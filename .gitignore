@@ -1,0 +1,69 @@
+# Cruft #
+.DS_Store
+
+# optimized loading #
+.optimized-loading-cache/
+combined.js*
+
+# Scripts #
+workspace/
+localconfig.js
+
+# Worlds #
+*.html
+!blank.html
+!welcome.html
+!run_tests.html
+!onedrive.html
+!dropbox.html
+
+# Node #
+node_modules
+*.pid
+
+# Parts #
+PartsBin
+
+# Users #
+users
+
+# Wiki #
+objects.sqlite
+
+# Debugging -- for development, will go away soon #
+DBG_*.js
+
+*.js~
+
+# Symlinks #
+stuff
+web
+
+# PartsBin serving
+PartsBin-copies/
+
+# QBF
+QBFHighScores.json
+
+# module debugging
+*.html.dot
+*.html.svg
+
+# backup
+.exclude-from-backup
+
+# ignore lively-web specific subservers
+core/servers/
+
+# R
+lively_r_log
+.Rhistory
+Rplots.pdf
+R-libraries/
+
+# Github API
+core/apis/github-api.json
+
+# HTTP / server #
+htpasswd
+.htpasswd

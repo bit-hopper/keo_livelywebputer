@@ -1,0 +1,319 @@
+.World {
+	font-family: Helvetica;
+}
+
+.Box {
+	border: 1px solid #aaa;
+}
+
+.Selection {
+	background: rgba(222,222,222, 0.6);
+	border: 1px solid #aaa;
+}
+
+.Box.selection-indicator {
+	background: none;
+	outline: 4px solid #E73F22;
+}
+
+.Text.edit-field {
+	background: white;
+	box-shadow: inset 1px 1px 1px #666;
+	border: 1px solid #aaa;
+	border-radius: 2px;
+}
+
+.Button {
+	font-size: 9pt;
+	color: #333;
+	text-align: center;
+	background: #EEE;
+	border-radius: 2px;
+	cursor: pointer;
+	border: 1px solid #888;
+}
+
+.Button.pressed {
+	box-shadow: inset 1px 1px 1px rgba(0, 0, 0, 0.5);
+}
+
+.Button.toggled {
+	color: black;
+}
+
+.Button.disabled {
+	color: gray;
+}
+
+.Button.disabled .Text span{
+	opacity: .3;
+}
+
+/* for centered button labels let the textNode use table layouting */
+
+.Text.vertically-centered > div {
+	display: table !important;
+}
+
+.Text.vertically-centered span {
+	display: table-cell;
+	vertical-align: middle;
+	text-align: center;
+}
+
+.Button .Text > div {
+	display: table !important;
+}
+
+.Button .Text span {
+	display: table-cell;
+	vertical-align: middle;
+	text-align: center;
+}
+
+.Menu {
+	background-color: #FFF !important;
+	box-shadow: 0px 2px 6px #666;
+}
+
+.PartsBinItem {
+	box-shadow: 1px 1px 5px 1px #DDD;
+}
+
+.Window {
+	background-color: rgb(244, 244, 244);
+	box-shadow: 0px 2px 6px #666;
+	border-radius: 3px;
+}
+
+.Window.highlighted {
+	background-color: rgb(222, 222, 222);
+	box-shadow: 0px 2px 6px #333;
+	border: 1px solid white;
+}
+
+.Window .TitleBar, .Window .reframe-handle {
+	border: none;
+	background: none;
+}
+
+.reframe-handle.corner {
+	cursor: se-resize;
+}
+
+.reframe-handle.right {
+	cursor: e-resize;
+}
+
+.reframe-handle.bottom {
+	cursor: s-resize;
+}
+
+.Window .Text.window-title {
+	padding-top: 2px !important;
+	font-size: 10pt;
+	text-align: left;
+	margin-left: 2px;
+	color: #555;
+}
+.Window.highlighted .Text.window-title {
+	font-weight: bold;
+	color: #333;
+}
+
+.Button.WindowControl {
+	border: 1px solid #aaa;
+	border-radius: 2px;
+	background: #EEE;
+	font-weight: normal;
+}
+
+.Button.WindowControl span {
+	padding-top: 1px !important;
+}
+
+.Button.WindowControl.close {
+	background: #E73F22;
+	color: white;
+}
+
+/* Lists */
+.MorphList .selected {
+    outline: 3px orange solid;
+}
+
+.List .list-item {
+	font-family: Helvetica,Verdana,sans-serif;
+	font-size: 10pt;
+	color: black;
+}
+
+.List .list-item.selected {
+	background: rgb(43, 88, 255) !important;
+	color: white !important;
+}
+
+.HorizontalDivider {
+	cursor: ns-resize;
+}
+
+.VerticalDivider {
+	cursor: ew-resize;
+}
+
+.Slider {
+	border-radius: 6px;
+	border: 1px solid #BBB;
+	background: #EEE;
+	box-shadow: inset 1px 1px 1px #666;
+}
+
+.SliderKnob {
+	box-shadow: inset 1px 1px 1px rgba(255, 255, 255, 0.8);
+	cursor: pointer;
+	border: 1px solid #888;
+	border-radius: 5px;
+	background-image: -webkit-linear-gradient(top, #EEE, #CCC);
+	background-image: -moz-linear-gradient(top, #EEE, #CCC);
+	background: linear-gradient(to bottom, #EEE, #CCC);
+}
+
+.AccordionHeader {
+	background-image: -webkit-linear-gradient(top, #eee, #ccc);
+	background-image: -moz-linear-gradient(top, #eee, #ccc);
+	background-image: linear-gradient(to top, #eee, #ccc);
+	border-radius: 3px;
+	box-shadow: inset 1px 1px 1px rgba(255, 255, 255, 0.8);
+	cursor: pointer;
+	border: 1px solid #888;
+}
+
+.AccordionHeader.active {
+	background-image: -webkit-linear-gradient(top, #fff, #eee);
+	background-image: -moz-linear-gradient(top, #fff, #eee);
+	background-image: linear-gradient(to top, #fff, #eee);
+}
+
+/* -=-=-=-=-=-=-=-=-=-=-=
+   messaging in the world
+   -=-=-=-=-=-=-=-=-=-=-= */
+
+.messageMorph {
+	background: rgba(0,0,0,0.6);
+	border-radius: 20px;
+}
+
+.messageMorph .closeButton {
+	visibility: hidden;
+	line-height: 3.6;
+	margin-left: 0px;
+	font-size: 12pt;
+	text-shadow: 0px 0px ✗4px rgba(255, 255, 255, 0.5);
+	color: white;
+}
+
+.messageMorph:hover .closeButton, .messageMorph.maximized .closeButton {
+	visibility: visible;
+	cursor: pointer;
+}
+
+.messageMorph .messageText {
+	font-size: 10pt;
+	font-family: Helvetica Neue,Helvetica,Arial;
+	color: white;
+	white-space: normal;
+	word-wrap: break-all !important;
+	line-height: 1.2 !important;
+	text-shadow: 0px 1px 2px rgba(255, 255, 255, 0.7);
+}
+
+.messageMorph:hover .messageText, .messageMorph.maximized .messageText {
+	margin-left: 0px;
+}
+
+.messageMorph.success {
+	background: rgba(0,180,0,0.6);
+}
+
+.messageMorph.success .messageText {
+	text-shadow: 0px 1px 2px rgba(220, 255, 220, 0.7);
+}
+
+.messageMorph.failure {
+	background: rgb(180,0,0);
+}
+
+.messageMorph.failure .messageText {
+	text-shadow: 0px 1px 2px rgba(255, 220, 220, 0.7);
+}
+
+/* -=-=-=-=-=-=-=-=-=-
+   codeeditor related
+   -=-=-=-=-=-=-=-=-=- */
+
+#ace-editor {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	left: 0;
+	right: 0;
+}
+
+.ace-global-var {
+	position: absolute;
+	border-bottom: 2px rgb(255,120, 0) dotted;
+}
+
+.ace_dark .ace-global-var {
+	border-bottom: 2px rgba(255,150, 0, 0.6) dotted;
+}
+
+.ace-syntax-error {
+	position: absolute;
+	border-radius: 3px;
+	background: rgba(255,0,0,0.7);
+}
+
+.ace-marker-warning {
+	position: absolute;
+	border-radius: 3px;
+	background: rgba(204,204,0,0.7);
+}
+
+.ace_line .ace_link {
+	pointer-events: auto;
+	cursor: pointer;
+}
+
+/*-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-*/
+/*for action texts*/
+.ace_link:hover, .ace_action:hover {
+	text-decoration: underline;
+/*font-weight: bold;*/
+}
+
+.ace_line .ace_action {
+	pointer-events: auto;
+	cursor: pointer;
+}
+
+.text-overlay {
+    z-index: 999;
+    font-family: Monaco, monospace;
+    font-size: inherit;
+    position: absolute;
+    color: white;
+    padding: 1px;
+    border-radius: 4px;
+	border: 1px #666 solid;
+    cursor: pointer;
+    white-space: pre;
+	pointer-events: auto;
+	background: #666;
+	box-shadow: none;
+	white-space: pre;
+}
+
+.text-overlay.hidden {
+	display: none;
+}
