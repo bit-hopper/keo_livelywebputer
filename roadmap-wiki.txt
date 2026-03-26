@@ -1,0 +1,169 @@
+# DWeb LivelyKernel  
+  
+## Introduction  
+  
+ 
+The project **Lively Kernel** is a **web-native programming environment and operating system-like runtime that runs inside a browser**. It was originally developed at **Sun Labs** by people connected to the Smalltalk/Self research community. and later --**SAP** and continued development at the **6-2018 [HPI Software Architecture Group](http://www.hpi.uni-potsdam.de/swa) Hasso Platter Instute**--later add **YCR** ..... ???
+  **DWeb LivelyKernel** is a fork of LivelyKernel enhanced to support **decentralized web protocols**, cryptographic identity, and content-addressed worlds.  
+  
+### Design Goals  
+- WebAuthn based login
+- Decentralized verifiable Credentials for user profiles and permissioning  
+- IPFS/IPNS world storage with IPLD DAG JSON snapshots  
+- Offline Local Network First, multi-user collaboration support
+- Polished and refreshed Lively morphic UI and runtime (halos, scripts, morphs etc.)
+---  
+  
+## Architecture Overview  
+  
+### 1. LivelyKernel Runtime  
+- Lively morphic architecture revamped
+- Halos, morphs, and scripts continue functioning as in original LivelyKernel  
+-  Offline Collaboration Local Network First support with **Helia libp2p** ?
+- Optional integration for offline editing, automatic merge with **Automerge CRDT** for morphic state replication  
+- Multi-user collaboration potential by adopting **Croquet VM architecture**
+ ----------
+
+
+### 2. Web Authentication 
+- Passkey authentication using WebAuthn 
+- Optional Sign-In With Ethereum (SIWE) (`window.ethereum`)
+
+----------
+
+
+### 3. Decentralized Cryptographic Identity  
+- DID:PKH generation  (`did:pkh:eip155:1:0x...`)
+- Verifiable Credentials (VCs) issued for profile, permissions  (`did:web`) etc.
+- Every **user** is represented by a **DID**:
+- Mapping .keo domain names to user DID document
+- did:web:alice.example.computer -> resolves to: ipns://did:pkh:eip155:1:0xAlice/world
+-    **IPNS** provides a mutable pointer to the latest world CID.
+did:web:lively.computer  -> resolves to: ipns://<CID pointing to world DAG>
+
+
+----------
+### 4. Decentralized Social
+- Decentralized Cryptographic Identity (`did:pkh:eip155:1:0x...`)
+- DID document mapping/linking?
+- Verifiable Credentials did:web 
+- Decentralize DNS solver .eth
+- PubSub
+- CIDs
+-  **IPNS** provides a mutable pointer to the latest world CID.
+did:web:lively.computer  -> resolves to: ipns://<CID pointing to world DAG>
+- CRDTs (Yjs, automerge)
+- Ocap (social scoped conversations)
+- Multiplayer
+- Secure End to End encrypted communication
+- Social Hosting (IPFS/Helia node)
+- Civil participation e.g Decentralized Voting??
+
+### 5. Decentralized Finance 
+- FHE ERC7984 contract on Ethereum testnet
+- Deploying ERC7984 on FEVM calibrationnet/ mainnet
+- Uniswap Hooks + v4 on FEVM ?  
+- Deploy DNS resolver for .keo domains on FEVM
+  
+ ----------
+
+
+### 6. Dentralized Web Strorage
+
+- Content Addressing & World Persistence 
+- Ohmjs scripting (see media computation)
+- An IPLD DAG-JSON Schema suitable for Lively Worlds  
+- Lively Worlds stored as **IPLD DAG JSON Objects** via Helia  
+- IPNS pointers resolve to latest world snapshots
+-    **IPNS** provides a mutable pointer to the latest world CID.
+did:web:lively.computer  -> resolves to: ipns://<CID pointing to world DAG>
+- Multiaddressing?? (`/ipns/QmPeerID → resolves → /ipfs/<new CID>`)
+-  Cryptographic signatures on encrypted serialized versioned/content addressed data
+- Object Capability for Social scoping content (syndicatejs?)
+- CIDs??
+- Optional DNSLink for human-readable names (`ipns://alice.host-server.world`)  
+Each world is represented as a DAG-JSON object. Morphs, scripts, and references are stored as nodes. 
+
+-   Resolving `ipns://did:pkh:eip155:1:0xAlice/world` gives the **CID of the latest world DAG**
+
+----------
+
+### 7. 3D Worlds & CADSIM
+- Adopting Croquet Worldcore
+- Croquet Microverse  
+- Leverage Threejs for 3D design CAD tool  
+- Integration with WebGL and WebGPU
+
+### 8. I/O
+- Integrate for WebSerial API
+- Native support for Arduino, Microblocks etc.
+ ----------  
+### 9. Low Level Web Primitives
+ - Multiformats ???? e.g IPLD DAG JSON for serializing World data, CID and mutliaddr for resolving dWeb protocol URIs
+ - WASM for faster processing?
+ - WASM compiled libraries for integrating desktop apps?
+ - WebAudio?? -> WebDAW?
+ - WebGL 
+ - WebGPU
+ - Chromium (reskin?) ARM WASM ISA? Linux FFI API??
+ ----------  
+### 10. Hardware (VM)? 
+- FPGA?
+- WASM -> ARM??
+- Custom/Programmable Circuit?
+---------
+### 11. Security & Privacy  
+- Wallet signing ensures cryptographic authentication  
+- Optional client-side world encryption  
+- DID and VC control access  
+- AES end to end encryption ????
+### 12. Future Directions
+
+-   Multi-user live collaboration with CRDTs and IPFS PubSub
+    
+-   Encrypted private worlds shared via DID keying
+    
+-   DNSLink or TLD human-readable IPNS names
+    
+-   Integration with DeFi identity and smart contracts
+    
+-   Cross-world programmable social interfaces
+    
+
+----------
+## Key Notes
+
+-   Morphic object references are **immutable via CID**, allowing reproducible snapshots.
+    
+-   Users own their **DIDs**, which are directly mapped to **IPNS addresses**.
+    
+-   Updating a world creates **new CIDs**, while IPNS maintains a mutable pointer to the latest state.
+    
+-   All serialization is **DAG-JSON compliant**, compatible with IPFS/Helia and future CRDT integrations.
+
+
+## References & Resources
+
+-   [LivelyKernel](https://github.com/LivelyKernel/LivelyKernel)
+
+- [IPLD DAG JSON](https://ipld.io/docs/codecs/known/dag-json/)
+
+-  [WebAuthn](https://developer.mozilla.org/en-US/docs/Web/API/Web_Authentication_API)
+
+-   [Veramo DID-PKH provider](https://veramo.io/docs/api/did-provider-pkh/)
+
+-   [SIWE](https://github.com/spruceid/siwe)
+
+-  [FHE ERC7984 Standard](https://docs.openzeppelin.com/confidential-contracts/token)
+      
+-   [Helia / IPFS](https://ipfs.github.io/helia/)
+    
+-   [IPNS documentation](https://docs.ipfs.tech/concepts/ipns/#ipns-in-practice)
+
+-   [Automerge CRDT docs](https://automerge.org/docs/)
+
+- [Ocap] Preserves?
+    
+
+----------
+
