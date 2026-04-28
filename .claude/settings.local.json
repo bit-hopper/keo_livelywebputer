@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sqlite3 \"c:/Users/Dream/Documents/Spellcasting/Art/keo_web/proto_lab/LivelyKernel/objects.sqlite\" \".schema\")",
+      "Bash(python3:*)",
+      "Bash(sqlite3 objects.sqlite \"SELECT date, length\\(content\\)/1024 as kb, change FROM versioned_objects WHERE path=''test.html'' ORDER BY version;\")"
+    ]
+  }
+}

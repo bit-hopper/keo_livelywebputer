@@ -1,0 +1,117 @@
+diff --git a/node_modules/lively-davfs/.direnv/flake-profile-a5d5b61aa8a61b7d9d765e1daf971a9a578f1cfa.rc b/node_modules/lively-davfs/.direnv/flake-profile-a5d5b61aa8a61b7d9d765e1daf971a9a578f1cfa.rc
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-davfs/.envrc b/node_modules/lively-davfs/.envrc
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-davfs/README.md b/node_modules/lively-davfs/README.md
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-davfs/VersionedFileSystem.js b/node_modules/lively-davfs/VersionedFileSystem.js
+old mode 100644
+new mode 100755
+index 129e6a6..d7e3c61
+--- a/node_modules/lively-davfs/VersionedFileSystem.js
++++ b/node_modules/lively-davfs/VersionedFileSystem.js
+@@ -18,7 +18,7 @@ var lkLoader = require('lively-loader');
+ // helper
+ function matches(reOrString, pathPart) {
+     if (typeof reOrString === 'string' && reOrString === pathPart) return true;
+-    if (util.isRegExp(reOrString) && reOrString.test(pathPart)) return true;
++    if (reOrString instanceof RegExp && reOrString.test(pathPart)) return true;
+     return false;
+ }
+ 
+@@ -79,7 +79,23 @@ util._extend(VersionedFileSystem.prototype, d.bindMethods({
+         // as a new version (change = "initial") to the storage
+         async.series([
+             storage.reset.bind(storage, resetDb/*drop tables?*/),
+-            this.readStateFromFiles.bind(this),
++            function(next) {
++                // Skip the expensive full-filesystem re-scan if the DB already
++                // has records from a previous run. New/changed files will still
++                // be versioned when they are saved through the DAV handler.
++                if (resetDb) { self.readStateFromFiles(next); return; }
++                storage.db.get(
++                    "SELECT COUNT(*) AS cnt FROM versioned_objects",
++                    function(err, row) {
++                        if (err || !row || row.cnt === 0) {
++                            self.readStateFromFiles(next);
++                        } else {
++                            console.log('LivelyFS: DB has %s records, skipping re-import from disk', row.cnt);
++                            next(null);
++                        }
++                    }
++                );
++            },
+         ], function(err) {
+             if (err) console.error('Error initializing versioned fs: %s', err);
+             else self.emit('initialized');
+diff --git a/node_modules/lively-davfs/domain.js b/node_modules/lively-davfs/domain.js
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-davfs/file-import-task.js b/node_modules/lively-davfs/file-import-task.js
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-davfs/flake.lock b/node_modules/lively-davfs/flake.lock
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-davfs/flake.nix b/node_modules/lively-davfs/flake.nix
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-davfs/jsDAV-plugin.js b/node_modules/lively-davfs/jsDAV-plugin.js
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-davfs/repository.js b/node_modules/lively-davfs/repository.js
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-davfs/request-handler.js b/node_modules/lively-davfs/request-handler.js
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-davfs/sqlite-storage.js b/node_modules/lively-davfs/sqlite-storage.js
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-davfs/test-server.js b/node_modules/lively-davfs/test-server.js
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-davfs/tests/fs-versioning-tests.js b/node_modules/lively-davfs/tests/fs-versioning-tests.js
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-davfs/tests/tests.js b/node_modules/lively-davfs/tests/tests.js
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-davfs/util.js b/node_modules/lively-davfs/util.js
+old mode 100644
+new mode 100755
+index 49cbca1..0876c04
+--- a/node_modules/lively-davfs/util.js
++++ b/node_modules/lively-davfs/util.js
+@@ -10,17 +10,17 @@ function batchify(list, constrainedFunc, context) {
+     // see [$world.browseCode("lively.lang.tests.ExtensionTests.ArrayTest", "testBatchify", "lively.lang.tests.ExtensionTests")]
+     // for an example
+     function extractBatch(batch, sizes) {
+-        // Array -> Array -> Array[Array,Array]
+-        // case 1: no sizes to distribute, we are done
+-        if (!sizes.length) return [batch, []];
+-        var first = sizes[0], rest = sizes.slice(1);
+-        // if batch is empty we have to take at least one
+-        // if batch and first still fits, add first
+-        var candidate = batch.concat([first]);
+-        if (constrainedFunc.call(context, candidate)) return extractBatch(candidate, rest);
+-        // otherwise leave first out for now
+-        var batchAndSizes = extractBatch(batch, rest);
+-        return [batchAndSizes[0], [first].concat(batchAndSizes[1])];
++        // Iterative replacement for the original recursive version.
++        // Avoids stack overflow when sizes is large (e.g. 13000+ files).
++        // Semantics are identical: greedily include each item if the
++        // constraint still holds, otherwise defer it to the remaining list.
++        var remaining = [];
++        for (var i = 0; i < sizes.length; i++) {
++            var candidate = batch.concat([sizes[i]]);
++            if (constrainedFunc.call(context, candidate)) batch = candidate;
++            else remaining.push(sizes[i]);
++        }
++        return [batch, remaining];
+     }
+     function findBatches(batches, sizes) {
+         if (!sizes.length) return batches;

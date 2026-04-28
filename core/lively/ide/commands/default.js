@@ -784,7 +784,7 @@ Object.extend(lively.ide.commands.byName, {
             // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 
             function isSaveForSCB(candidate) {
-              return (candidate.fullPath || "").endsWith(".js");
+              return !!candidate && (candidate.fullPath || "").endsWith(".js");
             }
 
             function searchForMatching(input, callback) {
