@@ -51,7 +51,12 @@ module("lively.ide.DirectoryWatcher")
         // lively.ide.DirectoryWatcher.dirs
         // lively.ide.DirectoryWatcher.withFilesOfDir(dir, function(files) { show(Object.keys(files).length); })
         // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
-
+        // Ensure dir is a valid string
+        if (!dir || typeof dir !== 'string') {
+          console.warn('DirectoryWatcher.withFilesOfDir: Invalid directory:', dir);
+          doFunc && doFunc({});
+          return;
+        }
         var watchState =
           this.dirs[dir] ||
           (this.dirs[dir] = { updateInProgress: false, callbacks: [] });
@@ -142,16 +147,35 @@ module("lively.ide.DirectoryWatcher")
 
         function whenDone() {
           watchState.updateInProgress = false;
+          // Ensure files is always an object before calling callbacks
+          if (!watchState.files || typeof watchState.files !== 'object') {
+            watchState.files = {};
+          }
           var cb;
-          while ((cb = watchState.callbacks.shift())) cb(watchState.files);
+          while ((cb = watchState.callbacks.shift())) {
+            try {
+              cb(watchState.files);
+            } catch (e) {
+              console.error('DirectoryWatcher callback error:', e);
+            }
+          }
         }
 
         function extend(statObj) {
           // convert date string into a date object
           if (!statObj) statObj = {};
+          if (typeof statObj.mode === 'undefined') {
+            // Default mode for files
+            statObj.mode = 0o100644; // Regular file with read permissions
+          }
           statObj.isDirectory = !!(statObj.mode & 0x4000);
           ["atime", "mtime", "ctime"].forEach(function (field) {
-            if (statObj[field]) statObj[field] = new Date(statObj[field]);
+            if (statObj[field]) {
+              statObj[field] = new Date(statObj[field]);
+            } else if (!statObj[field]) {
+              // Provide default timestamp if missing
+              statObj[field] = new Date();
+            }
           });
           return statObj;
         }
