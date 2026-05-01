@@ -67,3 +67,47 @@ core/apis/github-api.json
 # HTTP / server #
 htpasswd
 .htpasswd
+
+# Documentation files
+*.md
+*.txt
+
+# Claude and AI assistant files
+.claude
+.claude/**
+
+# Sensitive cryptographic keys
+.lively-keys
+.lively-keys/**
+
+# Environment configuration
+.env
+.env.identity
+.env.local
+.env.*.local
+
+# Database files (identity and other)
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+
+# Log files
+*.log
+logs/
+
+# Build outputs
+dist/
+build/
+.cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Runtime
+tmp/
+temp/
