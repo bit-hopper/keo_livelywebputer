@@ -1,0 +1,10 @@
+{
+  "keyId": "_health_check-signing-999",
+  "userId": "_health_check",
+  "keyType": "signing",
+  "algorithm": "Ed25519",
+  "publicKey": "tzIYwj3Dh5UmhB665VqR9ycVHVzui7xXwuam6oA08gc=",
+  "secretKey": "givmygP2Z9eH2yE5bCvc5pbj34i4rTxFCiWUBAYM6Xi3MhjCPcOHlSaEHrrlWpH3JxUdXO6LvFfC5qbqgDTyBw==",
+  "createdAt": "2026-04-30T07:29:30.852Z",
+  "isActive": true
+}

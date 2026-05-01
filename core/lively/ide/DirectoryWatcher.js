@@ -52,8 +52,11 @@ module("lively.ide.DirectoryWatcher")
         // lively.ide.DirectoryWatcher.withFilesOfDir(dir, function(files) { show(Object.keys(files).length); })
         // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
         // Ensure dir is a valid string
-        if (!dir || typeof dir !== 'string') {
-          console.warn('DirectoryWatcher.withFilesOfDir: Invalid directory:', dir);
+        if (!dir || typeof dir !== "string") {
+          console.warn(
+            "DirectoryWatcher.withFilesOfDir: Invalid directory:",
+            dir,
+          );
           doFunc && doFunc({});
           return;
         }
@@ -148,7 +151,7 @@ module("lively.ide.DirectoryWatcher")
         function whenDone() {
           watchState.updateInProgress = false;
           // Ensure files is always an object before calling callbacks
-          if (!watchState.files || typeof watchState.files !== 'object') {
+          if (!watchState.files || typeof watchState.files !== "object") {
             watchState.files = {};
           }
           var cb;
@@ -156,7 +159,7 @@ module("lively.ide.DirectoryWatcher")
             try {
               cb(watchState.files);
             } catch (e) {
-              console.error('DirectoryWatcher callback error:', e);
+              console.error("DirectoryWatcher callback error:", e);
             }
           }
         }
@@ -164,7 +167,7 @@ module("lively.ide.DirectoryWatcher")
         function extend(statObj) {
           // convert date string into a date object
           if (!statObj) statObj = {};
-          if (typeof statObj.mode === 'undefined') {
+          if (typeof statObj.mode === "undefined") {
             // Default mode for files
             statObj.mode = 0o100644; // Regular file with read permissions
           }

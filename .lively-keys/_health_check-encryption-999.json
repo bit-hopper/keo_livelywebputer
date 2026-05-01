@@ -1,0 +1,9 @@
+{
+  "keyId": "_health_check-encryption-999",
+  "userId": "_health_check",
+  "keyType": "encryption",
+  "algorithm": "A256GCM",
+  "key": "hd/+ZRCBoDCj/5s8sfQt2wWISItdXc1elZS4YiUA8So=",
+  "createdAt": "2026-04-30T07:29:30.881Z",
+  "isActive": true
+}
