@@ -1,9 +1,0 @@
-{
-  "keyId": "test-user-encryption-1",
-  "userId": "test-user",
-  "keyType": "encryption",
-  "algorithm": "A256GCM",
-  "key": "7YKWtXuWQfrPBT47LMp/Vlu2S3oL7aBAqjN42dqC29Q=",
-  "createdAt": "2026-04-30T07:29:30.928Z",
-  "isActive": true
-}
