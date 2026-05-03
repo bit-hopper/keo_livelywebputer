@@ -1,7 +1,46 @@
 <!doctype html>
-<html>
+<html lang="en">
   <head>
     <title>blank.html</title>
+    <script type="text/javascript">
+      // Accessibility enhancement: Add aria-labels to select elements
+      (function() {
+        function ensureSelectLabels() {
+          var selects = document.querySelectorAll('select');
+          selects.forEach(function(select, index) {
+            if (!select.getAttribute('aria-label') && !select.getAttribute('aria-labelledby')) {
+              var label = select.getAttribute('title') || 
+                         (select.parentElement && select.parentElement.getAttribute('aria-label')) ||
+                         'Option ' + (index + 1);
+              select.setAttribute('aria-label', label);
+            }
+          });
+        }
+        // Run on page load
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', ensureSelectLabels);
+        } else {
+          ensureSelectLabels();
+        }
+        // Also watch for dynamically added selects
+        if (window.MutationObserver && document.body) {
+          new MutationObserver(ensureSelectLabels).observe(document.body, {
+            subtree: true,
+            childList: true
+          });
+        } else if (window.MutationObserver) {
+          // Wait for body to be ready
+          document.addEventListener('DOMContentLoaded', function() {
+            if (document.body) {
+              new MutationObserver(ensureSelectLabels).observe(document.body, {
+                subtree: true,
+                childList: true
+              });
+            }
+          });
+        }
+      })();
+    </script>
     <style type="text/css">
       *:not(:focus) {
         -moz-user-select: -moz-none;
@@ -179,6 +218,7 @@
     </style>
   </head>
   <body>
+    <main>
     <div
       tabindex="-1"
       style="
@@ -702,5 +742,6 @@
         }
       }
     </script>
+    </main>
   </body>
 </html>

@@ -365,7 +365,7 @@
         "text-align:center;" +
           "font-family: sans-serif;" +
           "font-size: large;" +
-          "color: gray",
+          "color: #333333",
       );
       text.textContent = "Loading";
       logoAndText.style.top = this.height() / 2 - 100 + "px";
