@@ -212,10 +212,16 @@ Object.extend(lively.data.FileUpload, {
 
             function upload(location, next) {
                 formData.append('location', location);
+                console.log('[FileUpload] Starting upload to location:', location);
+                console.log('[FileUpload] FormData contains', files.length, 'file(s)');
                 URL.root.withFilename('upload').asWebResource()
                     .enableShowingProgress().createProgressBar("Uploading")
                     .beAsync().post(formData)
-                    .withJSONWhenDone(function(json, stat) { next(null, json, stat); });
+                    .withJSONWhenDone(function(json, stat) {
+                        console.log('[FileUpload] Upload response status:', stat);
+                        console.log('[FileUpload] Upload response:', json);
+                        next(null, json, stat);
+                    });
             },
 
             function report(uploadReport, postStatus, next) { next(null, uploadReport); }
