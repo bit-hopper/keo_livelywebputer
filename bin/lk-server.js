@@ -82,6 +82,19 @@ if (options.defined('noVersionControl')) {
     dbConfig = JSON.stringify({"enableVersioning": false});
 }
 
+if (!dbConfig) {
+    // Default configuration with API path exclusions for OAuth, Identity, and AT Protocol
+    dbConfig = JSON.stringify({
+        enableVersioning: false,
+        excludePaths: [
+            '/api/',           // All API endpoints
+            '/xrpc/',          // AT Protocol xRPC endpoints
+            '/service/',       // Service endpoints
+            '/.well-known/'    // Well-known endpoints
+        ]
+    });
+}
+
 if (!options.defined('noSubservers')) {
     var excluded = options.defined('excludeSubserver') ? options.excludeSubserver.split(',') : [];
     var lkSubserverDir = path.join(options.lkDir, "core/servers");
