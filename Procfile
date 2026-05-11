@@ -1,2 +1,2 @@
-web: node bin/lk-server --no-partsbin-check --port $PORT
+web: node bin/lk-server --port $PORT
 

@@ -110,8 +110,9 @@ Object.subclass("lively.store.ObjectRepository",
             .asWebResource().noProxy();
         if (thenDo != null) {
             res.withJSONWhenDone(function(json, status) {
+                // Handle empty results gracefully - versioning may be disabled
                 if (JSON.prettyPrint(json) == "[]"){
-                    throw new Error("Could not get records for:" + JSON.prettyPrint(querySpec))
+                    json = []; // Use empty array instead of throwing
                 } 
                 thenDo(status.isSuccess() ? null : status, json); }).beAsync().get();
             return this;

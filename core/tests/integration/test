@@ -1,0 +1,15 @@
+#!/usr/bin/env node
+/**
+ * Run integration tests via command line
+ */
+
+const { runAllTests } = require('./run-tests');
+
+runAllTests()
+  .then(results => {
+    process.exit(results.failed > 0 ? 1 : 0);
+  })
+  .catch(err => {
+    console.error('Test runner error:', err);
+    process.exit(1);
+  });
