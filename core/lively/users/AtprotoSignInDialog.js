@@ -209,7 +209,7 @@ function createAtprotoMainDialog() {
       dialogSignInBtn.submorphs[0].setTextString("Signing in...");
       
       // Call backend authentication endpoint
-      fetch("/auth/login", {
+      fetch("/nodejs/ATProtoAuthTest/auth/login", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
