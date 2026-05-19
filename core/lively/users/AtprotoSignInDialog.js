@@ -189,7 +189,7 @@ function createAtprotoMainDialog() {
       var provider = providerInput.textString;
       var username = usernameInput.textString;
       var password = passwordInput.textString;
-      
+
       if (!provider || provider.trim() === "") {
         alertOK("Please enter hosting provider");
         return;
@@ -202,12 +202,12 @@ function createAtprotoMainDialog() {
         alertOK("Please enter password");
         return;
       }
-      
+
       // Show loading message
       var originalLabel = dialogSignInBtn.getLabel();
       dialogSignInBtn.setLabel("Signing in...");
       dialogSignInBtn.submorphs[0].setTextString("Signing in...");
-      
+
       // Call backend authentication endpoint
       fetch("/nodejs/ATProtoAuthTest/auth/login", {
         method: "POST",
@@ -221,30 +221,45 @@ function createAtprotoMainDialog() {
         }),
       })
         .then(function (response) {
-          if (!response.ok) {
-            return response.json().then(function (error) {
-              throw new Error(error.error || "Authentication failed");
-            });
-          }
-          return response.json();
+          return response.json().then(function (data) {
+            if (!response.ok) {
+              // Build error message from backend response
+              var errorMsg = data.error || "Authentication failed";
+              if (data.details) {
+                errorMsg += ": " + data.details;
+              }
+              throw new Error(errorMsg);
+            }
+            return data;
+          });
         })
         .then(function (data) {
-          // Store session token
+          // Verify response has required fields
+          if (!data.user || !data.user.did) {
+            throw new Error("Invalid server response: missing user data");
+          }
+
+          // Store session token and user info
           if (typeof localStorage !== "undefined") {
             localStorage.setItem("atproto_token", data.token);
             localStorage.setItem("atproto_did", data.user.did);
             localStorage.setItem("atproto_handle", data.user.handle);
             localStorage.setItem("atproto_session_id", data.sessionId);
+            if (data.pdsUrl) {
+              localStorage.setItem("atproto_pds_url", data.pdsUrl);
+            }
           }
-          
-          // Success message
+
+          // Success message with real user details
           alertOK(
-            "Successfully signed in as " +
-              username +
-              "!\n\nDID: " +
-              data.user.did
+            "✓ Successfully signed in!\n\n" +
+              "Handle: " +
+              data.user.handle +
+              "\n" +
+              "DID: " +
+              data.user.did,
           );
-          
+
           // Clean up
           signInDialog.remove();
           mainDialog.remove();
@@ -253,10 +268,41 @@ function createAtprotoMainDialog() {
           // Reset button
           dialogSignInBtn.setLabel(originalLabel);
           dialogSignInBtn.submorphs[0].setTextString(originalLabel);
-          
-          // Show error
-          alertOK("Sign in failed:\n\n" + error.message);
-          console.error("Sign in error:", error);
+
+          // Format error message with helpful hints
+          var errorMsg = "✗ Sign in failed\n\n";
+          var fullError = error.message || "Unknown error";
+
+          if (
+            fullError.includes("Invalid handle") ||
+            fullError.includes("Invalid password") ||
+            fullError.includes("Invalid credentials")
+          ) {
+            errorMsg +=
+              "Invalid credentials\n\n" +
+              "Please check:\n" +
+              "• Handle format (e.g., user.bsky.social)\n" +
+              "• Password is correct\n" +
+              "• Account exists on the server";
+          } else if (fullError.includes("PDS unavailable")) {
+            errorMsg +=
+              "Server unavailable\n\n" +
+              "The PDS server could not be reached.\n" +
+              "Please try again or verify your server URL.";
+          } else if (
+            fullError.includes("Could not resolve PDS") ||
+            fullError.includes("Invalid handle format")
+          ) {
+            errorMsg +=
+              "Handle resolution failed\n\n" +
+              "Could not find the PDS server for this handle.\n" +
+              "Please provide an explicit PDS URL or use a known handle.";
+          } else {
+            errorMsg += fullError;
+          }
+
+          alertOK(errorMsg);
+          console.error("AT Proto authentication error:", error);
         });
     };
     signInDialog.addMorph(dialogSignInBtn);
