@@ -1,18 +1,18 @@
 /**
  * AT Protocol Authentication Server
- * 
+ *
  * Replaces legacy AuthServer.js with proper AT Protocol integration
  * Handles OAuth flows, handle validation, session management, and user accounts
  */
 
-const express = require('express');
-const { AtpAgent } = require('@atproto/api');
-const { getConfig } = require('../lib/atproto-config');
-const { getSessionManager } = require('../lib/atproto-session');
-const { getOAuthClient } = require('../lib/atproto-oauth');
-const { getPDSManager } = require('../lib/atproto-pds');
-const { getPDSDiscovery } = require('../lib/atproto-pds-discovery');
-const crypto = require('crypto');
+const express = require("express");
+const { AtpAgent } = require("@atproto/api");
+const { getConfig } = require("../lib/atproto-config");
+const { getSessionManager } = require("../lib/atproto-session");
+const { getOAuthClient } = require("../lib/atproto-oauth");
+const { getPDSManager } = require("../lib/atproto-pds");
+const { getPDSDiscovery } = require("../lib/atproto-pds-discovery");
+const crypto = require("crypto");
 
 class ATProtoAuthServer {
   constructor(app) {
@@ -31,31 +31,43 @@ class ATProtoAuthServer {
    */
   setupRoutes() {
     // OAuth initiation
-    this.router.post('/auth/oauth-authorize', this.handleOAuthAuthorize.bind(this));
-    
+    this.router.post(
+      "/auth/oauth-authorize",
+      this.handleOAuthAuthorize.bind(this),
+    );
+
     // OAuth callback
-    this.router.post('/auth/oauth-callback', this.handleOAuthCallback.bind(this));
-    
+    this.router.post(
+      "/auth/oauth-callback",
+      this.handleOAuthCallback.bind(this),
+    );
+
     // Signup with new handle
-    this.router.post('/auth/signup', this.handleSignup.bind(this));
-    
+    this.router.post("/auth/signup", this.handleSignup.bind(this));
+
     // Simple login with handle and password
-    this.router.post('/auth/login', this.handleLogin.bind(this));
-    
+    this.router.post("/auth/login", this.handleLogin.bind(this));
+
     // Handle availability check
-    this.router.get('/auth/handle-available/:handle', this.checkHandleAvailable.bind(this));
-    
+    this.router.get(
+      "/auth/handle-available/:handle",
+      this.checkHandleAvailable.bind(this),
+    );
+
     // Session verification
-    this.router.post('/auth/verify-session', this.handleVerifySession.bind(this));
-    
+    this.router.post(
+      "/auth/verify-session",
+      this.handleVerifySession.bind(this),
+    );
+
     // Logout
-    this.router.post('/auth/logout', this.handleLogout.bind(this));
-    
+    this.router.post("/auth/logout", this.handleLogout.bind(this));
+
     // Get current user info
-    this.router.get('/auth/me', this.handleGetCurrentUser.bind(this));
-    
+    this.router.get("/auth/me", this.handleGetCurrentUser.bind(this));
+
     // Revoke all sessions (password change scenario)
-    this.router.post('/auth/revoke-all', this.handleRevokeAll.bind(this));
+    this.router.post("/auth/revoke-all", this.handleRevokeAll.bind(this));
   }
 
   /**
@@ -63,7 +75,7 @@ class ATProtoAuthServer {
    */
   attachToApp() {
     this.app.use(this.router);
-    console.log('[ATProtoAuthServer] Routes attached to Express app');
+    console.log("[ATProtoAuthServer] Routes attached to Express app");
   }
 
   /**
@@ -75,7 +87,7 @@ class ATProtoAuthServer {
       const { redirectUri, handle, pdsUrl } = req.body;
 
       if (!redirectUri) {
-        return res.status(400).json({ error: 'redirectUri required' });
+        return res.status(400).json({ error: "redirectUri required" });
       }
 
       // Discover PDS endpoint
@@ -85,9 +97,15 @@ class ATProtoAuthServer {
         try {
           const pdsInfo = await this.discovery.discoverPDS(handle);
           discoveredPdsUrl = pdsInfo.url;
-          console.log('[ATProtoAuthServer] Discovered PDS for handle:', { handle, pdsUrl: discoveredPdsUrl });
+          console.log("[ATProtoAuthServer] Discovered PDS for handle:", {
+            handle,
+            pdsUrl: discoveredPdsUrl,
+          });
         } catch (error) {
-          console.warn('[ATProtoAuthServer] PDS discovery failed, using default:', error.message);
+          console.warn(
+            "[ATProtoAuthServer] PDS discovery failed, using default:",
+            error.message,
+          );
           discoveredPdsUrl = this.config.pds.url;
         }
       } else if (!discoveredPdsUrl) {
@@ -98,11 +116,12 @@ class ATProtoAuthServer {
       const state = this.oauthClient.generateStateToken();
 
       // Generate authorization URL with PKCE
-      const { url, codeVerifier } = await this.oauthClient.generateAuthorizationUrl(
-        state,
-        redirectUri,
-        discoveredPdsUrl
-      );
+      const { url, codeVerifier } =
+        await this.oauthClient.generateAuthorizationUrl(
+          state,
+          redirectUri,
+          discoveredPdsUrl,
+        );
 
       // TODO: Store state and codeVerifier in Redis or session for verification
 
@@ -113,8 +132,13 @@ class ATProtoAuthServer {
         pdsUrl: discoveredPdsUrl,
       });
     } catch (error) {
-      console.error('[ATProtoAuthServer] OAuth authorize error:', error);
-      res.status(500).json({ error: 'Authorization initiation failed', details: error.message });
+      console.error("[ATProtoAuthServer] OAuth authorize error:", error);
+      res
+        .status(500)
+        .json({
+          error: "Authorization initiation failed",
+          details: error.message,
+        });
     }
   }
 
@@ -126,7 +150,9 @@ class ATProtoAuthServer {
       const { code, codeVerifier, redirectUri, pdsUrl } = req.body;
 
       if (!code || !codeVerifier) {
-        return res.status(400).json({ error: 'code and codeVerifier required' });
+        return res
+          .status(400)
+          .json({ error: "code and codeVerifier required" });
       }
 
       // Exchange code for tokens (pdsUrl optional - will use default if not provided)
@@ -134,11 +160,11 @@ class ATProtoAuthServer {
         code,
         codeVerifier,
         redirectUri,
-        pdsUrl
+        pdsUrl,
       );
 
       if (!tokenResponse.did || !tokenResponse.handle) {
-        throw new Error('Invalid token response: missing DID or handle');
+        throw new Error("Invalid token response: missing DID or handle");
       }
 
       // Create session
@@ -151,7 +177,7 @@ class ATProtoAuthServer {
         {
           profile: tokenResponse.profile || {},
           email: tokenResponse.email,
-        }
+        },
       );
 
       res.json({
@@ -165,8 +191,10 @@ class ATProtoAuthServer {
         },
       });
     } catch (error) {
-      console.error('[ATProtoAuthServer] OAuth callback error:', error);
-      res.status(500).json({ error: 'OAuth callback failed', details: error.message });
+      console.error("[ATProtoAuthServer] OAuth callback error:", error);
+      res
+        .status(500)
+        .json({ error: "OAuth callback failed", details: error.message });
     }
   }
 
@@ -178,22 +206,27 @@ class ATProtoAuthServer {
       const { handle, password, email, inviteCode } = req.body;
 
       if (!handle || !password) {
-        return res.status(400).json({ error: 'handle and password required' });
+        return res.status(400).json({ error: "handle and password required" });
       }
 
       // Validate handle format
       if (!this.isValidHandle(handle)) {
-        return res.status(400).json({ error: 'Invalid handle format' });
+        return res.status(400).json({ error: "Invalid handle format" });
       }
 
       // Check handle availability via PDS
       const isAvailable = await this.pdsManager.isHandleAvailable(handle);
       if (!isAvailable) {
-        return res.status(409).json({ error: 'Handle already taken' });
+        return res.status(409).json({ error: "Handle already taken" });
       }
 
       // Create account on PDS
-      const account = await this.pdsManager.createAccount(handle, email, password, inviteCode);
+      const account = await this.pdsManager.createAccount(
+        handle,
+        email,
+        password,
+        inviteCode,
+      );
 
       // Create local session
       const sessionData = await this.sessionManager.createSession(
@@ -204,8 +237,8 @@ class ATProtoAuthServer {
         this.config.pds.url,
         {
           email: account.email,
-          createdVia: 'local_signup',
-        }
+          createdVia: "local_signup",
+        },
       );
 
       // Send email verification
@@ -223,8 +256,8 @@ class ATProtoAuthServer {
         },
       });
     } catch (error) {
-      console.error('[ATProtoAuthServer] Signup error:', error);
-      res.status(500).json({ error: 'Signup failed', details: error.message });
+      console.error("[ATProtoAuthServer] Signup error:", error);
+      res.status(500).json({ error: "Signup failed", details: error.message });
     }
   }
 
@@ -237,7 +270,7 @@ class ATProtoAuthServer {
       const { pdsUrl, handle, password } = req.body;
 
       if (!handle || !password) {
-        return res.status(400).json({ error: 'handle and password required' });
+        return res.status(400).json({ error: "handle and password required" });
       }
 
       // Use provided PDS URL or default
@@ -256,7 +289,7 @@ class ATProtoAuthServer {
         });
 
         if (!sessionResponse.data.did || !sessionResponse.data.handle) {
-          throw new Error('Invalid session response: missing DID or handle');
+          throw new Error("Invalid session response: missing DID or handle");
         }
 
         // Create local session record
@@ -268,8 +301,8 @@ class ATProtoAuthServer {
           targetPdsUrl,
           {
             profile: sessionResponse.data.profile || {},
-            createdVia: 'password_login',
-          }
+            createdVia: "password_login",
+          },
         );
 
         res.json({
@@ -283,18 +316,24 @@ class ATProtoAuthServer {
           },
         });
       } catch (authError) {
-        console.error('[ATProtoAuthServer] ATP login failed:', authError.message);
-        
+        console.error(
+          "[ATProtoAuthServer] ATP login failed:",
+          authError.message,
+        );
+
         // Check if it's an invalid credentials error
-        if (authError.status === 401 || authError.message.includes('Invalid identifier')) {
-          return res.status(401).json({ error: 'Invalid handle or password' });
+        if (
+          authError.status === 401 ||
+          authError.message.includes("Invalid identifier")
+        ) {
+          return res.status(401).json({ error: "Invalid handle or password" });
         }
-        
+
         throw authError;
       }
     } catch (error) {
-      console.error('[ATProtoAuthServer] Login error:', error);
-      res.status(500).json({ error: 'Login failed', details: error.message });
+      console.error("[ATProtoAuthServer] Login error:", error);
+      res.status(500).json({ error: "Login failed", details: error.message });
     }
   }
 
@@ -306,7 +345,7 @@ class ATProtoAuthServer {
       const { handle } = req.params;
 
       if (!this.isValidHandle(handle)) {
-        return res.status(400).json({ error: 'Invalid handle format' });
+        return res.status(400).json({ error: "Invalid handle format" });
       }
 
       // Discover PDS for this handle
@@ -318,12 +357,15 @@ class ATProtoAuthServer {
         pdsUrl = this.config.pds.url;
       }
 
-      const isAvailable = await this.pdsManager.isHandleAvailable(handle, pdsUrl);
+      const isAvailable = await this.pdsManager.isHandleAvailable(
+        handle,
+        pdsUrl,
+      );
 
       res.json({ available: isAvailable, pdsUrl });
     } catch (error) {
-      console.error('[ATProtoAuthServer] Handle check error:', error);
-      res.status(500).json({ error: 'Handle availability check failed' });
+      console.error("[ATProtoAuthServer] Handle check error:", error);
+      res.status(500).json({ error: "Handle availability check failed" });
     }
   }
 
@@ -335,13 +377,15 @@ class ATProtoAuthServer {
       const { token } = req.body;
 
       if (!token) {
-        return res.status(400).json({ error: 'token required' });
+        return res.status(400).json({ error: "token required" });
       }
 
       const verification = await this.sessionManager.verifyToken(token);
 
       if (!verification.valid) {
-        return res.status(401).json({ error: 'Invalid token', details: verification.error });
+        return res
+          .status(401)
+          .json({ error: "Invalid token", details: verification.error });
       }
 
       res.json({
@@ -351,8 +395,8 @@ class ATProtoAuthServer {
         handle: verification.handle,
       });
     } catch (error) {
-      console.error('[ATProtoAuthServer] Session verify error:', error);
-      res.status(500).json({ error: 'Session verification failed' });
+      console.error("[ATProtoAuthServer] Session verify error:", error);
+      res.status(500).json({ error: "Session verification failed" });
     }
   }
 
@@ -364,15 +408,15 @@ class ATProtoAuthServer {
       const { sessionId } = req.body;
 
       if (!sessionId) {
-        return res.status(400).json({ error: 'sessionId required' });
+        return res.status(400).json({ error: "sessionId required" });
       }
 
       await this.sessionManager.revokeSession(sessionId);
 
       res.json({ success: true });
     } catch (error) {
-      console.error('[ATProtoAuthServer] Logout error:', error);
-      res.status(500).json({ error: 'Logout failed' });
+      console.error("[ATProtoAuthServer] Logout error:", error);
+      res.status(500).json({ error: "Logout failed" });
     }
   }
 
@@ -384,16 +428,18 @@ class ATProtoAuthServer {
       const token = this.extractTokenFromRequest(req);
 
       if (!token) {
-        return res.status(401).json({ error: 'No token provided' });
+        return res.status(401).json({ error: "No token provided" });
       }
 
       const verification = await this.sessionManager.verifyToken(token);
 
       if (!verification.valid) {
-        return res.status(401).json({ error: 'Invalid token' });
+        return res.status(401).json({ error: "Invalid token" });
       }
 
-      const session = await this.sessionManager.getSession(verification.sessionId);
+      const session = await this.sessionManager.getSession(
+        verification.sessionId,
+      );
 
       res.json({
         did: session.did,
@@ -401,8 +447,8 @@ class ATProtoAuthServer {
         userData: session.user_data,
       });
     } catch (error) {
-      console.error('[ATProtoAuthServer] Get current user error:', error);
-      res.status(500).json({ error: 'Failed to get current user' });
+      console.error("[ATProtoAuthServer] Get current user error:", error);
+      res.status(500).json({ error: "Failed to get current user" });
     }
   }
 
@@ -414,21 +460,23 @@ class ATProtoAuthServer {
       const token = this.extractTokenFromRequest(req);
 
       if (!token) {
-        return res.status(401).json({ error: 'No token provided' });
+        return res.status(401).json({ error: "No token provided" });
       }
 
       const verification = await this.sessionManager.verifyToken(token);
 
       if (!verification.valid) {
-        return res.status(401).json({ error: 'Invalid token' });
+        return res.status(401).json({ error: "Invalid token" });
       }
 
-      const revokedCount = await this.sessionManager.revokeAllSessions(verification.did);
+      const revokedCount = await this.sessionManager.revokeAllSessions(
+        verification.did,
+      );
 
       res.json({ success: true, revokedCount });
     } catch (error) {
-      console.error('[ATProtoAuthServer] Revoke all error:', error);
-      res.status(500).json({ error: 'Failed to revoke sessions' });
+      console.error("[ATProtoAuthServer] Revoke all error:", error);
+      res.status(500).json({ error: "Failed to revoke sessions" });
     }
   }
 
@@ -439,7 +487,9 @@ class ATProtoAuthServer {
     // AT Protocol handle validation
     // Handles are 3-253 chars, alphanumeric + hyphens, but not starting/ending with hyphen
     const handleRegex = /^[a-z0-9]([a-z0-9-]{1,251}[a-z0-9])?$/i;
-    return handleRegex.test(handle) && handle.length >= 3 && handle.length <= 253;
+    return (
+      handleRegex.test(handle) && handle.length >= 3 && handle.length <= 253
+    );
   }
 
   /**
@@ -463,8 +513,8 @@ class ATProtoAuthServer {
     const authHeader = req.headers.authorization;
     if (!authHeader) return null;
 
-    const parts = authHeader.split(' ');
-    if (parts.length !== 2 || parts[0] !== 'Bearer') return null;
+    const parts = authHeader.split(" ");
+    if (parts.length !== 2 || parts[0] !== "Bearer") return null;
 
     return parts[1];
   }
@@ -478,13 +528,13 @@ class ATProtoAuthServer {
         const token = this.extractTokenFromRequest(req);
 
         if (!token) {
-          return res.status(401).json({ error: 'No token provided' });
+          return res.status(401).json({ error: "No token provided" });
         }
 
         const verification = await this.sessionManager.verifyToken(token);
 
         if (!verification.valid) {
-          return res.status(401).json({ error: 'Invalid token' });
+          return res.status(401).json({ error: "Invalid token" });
         }
 
         // Attach to request for downstream handlers
@@ -496,8 +546,8 @@ class ATProtoAuthServer {
 
         next();
       } catch (error) {
-        console.error('[ATProtoAuthServer] Auth middleware error:', error);
-        res.status(500).json({ error: 'Authentication failed' });
+        console.error("[ATProtoAuthServer] Auth middleware error:", error);
+        res.status(500).json({ error: "Authentication failed" });
       }
     };
   }
@@ -513,7 +563,24 @@ function getATProtoAuthServer(app) {
   return authServer;
 }
 
-module.exports = {
-  ATProtoAuthServer,
-  getATProtoAuthServer,
+// Export function for life_star subserver loading
+module.exports = function (route, app) {
+  // Initialize the auth server if not already done
+  const server = getATProtoAuthServer(app);
+
+  // Attach routes to Express (the router is already set up in constructor)
+  // We just need to make sure routes are available
+  if (!server._routesAttached) {
+    app.use(server.router);
+    server._routesAttached = true;
+    console.log(
+      "[ATProtoAuthServer] Routes attached to Express app via subserver loader",
+    );
+  }
+
+  return server;
 };
+
+// Also export for direct use
+module.exports.ATProtoAuthServer = ATProtoAuthServer;
+module.exports.getATProtoAuthServer = getATProtoAuthServer;

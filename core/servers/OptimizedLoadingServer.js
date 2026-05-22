@@ -148,14 +148,23 @@ function computeHash(combinedFile) {
 
 function coreFiles(baseDir) {
   var cfg = lively.Config,
-      libsFile = 'core/lib/lively-libs-debug.js',
-      bootstrapFiles = cfg.get("bootstrapFiles"),
+      libsFile = path.join(baseDir, 'core/lib/lively-libs-debug.js'),
+      // Convert bootstrap files to absolute paths by resolving them relative to baseDir
+      bootstrapFiles = (cfg.get("bootstrapFiles") || []).map(function(file) {
+        return path.join(baseDir, file);
+      }),
       modulesToInclude = cfg.get("bootstrapModules")
         .concat(cfg.get("modulesBeforeWorldLoad"))
         .concat(cfg.get("modulesOnWorldLoad"));
 
   var coreFiles = spliceInDependencies(modulesToInclude.map(moduleToFile).reverse());
   coreFiles = [libsFile].concat(bootstrapFiles).concat(coreFiles);
+  
+  // Convert all absolute paths back to relative paths for the module loading system
+  coreFiles = coreFiles.map(function(file) {
+    return file[0] === "/" || (file.length > 1 && file[1] === ":") ? path.relative(baseDir, file) : file;
+  });
+  
   return coreFiles;
 
   // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
@@ -199,8 +208,8 @@ function coreFiles(baseDir) {
         i++;
     }
 
-    // remove duplicates
-    return lang.arr.uniq(files).map(ea => ea[0] === "/" ? path.relative(baseDir, ea) : ea);
+    // remove duplicates - keep as absolute paths for now, will be converted to relative in coreFiles()
+    return lang.arr.uniq(files);
   }
 }
 

@@ -117,9 +117,7 @@ async function resolvePDSEndpoint(handle, explicitPdsUrl) {
       }
     })();
 
-    console.log(
-      `[ATProtoAuth] Found PDS endpoint via well-known: ${response}`,
-    );
+    console.log(`[ATProtoAuth] Found PDS endpoint via well-known: ${response}`);
     return response;
   } catch (wellKnownError) {
     console.log(
@@ -129,9 +127,7 @@ async function resolvePDSEndpoint(handle, explicitPdsUrl) {
 
   // Fallback to Bluesky for .bsky.social handles
   if (domain === "bsky.social" || domain === "bluesky.social") {
-    console.log(
-      `[ATProtoAuth] Using default Bluesky PDS for ${domain} domain`,
-    );
+    console.log(`[ATProtoAuth] Using default Bluesky PDS for ${domain} domain`);
     return "https://bsky.social";
   }
 
@@ -209,9 +205,7 @@ module.exports = function (route, app) {
           success: true,
           sessionId: sessionToken,
           token: sessionToken,
-          expiresAt: new Date(
-            Date.now() + 24 * 60 * 60 * 1000,
-          ).toISOString(),
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
           user: {
             did: sessionResponse.data.did,
             handle: sessionResponse.data.handle,
@@ -222,9 +216,7 @@ module.exports = function (route, app) {
         });
       } catch (error) {
         // Handle authentication errors
-        console.error(
-          `[ATProtoAuth] Authentication failed: ${error.message}`,
-        );
+        console.error(`[ATProtoAuth] Authentication failed: ${error.message}`);
 
         if (
           error.status === 401 ||
@@ -307,5 +299,8 @@ module.exports = function (route, app) {
     }
   });
 
-  console.log("[ATProtoAuth] Real AT Protocol auth endpoints registered at", route + "auth/*");
+  console.log(
+    "[ATProtoAuth] Real AT Protocol auth endpoints registered at",
+    route + "auth/*",
+  );
 };
