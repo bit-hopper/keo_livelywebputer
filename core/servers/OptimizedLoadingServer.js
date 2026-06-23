@@ -19,7 +19,9 @@ var path = require("path"),
 
 (function onStartup() {
   if (typeof lively === "undefined" || !lively.Config) {
-    console.log("lively.Config not yet initialized, skipping optimized-loading-cache initialization");
+    console.log(
+      "lively.Config not yet initialized, skipping optimized-loading-cache initialization",
+    );
     return;
   }
   combinedFileAndHash()
@@ -115,7 +117,8 @@ function prepareFileForConcat(rootDir, cacheDir, file) {
         source =
           babelExceptions.indexOf(file) > -1
             ? fs.readFileSync(fullFilePath)
-            : babel.transformFileSync(fullFilePath, { presets: ["es2015"] }).code;
+            : babel.transformFileSync(fullFilePath, { presets: ["es2015"] })
+                .code;
         fs.writeFileSync(cacheFile, source);
         fs.writeFileSync(mtimeFile, mtime);
       } catch (e) {
