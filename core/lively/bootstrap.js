@@ -1453,9 +1453,10 @@
             base + "generated/" + combinedModulesHash + "/combinedModules.js";
           loader.loadCombinedModules(combinedModulesUrl, thenDoFunc);
         } else {
+          var bootstrapFiles = Global.LivelyLoader.bootstrapFiles || [];
           loader.resolveAndLoadAll(
             base,
-            loader.libsFiles.concat(Global.LivelyLoader.bootstrapFiles),
+            loader.libsFiles.concat(bootstrapFiles),
             thenDoFunc,
           );
         }

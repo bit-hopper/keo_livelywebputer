@@ -18,6 +18,10 @@ var path = require("path"),
   _combinedFileAndHashCachedTimeout = 1000; /*ms*/
 
 (function onStartup() {
+  if (typeof lively === "undefined" || !lively.Config) {
+    console.log("lively.Config not yet initialized, skipping optimized-loading-cache initialization");
+    return;
+  }
   combinedFileAndHash()
     .then(() => console.log("optimized-loading-cache initialized"))
     .catch((err) =>
@@ -28,7 +32,7 @@ var path = require("path"),
 function combinedFileAndHashCached() {
   // for fast subsequent requests cache the hash / combined result
   // combinedFileAndHashCached().then(x => console.log(x)).catch(err => console.error(err))
-  if (!Config.optimizedLoading)
+  if (typeof Config !== "undefined" && !Config.optimizedLoading)
     return Promise.reject("Optimized loading not enabled");
   return _combinedFileAndHashCached
     ? Promise.resolve(_combinedFileAndHashCached)
@@ -73,25 +77,51 @@ function prepareFileForConcat(rootDir, cacheDir, file) {
   // var x = prepareFileForConcat(rootDir, workDir, files[1])
   // x.then((arg) => console.log(arg))
 
-  return new Promise((resolve, _reject) => {
+  return new Promise((resolve, reject) => {
     var babelExceptions = ["core/lib/lively-libs-debug.js"],
+      fullFilePath = path.join(rootDir, file),
       cacheFile = path.join(cacheDir, file.replace(/\//g, "_")),
       mtimeFile = cacheFile + ".mtime",
-      mtime = String(fs.statSync(file).mtime),
+      mtime,
+      needsUpdate,
+      source;
+
+    // Check if file exists first
+    if (!fs.existsSync(fullFilePath)) {
+      console.warn("File not found, skipping: " + fullFilePath);
+      return resolve({
+        source: file,
+        code: "",
+        sourcesRelativeTo: rootDir.replace(/\/$/, "/"),
+        cacheFile: cacheFile,
+        wasChanged: false,
+      });
+    }
+
+    try {
+      mtime = String(fs.statSync(fullFilePath).mtime);
       needsUpdate =
         !fs.existsSync(cacheFile) ||
         !fs.existsSync(mtimeFile) ||
-        mtime !== String(fs.readFileSync(mtimeFile)),
-      source;
+        mtime !== String(fs.readFileSync(mtimeFile));
+    } catch (e) {
+      console.error("Error checking file " + fullFilePath + ": " + e);
+      return reject(e);
+    }
 
     if (needsUpdate) {
       console.log(file + " needs update");
-      source =
-        babelExceptions.indexOf(file) > -1
-          ? fs.readFileSync(file)
-          : babel.transformFileSync(file, { presets: ["es2015"] }).code;
-      fs.writeFileSync(cacheFile, source);
-      fs.writeFileSync(mtimeFile, mtime);
+      try {
+        source =
+          babelExceptions.indexOf(file) > -1
+            ? fs.readFileSync(fullFilePath)
+            : babel.transformFileSync(fullFilePath, { presets: ["es2015"] }).code;
+        fs.writeFileSync(cacheFile, source);
+        fs.writeFileSync(mtimeFile, mtime);
+      } catch (e) {
+        console.error("Error processing file " + fullFilePath + ": " + e);
+        return reject(e);
+      }
     }
 
     resolve({
