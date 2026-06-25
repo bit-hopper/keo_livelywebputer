@@ -23,7 +23,7 @@ module("lively.net.tools.Wiki")
             .style,
           {
             extent: lively.pt(40, 22),
-            toolTip: "Versioning & co.",
+            toolTip: "Versioning & Co.",
           },
         ),
 
