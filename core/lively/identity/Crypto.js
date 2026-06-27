@@ -265,45 +265,13 @@ Object.subclass('lively.identity.Crypto',
     });
   },
 
-  // Sign an object envelope (without its `sig` field) and return the JWS string
-  // to be stored as envelope.sig.
-  //
-  // The JWS payload encodes canonicalJson(envelopeWithoutSig) so the signature
-  // is stable regardless of JSON key ordering in transit.
-  signEnvelope: function(envelopeWithoutSig, privateKey, thenDo) {
-    this.signJws(envelopeWithoutSig, privateKey, thenDo);
-  },
-
-  // Verify a complete envelope (with `sig` field).
-  // Checks both:
-  //   1. The JWS payload decodes to the same canonical form as the received envelope.
-  //   2. The cryptographic signature is valid for envelope.publicKey.
-  //
-  // Calls thenDo(null, true|false).
-  verifyEnvelope: function(envelope, thenDo) {
-    var self = this;
-    if (!envelope.sig) return thenDo(null, false);
-    if (!envelope.publicKey) return thenDo(new Error('Envelope missing publicKey'));
-
-    var parts = envelope.sig.split('.');
-    if (parts.length !== 3) return thenDo(null, false);
-
-    // Reconstruct envelope without sig and re-canonicalize
-    var envelopeWithoutSig = {};
-    Object.keys(envelope).forEach(function(k) {
-      if (k !== 'sig') envelopeWithoutSig[k] = envelope[k];
-    });
-
-    var expectedPayloadB64 = self.base64urlEncode(
-      new TextEncoder().encode(self.canonicalJson(envelopeWithoutSig))
-    );
-
-    // JWS payload must match the canonical envelope content
-    if (parts[1] !== expectedPayloadB64) return thenDo(null, false);
-
-    // Cryptographic signature check
-    self.verifyJws(envelope.sig, envelope.publicKey, thenDo);
-  }
+  // IDENTITY: signEnvelope and verifyEnvelope are deferred.
+  // Public object envelopes will use WebAuthn assertion signing (the challenge
+  // will be SHA-256(canonicalJson(envelopeWithoutSig))) in a future iteration.
+  // Private object envelopes are tamper-protected by libsodium authentication
+  // tags on the ciphertext (XSalsa20-Poly1305 includes an auth tag).
+  // signJws and verifyJws below are kept — they will be wired to WebAuthn
+  // assertion verification when signing is implemented.
 
 },
 
@@ -432,7 +400,7 @@ Object.subclass('lively.identity.Crypto',
 
 });
 
-// Singleton for convenience: lively.identity.crypto.signEnvelope(...)
+// Singleton: lively.identity.crypto.computeCid(...), .encryptPayload(...), etc.
 lively.identity.crypto = new lively.identity.Crypto();
 
 }); // end module('lively.identity.Crypto')

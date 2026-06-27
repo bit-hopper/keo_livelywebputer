@@ -1655,6 +1655,20 @@ module("lively.morphic.MorphAddons")
         },
 
         getUserDir: function (optUserName) {
+          // IDENTITY: When a DID session is active and no explicit username was
+          // requested, return the identity URL (/@handle/) instead of the legacy
+          // WebDAV path (/users/name/). Callers that pass optUserName explicitly
+          // always get the WebDAV path for backward compatibility.
+          if (
+            !optUserName &&
+            typeof lively !== "undefined" &&
+            lively.identity &&
+            lively.identity.did &&
+            lively.identity.did.isLoggedIn()
+          ) {
+            var id = lively.identity.did.currentUser();
+            return URL.root.withFilename("@" + id.handle + "/");
+          }
           var username = optUserName || this.getUserName();
           return username
             ? URL.root.withFilename("users/" + username + "/")

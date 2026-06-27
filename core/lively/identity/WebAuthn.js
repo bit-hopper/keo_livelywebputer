@@ -259,7 +259,13 @@ module("lively.identity.WebAuthn")
           var credIdLen = (bytes[53] << 8) | bytes[54];
           var coseKeyOffset = 55 + credIdLen;
           var coseKeyBytes = bytes.slice(coseKeyOffset);
-          this.coseKeyToJwk(coseKeyBytes.buffer, thenDo);
+          this.coseKeyToJwk(coseKeyBytes.buffer, function (err, jwk) {
+            if (err) return thenDo(err);
+            // Pass raw COSE bytes as 3rd arg so register() can include them
+            // in the roster — @simplewebauthn/server needs Uint8Array COSE bytes
+            // for verifyAuthenticationResponse (not JWK).
+            thenDo(null, jwk, coseKeyBytes);
+          });
         },
       },
 
@@ -334,7 +340,7 @@ module("lively.identity.WebAuthn")
               // target browsers. attestation:'none' means no CBOR unpacking needed.
               self.extractPublicKeyFromAuthData(
                 response.getAuthenticatorData(),
-                function (err, publicKeyJwk) {
+                function (err, publicKeyJwk, coseKeyBytes) {
                   if (err) return thenDo(err);
 
                   var c = lively.identity.crypto;
@@ -350,6 +356,10 @@ module("lively.identity.WebAuthn")
                   var result = {
                     credentialId: credentialId,
                     publicKeyJwk: publicKeyJwk,
+                    // Raw COSE bytes — needed by the server's verifyAuthenticationResponse
+                    // via @simplewebauthn/server, which expects Uint8Array not JWK.
+                    // Stored in roster so LoginDialog can include them in the POST body.
+                    credentialPublicKeyBytes: c.base64urlEncode(coseKeyBytes),
                     attestationObject: c.base64urlEncode(
                       new Uint8Array(response.attestationObject),
                     ),
@@ -625,12 +635,13 @@ module("lively.identity.WebAuthn")
         _saveCredentialToRoster: function (registrationResult, thenDo) {
           var self = this;
           var record = {
-            credentialId: registrationResult.credentialId,
-            handle: registrationResult.handle,
-            rpId: registrationResult.rpId,
-            publicKeyJwk: registrationResult.publicKeyJwk,
-            prfAvailable: registrationResult.prfAvailable,
-            registeredAt: new Date().toISOString(),
+            credentialId:             registrationResult.credentialId,
+            handle:                   registrationResult.handle,
+            rpId:                     registrationResult.rpId,
+            publicKeyJwk:             registrationResult.publicKeyJwk,
+            credentialPublicKeyBytes: registrationResult.credentialPublicKeyBytes,
+            prfAvailable:             registrationResult.prfAvailable,
+            registeredAt:             new Date().toISOString(),
           };
 
           // Fast flag in LocalStorage — avoids IndexedDB roundtrip when

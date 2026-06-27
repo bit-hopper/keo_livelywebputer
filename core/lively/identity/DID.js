@@ -7,7 +7,8 @@
  *   - Create a did:jwk DID string from a JWK public key
  *   - Build, parse, and validate DID documents
  *   - Add and revoke verification methods (per-device keys)
- *   - Sign and verify DID documents (so tampering is detectable)
+ *   - IDENTITY: DID document signing deferred — will use WebAuthn assertion
+ *     signing in a future iteration once login/encryption works end-to-end
  *   - Persist the current user's DID document and device key metadata
  *     in lively.IndexedDB under the 'identity' store
  *   - Integrate with lively.users.User: after DID auth, set the world's
@@ -124,7 +125,7 @@ module("lively.identity.DID")
             created: new Date().toISOString(),
             updated: new Date().toISOString(),
             prevHash: null, // null for genesis document
-            // sig is added by signDocument()
+            // sig: omitted — DID document signing is deferred (see completeRegistration)
           };
         },
 
@@ -211,102 +212,6 @@ module("lively.identity.DID")
 
         _cloneDocument: function (doc) {
           return JSON.parse(JSON.stringify(doc));
-        },
-      },
-
-      // ─── document signing & verification ─────────────────────────────────────────
-
-      "signing",
-      {
-        // Sign a DID document with a device's private key.
-        //
-        // The document is signed without its existing `sig` field (if any),
-        // and a new `sig` (JWS compact) is attached.
-        //
-        // The `prevHash` field is set to the SHA-256 of the previous document's
-        // canonical JSON before signing, forming a hash chain analogous to
-        // Wave's HashedVersion. For the genesis document prevHash is null.
-        //
-        // privateKey: CryptoKey (ECDSA P-256, from Crypto.importPrivateKeyJwk)
-        //
-        // Calls thenDo(null, signedDocument).
-        signDocument: function (
-          document,
-          privateKey,
-          prevDocumentOrNull,
-          thenDo,
-        ) {
-          var self = this;
-          var c = lively.identity.crypto;
-          var doc = self._cloneDocument(document);
-          delete doc.sig;
-
-          function sign(doc) {
-            c.signEnvelope(doc, privateKey, function (err, jws) {
-              if (err) return thenDo(err);
-              doc.sig = jws;
-              thenDo(null, doc);
-            });
-          }
-
-          if (!prevDocumentOrNull) {
-            doc.prevHash = null;
-            sign(doc);
-          } else {
-            // Hash the previous document (without its sig) to form the chain link
-            var prev = self._cloneDocument(prevDocumentOrNull);
-            delete prev.sig;
-            c.sha256(c.canonicalJson(prev), function (err, hash) {
-              if (err) return thenDo(err);
-              doc.prevHash = hash;
-              sign(doc);
-            });
-          }
-        },
-
-        // Verify a signed DID document.
-        //
-        // Cannot use Crypto.verifyEnvelope here — that method is for object
-        // envelopes which embed `publicKey` in the document body. DID documents
-        // don't have that field; the key lives in verificationMethod[].
-        // Instead: check the JWS payload matches the canonical document, then
-        // try each verification method's key via Crypto.verifyJws directly.
-        //
-        // Calls thenDo(null, true|false).
-        verifyDocument: function (document, thenDo) {
-          var c = lively.identity.crypto;
-          if (!document.sig) return thenDo(null, false);
-
-          var parts = document.sig.split(".");
-          if (parts.length !== 3) return thenDo(null, false);
-
-          // Confirm JWS payload encodes the canonical document (without sig)
-          var docWithoutSig = {};
-          Object.keys(document).forEach(function (k) {
-            if (k !== "sig") docWithoutSig[k] = document[k];
-          });
-          var expectedPayloadB64 = c.base64urlEncode(
-            new TextEncoder().encode(c.canonicalJson(docWithoutSig))
-          );
-          if (parts[1] !== expectedPayloadB64) return thenDo(null, false);
-
-          // Try each verification method's key against the JWS signature
-          var methods = document.verificationMethod || [];
-          if (methods.length === 0) return thenDo(null, false);
-
-          var found = false;
-          var remaining = methods.length;
-          methods.forEach(function (vm) {
-            c.verifyJws(document.sig, vm.publicKeyJwk, function (err, valid) {
-              if (found) return;
-              if (!err && valid) {
-                found = true;
-                thenDo(null, true);
-              } else {
-                if (--remaining === 0) thenDo(null, false);
-              }
-            });
-          });
         },
       },
 
@@ -495,19 +400,21 @@ module("lively.identity.DID")
       "flow",
       {
         // Complete registration flow: given a successful WebAuthn registration
-        // result (from lively.identity.WebAuthn.register), build and sign the
-        // genesis DID document and establish the session.
+        // result (from lively.identity.WebAuthn.register), build the genesis
+        // DID document and establish the session.
+        //
+        // IDENTITY: DID document signing deferred. The document is stored
+        // unsigned; WebAuthn assertion signing will be added in a future
+        // iteration once the core login/encryption flow is working end-to-end.
         //
         // registrationResult: the object returned by WebAuthn.register()
         // params: {
         //   handle:      String
         //   displayName: String
         //   deviceLabel: String
-        //   privateKey:  CryptoKey  — from Crypto.importPrivateKeyJwk (stored
-        //                             in memory only; never persisted)
         // }
         //
-        // Calls thenDo(null, { did, document, meta }).
+        // Calls thenDo(null, { did, document }).
         completeRegistration: function (registrationResult, params, thenDo) {
           var self = this;
           var did = self.didFromJwk(registrationResult.publicKeyJwk);
@@ -520,37 +427,31 @@ module("lively.identity.DID")
             handle: params.handle,
           });
 
-          self.signDocument(
-            document,
-            params.privateKey,
-            null,
-            function (err, signedDoc) {
-              if (err) return thenDo(err);
+          self.saveDocument(document, function (saveErr) {
+            if (saveErr) return thenDo(saveErr);
 
-              self.saveDocument(signedDoc, function (saveErr) {
-                if (saveErr) return thenDo(saveErr);
-
-                self.establishSession(
-                  {
-                    did: did,
-                    handle: params.handle,
-                    displayName: params.displayName || params.handle,
-                    credentialId: registrationResult.credentialId,
-                    rpId: registrationResult.rpId,
-                    document: signedDoc,
-                  },
-                  function (err) {
-                    if (err) return thenDo(err);
-                    thenDo(null, { did: did, document: signedDoc });
-                  },
-                );
-              });
-            },
-          );
+            self.establishSession(
+              {
+                did: did,
+                handle: params.handle,
+                displayName: params.displayName || params.handle,
+                credentialId: registrationResult.credentialId,
+                rpId: registrationResult.rpId,
+                document: document,
+              },
+              function (err) {
+                if (err) return thenDo(err);
+                thenDo(null, { did: did, document: document });
+              },
+            );
+          });
         },
 
         // Complete authentication flow: given a successful WebAuthn assertion,
-        // load the persisted DID document, verify it, and establish the session.
+        // load the persisted DID document and establish the session.
+        //
+        // IDENTITY: DID document signature verification deferred — matches the
+        // deferral of signDocument in completeRegistration above.
         //
         // assertionResult: the object returned by WebAuthn.authenticate()
         // meta: the persisted { did, handle, displayName, credentialId, rpId }
@@ -569,32 +470,20 @@ module("lively.identity.DID")
               );
             }
 
-            self.verifyDocument(doc, function (err, valid) {
-              if (err) return thenDo(err);
-              if (!valid) {
-                return thenDo(
-                  new Error(
-                    "completeAuthentication: DID document signature is invalid. " +
-                      "The document may have been tampered with.",
-                  ),
-                );
-              }
-
-              self.establishSession(
-                {
-                  did: meta.did,
-                  handle: meta.handle,
-                  displayName: meta.displayName,
-                  credentialId: assertionResult.credentialId,
-                  rpId: meta.rpId,
-                  document: doc,
-                },
-                function (err) {
-                  if (err) return thenDo(err);
-                  thenDo(null, { did: meta.did, document: doc });
-                },
-              );
-            });
+            self.establishSession(
+              {
+                did: meta.did,
+                handle: meta.handle,
+                displayName: meta.displayName,
+                credentialId: assertionResult.credentialId,
+                rpId: meta.rpId,
+                document: doc,
+              },
+              function (err) {
+                if (err) return thenDo(err);
+                thenDo(null, { did: meta.did, document: doc });
+              },
+            );
           });
         },
       },

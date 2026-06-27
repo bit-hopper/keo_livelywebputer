@@ -1,0 +1,387 @@
+/**
+ * lively.identity.UserSpace
+ *
+ * The user's identity-rooted object index: home manifest CRUD, world/part/file
+ * registration, and a PartsSpace-compatible personal parts provider.
+ *
+ * The home manifest is an unsigned envelope stored under the objId derived from
+ * the user's primary device key (verificationMethod[0].publicKeyJwk):
+ *
+ *   objId = computeObjId(primaryDevicePublicKeyJwk)
+ *
+ * This gives a stable, user-unique identifier that is consistent across sessions
+ * and devices. It does not collide with world/part envelopes because those use
+ * per-object freshly-generated key pairs (via SignedSerializer).
+ *
+ * IDENTITY: Envelope signing deferred — manifests are stored unsigned for now.
+ * When WebAuthn assertion signing is added (future iteration), saveHomeManifest
+ * will take a challenge + rpId and produce a sig via navigator.credentials.get.
+ *
+ * Manifest payload shape:
+ *   {
+ *     did:    String,
+ *     worlds: [{ objId, cid, title, url }, ...],
+ *     parts:  { [category]: [{ objId, cid, title, partName }, ...] },
+ *     files:  [{ objId, cid, title, mimeType }, ...]
+ *   }
+ *
+ * All writes are local-first: the envelope is stored in IndexedDB (via
+ * ObjectStore), then synced to the identity server. Sync failure is non-fatal.
+ *
+ * Async convention: thenDo(err, result) throughout.
+ *
+ * Dependencies:
+ *   lively.identity.DID         — currentUser(), isLoggedIn()
+ *   lively.identity.Crypto      — computeObjId, computeCid
+ *   lively.identity.ObjectStore — local IndexedDB cache + server sync
+ */
+
+module("lively.identity.UserSpace")
+  .requires(
+    "lively.identity.DID",
+    "lively.identity.Crypto",
+    "lively.identity.ObjectStore",
+    "lively.PartsBin",
+  )
+  .toRun(function () {
+
+    Object.subclass(
+      "lively.identity.UserSpace",
+
+      // ─── identity delegation ──────────────────────────────────────────────────────
+
+      "identity",
+      {
+        // Delegate to DID for the in-memory session record.
+        // Returns { did, handle, displayName, credentialId, rpId, document }
+        // or null if not logged in.
+        currentUser: function () {
+          return lively.identity.did.currentUser();
+        },
+      },
+
+      // ─── home manifest ────────────────────────────────────────────────────────────
+
+      "home manifest",
+      {
+        // Derive the stable home manifest objId from the primary device public key.
+        // The genesis device key (verificationMethod[0]) is used so the objId is
+        // consistent even when new devices are added to the DID document.
+        // Calls thenDo(err, objId).
+        _homeObjId: function (user, thenDo) {
+          var methods =
+            user.document && user.document.verificationMethod;
+          if (!methods || !methods[0] || !methods[0].publicKeyJwk) {
+            return thenDo(
+              new Error(
+                "UserSpace: DID document missing verificationMethod[0].publicKeyJwk",
+              ),
+            );
+          }
+          lively.identity.crypto.computeObjId(methods[0].publicKeyJwk, thenDo);
+        },
+
+        // Load the home manifest payload (local ObjectStore first, server fallback).
+        // Returns the parsed payload or null if no manifest exists yet.
+        // Calls thenDo(null, payload | null).
+        getHomeManifest: function (thenDo) {
+          var user = this.currentUser();
+          if (!user) return thenDo(new Error("UserSpace: not logged in"));
+
+          var self = this;
+          this._homeObjId(user, function (err, objId) {
+            if (err) return thenDo(err);
+
+            // ObjectStore is the authoritative local source.
+            lively.identity.objectStore.get(objId, function (err, envelope) {
+              if (err) return thenDo(err);
+              if (
+                envelope &&
+                envelope.record &&
+                envelope.record.payload !== undefined
+              ) {
+                return thenDo(null, envelope.record.payload);
+              }
+
+              // Fall back to server. GET /@handle/:objId returns the envelope.
+              fetch("/@" + user.handle + "/" + objId, { credentials: "include" })
+                .then(function (res) {
+                  if (res.status === 404) return void thenDo(null, null);
+                  if (!res.ok) {
+                    throw new Error(
+                      "UserSpace.getHomeManifest: HTTP " +
+                        res.status +
+                        " from /@" +
+                        user.handle +
+                        "/" +
+                        objId,
+                    );
+                  }
+                  return res.json().then(function (serverEnvelope) {
+                    // Cache locally with CID integrity check.
+                    lively.identity.objectStore._verifyAndPut(
+                      serverEnvelope,
+                      function (cacheErr) {
+                        if (cacheErr) {
+                          console.warn(
+                            "[UserSpace] Could not cache home manifest locally:",
+                            cacheErr,
+                          );
+                        }
+                        thenDo(
+                          null,
+                          serverEnvelope.record
+                            ? serverEnvelope.record.payload
+                            : null,
+                        );
+                      },
+                    );
+                  });
+                })
+                .catch(thenDo);
+            });
+          });
+        },
+
+        // Save the home manifest payload as a CID-chained envelope.
+        // IDENTITY: envelope is unsigned for now — signing deferred to a future
+        // iteration where WebAuthn assertion signing is implemented.
+        // Calls thenDo(null, { objId, cid }) on success.
+        saveHomeManifest: function (payload, thenDo) {
+          var user = this.currentUser();
+          if (!user) return thenDo(new Error("UserSpace: not logged in"));
+
+          var methods = user.document && user.document.verificationMethod;
+          if (!methods || !methods[0] || !methods[0].publicKeyJwk) {
+            return thenDo(
+              new Error("UserSpace: DID document missing verificationMethod"),
+            );
+          }
+          var publicKeyJwk = methods[0].publicKeyJwk;
+          var c = lively.identity.crypto;
+
+          c.computeObjId(publicKeyJwk, function (err, objId) {
+            if (err) return thenDo(err);
+
+            // Load previous local version to chain prevCid.
+            lively.identity.objectStore.get(objId, function (err, prevEnvelope) {
+              if (err) return thenDo(err);
+
+              c.computeCid(payload, function (err, cid) {
+                if (err) return thenDo(err);
+
+                var prevCid =
+                  prevEnvelope && prevEnvelope.record
+                    ? prevEnvelope.record.cid
+                    : null;
+
+                var envelope = {
+                  objId: objId,
+                  did: user.did,
+                  publicKey: publicKeyJwk,
+                  type: "home-manifest",
+                  visibility: "public",
+                  // created is fixed at genesis; subsequent versions keep the same
+                  // timestamp so it reflects when the object first appeared.
+                  created: prevEnvelope
+                    ? prevEnvelope.created
+                    : new Date().toISOString(),
+                  record: {
+                    cid: cid,
+                    prevCid: prevCid,
+                    payload: payload,
+                  },
+                  state: {},
+                };
+
+                lively.identity.objectStore.put(envelope, function (err) {
+                  if (err) return thenDo(err);
+
+                  // Non-fatal sync: local save already succeeded.
+                  lively.identity.objectStore.syncObject(
+                    objId,
+                    user.handle,
+                    window.location.origin,
+                    function (syncErr) {
+                      if (syncErr) {
+                        console.warn(
+                          "[UserSpace] Server sync failed (will retry at next sync):",
+                          syncErr,
+                        );
+                      }
+                      thenDo(null, { objId: objId, cid: cid });
+                    },
+                  );
+                });
+              });
+            });
+          });
+        },
+
+        // Replace an entry (matched by objId) in a list, or append if not found.
+        _upsertList: function (list, entry) {
+          for (var i = 0; i < list.length; i++) {
+            if (list[i].objId === entry.objId) {
+              list[i] = entry;
+              return;
+            }
+          }
+          list.push(entry);
+        },
+
+        // Read-modify-write the home manifest via mutator(manifest).
+        // Creates a genesis manifest if none exists.
+        // Calls thenDo(err, { objId, cid }).
+        //
+        // TOCTOU: concurrent calls from two tabs will both read the same
+        // version, apply independent mutations, and the second write wins —
+        // the first mutation is silently lost. Acceptable for now; a
+        // server-side compare-and-swap (If-Match: <cid>) will be needed
+        // before collaborative editing or multi-tab write merging.
+        _updateManifest: function (mutator, thenDo) {
+          var user = this.currentUser();
+          if (!user) return thenDo(new Error("UserSpace: not logged in"));
+
+          var self = this;
+          this.getHomeManifest(function (err, manifest) {
+            if (err) return thenDo(err);
+            manifest = manifest || {
+              did: user.did,
+              worlds: [],
+              parts: {},
+              files: [],
+            };
+            mutator(manifest);
+            self.saveHomeManifest(manifest, thenDo);
+          });
+        },
+
+        // Register a world in the home manifest.
+        // entry: { objId, cid, title, url }
+        // Calls thenDo(null, { objId, cid }) after saving.
+        addWorld: function (entry, thenDo) {
+          var self = this;
+          this._updateManifest(function (manifest) {
+            manifest.worlds = manifest.worlds || [];
+            self._upsertList(manifest.worlds, entry);
+          }, thenDo);
+        },
+
+        // Register a part in the home manifest under the given category.
+        // entry: { objId, cid, title, partName }
+        // Calls thenDo(null, { objId, cid }) after saving.
+        addPart: function (category, entry, thenDo) {
+          var self = this;
+          this._updateManifest(function (manifest) {
+            manifest.parts = manifest.parts || {};
+            manifest.parts[category] = manifest.parts[category] || [];
+            self._upsertList(manifest.parts[category], entry);
+          }, thenDo);
+        },
+
+        // Register a file in the home manifest.
+        // entry: { objId, cid, title, mimeType }
+        // Calls thenDo(null, { objId, cid }) after saving.
+        addFile: function (entry, thenDo) {
+          var self = this;
+          this._updateManifest(function (manifest) {
+            manifest.files = manifest.files || [];
+            self._upsertList(manifest.files, entry);
+          }, thenDo);
+        },
+      },
+
+      // ─── parts space integration ──────────────────────────────────────────────────
+
+      "parts space integration",
+      {
+        // Return a lively.PartsBin.IdentityPartsSpace for this user's personal
+        // parts. Registers it with the global lively.PartsBin registry so that
+        // PartItem.getPartsSpace() can resolve it by name.
+        // Calls thenDo(null, IdentityPartsSpace).
+        getPersonalPartsSpace: function (thenDo) {
+          var user = this.currentUser();
+          if (!user) return thenDo(new Error("UserSpace: not logged in"));
+          var space = new lively.PartsBin.IdentityPartsSpace(user.handle, user.did);
+          lively.PartsBin.addPartsSpace(space);
+          thenDo(null, space);
+        },
+      },
+    );
+
+    lively.identity.userSpace = new lively.identity.UserSpace();
+
+    // ─── IdentityPartsSpace ───────────────────────────────────────────────────────
+    //
+    // A lively.PartsBin.PartsSpace subclass whose backing store is the identity
+    // ObjectStore (IndexedDB) rather than WebDAV.
+    //
+    // The PartsBin UI calls getURL(), load(), getPartItems(), getPartItemNamed(),
+    // and setPartItem() on whatever PartsSpace it receives. This subclass satisfies
+    // that contract while routing reads through ObjectStore.listAll().
+    //
+    // Migration path: once parts are fully stored as envelopes, the WebDAV
+    // PartsBin directory (900 MB, 3 files/part) can be retired. See context
+    // brief item 7 for background.
+
+    lively.PartsBin.PartsSpace.subclass("lively.PartsBin.IdentityPartsSpace",
+
+      "initializing",
+      {
+        initialize: function ($super, handle, did) {
+          this.handle = handle;
+          this.did    = did;
+          $super("@" + handle + "/parts/");
+        },
+      },
+
+      "accessing",
+      {
+        getURL: function () {
+          return URL.root.withFilename("@" + this.handle + "/");
+        },
+      },
+
+      "loading",
+      {
+        // Async replacement for the parent's sync WebResource-based load().
+        // Populates this.partItems from ObjectStore envelopes of type 'part'.
+        // thenDo(err, this) — thenDo may be undefined (legacy callers pass boolean).
+        load: function (thenDo) {
+          var self = this;
+          lively.identity.objectStore.listAll(function (err, envelopes) {
+            if (err) return thenDo && thenDo(err);
+            envelopes
+              .filter(function (e) { return e.type === "part"; })
+              .forEach(function (envelope) {
+                var item = self.createPartItemFromEnvelope(envelope);
+                if (item) self.setPartItem(item);
+              });
+            thenDo && thenDo(null, self);
+          });
+        },
+
+        createPartItemFromEnvelope: function (envelope) {
+          var state = envelope.state || {};
+          var partName = state.partName;
+          if (!partName) return null;
+
+          var item = new lively.PartsBin.PartItem(partName, this.name);
+
+          var metaInfo = new lively.PartsBin.PartsBinMetaInfo();
+          metaInfo.partName         = partName;
+          metaInfo.comment          = state.comment          || "";
+          metaInfo.tags             = state.tags             || [];
+          metaInfo.requiredModules  = state.requiredModules  || [];
+          metaInfo.lastModifiedDate = envelope.created;
+
+          item.loadedMetaInfo = metaInfo;
+          item.json = JSON.stringify(
+            envelope.record && envelope.record.payload || null
+          );
+          return item;
+        },
+      },
+    );
+
+  }); // end module('lively.identity.UserSpace')

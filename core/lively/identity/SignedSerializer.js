@@ -84,11 +84,11 @@ module("lively.identity.SignedSerializer")
         // params: {
         //   obj:         Object   — the morph/part/object to serialize
         //   type:        String   — "world" | "part" | "file" | "settings"
-        //   privateKey:  CryptoKey — ECDSA P-256 private key for signing
-        //   publicKeyJwk: Object  — matching public key JWK
+        //   publicKeyJwk: Object  — device public key JWK (used to derive objId)
         //   prevEnvelope: Object|null — previous version envelope for chaining
         //   stateMeta:   Object   — free-form metadata for envelope.state
         // }
+        // IDENTITY: privateKey removed — envelope signing deferred.
         //
         // Calls thenDo(null, envelope).
         serializeToEnvelope: function (params, thenDo) {
@@ -155,22 +155,17 @@ module("lively.identity.SignedSerializer")
                   state: params.stateMeta || {},
                 };
 
-                // Step 6: Sign
-                c.signEnvelope(
-                  envelope,
-                  params.privateKey,
-                  function (err, jws) {
-                    if (err) return thenDo(err);
-                    envelope.sig = jws;
-                    thenDo(null, envelope);
-                  },
-                );
+                // IDENTITY: sig field omitted — envelope signing deferred.
+                // Public envelopes will use WebAuthn assertion signing in a future
+                // iteration. Private envelopes are tamper-protected by the
+                // XSalsa20-Poly1305 authentication tag on the ciphertext.
+                thenDo(null, envelope);
               });
             },
           );
         },
 
-        // Verify and deserialize a public envelope.
+        // Deserialize a public envelope.
         // Calls thenDo(null, reconstructedObject).
         deserializeFromEnvelope: function (envelope, thenDo) {
           var self = this;
@@ -182,48 +177,37 @@ module("lively.identity.SignedSerializer")
             );
           }
 
-          // Step 1: Verify signature
-          c.verifyEnvelope(envelope, function (err, valid) {
+          // IDENTITY: signature verification deferred. CID integrity check still
+          // runs — detects accidental corruption at zero extra cost.
+
+          // Step 1: Verify CID integrity of the payload
+          c.computeCid(envelope.record.payload, function (err, expectedCid) {
             if (err) return thenDo(err);
-            if (!valid) {
+            if (expectedCid !== envelope.record.cid) {
               return thenDo(
                 new Error(
-                  "deserializeFromEnvelope: signature verification failed for objId=" +
+                  "deserializeFromEnvelope: CID mismatch for objId=" +
                     envelope.objId +
-                    ". The envelope may have been tampered with.",
+                    ". Expected " +
+                    expectedCid +
+                    " but envelope has " +
+                    envelope.record.cid,
                 ),
               );
             }
 
-            // Step 2: Verify CID integrity of the payload
-            c.computeCid(envelope.record.payload, function (err, expectedCid) {
-              if (err) return thenDo(err);
-              if (expectedCid !== envelope.record.cid) {
-                return thenDo(
-                  new Error(
-                    "deserializeFromEnvelope: CID mismatch for objId=" +
-                      envelope.objId +
-                      ". Expected " +
-                      expectedCid +
-                      " but envelope has " +
-                      envelope.record.cid,
-                  ),
-                );
-              }
-
-              // Step 3: Inner deserialization (sync)
-              try {
-                var obj = self._innerDeserializeJso(envelope.record.payload);
-                thenDo(null, obj);
-              } catch (e) {
-                thenDo(
-                  new Error(
-                    "deserializeFromEnvelope: inner deserialization failed: " +
-                      e.message,
-                  ),
-                );
-              }
-            });
+            // Step 2: Inner deserialization (sync)
+            try {
+              var obj = self._innerDeserializeJso(envelope.record.payload);
+              thenDo(null, obj);
+            } catch (e) {
+              thenDo(
+                new Error(
+                  "deserializeFromEnvelope: inner deserialization failed: " +
+                    e.message,
+                ),
+              );
+            }
           });
         },
       },
@@ -356,16 +340,10 @@ module("lively.identity.SignedSerializer")
                           state: params.stateMeta || {},
                         };
 
-                        // Step 8: Sign
-                        c.signEnvelope(
-                          envelope,
-                          params.privateKey,
-                          function (err, jws) {
-                            if (err) return thenDo(err);
-                            envelope.sig = jws;
-                            thenDo(null, envelope);
-                          },
-                        );
+                        // IDENTITY: sig field omitted — envelope signing deferred.
+                        // The XSalsa20-Poly1305 auth tag on the ciphertext provides
+                        // tamper detection for private objects without a separate sig.
+                        thenDo(null, envelope);
                       }
                     });
                   });
@@ -401,82 +379,73 @@ module("lively.identity.SignedSerializer")
             );
           }
 
-          // Step 1: Verify envelope signature first (before decrypting)
-          c.verifyEnvelope(envelope, function (err, valid) {
+          // IDENTITY: signature verification deferred. CID check on the ciphertext
+          // still runs — catches corruption before attempting decryption.
+
+          // Step 1: Verify CID of ciphertext
+          c.computeCid(envelope.record.payload, function (err, expectedCid) {
             if (err) return thenDo(err);
-            if (!valid) {
+            if (expectedCid !== envelope.record.cid) {
               return thenDo(
                 new Error(
-                  "deserializeEncrypted: signature verification failed for objId=" +
+                  "deserializeEncrypted: CID mismatch for objId=" +
                     envelope.objId,
                 ),
               );
             }
 
-            // Step 2: Verify CID of ciphertext
-            c.computeCid(envelope.record.payload, function (err, expectedCid) {
-              if (err) return thenDo(err);
-              if (expectedCid !== envelope.record.cid) {
-                return thenDo(
-                  new Error(
-                    "deserializeEncrypted: CID mismatch for objId=" +
-                      envelope.objId,
-                  ),
+            // Step 2: Derive decryption key via PRF
+            wa.deriveEncryptionKey(
+              {
+                objId: envelope.objId,
+                challenge: options.challenge,
+                rpId: options.rpId || user.rpId,
+                credentialIds: options.credentialIds || [user.credentialId],
+              },
+              function (err, encKey) {
+                if (err) return thenDo(err);
+
+                // Step 3: Decrypt
+                c.decryptPayload(
+                  envelope.record.payload,
+                  envelope.record.nonce,
+                  encKey,
+                  function (err, jso) {
+                    if (err) return thenDo(err);
+
+                    // Step 4: Inner deserialization (sync)
+                    try {
+                      var obj = self._innerDeserializeJso(jso);
+                      thenDo(null, obj);
+                    } catch (e) {
+                      thenDo(
+                        new Error(
+                          "deserializeEncrypted: inner deserialization failed: " +
+                            e.message,
+                        ),
+                      );
+                    }
+                  },
                 );
-              }
-
-              // Step 3: Derive decryption key via PRF
-              wa.deriveEncryptionKey(
-                {
-                  objId: envelope.objId,
-                  challenge: options.challenge,
-                  rpId: options.rpId || user.rpId,
-                  credentialIds: options.credentialIds || [user.credentialId],
-                },
-                function (err, encKey) {
-                  if (err) return thenDo(err);
-
-                  // Step 4: Decrypt
-                  c.decryptPayload(
-                    envelope.record.payload,
-                    envelope.record.nonce,
-                    encKey,
-                    function (err, jso) {
-                      if (err) return thenDo(err);
-
-                      // Step 5: Inner deserialization (sync)
-                      try {
-                        var obj = self._innerDeserializeJso(jso);
-                        thenDo(null, obj);
-                      } catch (e) {
-                        thenDo(
-                          new Error(
-                            "deserializeEncrypted: inner deserialization failed: " +
-                              e.message,
-                          ),
-                        );
-                      }
-                    },
-                  );
-                },
-              );
-            });
+              },
+            );
           });
         },
       },
 
-      // ─── migration: upgrade bare Lively JSON to a signed envelope ────────────────
+      // ─── migration: upgrade bare Lively JSON to an unsigned envelope ────────────────
 
       "migration",
       {
-        // Wrap an existing bare Lively JSON string in a signed envelope.
+        // Wrap an existing bare Lively JSON string in an envelope.
         // The JSON is NOT re-parsed into a live object — the raw payload JSO
         // is embedded directly, preserving the original exactly.
+        //
+        // IDENTITY: signing deferred — envelope is unsigned for now.
         //
         // params: {
         //   json:        String   — existing bare Lively JSON string
         //   type:        String
-        //   privateKey:  CryptoKey
         //   publicKeyJwk: Object
         //   stateMeta:   Object
         // }
@@ -507,7 +476,7 @@ module("lively.identity.SignedSerializer")
               c.computeCid(jso, function (err, cid) {
                 if (err) return thenDo(err);
 
-                var envelope = {
+                thenDo(null, {
                   objId: objId,
                   did: user.did,
                   publicKey: params.publicKeyJwk,
@@ -520,19 +489,8 @@ module("lively.identity.SignedSerializer")
                     payload: jso,
                   },
                   state: params.stateMeta || {},
-                  // Mark as migrated so the server can distinguish from native envelopes
                   migrated: true,
-                };
-
-                c.signEnvelope(
-                  envelope,
-                  params.privateKey,
-                  function (err, jws) {
-                    if (err) return thenDo(err);
-                    envelope.sig = jws;
-                    thenDo(null, envelope);
-                  },
-                );
+                });
               });
             },
           );
@@ -583,18 +541,6 @@ module("lively.identity.SignedSerializer")
 
                 var user = lively.identity.did.currentUser();
 
-                // We need the user's private key to sign. It must have been
-                // provided by the login flow and held in session memory.
-                // If it's not present (e.g. session was restored from IndexedDB
-                // without re-authentication), fall back to original save.
-                if (!user.privateKey) {
-                  console.warn(
-                    "[SignedSerializer] No privateKey in session — " +
-                      "falling back to unsigned save. Re-authenticate to enable signing.",
-                  );
-                  return originalSaveWorldAs.apply(world, arguments);
-                }
-
                 // Proceed with original save first (writes the HTML to WebDAV)
                 originalSaveWorldAs.call(
                   world,
@@ -605,11 +551,13 @@ module("lively.identity.SignedSerializer")
                     if (err) return thenDo && thenDo(err);
 
                     // Then additionally write a signed envelope to the identity URL
+                    var rawName = world.name;
                     var worldName =
-                      world.name ||
-                      (url
-                        ? new URL(url).filename().replace(/\.x?html$/, "")
-                        : "world");
+                      rawName && rawName !== "null" && rawName !== "undefined"
+                        ? rawName
+                        : url
+                          ? new URL(url).filename().replace(/\.x?html$/, "")
+                          : "world";
 
                     // Use findMethodByCredentialId so the correct key is chosen
                     // when the user has multiple devices registered.
@@ -631,7 +579,6 @@ module("lively.identity.SignedSerializer")
                       {
                         obj: world,
                         type: "world",
-                        privateKey: user.privateKey,
                         publicKeyJwk: method.publicKeyJwk,
                         stateMeta: { name: worldName },
                       },

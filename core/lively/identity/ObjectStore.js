@@ -229,16 +229,22 @@ Object.subclass('lively.identity.ObjectStore',
     });
   },
 
-  // Verify an incoming envelope's signature, then store it if valid.
-  // Calls thenDo(err, result) — result is null if verification failed (not stored).
+  // Verify an incoming envelope's CID integrity, then store it.
+  // IDENTITY: signature verification deferred — WebAuthn assertion signing
+  // comes in a future iteration. CID check catches accidental corruption and
+  // costs nothing since the payload is already loaded.
+  // Calls thenDo(err, result).
   _verifyAndPut: function(envelope, thenDo) {
     var self = this;
-    lively.identity.crypto.verifyEnvelope(envelope, function(err, valid) {
+    if (!envelope || !envelope.record) {
+      return thenDo(new Error('ObjectStore._verifyAndPut: invalid envelope'));
+    }
+    lively.identity.crypto.computeCid(envelope.record.payload, function(err, expectedCid) {
       if (err) return thenDo(err);
-      if (!valid) {
+      if (expectedCid !== envelope.record.cid) {
         return thenDo(new Error(
-          'ObjectStore: invalid signature on incoming envelope ' +
-          (envelope && envelope.objId)
+          'ObjectStore: CID mismatch on incoming envelope ' + envelope.objId +
+          ' — content may be corrupted'
         ));
       }
       self.put(envelope, thenDo);

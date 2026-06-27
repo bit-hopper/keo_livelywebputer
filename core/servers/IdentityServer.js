@@ -239,6 +239,11 @@ module.exports = function (route, app) {
 
       objectRepo.put(envelope, function (err, result) {
         if (err) return res.status(500).json({ error: String(err) });
+        // IDENTITY: future — WaveBus-style fan-out on PUT.
+        // After a successful write, notify any WebSocket connections subscribed
+        // to this objId so other clients can pull the new version. This maps to
+        // Wave's WaveBus.publish(). Use lively.net.SessionTracker (L2L) as the
+        // transport when implementing. Not needed until live collaboration.
         res.json({
           ok: true,
           objId: result.objId,
