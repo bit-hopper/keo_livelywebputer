@@ -115,23 +115,18 @@ lively.IndexedDB = {
     set: function(key, value, callback, optStore) {
         if (!this.isAvailable()) return callback && callback(new Error('IndexedDB is not available.'));
 
+        // IDENTITY: replaced has→remove→add (three transactions, non-atomic) with a
+        // single put() call. IDBObjectStore.put() is an atomic upsert: it inserts if
+        // the key is absent or replaces if it already exists, with no gap between.
         optStore = optStore || this.defaultStoreName;
         Functions.composeAsync(
             this.ensureDatabase.bind(this, undefined, undefined),
             this.ensureObjectStore.bind(this, optStore, null),
-            function(next) {
-                this.has(key, next, optStore);
-            }.bind(this),
-            function (exists, next) {
-                if (!exists) return next();
-
-                this.remove(key, next);
-            }.bind(this),
             function writeValue(next) {
                 var transaction = this.currentDB.transaction(optStore, 'readwrite').
-                        objectStore(optStore).add(value, key);
+                        objectStore(optStore).put(value, key);
                 transaction.onsuccess = function(event) {
-                    next(null, event.target.result); // should be key
+                    next(null, event.target.result); // key
                 };
                 transaction.onerror = function(event) {
                     next(event.target.error);
@@ -150,6 +145,8 @@ lively.IndexedDB = {
             this.ensureDatabase.bind(this, undefined, undefined),
             this.ensureObjectStore.bind(this, optStore, null),
             function(next) {
+                // IDENTITY: should be 'readonly' — 'readwrite' holds an unnecessary
+                // exclusive lock here, blocking concurrent reads. Safe to change later.
                 var transaction = this.currentDB.transaction(optStore, 'readwrite').
                         objectStore(optStore).get(key);
                 transaction.onsuccess = function(event) {
