@@ -620,7 +620,8 @@ module("lively.identity.SignedSerializer")
                     if (!method) {
                       console.warn(
                         "[SignedSerializer] Verification method not found for " +
-                          "credentialId=" + user.credentialId +
+                          "credentialId=" +
+                          user.credentialId +
                           " — skipping envelope.",
                       );
                       return thenDo && thenDo(null);
