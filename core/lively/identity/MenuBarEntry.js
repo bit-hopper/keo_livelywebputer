@@ -31,9 +31,10 @@ module("lively.identity.MenuBarEntry")
 
         morphMenuItems: function morphMenuItems() {
           var self = this;
-          if (!lively.identity.did.isLoggedIn()) {
+          if (!lively.identity.did || !lively.identity.did.isLoggedIn()) {
             return [
-              ["Sign in", function () { self.openLoginDialog(); }],
+              ["Sign in",         function () { self.openLoginDialog(); }],
+              ["Create identity", function () { self.openRegisterDialog(); }],
             ];
           }
           return [
@@ -84,22 +85,32 @@ module("lively.identity.MenuBarEntry")
         },
 
         update: function update() {
+          if (!lively.identity || !lively.identity.did) return;
           var label = lively.identity.did.isLoggedIn()
             ? "@" + lively.identity.did.currentUser().handle
             : "Sign in";
           this.textString = label;
         },
 
-        // Called when the morph is added to the world from a saved world file.
+        // Called when the morph is added to the world from a saved world file,
+        // and by onFromBuildSpecCreated when created fresh.
         onLoad: function onLoad() {
           var self = this;
-          this.update();
-          // DID.establishSession fires identityChanged — reconnect to it here
-          // so the label updates without polling.
-          lively.bindings.connect(
-            lively.identity.did, "identityChanged",
-            self, "update",
-          );
+          var connect = function () {
+            self.update();
+            lively.bindings.connect(
+              lively.identity.did, "identityChanged",
+              self, "update",
+            );
+          };
+          // If DID.js is already loaded (normal path: module loads before world
+          // deserializes), connect immediately. Otherwise defer — toRun() fires
+          // as soon as the module's onload callbacks run.
+          if (lively.identity && lively.identity.did) {
+            connect();
+          } else {
+            lively.require("lively.identity.DID").toRun(connect);
+          }
         },
 
         onFromBuildSpecCreated: function onFromBuildSpecCreated() {
