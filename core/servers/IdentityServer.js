@@ -58,9 +58,9 @@ module.exports = function (route, app) {
         return res.status(400).json({ error: String(err.message || err) });
 
       if (body.didDocument) {
-        var didEnvelope;
+        var didDoc;
         try {
-          didEnvelope =
+          didDoc =
             typeof body.didDocument === "string"
               ? JSON.parse(body.didDocument)
               : body.didDocument;
@@ -70,8 +70,8 @@ module.exports = function (route, app) {
             .json({ error: "Invalid didDocument JSON: " + e.message });
         }
 
-        objectRepo.put(didEnvelope, function (putErr) {
-          if (putErr && !putErr.toString().includes("UNIQUE")) {
+        handleRegistry.saveDIDDocument(result.did, didDoc, function (putErr) {
+          if (putErr) {
             console.warn(
               "[IdentityServer] Failed to store DID document:",
               putErr,
@@ -162,6 +162,28 @@ module.exports = function (route, app) {
       objectRepo.listForUser(did, function (err, envelopes) {
         if (err) return res.status(500).json({ error: String(err) });
         res.json({ handle: handle, did: did, objects: envelopes });
+      });
+    });
+  });
+
+  // ─── DID document ──────────────────────────────────────────────────────────
+  // Returns the stored DID document for a handle.
+  // Used by the new-device login path to populate local lively.IndexedDB.
+
+  app.get("/@:handle/did-document", function (req, res) {
+    var handle = req.params.handle;
+
+    handleRegistry.resolve(handle, function (err, did) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!did)
+        return res.status(404).json({ error: "Handle not found: @" + handle });
+
+      handleRegistry.getDIDDocument(did, function (err, doc) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!doc)
+          return res.status(404).json({ error: "No DID document stored for @" + handle });
+
+        res.json(doc);
       });
     });
   });

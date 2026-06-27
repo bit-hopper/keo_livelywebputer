@@ -69,6 +69,16 @@ function withDB(thenDo) {
         '  public_key    TEXT NOT NULL,' +
         '  counter       INTEGER NOT NULL DEFAULT 0,' +
         '  created_at    TEXT NOT NULL' +
+        ')'
+      );
+      // Stores the full DID document JSON keyed by DID string.
+      // Used by the new-device login path to fetch the DID document without
+      // requiring it to exist in the user's content object store.
+      db.run(
+        'CREATE TABLE IF NOT EXISTS did_documents (' +
+        '  did        TEXT PRIMARY KEY,' +
+        '  document   TEXT NOT NULL,' +
+        '  updated_at TEXT NOT NULL' +
         ')',
         function(err) { thenDo(err, db); }
       );
@@ -205,15 +215,54 @@ function updateCounter(credentialId, newCounter, thenDo) {
   });
 }
 
+// Store or replace the full DID document for a DID.
+// document: plain object (will be JSON-serialised).
+// Calls thenDo(err).
+function saveDIDDocument(did, document, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    var now = new Date().toISOString();
+    db.run(
+      'INSERT INTO did_documents (did, document, updated_at) VALUES (?, ?, ?)' +
+      ' ON CONFLICT(did) DO UPDATE SET document=excluded.document, updated_at=excluded.updated_at',
+      [did, JSON.stringify(document), now],
+      function(err) { thenDo(err || null); }
+    );
+  });
+}
+
+// Retrieve the stored DID document for a DID.
+// Calls thenDo(null, document) or thenDo(null, null) if not found.
+function getDIDDocument(did, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.get(
+      'SELECT document FROM did_documents WHERE did = ?',
+      [did],
+      function(err, row) {
+        if (err) return thenDo(err);
+        if (!row) return thenDo(null, null);
+        try {
+          thenDo(null, JSON.parse(row.document));
+        } catch (e) {
+          thenDo(new Error('HandleRegistry: corrupt DID document for ' + did));
+        }
+      }
+    );
+  });
+}
+
 module.exports = {
-  withDB:          withDB,
-  register:        register,
-  resolve:         resolve,
-  listAll:         listAll,
-  remove:          remove,
-  registerDomain:  registerDomain,
-  resolveDomain:   resolveDomain,
-  saveCredential:  saveCredential,
-  getCredential:   getCredential,
-  updateCounter:   updateCounter
+  withDB:           withDB,
+  register:         register,
+  resolve:          resolve,
+  listAll:          listAll,
+  remove:           remove,
+  registerDomain:   registerDomain,
+  resolveDomain:    resolveDomain,
+  saveCredential:   saveCredential,
+  getCredential:    getCredential,
+  updateCounter:    updateCounter,
+  saveDIDDocument:  saveDIDDocument,
+  getDIDDocument:   getDIDDocument,
 };
