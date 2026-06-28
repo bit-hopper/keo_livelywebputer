@@ -209,6 +209,8 @@ Object.subclass('lively.PartsBin.PartItem',
 
         new lively.store.ObjectRepository(root).getRecords(query, function(err, rows) {
             if (err) { show(err); self.json = null; return; }
+            // IDENTITY: pre-existing bug — empty version history crashes here.
+            // Normal case for parts never saved through lively.store.ObjectRepository.
             if (!rows || !rows[0]) { self.json = null; return; }
             self.json = rows[0].content;
         });
@@ -326,6 +328,8 @@ Object.subclass('lively.PartsBin.PartItem',
 
         new lively.store.ObjectRepository(root).getRecords(query, function(err, rows) {
             if (err) { show(err); self.loadedMetaInfo = null; return; }
+            // IDENTITY: pre-existing bug — empty version history crashes here.
+            // Normal case for parts never saved through lively.store.ObjectRepository.
             if (!rows || !rows[0]) { self.loadedMetaInfo = null; return; }
             var metaInfo = lively.persistence.Serializer.deserialize(rows[0].content)
             metaInfo.lastModifiedDate = new Date(rows[0].date);
