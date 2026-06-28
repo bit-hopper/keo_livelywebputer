@@ -446,7 +446,7 @@ Object.extend(lively.net.SessionTracker, {
             }
             if (chat) {
                 chat = chat.targetMorph || chat;
-                chat.addText(msg.data.user + ': ' + msg.data.message);
+                chat.addMessage(msg.data.message, false, msg.data.user);
             }
             session.answer(msg, {message: 'chat message received', error: null});
         },
