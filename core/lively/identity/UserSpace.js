@@ -41,6 +41,7 @@ module("lively.identity.UserSpace")
     "lively.identity.DID",
     "lively.identity.Crypto",
     "lively.identity.ObjectStore",
+    "lively.identity.IdentityPartsSpace",
     "lively.PartsBin",
   )
   .toRun(function () {
@@ -295,14 +296,14 @@ module("lively.identity.UserSpace")
 
       "parts space integration",
       {
-        // Return a lively.PartsBin.IdentityPartsSpace for this user's personal
+        // Return a lively.identity.IdentityPartsSpace for this user's personal
         // parts. Registers it with the global lively.PartsBin registry so that
         // PartItem.getPartsSpace() can resolve it by name.
         // Calls thenDo(null, IdentityPartsSpace).
         getPersonalPartsSpace: function (thenDo) {
           var user = this.currentUser();
           if (!user) return thenDo(new Error("UserSpace: not logged in"));
-          var space = new lively.PartsBin.IdentityPartsSpace(user.handle, user.did);
+          var space = new lively.identity.IdentityPartsSpace(user.handle, user.did);
           lively.PartsBin.addPartsSpace(space);
           thenDo(null, space);
         },
@@ -310,78 +311,5 @@ module("lively.identity.UserSpace")
     );
 
     lively.identity.userSpace = new lively.identity.UserSpace();
-
-    // ─── IdentityPartsSpace ───────────────────────────────────────────────────────
-    //
-    // A lively.PartsBin.PartsSpace subclass whose backing store is the identity
-    // ObjectStore (IndexedDB) rather than WebDAV.
-    //
-    // The PartsBin UI calls getURL(), load(), getPartItems(), getPartItemNamed(),
-    // and setPartItem() on whatever PartsSpace it receives. This subclass satisfies
-    // that contract while routing reads through ObjectStore.listAll().
-    //
-    // Migration path: once parts are fully stored as envelopes, the WebDAV
-    // PartsBin directory (900 MB, 3 files/part) can be retired. See context
-    // brief item 7 for background.
-
-    lively.PartsBin.PartsSpace.subclass("lively.PartsBin.IdentityPartsSpace",
-
-      "initializing",
-      {
-        initialize: function ($super, handle, did) {
-          this.handle = handle;
-          this.did    = did;
-          $super("@" + handle + "/parts/");
-        },
-      },
-
-      "accessing",
-      {
-        getURL: function () {
-          return URL.root.withFilename("@" + this.handle + "/");
-        },
-      },
-
-      "loading",
-      {
-        // Async replacement for the parent's sync WebResource-based load().
-        // Populates this.partItems from ObjectStore envelopes of type 'part'.
-        // thenDo(err, this) — thenDo may be undefined (legacy callers pass boolean).
-        load: function (thenDo) {
-          var self = this;
-          lively.identity.objectStore.listAll(function (err, envelopes) {
-            if (err) return thenDo && thenDo(err);
-            envelopes
-              .filter(function (e) { return e.type === "part"; })
-              .forEach(function (envelope) {
-                var item = self.createPartItemFromEnvelope(envelope);
-                if (item) self.setPartItem(item);
-              });
-            thenDo && thenDo(null, self);
-          });
-        },
-
-        createPartItemFromEnvelope: function (envelope) {
-          var state = envelope.state || {};
-          var partName = state.partName;
-          if (!partName) return null;
-
-          var item = new lively.PartsBin.PartItem(partName, this.name);
-
-          var metaInfo = new lively.PartsBin.PartsBinMetaInfo();
-          metaInfo.partName         = partName;
-          metaInfo.comment          = state.comment          || "";
-          metaInfo.tags             = state.tags             || [];
-          metaInfo.requiredModules  = state.requiredModules  || [];
-          metaInfo.lastModifiedDate = envelope.created;
-
-          item.loadedMetaInfo = metaInfo;
-          item.json = JSON.stringify(
-            envelope.record && envelope.record.payload || null
-          );
-          return item;
-        },
-      },
-    );
 
   }); // end module('lively.identity.UserSpace')
