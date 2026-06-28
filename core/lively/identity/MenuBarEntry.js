@@ -24,13 +24,10 @@ module("lively.identity.MenuBarEntry")
         menuBarAlign: "right",
         textString: "Sign in",
 
-        style: lively.lang.obj.merge(
-          lively.BuildSpec("lively.morphic.tools.MenuBarEntry").attributeStore.style,
-          {
-            extent: lively.pt(80, 22),
-            toolTip: "Identity — sign in or manage your account",
-          },
-        ),
+        style: {
+          extent: lively.pt(80, 22),
+          toolTip: "Identity — sign in or manage your account",
+        },
 
         morphMenuItems: function morphMenuItems() {
           var self = this;
