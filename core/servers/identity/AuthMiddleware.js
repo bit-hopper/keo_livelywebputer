@@ -45,6 +45,11 @@ function getSimpleWebAuthn() {
 
 var handleRegistry = require('./HandleRegistry');
 
+// Configurable rpId/origin — set via env vars when running behind a tunnel or
+// reverse proxy where req.hostname / req.protocol would resolve to localhost.
+var IDENTITY_RP_ID  = process.env.IDENTITY_RP_ID  || null;
+var IDENTITY_ORIGIN = process.env.IDENTITY_ORIGIN || null;
+
 // ─── challenge management ─────────────────────────────────────────────────────
 
 // Generate a 32-byte random challenge, store it in the session, return base64url.
@@ -84,8 +89,8 @@ function verifyRegistration(req, body, thenDo) {
     return thenDo(new Error('No pending challenge for this session'));
   }
 
-  var rpID   = req.hostname || 'localhost';
-  var origin = req.protocol + '://' + req.get('host');
+  var rpID   = IDENTITY_RP_ID  || req.hostname || 'localhost';
+  var origin = IDENTITY_ORIGIN || (req.protocol + '://' + req.get('host'));
 
   var swAuth;
   try { swAuth = getSimpleWebAuthn(); }
@@ -161,8 +166,8 @@ function verifyAuthentication(req, body, thenDo) {
     return thenDo(new Error('No pending challenge for this session'));
   }
 
-  var rpID   = req.hostname || 'localhost';
-  var origin = req.protocol + '://' + req.get('host');
+  var rpID   = IDENTITY_RP_ID  || req.hostname || 'localhost';
+  var origin = IDENTITY_ORIGIN || (req.protocol + '://' + req.get('host'));
 
   var swAuth;
   try { swAuth = getSimpleWebAuthn(); }

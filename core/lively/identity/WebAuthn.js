@@ -302,7 +302,7 @@ module("lively.identity.WebAuthn")
 
           var handle = options.handle || "user";
           var displayName = options.displayName || handle;
-          var rpId = options.rpId || window.location.hostname;
+          var rpId = options.rpId || (lively.Config && lively.Config.get('identityRpId')) || window.location.hostname;
           var rpName = options.rpName || "Lively";
           var requestPrf = options.requestPrf !== false; // default true
 
@@ -436,7 +436,7 @@ module("lively.identity.WebAuthn")
 
           var publicKeyOptions = {
             challenge: options.challenge,
-            rpId: options.rpId || window.location.hostname,
+            rpId: options.rpId || (lively.Config && lively.Config.get('identityRpId')) || window.location.hostname,
             allowCredentials: allowCredentials, // empty = any resident key
             userVerification: "required",
           };
@@ -510,7 +510,7 @@ module("lively.identity.WebAuthn")
 
           var publicKeyOptions = {
             challenge: options.challenge,
-            rpId: options.rpId || window.location.hostname,
+            rpId: options.rpId || (lively.Config && lively.Config.get('identityRpId')) || window.location.hostname,
             allowCredentials: allowCredentials,
             userVerification: "required",
             extensions: {
@@ -578,7 +578,7 @@ module("lively.identity.WebAuthn")
 
           var publicKeyOptions = {
             challenge: options.challenge,
-            rpId: options.rpId || window.location.hostname,
+            rpId: options.rpId || (lively.Config && lively.Config.get('identityRpId')) || window.location.hostname,
             allowCredentials: allowCredentials,
             userVerification: "required",
             extensions: {

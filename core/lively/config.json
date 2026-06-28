@@ -61,6 +61,11 @@
     }
   ],
 
+  "identity": [
+    ["identityRpId", "tinylil.world", "WebAuthn relying party ID — must match the domain served over HTTPS (e.g. tinylil.world for dev.tinylil.world tunnel)."],
+    ["identityOrigin", "https://dev.tinylil.world", "WebAuthn expected origin — the full HTTPS origin where the Lively world is served."]
+  ],
+
   "auth": [
     ["userAuthEnabled", false, "Is user authentication enabled?"],
     ["cookieField", "lvUserData_2013-10-12", "Cookie used for user data"],

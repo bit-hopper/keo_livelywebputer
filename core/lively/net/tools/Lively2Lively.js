@@ -544,16 +544,25 @@ lively.BuildSpec('lively.net.tools.Lively2LivelyChat', {
                 rects + '</svg>');
         },
         createMessageBubble: function createMessageBubble(text, isOwn, width) {
-            var maxW = Math.floor(width * 0.65), pad = 10;
-            var t = new lively.morphic.Text(lively.rect(0, 0, maxW - pad*2, 20), text);
-            t.applyStyle({fixedWidth: true, fixedHeight: false,
-                fontSize: 13, fontFamily: 'sans-serif', fill: null, borderWidth: 0});
+            var maxW = Math.floor(width * 0.65), pad = 10, textW = maxW - pad * 2;
+            // seed height with a line-count estimate so fit() has room to measure
+            var estLines = Math.ceil(text.length * 8 / textW) + 1;
+            var t = new lively.morphic.Text(lively.rect(0, 0, textW, estLines * 18), text);
+            t.applyStyle({
+                fixedWidth: true, fixedHeight: false,
+                fontSize: 13, fontFamily: 'sans-serif',
+                fill: null, borderWidth: 0, allowInput: false,
+                lineWrapping: 'by-words'
+            });
+            // call setter directly — applyStyle may not reach it in all Lively builds
+            if (t.setLineWrapping) t.setLineWrapping('by-words');
             t.fit();
             var bH = t.getExtent().y + pad * 2;
             var bubble = new lively.morphic.Box(lively.rect(0, 0, maxW, bH));
             bubble.applyStyle({
                 fill: isOwn ? Color.rgb(37,211,102) : Color.rgb(235,235,235),
-                borderRadius: 12, borderWidth: 0
+                borderRadius: 12, borderWidth: 0,
+                clipMode: 'visible'  // never hide overflow if fit() underestimates
             });
             t.setPosition(lively.pt(pad, pad));
             t.setTextColor(isOwn ? Color.white : Color.rgb(30,30,30));
