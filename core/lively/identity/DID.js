@@ -224,7 +224,10 @@ module("lively.identity.DID")
           lively.IndexedDB.set(
             "identity-did-document",
             JSON.stringify(document),
-            thenDo || function () {},
+            function (err) {
+              if (!err) console.log("[DID] saveDocument: DID document saved to IndexedDB");
+              (thenDo || function () {})(err);
+            },
             "identity",
           );
         },
@@ -330,12 +333,14 @@ module("lively.identity.DID")
             },
             function () {
               // 4. Signal for UI bindings (MenuBarEntry etc.)
+              console.log("[DID] Session established:", { did: params.did, handle: params.handle });
               if (typeof lively !== "undefined" && lively.bindings) {
                 lively.bindings.signal(
                   lively.identity.did,
                   "identityChanged",
                   params,
                 );
+                console.log("[Identity] identityChanged signal fired");
               }
               thenDo && thenDo(null, params);
             },
@@ -469,6 +474,7 @@ module("lively.identity.DID")
                 ),
               );
             }
+            console.log("[DID] completeAuthentication: document loaded, establishing session");
 
             self.establishSession(
               {

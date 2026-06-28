@@ -191,19 +191,14 @@ Object.subclass('lively.identity.Crypto',
 
 'hashing', {
 
-  // CID = base64url(BLAKE2b-256(canonicalJson(payload)))
-  // Uses libsodium crypto_generichash (BLAKE2b).
+  // CID = base64url(SHA-256(canonicalJson(payload)))
+  // Uses Web Crypto API — no external dependency required.
   computeCid: function(payload, thenDo) {
-    this.withSodium(function(err, sodium) {
-      if (err) return thenDo(err);
-      try {
-        var json = typeof payload === 'string' ? payload : JSON.stringify(payload);
-        var bytes = sodium.from_string(json);
-        var hash = sodium.crypto_generichash(32, bytes);
-        var cid = sodium.to_base64(hash, sodium.base64_variants.URLSAFE_NO_PADDING);
-        thenDo(null, cid);
-      } catch (e) { thenDo(e); }
-    });
+    var self = this;
+    try {
+      var json = typeof payload === 'string' ? payload : JSON.stringify(payload);
+      self.sha256(json, thenDo);
+    } catch (e) { thenDo(e); }
   },
 
   // SHA-256 via Web Crypto, returns base64url string.

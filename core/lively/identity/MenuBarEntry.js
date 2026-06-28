@@ -1,13 +1,16 @@
 module("lively.identity.MenuBarEntry")
   .requires(
     "lively.identity.DID",
+    "lively.identity.SignedSerializer",
     "lively.persistence.BuildSpec",
     "lively.morphic.tools.MenuBar",
   )
   .toRun(function () {
 
     // Advertise to the MenuBar system (same pattern as Wiki.js / Lively2Lively.js).
-    Object.extend(lively.identity, {
+    // MenuBar calls module("lively.identity.MenuBarEntry").getMenuBarEntries(),
+    // which resolves to lively.identity.MenuBarEntry — so the method must live here.
+    Object.extend(lively.identity.MenuBarEntry, {
       getMenuBarEntries: function () {
         return [lively.BuildSpec("lively.identity.MenuBarEntry").createMorph()];
       },

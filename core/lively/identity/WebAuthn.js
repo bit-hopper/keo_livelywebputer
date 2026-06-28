@@ -371,6 +371,13 @@ module("lively.identity.WebAuthn")
                     handle: handle,
                   };
 
+                  if (!prfAvailable) {
+                    console.warn(
+                      "[WebAuthn] PRF extension not supported — " +
+                        "private world encryption unavailable on this device",
+                    );
+                  }
+
                   // Persist to local roster so authenticate() can find this credential
                   self._saveCredentialToRoster(result, function (saveErr) {
                     if (saveErr)
@@ -378,6 +385,10 @@ module("lively.identity.WebAuthn")
                         "WebAuthn: could not save credential to roster:",
                         saveErr,
                       );
+                    console.log(
+                      "[WebAuthn] Registration successful:",
+                      { credentialId: result.credentialId, prfAvailable: result.prfAvailable },
+                    );
                     thenDo(null, result);
                   });
                 },

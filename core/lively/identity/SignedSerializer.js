@@ -558,6 +558,12 @@ module("lively.identity.SignedSerializer")
                         : url
                           ? new URL(url).filename().replace(/\.x?html$/, "")
                           : "world";
+                    if (!rawName || rawName === "null" || rawName === "undefined") {
+                      console.warn(
+                        "[SignedSerializer] Warning: world.name is " +
+                          JSON.stringify(rawName) + " — using \"" + worldName + "\" from URL",
+                      );
+                    }
 
                     // Use findMethodByCredentialId so the correct key is chosen
                     // when the user has multiple devices registered.
@@ -575,6 +581,9 @@ module("lively.identity.SignedSerializer")
                       return thenDo && thenDo(null);
                     }
 
+                    console.log(
+                      "[SignedSerializer] Building envelope for world \"" + worldName + "\"",
+                    );
                     signedSerializer.serializeToEnvelope(
                       {
                         obj: world,
@@ -605,7 +614,15 @@ module("lively.identity.SignedSerializer")
                           .beAsync()
                           .put(JSON.stringify(envelope), "application/json")
                           .whenDone(function (content, status) {
-                            if (!status.isSuccess()) {
+                            if (status.isSuccess()) {
+                              var body = null;
+                              try { body = JSON.parse(content); } catch(e) {}
+                              console.log(
+                                "[SignedSerializer] PUT /@" + user.handle +
+                                  "/" + envelope.objId + " →",
+                                body || content,
+                              );
+                            } else {
                               console.warn(
                                 "[SignedSerializer] Failed to PUT envelope to " +
                                   envelopeUrl +

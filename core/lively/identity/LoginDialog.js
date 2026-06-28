@@ -145,7 +145,7 @@ module("lively.identity.LoginDialog")
         var self = this;
         var typedHandle = (this.get("handleInput").textString || "").trim().replace(/^@/, "");
         var btn = this.get("signInBtn");
-        if (btn) btn.setEnabled(false);
+        if (btn) btn.setActive(false);
         this.setStatus("Requesting challenge…");
 
         fetch("/nodejs/IdentityServer/challenge", { credentials: "include" })
@@ -177,7 +177,7 @@ module("lively.identity.LoginDialog")
                   { challenge: challengeBytes, rpId: rpId, credentialIds: credentialIds },
                   function (authErr, assertion) {
                     if (authErr) {
-                      if (btn) btn.setEnabled(true);
+                      if (btn) btn.setActive(true);
                       return self.setStatus("Authentication cancelled: " + authErr.message, true);
                     }
                     // Pass the roster record for this credential so the POST body
@@ -200,7 +200,7 @@ module("lively.identity.LoginDialog")
                   { challenge: challengeBytes, rpId: rpId, credentialIds: [] },
                   function (authErr, assertion) {
                     if (authErr) {
-                      if (btn) btn.setEnabled(true);
+                      if (btn) btn.setActive(true);
                       return self.setStatus("Authentication cancelled: " + authErr.message, true);
                     }
                     // Extract handle from userHandle bytes ("lively-user:<handle>").
@@ -215,7 +215,7 @@ module("lively.identity.LoginDialog")
                       }
                     }
                     if (!handle) {
-                      if (btn) btn.setEnabled(true);
+                      if (btn) btn.setActive(true);
                       return self.setStatus(
                         "Could not determine handle. Enter your handle and try again.",
                         true,
@@ -228,7 +228,7 @@ module("lively.identity.LoginDialog")
             });
           })
           .catch(function (e) {
-            if (btn) btn.setEnabled(true);
+            if (btn) btn.setActive(true);
             self.setStatus("Could not get challenge: " + e.message, true);
           });
       },
@@ -270,7 +270,7 @@ module("lively.identity.LoginDialog")
                 rpId: rpId,
               },
               function (sessionErr) {
-                if (btn) btn.setEnabled(true);
+                if (btn) btn.setActive(true);
                 if (sessionErr) {
                   return self.setStatus("Session setup failed: " + sessionErr.message, true);
                 }
@@ -280,7 +280,7 @@ module("lively.identity.LoginDialog")
             );
           })
           .catch(function (e) {
-            if (btn) btn.setEnabled(true);
+            if (btn) btn.setActive(true);
             self.setStatus("Server error: " + e.message, true);
           });
       },
@@ -310,6 +310,7 @@ module("lively.identity.LoginDialog")
             // Fetch the DID document from the dedicated endpoint so that
             // completeAuthentication can read it via loadDocument().
             self.setStatus("Fetching identity document…");
+            console.log("[LoginDialog] Fetching /@" + body.handle + "/did-document");
             return fetch("/@" + body.handle + "/did-document", { credentials: "include" })
               .then(function (res) {
                 if (!res.ok) throw new Error("Could not fetch DID document for @" + body.handle + " (HTTP " + res.status + ")");
@@ -324,7 +325,7 @@ module("lively.identity.LoginDialog")
                 var did = lively.identity.did;
                 did.saveDocument(didDoc, function (saveErr) {
                   if (saveErr) {
-                    if (btn) btn.setEnabled(true);
+                    if (btn) btn.setActive(true);
                     return self.setStatus("Could not save DID document: " + saveErr.message, true);
                   }
 
@@ -339,7 +340,7 @@ module("lively.identity.LoginDialog")
                       rpId: rpId,
                     },
                     function (sessionErr) {
-                      if (btn) btn.setEnabled(true);
+                      if (btn) btn.setActive(true);
                       if (sessionErr) {
                         return self.setStatus("Session setup failed: " + sessionErr.message, true);
                       }
@@ -351,7 +352,7 @@ module("lively.identity.LoginDialog")
               });
           })
           .catch(function (e) {
-            if (btn) btn.setEnabled(true);
+            if (btn) btn.setActive(true);
             self.setStatus("Error: " + e.message, true);
           });
       },
@@ -367,6 +368,8 @@ module("lively.identity.LoginDialog")
           function (err, result) {
             if (err) {
               console.warn("[Identity] Post-login sync failed:", err.message);
+            } else {
+              console.log("[Identity] Post-login sync:", result);
             }
           },
         );

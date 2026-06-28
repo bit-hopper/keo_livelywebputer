@@ -146,9 +146,9 @@ module("lively.identity.RegisterDialog")
         if (lively.identity.did.isLoggedIn()) {
           var user = lively.identity.did.currentUser();
           this.get("handleInput").setTextString(user.handle);
-          this.get("handleInput").setEnabled(false);
+          this.get("handleInput").applyStyle({ allowInput: false });
           this.get("displayNameInput").setTextString(user.displayName || "");
-          this.get("displayNameInput").setEnabled(false);
+          this.get("displayNameInput").applyStyle({ allowInput: false });
         }
       },
 
@@ -176,7 +176,7 @@ module("lively.identity.RegisterDialog")
         }
 
         var btn = this.get("registerBtn");
-        if (btn) btn.setEnabled(false);
+        if (btn) btn.setActive(false);
         this.setStatus("Requesting challenge…");
 
         var rpId = window.location.hostname;
@@ -207,7 +207,7 @@ module("lively.identity.RegisterDialog")
               },
               function (err, reg) {
                 if (err) {
-                  if (btn) btn.setEnabled(true);
+                  if (btn) btn.setActive(true);
                   return self.setStatus(
                     "Registration cancelled: " + err.message,
                     true,
@@ -262,7 +262,7 @@ module("lively.identity.RegisterDialog")
                         deviceLabel: deviceLabel,
                       },
                       function (sessionErr) {
-                        if (btn) btn.setEnabled(true);
+                        if (btn) btn.setActive(true);
                         if (sessionErr) {
                           return self.setStatus(
                             "Session setup failed: " + sessionErr.message,
@@ -274,14 +274,14 @@ module("lively.identity.RegisterDialog")
                     );
                   })
                   .catch(function (serverErr) {
-                    if (btn) btn.setEnabled(true);
+                    if (btn) btn.setActive(true);
                     self.setStatus("Server error: " + serverErr.message, true);
                   });
               },
             );
           })
           .catch(function (e) {
-            if (btn) btn.setEnabled(true);
+            if (btn) btn.setActive(true);
             self.setStatus("Could not get challenge: " + e.message, true);
           });
       },

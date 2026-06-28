@@ -93,17 +93,18 @@ function verifyRegistration(req, body, thenDo) {
 
   swAuth.verifyRegistrationResponse({
     response: {
-      id:       body.credentialId,
-      rawId:    body.credentialId,
+      id:                   body.credentialId,
+      rawId:                body.credentialId,
       response: {
-        attestationObject: body.attestationObject,
-        clientDataJSON:    body.clientDataJSON
+        attestationObject:  body.attestationObject,
+        clientDataJSON:     body.clientDataJSON
       },
+      clientExtensionResults: {},
       type: 'public-key'
     },
-    expectedChallenge: expectedChallenge,
-    expectedOrigin:    origin,
-    expectedRPID:      rpID,
+    expectedChallenge:       expectedChallenge,
+    expectedOrigin:          origin,
+    expectedRPID:            rpID,
     requireUserVerification: true
   }).then(function(result) {
     if (!result.verified) {
@@ -111,11 +112,13 @@ function verifyRegistration(req, body, thenDo) {
     }
 
     var regInfo = result.registrationInfo;
+    // v9+: public key and counter are nested under registrationInfo.credential
+    var cred = regInfo.credential;
     handleRegistry.saveCredential(
       body.credentialId,
       body.did,
-      regInfo.credentialPublicKey,
-      regInfo.counter,
+      cred.publicKey,
+      cred.counter,
       function(saveErr) {
         if (saveErr) return thenDo(saveErr);
         handleRegistry.register(body.handle, body.did, function(err) {
@@ -185,18 +188,20 @@ function verifyAuthentication(req, body, thenDo) {
             authenticatorData: body.authenticatorData,
             clientDataJSON:    body.clientDataJSON,
             signature:         body.signature,
-            userHandle:        body.userHandle || null
+            userHandle:        body.userHandle || undefined
           },
+          clientExtensionResults: {},
           type: 'public-key'
         },
-        expectedChallenge:     expectedChallenge,
-        expectedOrigin:        origin,
-        expectedRPID:          rpID,
+        expectedChallenge:       expectedChallenge,
+        expectedOrigin:          origin,
+        expectedRPID:            rpID,
         requireUserVerification: true,
-        authenticator: {
-          credentialPublicKey: credential.publicKey,
-          credentialID:        body.credentialId,
-          counter:             credential.counter
+        // v9+: credential replaces authenticator; publicKey is COSE Uint8Array from DB
+        credential: {
+          id:        body.credentialId,
+          publicKey: credential.publicKey,
+          counter:   credential.counter
         }
       }).then(function(result) {
         if (!result.verified) {
