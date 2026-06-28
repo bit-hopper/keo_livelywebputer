@@ -1419,7 +1419,7 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
         var comment = (metaInfo && metaInfo.getComment()) ||
             'No comment yet';
         // this.get('CommitLog').setTextString(this.commitLogString(metaInfo))
-        this.setSelectedPartVersions(metaInfo.changes)
+        this.setSelectedPartVersions(metaInfo && metaInfo.changes)
         this.get('selectedPartComment').textString = comment;
     },
         setPartsBinURL: function setPartsBinURL(url) {
