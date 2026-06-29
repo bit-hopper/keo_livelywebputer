@@ -321,7 +321,10 @@ module("lively.identity.WebAuthn")
             pubKeyCredParams: [
               { type: "public-key", alg: -7 },   // ES256 (P-256) — preferred
               { type: "public-key", alg: -8 },   // EdDSA (Ed25519) — newer devices
-              { type: "public-key", alg: -257 }, // RS256 — legacy fallback for broader compat
+              { type: "public-key", alg: -257 }, // RS256 — Windows Hello fallback
+              // NOTE: coseKeyToJwk does not yet handle RSA keys (kty=3).
+              // If an RS256 credential is created, extractPublicKeyFromAuthData will error.
+              // Full RS256 support requires adding RSA COSE parsing to coseKeyToJwk.
             ],
             authenticatorSelection: {
               authenticatorAttachment: "platform", // passkey (device-bound)

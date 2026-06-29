@@ -168,8 +168,10 @@ function verifyAuthentication(req, body, thenDo) {
     return thenDo(new Error('No pending challenge for this session'));
   }
 
-  var rpID   = IDENTITY_RP_ID  || req.hostname || 'localhost';
-  var origin = IDENTITY_ORIGIN || (req.protocol + '://' + req.get('host'));
+  var proto  = req.get('X-Forwarded-Proto') || req.protocol;
+  var host   = req.get('host') || req.hostname || 'localhost';
+  var rpID   = IDENTITY_RP_ID  || host.split(':')[0];
+  var origin = IDENTITY_ORIGIN || (proto + '://' + host);
 
   var swAuth;
   try { swAuth = getSimpleWebAuthn(); }
