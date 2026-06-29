@@ -62,7 +62,7 @@
   ],
 
   "identity": [
-    ["identityRpId", "tinylil.world", "WebAuthn relying party ID — must match the domain served over HTTPS (e.g. tinylil.world for dev.tinylil.world tunnel)."],
+    ["identityRpId", "dev.tinylil.world", "WebAuthn relying party ID — must exactly match the hostname served over HTTPS."],
     ["identityOrigin", "https://dev.tinylil.world", "WebAuthn expected origin — the full HTTPS origin where the Lively world is served."]
   ],
 

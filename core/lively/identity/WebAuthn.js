@@ -319,8 +319,9 @@ module("lively.identity.WebAuthn")
               displayName: displayName,
             },
             pubKeyCredParams: [
-              { type: "public-key", alg: -7 }, // ES256 (P-256) — preferred
-              { type: "public-key", alg: -8 }, // EdDSA (Ed25519) — newer devices
+              { type: "public-key", alg: -7 },   // ES256 (P-256) — preferred
+              { type: "public-key", alg: -8 },   // EdDSA (Ed25519) — newer devices
+              { type: "public-key", alg: -257 }, // RS256 — legacy fallback for broader compat
             ],
             authenticatorSelection: {
               authenticatorAttachment: "platform", // passkey (device-bound)
