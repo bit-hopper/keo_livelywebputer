@@ -15,10 +15,15 @@
  *   GET  /.well-known/lively-did?handle=<handle>
  *
  *   GET  /@:handle           — home manifest (all objects for this handle)
- *   GET  /@:handle/:objId    — fetch a specific object envelope
- *   PUT  /@:handle/:objId    — store a new envelope version (auth required)
+ *   GET  /@:handle/:objId    — fetch a specific object envelope (owner or
+ *                              recipient; renders an HTML access-denied page
+ *                              with a "Request Access" button for browsers)
+ *   PUT  /@:handle/:objId    — store a new envelope version (owner only)
  *   GET  /@:handle/:objId/versions        — version history
  *   GET  /@:handle/:objId/since/:prevCid  — sync delta
+ *
+ *   POST /nodejs/IdentityServer/access-request/:objId  — request read access
+ *   POST /nodejs/IdentityServer/grant-access/:objId    — owner grants access
  */
 
 "use strict";
@@ -27,6 +32,53 @@ var url = require("url");
 var handleRegistry = require("./identity/HandleRegistry");
 var objectRepo = require("./identity/ObjectRepository");
 var auth = require("./identity/AuthMiddleware");
+
+// ─── HTML helpers (access-denied / access-requested pages) ───────────────────
+
+function escapeHtml(str) {
+  return String(str == null ? "" : str).replace(/[&<>"']/g, function (c) {
+    return (
+      { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[
+        c
+      ]
+    );
+  });
+}
+
+// Renders a minimal standalone HTML page (no Lively/morphic context — this is
+// served to a plain browser navigation, not loaded inside a running world).
+// params: { title, heading, message, objId, showRequestButton, loggedIn }
+function buildAccessDeniedPage(params) {
+  var title = escapeHtml(params.title || "Access denied");
+  var heading = escapeHtml(params.heading || title);
+  var message = escapeHtml(params.message || "");
+  var objId = escapeHtml(params.objId || "");
+
+  var action = "";
+  if (params.showRequestButton) {
+    action = params.loggedIn
+      ? '<form method="POST" action="/nodejs/IdentityServer/access-request/' +
+        objId +
+        '"><button type="submit">Request Access</button></form>'
+      : "<p>Sign in to request access to this object.</p>";
+  }
+
+  return (
+    "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" +
+    "<title>" +
+    title +
+    "</title>" +
+    "<style>body{font-family:sans-serif;max-width:480px;margin:80px auto;" +
+    "text-align:center;color:#333}button{font-size:14px;padding:8px 16px;" +
+    "cursor:pointer}</style></head><body>" +
+    "<h2>" +
+    heading +
+    "</h2>" +
+    (message ? "<p>" + message + "</p>" : "") +
+    action +
+    "</body></html>"
+  );
+}
 
 module.exports = function (route, app) {
   // ─── challenge ─────────────────────────────────────────────────────────────
@@ -200,7 +252,32 @@ module.exports = function (route, app) {
         return res.status(404).json({ error: "Object not found: " + objId });
 
       if (envelope.visibility !== "public") {
-        if (!req.identity || req.identity.did !== envelope.did) {
+        var isOwner = req.identity && req.identity.did === envelope.did;
+        var recipients = (envelope.record && envelope.record.recipients) || [];
+        var isRecipient =
+          req.identity &&
+          recipients.some(function (r) {
+            return (r.did || r) === req.identity.did;
+          });
+
+        if (!isOwner && !isRecipient) {
+          if (req.accepts(["html", "json"]) === "html") {
+            return res
+              .status(403)
+              .send(
+                buildAccessDeniedPage({
+                  title: "Access denied",
+                  heading: "This world is private",
+                  message:
+                    "@" +
+                    handle +
+                    " has not shared this object with you.",
+                  objId: objId,
+                  showRequestButton: true,
+                  loggedIn: !!req.identity,
+                }),
+              );
+          }
           return res.status(403).json({ error: "Forbidden" });
         }
       }
@@ -210,6 +287,9 @@ module.exports = function (route, app) {
   });
 
   // ─── PUT object ────────────────────────────────────────────────────────────
+  // Intentionally owner-only — Phase 1 "shared" visibility grants read access
+  // via record.recipients (see GET above / addRecipient), not write access.
+  // Co-editing shared objects is a future iteration, not implied by "shared".
 
   app.put("/@:handle/:objId", auth.requireAuth, function (req, res) {
     var handle = req.params.handle;
@@ -275,6 +355,105 @@ module.exports = function (route, app) {
       });
     });
   });
+
+  // ─── access request ────────────────────────────────────────────────────────
+  // Records that req.identity is asking the owner of objId for read access.
+  // This intentionally does NOT attempt live L2L delivery to the owner: L2L
+  // sessions are keyed by the legacy lively username (world.getUserName(true)),
+  // not by identity handle/DID, so there is no existing way to look up "the
+  // owner's session" from a DID alone. Wiring that requires the owner's client
+  // to register its session under its identity handle first — a separate,
+  // larger change. For now this is request-recording only; the owner finds
+  // out by checking back, or a future notification mechanism.
+
+  app.post(
+    "/nodejs/IdentityServer/access-request/:objId",
+    auth.requireAuth,
+    function (req, res) {
+      var objId = req.params.objId;
+
+      objectRepo.get(objId, function (err, envelope) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!envelope)
+          return res.status(404).json({ error: "Object not found: " + objId });
+
+        console.log(
+          "[IdentityServer] Access requested for " +
+            objId +
+            " by " +
+            req.identity.did +
+            " (@" +
+            req.identity.handle +
+            "), owner=" +
+            envelope.did,
+        );
+
+        if (req.accepts(["html", "json"]) === "html") {
+          return res.send(
+            buildAccessDeniedPage({
+              title: "Request sent",
+              heading: "Access requested",
+              message:
+                "The owner has been notified. Check back once they grant access.",
+            }),
+          );
+        }
+        res.json({ ok: true, requested: true });
+      });
+    },
+  );
+
+  // ─── grant access ──────────────────────────────────────────────────────────
+  // Owner-only: adds recipientHandle's DID to the object's recipient list,
+  // granting them read access (see ObjectRepository.addRecipient — this is an
+  // ACL grant, not a re-encryption; see that function's doc comment for the
+  // caveat on genuinely encrypted private objects).
+
+  app.post(
+    "/nodejs/IdentityServer/grant-access/:objId",
+    auth.requireAuth,
+    function (req, res) {
+      var objId = req.params.objId;
+      var recipientHandle = req.body && req.body.recipientHandle;
+
+      if (!recipientHandle) {
+        return res
+          .status(400)
+          .json({ error: "Missing required field: recipientHandle" });
+      }
+
+      objectRepo.get(objId, function (err, envelope) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!envelope)
+          return res.status(404).json({ error: "Object not found: " + objId });
+
+        if (req.identity.did !== envelope.did) {
+          return res
+            .status(403)
+            .json({ error: "Forbidden: only the owner can grant access" });
+        }
+
+        handleRegistry.resolve(recipientHandle, function (err, recipientDid) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (!recipientDid) {
+            return res
+              .status(404)
+              .json({ error: "Handle not found: @" + recipientHandle });
+          }
+
+          objectRepo.addRecipient(objId, recipientDid, function (err, updated) {
+            if (err) return res.status(500).json({ error: String(err) });
+            res.json({
+              ok: true,
+              objId: objId,
+              recipientDid: recipientDid,
+              visibility: updated.visibility,
+            });
+          });
+        });
+      });
+    },
+  );
 
   // ─── version history ───────────────────────────────────────────────────────
 

@@ -238,6 +238,52 @@ function listVersions(objId, thenDo) {
   });
 }
 
+// Grant read access to an additional recipient DID on the latest version of
+// an object, by appending to record.recipients in place.
+//
+// Recipients here are an access-control concept only — they gate the
+// GET /@:handle/:objId visibility check in IdentityServer.js. They are NOT
+// part of the cid hash domain (cid = hash(record.payload) only — see
+// SignedSerializer.js / Crypto.computeCid), so granting access cannot be
+// represented as a new content-addressed version: the cid would be
+// unchanged and collide with idx_obj_cid (obj_id, cid). This updates the
+// latest row in place instead of inserting a new version.
+//
+// For encrypted ('private'/'shared') objects, this only grants the
+// recipient permission to fetch the envelope over HTTP — it does not wrap
+// a decryption key for them. Actually decrypting requires the owner's
+// client to seal a key copy (Crypto.sealForRecipient) and PUT a new
+// envelope version; that is out of scope for this ACL-only helper.
+//
+// Calls thenDo(err, envelope) with the updated envelope.
+function addRecipient(objId, recipientDid, thenDo) {
+  get(objId, function(err, envelope) {
+    if (err) return thenDo(err);
+    if (!envelope) return thenDo(new Error('addRecipient: object not found: ' + objId));
+
+    if (!envelope.record.recipients) envelope.record.recipients = [];
+    var already = envelope.record.recipients.some(function(r) {
+      return (r.did || r) === recipientDid;
+    });
+    if (already) return thenDo(null, envelope);
+
+    envelope.record.recipients.push({ did: recipientDid });
+    if (envelope.visibility === 'private') envelope.visibility = 'shared';
+
+    withDB(function(err, db) {
+      if (err) return thenDo(err);
+      db.run(
+        'UPDATE objects SET envelope = ?, visibility = ? WHERE obj_id = ? AND cid = ?',
+        [JSON.stringify(envelope), envelope.visibility, objId, envelope.record.cid],
+        function(err) {
+          if (err) return thenDo(err);
+          thenDo(null, envelope);
+        }
+      );
+    });
+  });
+}
+
 module.exports = {
   withDB:          withDB,
   put:             put,
@@ -245,5 +291,6 @@ module.exports = {
   getVersion:      getVersion,
   getVersionsSince: getVersionsSince,
   listForUser:     listForUser,
-  listVersions:    listVersions
+  listVersions:    listVersions,
+  addRecipient:    addRecipient
 };
