@@ -74,41 +74,95 @@ function withDB(thenDo) {
   });
 }
 
-// Append a new envelope version for an object.
+// Overwrite the stored envelope+visibility for an existing (obj_id, cid)
+// row in place. Used when metadata (visibility / state / record.recipients)
+// changes without the payload changing — cid only covers record.payload
+// (see SignedSerializer.js / Crypto.computeCid), so such changes can never
+// be represented as a new content-addressed version.
+// Calls thenDo(err, envelope).
+function _updateInPlace(envelope, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.run(
+      'UPDATE objects SET envelope = ?, visibility = ? WHERE obj_id = ? AND cid = ?',
+      [
+        JSON.stringify(envelope),
+        envelope.visibility || 'public',
+        envelope.objId,
+        envelope.record.cid
+      ],
+      function(err) {
+        if (err) return thenDo(err);
+        thenDo(null, envelope);
+      }
+    );
+  });
+}
+
+// Append a new envelope version for an object, or — if the incoming cid
+// matches the latest stored version's cid (i.e. the payload is unchanged)
+// but visibility/state/recipients differ — apply that metadata change in
+// place instead of silently dropping it. A same-cid INSERT would otherwise
+// collide with idx_obj_cid and be swallowed by put()'s old duplicate
+// handling, which is exactly how visibility changes used to go missing.
 // envelope must be a parsed JS object with at minimum:
 //   { objId, did, type, visibility, record: { cid, prevCid } }
-// Calls thenDo(err, { id, objId, cid }).
+// Calls thenDo(err, { id, objId, cid, duplicate, changed }) where
+// changed is 'content' | 'metadata' | 'none'.
 function put(envelope, thenDo) {
   if (!envelope || !envelope.objId || !envelope.record || !envelope.record.cid) {
     return thenDo(new Error('ObjectRepository.put: invalid envelope — missing objId or record.cid'));
   }
-  withDB(function(err, db) {
+
+  get(envelope.objId, function(err, existing) {
     if (err) return thenDo(err);
-    var now = new Date().toISOString();
-    db.run(
-      'INSERT INTO objects (obj_id, did, cid, prev_cid, type, visibility, envelope, created_at)' +
-      ' VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [
-        envelope.objId,
-        envelope.did,
-        envelope.record.cid,
-        envelope.record.prevCid || null,
-        envelope.type || 'world',
-        envelope.visibility || 'public',
-        JSON.stringify(envelope),
-        now
-      ],
-      function(err) {
-        if (err) {
-          // UNIQUE constraint on (obj_id, cid) — this version already stored, not an error
-          if (err.message && err.message.indexOf('UNIQUE constraint') !== -1) {
-            return thenDo(null, { objId: envelope.objId, cid: envelope.record.cid, duplicate: true });
-          }
-          return thenDo(err);
-        }
-        thenDo(null, { id: this.lastID, objId: envelope.objId, cid: envelope.record.cid });
+
+    if (existing && existing.record.cid === envelope.record.cid) {
+      var metadataChanged =
+        existing.visibility !== envelope.visibility ||
+        JSON.stringify(existing.state || {}) !== JSON.stringify(envelope.state || {}) ||
+        JSON.stringify(existing.record.recipients || []) !== JSON.stringify(envelope.record.recipients || []);
+
+      if (!metadataChanged) {
+        return thenDo(null, { objId: envelope.objId, cid: envelope.record.cid, duplicate: true, changed: 'none' });
       }
-    );
+
+      return _updateInPlace(envelope, function(err) {
+        if (err) return thenDo(err);
+        thenDo(null, { objId: envelope.objId, cid: envelope.record.cid, duplicate: true, changed: 'metadata' });
+      });
+    }
+
+    withDB(function(err, db) {
+      if (err) return thenDo(err);
+      var now = new Date().toISOString();
+      db.run(
+        'INSERT INTO objects (obj_id, did, cid, prev_cid, type, visibility, envelope, created_at)' +
+        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          envelope.objId,
+          envelope.did,
+          envelope.record.cid,
+          envelope.record.prevCid || null,
+          envelope.type || 'world',
+          envelope.visibility || 'public',
+          JSON.stringify(envelope),
+          now
+        ],
+        function(err) {
+          if (err) {
+            // UNIQUE constraint on (obj_id, cid) — raced with another insert
+            // of this exact cid (or it's an older, non-latest version being
+            // resubmitted). Either way, the content is already stored.
+            if (err.message && err.message.indexOf('UNIQUE constraint') !== -1) {
+              return thenDo(null, { objId: envelope.objId, cid: envelope.record.cid, duplicate: true, changed: 'none' });
+            }
+            return thenDo(err);
+          }
+          thenDo(null, { id: this.lastID, objId: envelope.objId, cid: envelope.record.cid, changed: 'content' });
+        }
+      );
+    });
   });
 }
 
@@ -270,17 +324,7 @@ function addRecipient(objId, recipientDid, thenDo) {
     envelope.record.recipients.push({ did: recipientDid });
     if (envelope.visibility === 'private') envelope.visibility = 'shared';
 
-    withDB(function(err, db) {
-      if (err) return thenDo(err);
-      db.run(
-        'UPDATE objects SET envelope = ?, visibility = ? WHERE obj_id = ? AND cid = ?',
-        [JSON.stringify(envelope), envelope.visibility, objId, envelope.record.cid],
-        function(err) {
-          if (err) return thenDo(err);
-          thenDo(null, envelope);
-        }
-      );
-    });
+    _updateInPlace(envelope, thenDo);
   });
 }
 

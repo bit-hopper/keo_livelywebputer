@@ -351,6 +351,7 @@ module.exports = function (route, app) {
           objId: result.objId,
           cid: result.cid,
           duplicate: result.duplicate || false,
+          changed: result.changed || "content",
         });
       });
     });
