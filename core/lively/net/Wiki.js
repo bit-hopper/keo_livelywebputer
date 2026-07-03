@@ -106,14 +106,6 @@ Object.extend(lively.net.Wiki, {
         }, thenDo);
     },
 
-    showLoginInfo: function(withInfoMorphDo) {
-        lively.require("lively.net.tools.Wiki").toRun(function() {
-            var m = lively.BuildSpec("lively.wiki.LoginInfo")
-                .createMorph().openInWorldCenter().comeForward();
-            withInfoMorphDo && withInfoMorphDo(null, m);
-        });
-    },
-
     openResourceList: function(resources, options, thenDo) {
         if (!thenDo && typeof options === 'function') { thenDo = options; options = {}; }
         options = options || {};

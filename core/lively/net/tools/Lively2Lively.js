@@ -160,8 +160,8 @@ lively.BuildSpec('lively.net.tools.ConnectionIndicator', {
         isConnected = lively.net.SessionTracker.isConnected(),
         allowRemoteEval = !!lively.Config.get('lively2livelyAllowRemoteEval');
     if (!isConnected) {
-        items.push(['show login info', function() {
-            lively.net.Wiki.showLoginInfo();
+        items.push(['Worlds', function() {
+            $world.inform('coming soon');
             self.collapse();
         }]);
         items.push(['connect', function() {
@@ -171,8 +171,8 @@ lively.BuildSpec('lively.net.tools.ConnectionIndicator', {
         }]);
     } else {
         items = [
-        ['show login info', function() {
-            lively.net.Wiki.showLoginInfo();
+        ['Worlds', function() {
+            $world.inform('coming soon');
             self.collapse();
         }],
         ['open chat', function() {
@@ -1410,7 +1410,7 @@ lively.BuildSpec("lively.net.tools.ConnectionIndicatorMenuBarEntry", lively.Buil
         allowRemoteEval = !!lively.Config.get('lively2livelyAllowRemoteEval');
 
     var livelyItems = [
-        ['show login info', function() { lively.net.Wiki.showLoginInfo(); }],
+      ['worlds', function() { $world.inform('coming soon'); }],
     ];
 
     if (!isConnected) {

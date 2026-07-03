@@ -22,18 +22,21 @@ module("lively.identity.MenuBarEntry")
 
         name: "IdentityMenuBarEntry",
         menuBarAlign: "right",
-        textString: "Sign in",
+        textString: "sign in",
 
-        style: {
-          extent: lively.pt(80, 22),
-          toolTip: "Identity — sign in or manage your account",
-        },
+        style: lively.lang.obj.merge(
+          lively.BuildSpec("lively.morphic.tools.MenuBarEntry").attributeStore.style,
+          {
+            extent: lively.pt(80, 22),
+            toolTip: "Identity — sign in or manage your account",
+          },
+        ),
 
         morphMenuItems: function morphMenuItems() {
           var self = this;
           if (!lively.identity.did || !lively.identity.did.isLoggedIn()) {
             return [
-              ["Sign in",         function () { self.openLoginDialog(); }],
+              ["sign in",         function () { self.openLoginDialog(); }],
               ["Create identity", function () { self.openRegisterDialog(); }],
             ];
           }
@@ -88,7 +91,7 @@ module("lively.identity.MenuBarEntry")
           if (!lively.identity || !lively.identity.did) return;
           var label = lively.identity.did.isLoggedIn()
             ? "@" + lively.identity.did.currentUser().handle
-            : "Sign in";
+            : "sign in";
           this.textString = label;
         },
 

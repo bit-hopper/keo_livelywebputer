@@ -2182,9 +2182,6 @@ lively.morphic.World.addMethods(
                 $world.get(/^MenuBar/) && $world.get(/^MenuBar/).isGlobalMenuBar ?
                   ['Hide menu bar', lively.ide.commands.exec.bind(null, 'lively.morphic.MenuBar.hide')] :
                   ['Show menu bar', lively.ide.commands.exec.bind(null, 'lively.morphic.MenuBar.show')],
-                ['Show login info', function() {
-                    lively.require("lively.net.Wiki").toRun(function() { lively.net.Wiki.showLoginInfo(); })
-                }],
                 ['My user config', this.showUserConfig.bind(this)],
                 ['Preferences', this.openPreferences.bind(this)],
                 ['Set world extent', this.askForNewWorldExtent.bind(this)],
