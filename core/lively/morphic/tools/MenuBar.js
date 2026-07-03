@@ -147,7 +147,7 @@ lively.BuildSpec("lively.morphic.tools.MenuBarEntry", {
 
   showMenu: function showMenu() {
     if (this.changeColorForMenu)
-      this.applyStyle({fill: Color.rgb(43, 88, 255), textColor: Color.white});
+      this.applyStyle({fill: Color.rgb(240, 26, 105), textColor: Color.white});
     var items = this.morphMenuItems();
     this.menu = lively.morphic.Menu.openAt(this.globalBounds().bottomLeft(), null, items);
     lively.bindings.connect(this.menu, 'remove', this, 'removeMenu');
