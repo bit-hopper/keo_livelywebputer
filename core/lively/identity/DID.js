@@ -360,7 +360,10 @@ module("lively.identity.DID")
               null,
             );
           }
-          lively.IndexedDB.set("identity-did-meta", null, function () {
+          // Use saveMeta so the write goes to the correct "identity" store.
+          // Storing null causes loadMeta → JSON.parse("null") = null → !meta
+          // is true → restoreSession returns null on the next page load.
+          this.saveMeta(null, function () {
             thenDo && thenDo(null);
           });
         },
