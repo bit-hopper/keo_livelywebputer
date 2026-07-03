@@ -2206,8 +2206,93 @@ lively.morphic.World.addMethods(
             ]],
             ['Report a bug', this.bugReport.bind(this)],
             ['Run command...', function() { lively.ide.commands.exec('lively.ide.commands.execute'); }],
-            ['Save world as ...', function() { $world.currentMenu && $world.currentMenu.remove(); world.interactiveSaveWorldAs(); }],
-            ['Save world', function() { $world.currentMenu && $world.currentMenu.remove(); world.interactiveSaveWorld(); }]
+            ['Save world as ...', function() {
+                $world.currentMenu && $world.currentMenu.remove();
+                var world = $world;
+                if (!lively.identity || !lively.identity.did || !lively.identity.did.isLoggedIn()) {
+                    return world.interactiveSaveWorldAs();
+                }
+                world.prompt('New world name:', function(name) {
+                    if (!name) return;
+                    var user = lively.identity.did.currentUser();
+                    var bytes = new Uint8Array(9);
+                    window.crypto.getRandomValues(bytes);
+                    var b64 = btoa(String.fromCharCode.apply(null, bytes));
+                    var newObjId = b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+                    lively.require('lively.identity.SignedSerializer').toRun(function() {
+                        var ss = lively.identity.signedSerializer;
+                        var method = lively.identity.did.findMethodByCredentialId(user.document, user.credentialId);
+                        ss.serializeToEnvelope({
+                            obj: world,
+                            type: 'world',
+                            objId: newObjId,
+                            publicKeyJwk: method ? method.publicKeyJwk : null,
+                            stateMeta: { name: name }
+                        }, function(err, envelope) {
+                            if (err) { $world.alert('Save failed: ' + err.message); return; }
+                            fetch('/@' + user.handle + '/' + newObjId, {
+                                method: 'PUT',
+                                credentials: 'include',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(envelope)
+                            })
+                            .then(function(r) { return r.json(); })
+                            .then(function(body) {
+                                if (!body.ok) { $world.alert('Save failed: ' + (body.error || '?')); return; }
+                                if (lively.Config) lively.Config.askBeforeQuit = false;
+                                window.location.href = '/@' + user.handle + '/' + newObjId;
+                            })
+                            .catch(function(e) { $world.alert('Save failed: ' + e.message); });
+                        });
+                    });
+                });
+            }],
+            ['Save world', function() {
+                $world.currentMenu && $world.currentMenu.remove();
+                var world = $world;
+                if (!lively.identity || !lively.identity.did || !lively.identity.did.isLoggedIn()) {
+                    return world.interactiveSaveWorld();
+                }
+                lively.require('lively.identity.SignedSerializer').toRun(function() {
+                    var parsed = lively.identity.webKey.parseObjectUrl(window.location.href);
+                    if (!parsed || !parsed.objId) { return world.interactiveSaveWorld(); }
+                    var user = lively.identity.did.currentUser();
+                    var handle = parsed.handle;
+                    var objId = parsed.objId;
+                    fetch('/@' + handle + '/' + objId, {
+                        credentials: 'include',
+                        headers: { 'Accept': 'application/json' }
+                    })
+                    .then(function(r) { return r.ok ? r.json() : null; })
+                    .then(function(prevEnvelope) {
+                        var ss = lively.identity.signedSerializer;
+                        var method = lively.identity.did.findMethodByCredentialId(user.document, user.credentialId);
+                        ss.serializeToEnvelope({
+                            obj: world,
+                            type: 'world',
+                            objId: objId,
+                            publicKeyJwk: method ? method.publicKeyJwk : null,
+                            prevEnvelope: prevEnvelope && prevEnvelope.record ? prevEnvelope : null,
+                            stateMeta: { name: world.name || 'world' }
+                        }, function(err, envelope) {
+                            if (err) { $world.alert('Save failed: ' + err.message); return; }
+                            fetch('/@' + handle + '/' + objId, {
+                                method: 'PUT',
+                                credentials: 'include',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(envelope)
+                            })
+                            .then(function(r) { return r.json(); })
+                            .then(function(body) {
+                                if (body.ok) $world.alertOK('World saved.');
+                                else $world.alert('Save failed: ' + (body.error || '?'));
+                            })
+                            .catch(function(e) { $world.alert('Save failed: ' + e.message); });
+                        });
+                    })
+                    .catch(function(e) { $world.alert('Save failed: ' + e.message); });
+                });
+            }]
         ];
 
         return items;

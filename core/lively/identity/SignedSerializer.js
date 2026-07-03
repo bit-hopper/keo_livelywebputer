@@ -121,48 +121,35 @@ module("lively.identity.SignedSerializer")
               new Error("serializeToEnvelope: inner serializer returned null"),
             );
 
-          // Step 2: Compute ObjID from public key
-          lively.identity.webKey.generateObjId(
-            params.publicKeyJwk,
-            function (err, objId) {
+          // Step 2: Compute ObjID — use explicit params.objId when provided
+          // (e.g. saving an existing world in-place), otherwise derive from key.
+          function _buildEnvelopeWithObjId(objId) {
+            c.computeCid(jso, function (err, cid) {
               if (err) return thenDo(err);
-
-              // Step 3: Compute CID of the payload
-              c.computeCid(jso, function (err, cid) {
-                if (err) return thenDo(err);
-
-                // Step 4: Compute prevCid from previous envelope if provided
-                var prevCid = null;
-                if (params.prevEnvelope && params.prevEnvelope.record) {
-                  prevCid = params.prevEnvelope.record.cid || null;
-                }
-
-                // Step 5: Build envelope (without sig)
-                var envelope = {
-                  objId: objId,
-                  did: user.did,
-                  publicKey: params.publicKeyJwk,
-                  type: params.type || "world",
-                  visibility: "public",
-                  created:
-                    (params.prevEnvelope && params.prevEnvelope.created) ||
-                    new Date().toISOString(),
-                  record: {
-                    cid: cid,
-                    prevCid: prevCid,
-                    payload: jso,
-                  },
-                  state: params.stateMeta || {},
-                };
-
-                // IDENTITY: sig field omitted — envelope signing deferred.
-                // Public envelopes will use WebAuthn assertion signing in a future
-                // iteration. Private envelopes are tamper-protected by the
-                // XSalsa20-Poly1305 authentication tag on the ciphertext.
-                thenDo(null, envelope);
+              var prevCid = params.prevEnvelope && params.prevEnvelope.record
+                ? params.prevEnvelope.record.cid || null : null;
+              thenDo(null, {
+                objId: objId,
+                did: user.did,
+                publicKey: params.publicKeyJwk || null,
+                type: params.type || "world",
+                visibility: "public",
+                created: (params.prevEnvelope && params.prevEnvelope.created) ||
+                  new Date().toISOString(),
+                record: { cid: cid, prevCid: prevCid, payload: jso },
+                state: params.stateMeta || {},
               });
-            },
-          );
+            });
+          }
+
+          if (params.objId) {
+            _buildEnvelopeWithObjId(params.objId);
+          } else {
+            lively.identity.webKey.generateObjId(params.publicKeyJwk, function (err, objId) {
+              if (err) return thenDo(err);
+              _buildEnvelopeWithObjId(objId);
+            });
+          }
         },
 
         // Deserialize a public envelope.
