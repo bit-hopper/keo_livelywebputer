@@ -68,15 +68,34 @@ module("lively.identity.MenuBarEntry")
             "Sign out as @" + user.handle + "?",
             function (ok) {
               if (!ok) return;
-              // Clear in-memory session first so the UI updates immediately.
+              // Clear in-memory state immediately so the menubar updates now.
               did._currentUser = null;
               lively.bindings.signal(did, "identityChanged", null);
-              // Invalidate the server session cookie; failure is non-fatal.
+
+              function _finishSignOut() {
+                // Clear IndexedDB so restoreSession() cannot revive this session.
+                did.clearSession(function () {
+                  // Notify other tabs only after the server session is gone so
+                  // their /welcome.html redirect won't see a live session.
+                  if (typeof BroadcastChannel !== "undefined") {
+                    var _ch = new BroadcastChannel("lively-identity");
+                    _ch.postMessage({ type: "signed-out" });
+                    _ch.close();
+                  }
+                  if (lively.Config) lively.Config.askBeforeQuit = false;
+                  window.location.href = "/welcome.html";
+                });
+              }
+
+              // Wait for the server to commit the session deletion before
+              // navigating — otherwise /welcome.html sees a live cookie and
+              // bounces back to the user's home world.
               fetch("/nodejs/IdentityServer/logout", {
                 method: "POST",
                 credentials: "include",
-              }).catch(function (err) {
+              }).then(_finishSignOut).catch(function (err) {
                 console.warn("[Identity] Server logout failed:", err.message);
+                _finishSignOut();
               });
             },
           );

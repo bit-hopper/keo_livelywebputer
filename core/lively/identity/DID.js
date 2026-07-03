@@ -348,6 +348,8 @@ module("lively.identity.DID")
         },
 
         // Clear the current identity (logout).
+        // Clears in-memory state AND the persisted IndexedDB meta so that
+        // restoreSession() does not revive the session on the next page load.
         clearSession: function (thenDo) {
           this._currentUser = null;
           lively.Config.set("UserName", null);
@@ -358,7 +360,9 @@ module("lively.identity.DID")
               null,
             );
           }
-          thenDo && thenDo(null);
+          lively.IndexedDB.set("identity-did-meta", null, function () {
+            thenDo && thenDo(null);
+          });
         },
 
         // Return the current in-memory user record, or null if not logged in.
@@ -497,4 +501,24 @@ module("lively.identity.DID")
 
     // Singleton
     lively.identity.did = new lively.identity.DID();
+
+    // Restore any persisted session on page load so the menubar and other
+    // consumers reflect the signed-in user without requiring an explicit login.
+    lively.identity.did.restoreSession(function (err, user) {
+      if (user) lively.bindings.signal(lively.identity.did, "identityChanged", user);
+    });
+
+    // Cross-tab sign-out: when the user signs out in one tab, clear the
+    // in-memory session in every other same-origin tab and redirect to welcome.
+    if (typeof BroadcastChannel !== "undefined") {
+      var _identityChannel = new BroadcastChannel("lively-identity");
+      _identityChannel.onmessage = function (evt) {
+        if (!evt.data || evt.data.type !== "signed-out") return;
+        lively.identity.did.clearSession(function () {
+          if (typeof lively !== "undefined" && lively.Config) lively.Config.askBeforeQuit = false;
+          window.location.href = "/welcome.html";
+        });
+      };
+      lively.identity.did._identityChannel = _identityChannel;
+    }
   }); // end module('lively.identity.DID')
