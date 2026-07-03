@@ -1409,13 +1409,7 @@ lively.BuildSpec("lively.net.tools.ConnectionIndicatorMenuBarEntry", lively.Buil
         isConnected = lively.net.SessionTracker.isConnected(),
         allowRemoteEval = !!lively.Config.get('lively2livelyAllowRemoteEval');
 
-    var livelyItems = [
-      ['worlds', function() {
-        lively.require("lively.identity.WorldsBrowser").toRun(function() {
-          lively.BuildSpec("lively.identity.WorldsBrowser").createMorph().openInWorldCenter();
-        });
-      }],
-    ];
+    var livelyItems = [];
 
     if (!isConnected) {
       return livelyItems.concat([

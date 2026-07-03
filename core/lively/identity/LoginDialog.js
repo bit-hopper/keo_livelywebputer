@@ -276,6 +276,7 @@ module("lively.identity.LoginDialog")
                 }
                 self._backgroundSync(body.handle);
                 self.remove();
+                self._redirectAfterLogin(body.handle);
               },
             );
           })
@@ -346,6 +347,7 @@ module("lively.identity.LoginDialog")
                       }
                       self._backgroundSync(body.handle);
                       self.remove();
+                      self._redirectAfterLogin(body.handle);
                     },
                   );
                 });
@@ -358,6 +360,21 @@ module("lively.identity.LoginDialog")
       },
 
       // ─── post-login sync ────────────────────────────────────────────────────────
+
+      _redirectAfterLogin: function _redirectAfterLogin(handle) {
+        var pathHandle = (window.location.pathname.match(/^\/@([^\/]+)/) || [])[1];
+        if (pathHandle === handle) return;
+        if (typeof lively !== 'undefined' && lively.Config) lively.Config.askBeforeQuit = false;
+        fetch('/@' + handle, { credentials: 'include' })
+          .then(function (r) { return r.json(); })
+          .then(function (body) {
+            var worlds = (body.objects || []).filter(function (e) { return e.type === 'world'; });
+            if (!worlds.length) return;
+            worlds.sort(function (a, b) { return a.created < b.created ? -1 : 1; });
+            window.location.href = '/@' + handle + '/' + worlds[0].objId;
+          })
+          .catch(function () {});
+      },
 
       _backgroundSync: function _backgroundSync(handle) {
         // Pull any remote updates accumulated since the last login.
