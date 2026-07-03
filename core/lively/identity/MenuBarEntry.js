@@ -83,8 +83,9 @@ module("lively.identity.MenuBarEntry")
         },
 
         openMyWorlds: function openMyWorlds() {
-          // TODO: open a worlds browser backed by lively.identity.userSpace.getHomeManifest()
-          $world.inform("My worlds — coming soon");
+          lively.require("lively.identity.WorldsBrowser").toRun(function () {
+            lively.BuildSpec("lively.identity.WorldsBrowser").createMorph().openInWorldCenter();
+          });
         },
 
         update: function update() {
