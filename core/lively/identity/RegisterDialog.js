@@ -269,7 +269,12 @@ module("lively.identity.RegisterDialog")
                             true,
                           );
                         }
-                        self.remove(); // success — close dialog
+                        if (serverBody.homeWorldObjId) {
+                          if (typeof lively !== 'undefined' && lively.Config) lively.Config.askBeforeQuit = false;
+                          window.location.href = "/@" + handle + "/" + serverBody.homeWorldObjId + "?welcome=" + encodeURIComponent(handle);
+                        } else {
+                          self.remove();
+                        }
                       },
                     );
                   })

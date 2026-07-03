@@ -29,11 +29,72 @@
 "use strict";
 
 var url = require("url");
+var fs = require("fs");
+var path = require("path");
+var nodeCrypto = require("crypto");
 var handleRegistry = require("./identity/HandleRegistry");
 var objectRepo = require("./identity/ObjectRepository");
 var auth = require("./identity/AuthMiddleware");
 
-// ─── HTML helpers (access-denied / access-requested pages) ───────────────────
+// ─── home-world bootstrap helpers ─────────────────────────────────────────────
+
+var _blankWorldJso = null;
+function getBlankWorldJso() {
+  if (_blankWorldJso) return _blankWorldJso;
+  var html = fs.readFileSync(path.join(__dirname, "..", "..", "blank.html"), "utf8");
+  var tagStart = html.indexOf('<script type="text/x-lively-world"');
+  if (tagStart === -1) throw new Error("blank.html: x-lively-world script tag not found");
+  var contentStart = html.indexOf(">", tagStart) + 1;
+  var contentEnd = html.indexOf("</script>", contentStart);
+  _blankWorldJso = JSON.parse(html.slice(contentStart, contentEnd));
+  return _blankWorldJso;
+}
+
+function genObjId() {
+  return nodeCrypto.randomBytes(9).toString("base64")
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+}
+
+function computeCidSync(jso) {
+  return nodeCrypto.createHash("sha256")
+    .update(JSON.stringify(jso))
+    .digest("base64")
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+}
+
+// Creates a blank home world for a newly registered user.
+// Skips silently if the user already owns any object (add-device path).
+// Calls thenDo(err, objId|null).
+function createHomeWorld(did, thenDo) {
+  objectRepo.listForUser(did, function (err, existing) {
+    if (err || (existing && existing.length > 0)) return thenDo(err, null);
+    var worldJso;
+    try { worldJso = getBlankWorldJso(); }
+    catch (e) {
+      console.warn("[IdentityServer] Could not load blank.html for home world:", e.message);
+      return thenDo(null, null);
+    }
+    var objId = genObjId();
+    var envelope = {
+      objId: objId,
+      did: did,
+      type: "world",
+      visibility: "public",
+      created: new Date().toISOString(),
+      record: { cid: computeCidSync(worldJso), prevCid: null, payload: worldJso },
+      state: { name: "Home" },
+    };
+    objectRepo.put(envelope, function (putErr) {
+      if (putErr) {
+        console.warn("[IdentityServer] Could not create home world:", putErr.message);
+        return thenDo(null, null);
+      }
+      thenDo(null, objId);
+    });
+  });
+}
+
+// ─── HTML helpers (world bootstrap / access-denied / access-requested pages) ──
 
 function escapeHtml(str) {
   return String(str == null ? "" : str).replace(/[&<>"']/g, function (c) {
@@ -43,6 +104,58 @@ function escapeHtml(str) {
       ]
     );
   });
+}
+
+// Serves a stored world envelope as a bootable Lively page.
+// Embeds record.payload as JSON in a <script type="text/x-lively-world"> tag
+// so the existing JSONMorphicData / World.createFromJSOOn path picks it up
+// unmodified — same mechanism as static .html world files, just server-rendered.
+// </script> inside JSON payload is escaped to <\/script> to prevent tag break.
+// welcomeHandle: when set, injects Config.onStartWorld to show a welcome alert.
+function buildWorldPage(envelope, welcomeHandle) {
+  var name = (envelope.state && envelope.state.name) || envelope.objId;
+  var title = escapeHtml(name);
+  var payload = JSON.stringify(envelope.record.payload || {})
+    .replace(/<\/script>/gi, "<\\/script>");
+
+  // Pre-set codeBase and rootPath before bootstrap.js runs. JSLoader.makeAbsolute
+  // only fast-paths on ^http/^file/^// — root-relative /... paths get prepended
+  // with currentDir(), which from /@handle/objId resolves to the wrong base
+  // (@handle/core/ instead of /core/). findCodeBase/findRootPath check these
+  // Config fields first and short-circuit if already set.
+  var configScript;
+  if (welcomeHandle) {
+    var msgJson = JSON.stringify(
+      "New passkey registered successfully. Welcome to Lively @" + welcomeHandle + "!"
+    );
+    configScript =
+      "<script>window.Config={" +
+      "codeBase:location.protocol+'//'+location.host+'/core/'," +
+      "rootPath:location.protocol+'//'+location.host+'/'," +
+      "verboseLogging:true," +
+      "onStartWorld:function(){$world.alertOK(" + msgJson + ",8);}" +
+      "}</script>";
+  } else {
+    configScript =
+      "<script>window.Config={" +
+      "codeBase:location.protocol+'//'+location.host+'/core/'," +
+      "rootPath:location.protocol+'//'+location.host+'/'" +
+      "}</script>";
+  }
+
+  return (
+    "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" +
+    "<meta name=\"apple-mobile-web-app-capable\" content=\"yes\">" +
+    "<link rel=\"shortcut icon\" href=\"/core/media/lively.ico\">" +
+    "<title>" + title + "</title>" +
+    configScript +
+    "</head><body>" +
+    "<script type=\"text/javascript\" src=\"/core/lively/bootstrap.js\"></script>" +
+    "<script type=\"text/x-lively-world\" id=\"" + escapeHtml(envelope.objId) + "\">" +
+    payload +
+    "</script>" +
+    "</body></html>"
+  );
 }
 
 // Renders a minimal standalone HTML page (no Lively/morphic context — this is
@@ -129,10 +242,18 @@ module.exports = function (route, app) {
               putErr,
             );
           }
-          res.json({ ok: true, handle: result.handle, did: result.did });
+          createHomeWorld(result.did, function (worldErr, homeWorldObjId) {
+            var resp = { ok: true, handle: result.handle, did: result.did };
+            if (homeWorldObjId) resp.homeWorldObjId = homeWorldObjId;
+            res.json(resp);
+          });
         });
       } else {
-        res.json({ ok: true, handle: result.handle, did: result.did });
+        createHomeWorld(result.did, function (worldErr, homeWorldObjId) {
+          var resp = { ok: true, handle: result.handle, did: result.did };
+          if (homeWorldObjId) resp.homeWorldObjId = homeWorldObjId;
+          res.json(resp);
+        });
       }
     });
   });
@@ -282,6 +403,13 @@ module.exports = function (route, app) {
         }
       }
 
+      if (envelope.type === "world" && req.accepts(["html", "json"]) === "html") {
+        var welcomeHandle = null;
+        if (req.query.welcome && /^[a-z0-9_]{1,32}$/.test(req.query.welcome)) {
+          welcomeHandle = req.query.welcome;
+        }
+        return res.send(buildWorldPage(envelope, welcomeHandle));
+      }
       res.json(envelope);
     });
   });
