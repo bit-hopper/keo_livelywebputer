@@ -222,6 +222,11 @@ module.exports = function (route, app) {
       if (err)
         return res.status(400).json({ error: String(err.message || err) });
 
+      // Establish a server session so the new user can immediately write
+      // objects (PUT /@handle/:objId) without a separate sign-in step.
+      req.session['identity-did']    = result.did;
+      req.session['identity-handle'] = result.handle;
+
       if (body.didDocument) {
         var didDoc;
         try {
@@ -317,6 +322,23 @@ module.exports = function (route, app) {
       // Client WebKey._verifyWellKnown treats absent sig as unverified but
       // still resolves the DID — verification is a separate flag.
       res.json({ did: did, handle: handle });
+    });
+  });
+
+  // ─── welcome.html redirect for signed-in users ────────────────────────────
+  // Intercept GET /welcome.html before the static file server.
+  // Visitors with a valid session cookie are redirected straight to their
+  // home world so they don't have to click "login" again.
+  // Non-authenticated visitors fall through to the static file.
+
+  app.get("/welcome.html", auth.optionalAuth, function (req, res, next) {
+    if (!req.identity) return next();
+    objectRepo.listForUser(req.identity.did, function (err, envelopes) {
+      if (err || !envelopes || !envelopes.length) return next();
+      var worlds = envelopes.filter(function (e) { return e.type === "world"; });
+      if (!worlds.length) return next();
+      worlds.sort(function (a, b) { return a.created < b.created ? -1 : 1; });
+      res.redirect("/@" + req.identity.handle + "/" + worlds[0].objId);
     });
   });
 
