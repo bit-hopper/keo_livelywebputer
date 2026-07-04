@@ -1,3 +1,7 @@
+# User data — @handle directories written by the WebDAV file server
+# must never be committed (exposes handles and user content)
+@*/
+
 # Cruft #
 .DS_Store
 
