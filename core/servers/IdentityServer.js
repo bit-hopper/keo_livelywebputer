@@ -383,6 +383,88 @@ module.exports = function (route, app) {
     });
   });
 
+  // ─── user file uploads ─────────────────────────────────────────────────────
+  // PUT /@handle/uploads/<path> — store a file to identity/uploads/<handle>/
+  // GET /@handle/uploads/<path> — serve the file back
+  //
+  // Files are kept in identity/uploads/ alongside objects.db — outside the
+  // git repo (identity/uploads/ is gitignored). Registered before the generic
+  // /@:handle/:objId routes so the literal segment "uploads" is never treated
+  // as a 12-char objId.
+
+  var _uploadsBase = path.join(
+    process.env.WORKSPACE_LK || process.cwd(),
+    "identity",
+    "uploads",
+  );
+
+  // Resolve a handle + raw wildcard path to an absolute on-disk path.
+  // Returns null if the path would escape the owner's upload directory.
+  function _resolveUploadPath(handle, rawPath) {
+    var ownerRoot = path.resolve(_uploadsBase, handle);
+    var normalized = path
+      .normalize(rawPath || "")
+      .replace(/^(\.\.[\/\\])+/, "")
+      .replace(/^[\/\\]+/, "");
+    var full = path.resolve(ownerRoot, normalized);
+    if (full !== ownerRoot && !full.startsWith(ownerRoot + path.sep))
+      return null;
+    return {
+      full: full,
+      dir: path.dirname(full),
+      urlPath: normalized.replace(/\\/g, "/"),
+    };
+  }
+
+  app.get("/@:handle/uploads/*", auth.optionalAuth, function (req, res) {
+    var resolved = _resolveUploadPath(req.params.handle, req.params[0]);
+    if (!resolved) return res.status(400).json({ error: "Invalid file path" });
+    res.sendFile(resolved.full, function (err) {
+      if (err && !res.headersSent)
+        res.status(404).json({ error: "File not found" });
+    });
+  });
+
+  app.put("/@:handle/uploads/*", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle) {
+      return res
+        .status(403)
+        .json({ error: "Forbidden: not your upload space" });
+    }
+    var resolved = _resolveUploadPath(handle, req.params[0]);
+    if (!resolved) return res.status(400).json({ error: "Invalid file path" });
+
+    function _writeFile(content) {
+      try {
+        fs.mkdirSync(resolved.dir, { recursive: true });
+      } catch (e) {
+        return res
+          .status(500)
+          .json({ error: "Could not create directory: " + e.message });
+      }
+      fs.writeFile(resolved.full, content, function (err) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({
+          ok: true,
+          url: "/@" + handle + "/uploads/" + resolved.urlPath,
+        });
+      });
+    }
+
+    // body-parser does not process binary content — read raw from the stream.
+    // If some middleware already buffered it as a Buffer, use that directly.
+    if (req.body && Buffer.isBuffer(req.body)) return _writeFile(req.body);
+    if (req.body && typeof req.body === "string")
+      return _writeFile(Buffer.from(req.body));
+    var chunks = [];
+    req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () { _writeFile(Buffer.concat(chunks)); });
+    req.on("error", function (e) {
+      res.status(500).json({ error: String(e) });
+    });
+  });
+
   // ─── GET object ────────────────────────────────────────────────────────────
 
   app.get("/@:handle/:objId", auth.optionalAuth, function (req, res) {
@@ -657,6 +739,15 @@ module.exports = function (route, app) {
       });
     },
   );
+
+  // ─── catch-all for unmatched /@handle paths ────────────────────────────────
+  // Anything under /@handle/... that didn't match a registered route above
+  // would otherwise fall through to the WebDAV file server and land on disk
+  // inside the git repo. Return 404 here to close that gap entirely.
+
+  app.all("/@:handle/*", function (req, res) {
+    res.status(404).json({ error: "Not found: " + req.path });
+  });
 
   // ─── health check ──────────────────────────────────────────────────────────
 

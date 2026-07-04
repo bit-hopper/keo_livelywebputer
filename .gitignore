@@ -94,11 +94,12 @@ htpasswd
 .env.local
 .env.*.local
 
-# Database files (identity and other)
+# Database files and user uploads (identity system)
 *.sqlite
 *.sqlite3
 *.db
 *.db-journal
+identity/uploads/
 
 # Log files
 *.log
