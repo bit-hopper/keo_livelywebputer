@@ -308,6 +308,87 @@ module("lively.identity.UserSpace")
           thenDo(null, space);
         },
       },
+
+      // ─── profile ──────────────────────────────────────────────────────────────
+
+      "profile",
+      {
+        // Fetch the current user's full profile envelope from the server.
+        // Returns null (not an error) if no profile exists yet.
+        // Calls thenDo(null, envelope | null).
+        getProfile: function (thenDo) {
+          var user = this.currentUser();
+          if (!user) return thenDo(new Error("UserSpace: not logged in"));
+          fetch("/@" + user.handle + "/profile", { credentials: "include" })
+            .then(function (res) {
+              if (res.status === 404) return thenDo(null, null);
+              if (!res.ok)
+                throw new Error("UserSpace.getProfile: HTTP " + res.status);
+              return res.json().then(function (env) { thenDo(null, env); });
+            })
+            .catch(thenDo);
+        },
+
+        // Save updated profile data. Reads existing envelope for objId/prevCid
+        // chain, computes a new CID, and PUTs to /@handle/profile.
+        // payload: { displayName, bio, avatarUrl, bannerUrl, links }
+        // Calls thenDo(null, { objId, cid, changed }) on success.
+        saveProfile: function (payload, thenDo) {
+          var user = this.currentUser();
+          if (!user) return thenDo(new Error("UserSpace: not logged in"));
+          var c = lively.identity.crypto;
+          var self = this;
+
+          self.getProfile(function (err, existing) {
+            if (err) return thenDo(err);
+            if (!existing)
+              return thenDo(
+                new Error(
+                  "UserSpace.saveProfile: no profile found — server creates one at registration",
+                ),
+              );
+
+            c.computeCid(payload, function (err, cid) {
+              if (err) return thenDo(err);
+
+              var primaryKey =
+                user.document &&
+                user.document.verificationMethod &&
+                user.document.verificationMethod[0]
+                  ? user.document.verificationMethod[0].publicKeyJwk
+                  : null;
+
+              var envelope = {
+                objId:      existing.objId,
+                did:        user.did,
+                publicKey:  primaryKey,
+                type:       "profile",
+                visibility: "public",
+                created:    existing.created || new Date().toISOString(),
+                record:     { cid: cid, prevCid: existing.record.cid, payload: payload },
+                state:      { name: "profile" },
+              };
+
+              fetch("/@" + user.handle + "/profile", {
+                method: "PUT",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(envelope),
+              })
+                .then(function (res) {
+                  if (!res.ok)
+                    return res.json().then(function (b) {
+                      throw new Error(
+                        b.error || "PUT profile HTTP " + res.status,
+                      );
+                    });
+                  return res.json().then(function (r) { thenDo(null, r); });
+                })
+                .catch(thenDo);
+            });
+          });
+        },
+      },
     );
 
     lively.identity.userSpace = new lively.identity.UserSpace();

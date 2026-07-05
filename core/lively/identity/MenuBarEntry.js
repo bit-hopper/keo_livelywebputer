@@ -41,9 +41,10 @@ module("lively.identity.MenuBarEntry")
             ];
           }
           return [
-            ["Add device", function () { self.openRegisterDialog(); }],
-            ["Sign out",   function () { self.signOut(); }],
-            ["My worlds",  function () { self.openMyWorlds(); }],
+            ["Add device",  function () { self.openRegisterDialog(); }],
+            ["Sign out",    function () { self.signOut(); }],
+            ["My worlds",   function () { self.openMyWorlds(); }],
+            ["My profile",  function () { self.openMyProfile(); }],
           ];
         },
 
@@ -104,6 +105,12 @@ module("lively.identity.MenuBarEntry")
         openMyWorlds: function openMyWorlds() {
           lively.require("lively.identity.WorldsBrowser").toRun(function () {
             lively.BuildSpec("lively.identity.WorldsBrowser").createMorph().openInWorldCenter();
+          });
+        },
+
+        openMyProfile: function openMyProfile() {
+          lively.require("lively.identity.ProfileCard").toRun(function () {
+            lively.identity.ProfileCard.open();
           });
         },
 
