@@ -15,7 +15,7 @@
  *     did         TEXT NOT NULL      — author's DID
  *     cid         TEXT NOT NULL      — content hash of this version
  *     prev_cid    TEXT               — NULL for genesis version
- *     type        TEXT NOT NULL      — world|part|file|settings|home
+ *     type        TEXT NOT NULL      — world|part|file|settings|home|profile
  *     visibility  TEXT NOT NULL      — public|private|shared
  *     envelope    TEXT NOT NULL      — full JSON envelope
  *     created_at  TEXT NOT NULL      — ISO 8601
@@ -274,18 +274,38 @@ function listForUser(did, thenDo) {
   });
 }
 
+// Get the latest profile envelope for a DID.
+// Profiles are type:'profile' singletons — one per user.
+// Calls thenDo(null, envelope | null).
+function getProfileForDid(did, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.get(
+      'SELECT envelope FROM objects WHERE did = ? AND type = \'profile\' ORDER BY id DESC LIMIT 1',
+      [did],
+      function(err, row) {
+        if (err) return thenDo(err);
+        if (!row) return thenDo(null, null);
+        try { thenDo(null, JSON.parse(row.envelope)); }
+        catch (e) { thenDo(new Error('ObjectRepository.getProfileForDid: corrupt envelope JSON')); }
+      }
+    );
+  });
+}
+
 // List the full version history (all CIDs) for an objId, ascending.
 // Calls thenDo(null, [{ cid, prevCid, createdAt }]).
 function listVersions(objId, thenDo) {
   withDB(function(err, db) {
     if (err) return thenDo(err);
     db.all(
-      'SELECT cid, prev_cid, created_at FROM objects WHERE obj_id = ? ORDER BY id ASC',
+      'SELECT cid, prev_cid, created_at, json_extract(envelope, \'$.state.name\') AS name ' +
+      'FROM objects WHERE obj_id = ? ORDER BY id ASC',
       [objId],
       function(err, rows) {
         if (err) return thenDo(err);
         thenDo(null, rows.map(function(r) {
-          return { cid: r.cid, prevCid: r.prev_cid, createdAt: r.created_at };
+          return { cid: r.cid, prevCid: r.prev_cid, createdAt: r.created_at, name: r.name };
         }));
       }
     );
@@ -328,13 +348,40 @@ function addRecipient(objId, recipientDid, thenDo) {
   });
 }
 
+// Delete all versions of an object that were written after the given cid.
+// Used by the revert UI to roll back to a known-good snapshot.
+// Calls thenDo(err, { deleted }) where deleted is the row count removed.
+function deleteVersionsAfter(objId, cid, thenDo) {
+  withDB(function (err, db) {
+    if (err) return thenDo(err);
+    db.get(
+      'SELECT id FROM objects WHERE obj_id = ? AND cid = ?',
+      [objId, cid],
+      function (err, row) {
+        if (err)  return thenDo(err);
+        if (!row) return thenDo(new Error('deleteVersionsAfter: version not found: ' + cid));
+        db.run(
+          'DELETE FROM objects WHERE obj_id = ? AND id > ?',
+          [objId, row.id],
+          function (err) {
+            if (err) return thenDo(err);
+            thenDo(null, { deleted: this.changes });
+          }
+        );
+      }
+    );
+  });
+}
+
 module.exports = {
-  withDB:          withDB,
-  put:             put,
-  get:             get,
-  getVersion:      getVersion,
-  getVersionsSince: getVersionsSince,
-  listForUser:     listForUser,
-  listVersions:    listVersions,
-  addRecipient:    addRecipient
+  withDB:              withDB,
+  put:                 put,
+  get:                 get,
+  getVersion:          getVersion,
+  getVersionsSince:    getVersionsSince,
+  listForUser:         listForUser,
+  getProfileForDid:    getProfileForDid,
+  listVersions:        listVersions,
+  deleteVersionsAfter: deleteVersionsAfter,
+  addRecipient:        addRecipient
 };

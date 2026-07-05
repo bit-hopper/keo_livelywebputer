@@ -14,11 +14,13 @@
  *
  *   GET  /.well-known/lively-did?handle=<handle>
  *
- *   GET  /@:handle           — home manifest (all objects for this handle)
- *   GET  /@:handle/:objId    — fetch a specific object envelope (owner or
- *                              recipient; renders an HTML access-denied page
- *                              with a "Request Access" button for browsers)
- *   PUT  /@:handle/:objId    — store a new envelope version (owner only)
+ *   GET  /@:handle              — home manifest (all objects for this handle)
+ *   GET  /@:handle/profile      — fetch profile envelope (public singleton)
+ *   PUT  /@:handle/profile      — save/update profile (owner only)
+ *   GET  /@:handle/:objId       — fetch a specific object envelope (owner or
+ *                                 recipient; renders an HTML access-denied page
+ *                                 with a "Request Access" button for browsers)
+ *   PUT  /@:handle/:objId       — store a new envelope version (owner only)
  *   GET  /@:handle/:objId/versions        — version history
  *   GET  /@:handle/:objId/since/:prevCid  — sync delta
  *
@@ -91,6 +93,29 @@ function createHomeWorld(did, thenDo) {
       }
       thenDo(null, objId);
     });
+  });
+}
+
+// Creates a blank profile envelope for a newly registered user.
+// Calls thenDo(err, objId|null).
+function createDefaultProfile(did, handle, thenDo) {
+  var payload = { displayName: handle || '', bio: '', avatarUrl: null, bannerUrl: null, links: [] };
+  var objId   = genObjId();
+  var envelope = {
+    objId:      objId,
+    did:        did,
+    type:       'profile',
+    visibility: 'public',
+    created:    new Date().toISOString(),
+    record:     { cid: computeCidSync(payload), prevCid: null, payload: payload },
+    state:      { name: 'profile' }
+  };
+  objectRepo.put(envelope, function(putErr) {
+    if (putErr) {
+      console.warn('[IdentityServer] Could not create default profile:', putErr.message);
+      return thenDo(null, null);
+    }
+    thenDo(null, objId);
   });
 }
 
@@ -248,16 +273,20 @@ module.exports = function (route, app) {
             );
           }
           createHomeWorld(result.did, function (worldErr, homeWorldObjId) {
-            var resp = { ok: true, handle: result.handle, did: result.did };
-            if (homeWorldObjId) resp.homeWorldObjId = homeWorldObjId;
-            res.json(resp);
+            createDefaultProfile(result.did, result.handle, function (profileErr, profileObjId) {
+              var resp = { ok: true, handle: result.handle, did: result.did };
+              if (homeWorldObjId) resp.homeWorldObjId = homeWorldObjId;
+              res.json(resp);
+            });
           });
         });
       } else {
         createHomeWorld(result.did, function (worldErr, homeWorldObjId) {
-          var resp = { ok: true, handle: result.handle, did: result.did };
-          if (homeWorldObjId) resp.homeWorldObjId = homeWorldObjId;
-          res.json(resp);
+          createDefaultProfile(result.did, result.handle, function (profileErr, profileObjId) {
+            var resp = { ok: true, handle: result.handle, did: result.did };
+            if (homeWorldObjId) resp.homeWorldObjId = homeWorldObjId;
+            res.json(resp);
+          });
         });
       }
     });
@@ -380,6 +409,46 @@ module.exports = function (route, app) {
 
         res.json(doc);
       });
+    });
+  });
+
+  // ─── profile ───────────────────────────────────────────────────────────────
+  // Singleton per user. Registered before uploads/* and :objId so the literal
+  // segment "profile" is never captured by a wildcard route.
+
+  app.get("/@:handle/profile", auth.optionalAuth, function (req, res) {
+    var handle = req.params.handle;
+    handleRegistry.resolve(handle, function (err, did) {
+      if (err)  return res.status(500).json({ error: String(err) });
+      if (!did) return res.status(404).json({ error: "Handle not found: @" + handle });
+      objectRepo.getProfileForDid(did, function (err, envelope) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (envelope) return res.json(envelope);
+        // No profile yet — upsert on first read so existing accounts self-heal.
+        createDefaultProfile(did, handle, function (createErr) {
+          if (createErr) return res.status(500).json({ error: String(createErr) });
+          objectRepo.getProfileForDid(did, function (err2, newEnvelope) {
+            if (err2)         return res.status(500).json({ error: String(err2) });
+            if (!newEnvelope) return res.status(500).json({ error: "Profile creation failed" });
+            res.json(newEnvelope);
+          });
+        });
+      });
+    });
+  });
+
+  app.put("/@:handle/profile", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your profile" });
+    var envelope = req.body;
+    if (!envelope || !envelope.objId || !envelope.record || !envelope.record.cid)
+      return res.status(400).json({ error: "Invalid profile envelope" });
+    if (envelope.type !== "profile")
+      return res.status(400).json({ error: 'Envelope type must be "profile"' });
+    objectRepo.put(envelope, function (err, result) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json({ ok: true, objId: result.objId, cid: result.cid, changed: result.changed });
     });
   });
 
@@ -714,10 +783,45 @@ module.exports = function (route, app) {
     },
   );
 
+  // ─── view a specific version as a bootable world page ─────────────────────
+  // Non-destructive: serves the stored payload at an exact CID as a live world.
+  // Navigating away and back to /@handle returns to the current (latest) version.
+
+  app.get("/@:handle/:objId/at/:cid", auth.optionalAuth, function (req, res) {
+    var objId = req.params.objId;
+    var cid   = req.params.cid;
+
+    objectRepo.getVersion(objId, cid, function (err, envelope) {
+      if (err)      return res.status(500).json({ error: String(err) });
+      if (!envelope) return res.status(404).json({ error: "Version not found: " + cid });
+
+      if (envelope.visibility !== "public") {
+        if (!req.identity || req.identity.did !== envelope.did)
+          return res.status(403).json({ error: "Forbidden" });
+      }
+
+      if (!req.accepts("html")) return res.json(envelope);
+
+      var name = (envelope.state && envelope.state.name) || objId;
+      var page = buildWorldPage(envelope);
+      // Inject a banner so it's clear this is a historical snapshot, not current.
+      var banner =
+        '<div style="position:fixed;top:0;left:0;right:0;z-index:99999;' +
+        'background:#f01a69;color:#fff;font:13px/32px sans-serif;text-align:center;' +
+        'padding:0 12px;">' +
+        '⚠ Viewing snapshot: <b>' + escapeHtml(name) + '</b> — ' +
+        new Date(envelope.created || "").toLocaleString() +
+        ' &nbsp;|&nbsp; <a href="javascript:history.back()" style="color:#fff;text-decoration:underline;">← back to current</a>' +
+        '</div>';
+      res.send(page.replace(/<body/, banner + '<body'));
+    });
+  });
+
   // ─── version history ───────────────────────────────────────────────────────
 
   app.get("/@:handle/:objId/versions", auth.optionalAuth, function (req, res) {
-    var objId = req.params.objId;
+    var handle = req.params.handle;
+    var objId  = req.params.objId;
 
     objectRepo.get(objId, function (err, envelope) {
       if (err) return res.status(500).json({ error: String(err) });
@@ -732,7 +836,80 @@ module.exports = function (route, app) {
 
       objectRepo.listVersions(objId, function (err, versions) {
         if (err) return res.status(500).json({ error: String(err) });
-        res.json({ versions: versions });
+
+        if (!req.accepts("html")) return res.json({ versions: versions });
+
+        // Browser request — serve a self-contained version history page.
+        var worldName = escapeHtml((envelope.state && envelope.state.name) || objId);
+        var isOwner   = !!(req.identity && req.identity.handle === handle);
+        var rows = versions.slice().reverse().map(function (v, idx) {
+          var isCurrent = idx === 0;
+          var dateStr   = v.createdAt
+            ? new Date(v.createdAt).toLocaleString(undefined,
+                { dateStyle: "medium", timeStyle: "short" })
+            : "—";
+          var cidShort  = v.cid ? v.cid.slice(0, 16) + "…" : "—";
+          var vName     = escapeHtml(v.name || "—");
+          var viewUrl   = "/@" + escapeHtml(handle) + "/" + escapeHtml(objId) +
+                          "/at/" + encodeURIComponent(v.cid);
+          var actions = isCurrent
+            ? '<span class="badge">current</span>'
+            : '<a class="btn-view" href="' + viewUrl + '">view</a>' +
+              (isOwner
+                ? ' <button class="btn-restore" onclick="doRestore(' +
+                  JSON.stringify(v.cid) + ')">restore to here</button>'
+                : "");
+          return '<li class="row">' +
+            '<div class="meta">' +
+            '<span class="name">' + vName + '</span>' +
+            '<span class="date">' + dateStr + '</span>' +
+            '<span class="cid">' + cidShort + '</span></div>' +
+            '<div class="actions">' + actions + '</div></li>';
+        }).join("\n");
+
+        var page = '<!DOCTYPE html><html lang="en"><head>' +
+          '<meta charset="utf-8">' +
+          '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+          '<title>Versions — ' + worldName + '</title>' +
+          '<style>' +
+          'body{font-family:system-ui,sans-serif;max-width:680px;margin:48px auto;padding:0 20px;color:#222}' +
+          'h1{font-size:18px;font-weight:700;margin:0 0 4px}' +
+          '.sub{font-size:13px;color:#888;margin:0 0 28px}' +
+          'ul{list-style:none;margin:0;padding:0}' +
+          '.row{display:flex;align-items:center;padding:12px 0;border-bottom:1px solid #eee}' +
+          '.meta{flex:1}.name{font-size:14px;font-weight:700;display:block}' +
+          '.date{font-size:12px;color:#666;display:block}' +
+          '.cid{font-size:11px;color:#bbb;font-family:monospace}' +
+          '.actions{display:flex;gap:8px;align-items:center}' +
+          '.badge{font-size:11px;color:#aaa}' +
+          '.btn-view{font-size:12px;color:#f01a69;text-decoration:none}' +
+          '.btn-view:hover{text-decoration:underline}' +
+          '.btn-restore{font-size:12px;background:none;border:1px solid #d44;color:#d44;' +
+          'border-radius:4px;padding:2px 8px;cursor:pointer}' +
+          '.btn-restore:hover{background:#fdf0f0}' +
+          '#msg{margin-top:20px;font-size:13px}' +
+          '</style></head><body>' +
+          '<p><a href="/@' + escapeHtml(handle) + '/' + escapeHtml(objId) + '" ' +
+          'style="font-size:13px;color:#f01a69;text-decoration:none">← current version</a></p>' +
+          '<h1>' + worldName + '</h1>' +
+          '<p class="sub">Version history &mdash; newest first</p>' +
+          '<ul>' + rows + '</ul>' +
+          '<p id="msg"></p>' +
+          '<script>' +
+          'function doRestore(cid){' +
+          'if(!confirm("Restore to this version?\\nAll newer versions will be permanently deleted."))return;' +
+          'document.getElementById("msg").textContent="Restoring…";' +
+          'fetch("/@' + handle + '/' + objId + '/after/"+encodeURIComponent(cid),' +
+          '{method:"DELETE",credentials:"include"})' +
+          '.then(function(r){return r.json()})' +
+          '.then(function(b){' +
+          'if(b.ok){document.getElementById("msg").textContent="Restored. "+b.deleted+" newer version(s) removed.";' +
+          'setTimeout(function(){location.reload()},1200)}' +
+          'else{document.getElementById("msg").textContent="Error: "+(b.error||"unknown")}})' +
+          '.catch(function(e){document.getElementById("msg").textContent="Error: "+e.message});}' +
+          '<\/script></body></html>';
+
+        res.send(page);
       });
     });
   });
@@ -764,6 +941,28 @@ module.exports = function (route, app) {
         });
       });
     },
+  );
+
+  // ─── version revert ────────────────────────────────────────────────────────
+  // Owner-only. Deletes all versions of an object written after the given cid,
+  // making that cid the new current head. Used by the WorldsBrowser revert UI.
+
+  app.delete(
+    "/@:handle/:objId/after/:cid",
+    auth.requireAuth,
+    function (req, res) {
+      var handle = req.params.handle;
+      var objId  = req.params.objId;
+      var cid    = req.params.cid;
+
+      if (req.identity.handle !== handle)
+        return res.status(403).json({ error: "Forbidden" });
+
+      objectRepo.deleteVersionsAfter(objId, cid, function (err, result) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({ ok: true, deleted: result.deleted });
+      });
+    }
   );
 
   // ─── catch-all for unmatched /@handle paths ────────────────────────────────

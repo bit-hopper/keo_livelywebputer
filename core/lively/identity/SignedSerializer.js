@@ -539,16 +539,20 @@ module("lively.identity.SignedSerializer")
 
                     // Then additionally write a signed envelope to the identity URL
                     var rawName = world.name;
-                    var worldName =
-                      rawName && rawName !== "null" && rawName !== "undefined"
-                        ? rawName
-                        : url
-                          ? new URL(url).filename().replace(/\.x?html$/, "")
-                          : "world";
-                    if (!rawName || rawName === "null" || rawName === "undefined") {
+                    // "world" is Lively's default name for worlds loaded without a
+                    // filename (i.e. from /@handle identity URLs). Treat it as unset
+                    // and prefer document.title, which buildWorldPage sets from state.name.
+                    var isDefaultName = !rawName || rawName === "null" ||
+                                        rawName === "undefined" || rawName === "world";
+                    var worldName = isDefaultName
+                      ? (document.title && document.title !== "world" && document.title !== "Lively"
+                          ? document.title
+                          : (url ? new URL(url).filename().replace(/\.x?html$/, "") : "world"))
+                      : rawName;
+                    if (isDefaultName) {
                       console.warn(
                         "[SignedSerializer] Warning: world.name is " +
-                          JSON.stringify(rawName) + " — using \"" + worldName + "\" from URL",
+                          JSON.stringify(rawName) + " — using \"" + worldName + "\" from page title / URL",
                       );
                     }
 
