@@ -6,9 +6,16 @@ lively.data.FileUpload.Handler.subclass('lively.data.PDFUpload.Handler', {
     },
 
     getUploadSpec: function(evt, file) {
-        return {readMethod: "asBinary"}
+        if (this.isIdentityUploadAvailable()) return {readMethod: "manual"};
+        return {readMethod: "asBinary"};
     },
-
+    readManually: function(file) {
+        var self = this;
+        self.identityUpload(file, function(err, url) {
+            if (err) { $world.inform("Error uploading PDF file:\n" + err); return; }
+            self.openPDF(url, file.type, self.pos);
+        });
+    },
     onLoad: function(evt) {
         this.uploadAndOpenPDFTo(
             URL.source.withFilename(this.file.name),

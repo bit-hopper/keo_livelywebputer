@@ -5,7 +5,16 @@ lively.data.FileUpload.Handler.subclass('lively.Clipboard.VideoUploader', {
         return file.type.match(/video.*/);
     },
     getUploadSpec: function(evt, file) {
+        if (this.isIdentityUploadAvailable()) return {readMethod: "manual"};
         return {readMethod: "asBinary"};
+    },
+    readManually: function(file) {
+        var self = this;
+        self.identityUpload(file, function(err, url) {
+            if (err) { $world.inform("Error uploading video file:\n" + err); return; }
+            var morph = self.openVideo(url, file.type, self.pos);
+            self.attachIdentityDelete(morph, url);
+        });
     },
     onLoad: function(evt) {
         this.uploadAndOpenVideoTo(
@@ -51,10 +60,11 @@ lively.data.FileUpload.Handler.subclass('lively.Clipboard.VideoUploader', {
             // videoNode.appendChild(embedNode)
         }
 
-        // FIXME implement video morph?
         var morph = new lively.morphic.Morph(new lively.morphic.Shapes.External(videoNode));
-        morph.applyStyle({borderWidth: 1, borderColor: Color.black})
+        morph.applyStyle({borderWidth: 1, borderColor: Color.black,
+            extent: pt(videoNode.width || 640, videoNode.height || 360)});
         morph.openInWorld(pos);
+        return morph;
     },
     uploadAndOpenVideoTo: function(url, mime, binaryData, pos) {
         var onloadDo = function(status) {

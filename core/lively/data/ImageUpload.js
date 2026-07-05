@@ -49,50 +49,48 @@ module("lively.data.ImageUpload")
 
       readManually: function (file) {
         var self = this;
-        // inspect(this)
+
+        function _openAndFit(url, type) {
+          var img = self.openImage(url, type, self.pos, file.name, function (err, loadedImg) {
+            var m = loadedImg || img;
+            if (!m) return;
+            var tryExtent = function () {
+              try { m.setNativeExtent(); } catch (e) { setTimeout(tryExtent, 100); }
+            };
+            setTimeout(tryExtent, 100);
+          });
+          // Attach synchronously from the return value — don't wait for the load callback,
+          // which may receive (img) instead of (null, img) depending on the Image class.
+          if (img) self.attachIdentityDelete(img, url);
+        }
+
+        if (self.isIdentityUploadAvailable()) {
+          self.identityUpload(file, function (err, url) {
+            if (err) { $world.inform("Error uploading image file:\n" + err); return; }
+            _openAndFit(url, file.type);
+          });
+          return;
+        }
+
         lively.lang.fun.composeAsync(
           function (n) {
-            lively.data.FileUpload.uploadFilesToServer(
-              [file],
-              this.evt,
-              false,
-              n,
-            );
+            lively.data.FileUpload.uploadFilesToServer([file], self.evt, false, n);
           },
           function (report, n) {
-            // show(lively.morphic.World.current().firstHand().getPosition())
-            //  console.log('[ImageUpload] Upload response:', report);
             if (!report || !report.uploadedFiles || !report.uploadedFiles[0]) {
-              var errMsg =
-                "no file uploaded or invalid upload response. Response: " +
-                JSON.stringify(report);
-              //       console.error('[ImageUpload] Error:', errMsg);
-              return n(new Error(errMsg));
+              return n(new Error("no file uploaded or invalid upload response. Response: " + JSON.stringify(report)));
             }
             var uploaded = report.uploadedFiles[0],
               relPath = uploaded && uploaded.relativePath;
-            if (!relPath) {
-              //          console.error('[ImageUpload] Error: no relativePath in upload response');
-              return n(new Error("no file uploaded?"));
-            }
+            if (!relPath) return n(new Error("no file uploaded?"));
             var img = self.openImage(
               URL.root.withPath("/" + relPath).toString(),
-              uploaded.type,
-              self.pos,
-              file.name,
-              n,
-            );
+              uploaded.type, self.pos, file.name, n);
           },
           function (img, n) {
-            // Wait for the image to be fully loaded before setting native extent
             var attemptSetNativeExtent = function () {
-              try {
-                img.setNativeExtent();
-                n();
-              } catch (e) {
-                // Image might not be fully loaded yet, try again
-                setTimeout(attemptSetNativeExtent, 100);
-              }
+              try { img.setNativeExtent(); n(); }
+              catch (e) { setTimeout(attemptSetNativeExtent, 100); }
             };
             setTimeout(attemptSetNativeExtent, 100);
           },

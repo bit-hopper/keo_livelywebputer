@@ -416,12 +416,26 @@ module.exports = function (route, app) {
     };
   }
 
+  var _uploadMimeTypes = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+    ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
+    ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg",
+    ".pdf": "application/pdf",
+    ".txt": "text/plain", ".json": "application/json",
+  };
+
   app.get("/@:handle/uploads/*", auth.optionalAuth, function (req, res) {
     var resolved = _resolveUploadPath(req.params.handle, req.params[0]);
     if (!resolved) return res.status(400).json({ error: "Invalid file path" });
-    res.sendFile(resolved.full, function (err) {
-      if (err && !res.headersSent)
-        res.status(404).json({ error: "File not found" });
+    fs.stat(resolved.full, function (err, stat) {
+      if (err || !stat.isFile())
+        return res.status(404).json({ error: "File not found" });
+      var mime = _uploadMimeTypes[path.extname(resolved.full).toLowerCase()] ||
+        "application/octet-stream";
+      res.setHeader("Content-Type", mime);
+      res.setHeader("Content-Length", stat.size);
+      fs.createReadStream(resolved.full).pipe(res);
     });
   });
 
@@ -462,6 +476,18 @@ module.exports = function (route, app) {
     req.on("end", function () { _writeFile(Buffer.concat(chunks)); });
     req.on("error", function (e) {
       res.status(500).json({ error: String(e) });
+    });
+  });
+
+  app.delete("/@:handle/uploads/*", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your upload space" });
+    var resolved = _resolveUploadPath(handle, req.params[0]);
+    if (!resolved) return res.status(400).json({ error: "Invalid file path" });
+    fs.unlink(resolved.full, function (err) {
+      if (err) return res.status(404).json({ error: "File not found" });
+      res.json({ ok: true });
     });
   });
 

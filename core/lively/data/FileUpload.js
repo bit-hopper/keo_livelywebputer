@@ -120,6 +120,64 @@ module("lively.data.FileUpload")
       },
       "uploading to server",
       {
+        isIdentityUploadAvailable: function () {
+          return !!(
+            typeof lively !== "undefined" &&
+            lively.identity &&
+            lively.identity.did &&
+            lively.identity.did.isLoggedIn()
+          );
+        },
+
+        attachIdentityDelete: function (morph, url) {
+          if (!morph || !url) return;
+          morph.identityUploadUrl = url;
+          morph.addScript(function remove() {
+            var self = this;
+            var uploadUrl = this.identityUploadUrl;
+            console.log('[identityDelete] remove() called. uploadUrl:', uploadUrl, '| owner:', this.owner);
+            // Call the base remove explicitly — $super doesn't work when the method
+            // is inherited rather than defined directly on the subclass prototype.
+            lively.morphic.Morph.prototype.remove.call(this);
+            console.log('[identityDelete] after base remove, owner:', this.owner);
+            if (!uploadUrl) { console.log('[identityDelete] no URL, skipping DELETE'); return; }
+            // remove() is also called during drag (morph is re-parented to the hand).
+            // Defer the DELETE: if the morph gets a new owner (hand or world) within
+            // the same tick, it's a drag — not a deletion — so don't delete the file.
+            setTimeout(function () {
+              console.log('[identityDelete] setTimeout: owner is', self.owner, '→ will DELETE:', !self.owner);
+              if (!self.owner) {
+                fetch(uploadUrl, { method: "DELETE", credentials: "include" })
+                  .then(function (r) {
+                    r.json().then(function (j) {
+                      console.log('[identityDelete] DELETE response', r.status, j);
+                    });
+                  })
+                  .catch(function (e) { console.warn('[identityDelete] DELETE failed', e); });
+                delete self.identityUploadUrl;
+              }
+            }, 0);
+          });
+        },
+
+        identityUpload: function (file, thenDo) {
+          var user = lively.identity.did.currentUser();
+          var url =
+            "/@" + user.handle + "/uploads/" + encodeURIComponent(file.name);
+          fetch(url, {
+            method: "PUT",
+            credentials: "include",
+            headers: { "Content-Type": file.type || "application/octet-stream" },
+            body: file,
+          })
+            .then(function (res) { return res.json(); })
+            .then(function (json) {
+              if (json.ok) thenDo(null, json.url);
+              else thenDo(new Error(json.error || "Upload failed"));
+            })
+            .catch(function (err) { thenDo(err); });
+        },
+
         uploadBinary: function (url, mime, binaryData, onloadCallback) {
           var webR = new WebResource(url);
           webR.enableShowingProgress();

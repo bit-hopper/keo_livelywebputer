@@ -7,10 +7,16 @@ lively.data.FileUpload.Handler.subclass('lively.Clipboard.AudioUploader', {
     },
 
     getUploadSpec: function(evt, file) {
-        var altDown = evt.isAltDown();
-        return {readMethod: "asBinary"}
+        if (this.isIdentityUploadAvailable()) return {readMethod: "manual"};
+        return {readMethod: "asBinary"};
     },
-
+    readManually: function(file) {
+        var self = this;
+        self.identityUpload(file, function(err, url) {
+            if (err) { $world.inform("Error uploading audio file:\n" + err); return; }
+            self.openAudio(url, file.type, null, self.pos);
+        });
+    },
     onLoad: function(evt) {
         if (this.readMethod === 'asBinary')
             this.uploadAndOpenAudioTo(
