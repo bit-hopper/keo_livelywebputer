@@ -400,15 +400,16 @@
       el.style.top = this.height() / 2 - 70 + "px";
       el.style.left = this.width() / 2 - 250 + "px";
       link.style.color = "red";
-      link.setAttribute(
-        "href",
-        "/world-versions.html?world-path=" +
-          encodeURIComponent(document.location.pathname.replace(/^\//, "")),
-      );
+      var _pathname = document.location.pathname;
+      var _identityMatch = _pathname.match(/^\/@([^\/]+)\/([^\/]+)/);
+      var _href = _identityMatch
+        ? "/@" + _identityMatch[1] + "/" + _identityMatch[2] + "/versions"
+        : "/world-versions.html?world-path=" + encodeURIComponent(_pathname.replace(/^\//, ""));
+      link.setAttribute("href", _href);
       link.setAttribute("target", "_blank");
       link.textContent =
         "revert " +
-        document.location.pathname.match(/[^\/]+$/) +
+        _pathname.match(/[^\/]+$/) +
         " by clicking here";
       link.style.fontWeight = "bold";
       el.appendChild(text1);

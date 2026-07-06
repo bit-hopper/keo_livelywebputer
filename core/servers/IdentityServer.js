@@ -52,6 +52,21 @@ function getBlankWorldJso() {
   return _blankWorldJso;
 }
 
+// restore.html is a stable copy of blank.html used exclusively as the seed
+// for recovery worlds. Kept separate so changes to blank.html don't affect
+// existing users' recovery worlds.
+var _restoreWorldJso = null;
+function getRestoreWorldJso() {
+  if (_restoreWorldJso) return _restoreWorldJso;
+  var html = fs.readFileSync(path.join(__dirname, "..", "..", "restore.html"), "utf8");
+  var tagStart = html.indexOf('<script type="text/x-lively-world"');
+  if (tagStart === -1) throw new Error("restore.html: x-lively-world script tag not found");
+  var contentStart = html.indexOf(">", tagStart) + 1;
+  var contentEnd = html.indexOf("</script>", contentStart);
+  _restoreWorldJso = JSON.parse(html.slice(contentStart, contentEnd));
+  return _restoreWorldJso;
+}
+
 function genObjId() {
   return nodeCrypto.randomBytes(9).toString("base64")
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
@@ -113,6 +128,36 @@ function createDefaultProfile(did, handle, thenDo) {
   objectRepo.put(envelope, function(putErr) {
     if (putErr) {
       console.warn('[IdentityServer] Could not create default profile:', putErr.message);
+      return thenDo(null, null);
+    }
+    thenDo(null, objId);
+  });
+}
+
+// Creates a read-only recovery world from restore.html for a new user.
+// Stored as type:'recovery', visibility:'private'. Never shown in the UI.
+// Served at /@handle/:objId/versions as the Lively boot vehicle.
+// Calls thenDo(err, objId|null).
+function createRecoveryWorld(did, thenDo) {
+  var worldJso;
+  try { worldJso = getRestoreWorldJso(); }
+  catch (e) {
+    console.warn("[IdentityServer] Could not load restore.html for recovery world:", e.message);
+    return thenDo(null, null);
+  }
+  var objId = genObjId();
+  var envelope = {
+    objId:      objId,
+    did:        did,
+    type:       "recovery",
+    visibility: "private",
+    created:    new Date().toISOString(),
+    record:     { cid: computeCidSync(worldJso), prevCid: null, payload: worldJso },
+    state:      { name: "recovery" }
+  };
+  objectRepo.put(envelope, function(putErr) {
+    if (putErr) {
+      console.warn("[IdentityServer] Could not create recovery world:", putErr.message);
       return thenDo(null, null);
     }
     thenDo(null, objId);
@@ -274,18 +319,21 @@ module.exports = function (route, app) {
           }
           createHomeWorld(result.did, function (worldErr, homeWorldObjId) {
             createDefaultProfile(result.did, result.handle, function (profileErr, profileObjId) {
+              createRecoveryWorld(result.did, function () {
+                var resp = { ok: true, handle: result.handle, did: result.did };
+                if (homeWorldObjId) resp.homeWorldObjId = homeWorldObjId;
+                res.json(resp);
+              });
+            });
+          });
+      } else {
+        createHomeWorld(result.did, function (worldErr, homeWorldObjId) {
+          createDefaultProfile(result.did, result.handle, function (profileErr, profileObjId) {
+            createRecoveryWorld(result.did, function () {
               var resp = { ok: true, handle: result.handle, did: result.did };
               if (homeWorldObjId) resp.homeWorldObjId = homeWorldObjId;
               res.json(resp);
             });
-          });
-        });
-      } else {
-        createHomeWorld(result.did, function (worldErr, homeWorldObjId) {
-          createDefaultProfile(result.did, result.handle, function (profileErr, profileObjId) {
-            var resp = { ok: true, handle: result.handle, did: result.did };
-            if (homeWorldObjId) resp.homeWorldObjId = homeWorldObjId;
-            res.json(resp);
           });
         });
       }
@@ -647,6 +695,10 @@ module.exports = function (route, app) {
       });
     }
 
+    if (envelope.type === "recovery") {
+      return res.status(403).json({ error: "Recovery worlds are read-only" });
+    }
+
     if (req.identity.did !== envelope.did) {
       return res
         .status(403)
@@ -839,77 +891,104 @@ module.exports = function (route, app) {
 
         if (!req.accepts("html")) return res.json({ versions: versions });
 
-        // Browser request — serve a self-contained version history page.
-        var worldName = escapeHtml((envelope.state && envelope.state.name) || objId);
-        var isOwner   = !!(req.identity && req.identity.handle === handle);
-        var rows = versions.slice().reverse().map(function (v, idx) {
-          var isCurrent = idx === 0;
-          var dateStr   = v.createdAt
-            ? new Date(v.createdAt).toLocaleString(undefined,
-                { dateStyle: "medium", timeStyle: "short" })
-            : "—";
-          var cidShort  = v.cid ? v.cid.slice(0, 16) + "…" : "—";
-          var vName     = escapeHtml(v.name || "—");
-          var viewUrl   = "/@" + escapeHtml(handle) + "/" + escapeHtml(objId) +
-                          "/at/" + encodeURIComponent(v.cid);
-          var actions = isCurrent
-            ? '<span class="badge">current</span>'
-            : '<a class="btn-view" href="' + viewUrl + '">view</a>' +
-              (isOwner
-                ? ' <button class="btn-restore" onclick="doRestore(' +
-                  JSON.stringify(v.cid) + ')">restore to here</button>'
-                : "");
-          return '<li class="row">' +
-            '<div class="meta">' +
-            '<span class="name">' + vName + '</span>' +
-            '<span class="date">' + dateStr + '</span>' +
-            '<span class="cid">' + cidShort + '</span></div>' +
-            '<div class="actions">' + actions + '</div></li>';
-        }).join("\n");
+        var isOwner = !!(req.identity && req.identity.handle === handle);
 
-        var page = '<!DOCTYPE html><html lang="en"><head>' +
-          '<meta charset="utf-8">' +
-          '<meta name="viewport" content="width=device-width,initial-scale=1">' +
-          '<title>Versions — ' + worldName + '</title>' +
-          '<style>' +
-          'body{font-family:system-ui,sans-serif;max-width:680px;margin:48px auto;padding:0 20px;color:#222}' +
-          'h1{font-size:18px;font-weight:700;margin:0 0 4px}' +
-          '.sub{font-size:13px;color:#888;margin:0 0 28px}' +
-          'ul{list-style:none;margin:0;padding:0}' +
-          '.row{display:flex;align-items:center;padding:12px 0;border-bottom:1px solid #eee}' +
-          '.meta{flex:1}.name{font-size:14px;font-weight:700;display:block}' +
-          '.date{font-size:12px;color:#666;display:block}' +
-          '.cid{font-size:11px;color:#bbb;font-family:monospace}' +
-          '.actions{display:flex;gap:8px;align-items:center}' +
-          '.badge{font-size:11px;color:#aaa}' +
-          '.btn-view{font-size:12px;color:#f01a69;text-decoration:none}' +
-          '.btn-view:hover{text-decoration:underline}' +
-          '.btn-restore{font-size:12px;background:none;border:1px solid #d44;color:#d44;' +
-          'border-radius:4px;padding:2px 8px;cursor:pointer}' +
-          '.btn-restore:hover{background:#fdf0f0}' +
-          '#msg{margin-top:20px;font-size:13px}' +
-          '</style></head><body>' +
-          '<p><a href="/@' + escapeHtml(handle) + '/' + escapeHtml(objId) + '" ' +
-          'style="font-size:13px;color:#f01a69;text-decoration:none">← current version</a></p>' +
-          '<h1>' + worldName + '</h1>' +
-          '<p class="sub">Version history &mdash; newest first</p>' +
-          '<ul>' + rows + '</ul>' +
-          '<p id="msg"></p>' +
-          '<script>' +
-          'function doRestore(cid){' +
-          'if(!confirm("Restore to this version?\\nAll newer versions will be permanently deleted."))return;' +
-          'document.getElementById("msg").textContent="Restoring…";' +
-          'fetch("/@' + handle + '/' + objId + '/after/"+encodeURIComponent(cid),' +
-          '{method:"DELETE",credentials:"include"})' +
-          '.then(function(r){return r.json()})' +
-          '.then(function(b){' +
-          'if(b.ok){document.getElementById("msg").textContent="Restored. "+b.deleted+" newer version(s) removed.";' +
-          'setTimeout(function(){location.reload()},1200)}' +
-          'else{document.getElementById("msg").textContent="Error: "+(b.error||"unknown")}})' +
-          '.catch(function(e){document.getElementById("msg").textContent="Error: "+e.message});}' +
-          '<\/script></body></html>';
+        // Owner: boot the recovery world and open the Lively VersionViewer.
+        // Falls back to static HTML if no recovery world exists yet.
+        if (isOwner) {
+          objectRepo.getRecoveryWorldForDid(envelope.did, function (rErr, recoveryEnvelope) {
+            if (!rErr && recoveryEnvelope) {
+              var livelyPage = buildWorldPage(recoveryEnvelope);
+              var startupScript =
+                '<script>' +
+                '(function waitForLively(){' +
+                'if(typeof lively==="undefined"||!lively.require)return setTimeout(waitForLively,200);' +
+                'if(lively.morphic&&lively.morphic.World.current())' +
+                'lively.morphic.World.current().showsMorphMenu=false;' +
+                'lively.require("lively.identity.VersionViewer").toRun(function(){' +
+                'lively.identity.VersionViewer.open("' + handle + '","' + objId + '");' +
+                '});})();' +
+                '<\/script>';
+              return res.send(livelyPage.replace('</body>', startupScript + '</body>'));
+            }
+            serveStaticHtml();
+          });
+          return;
+        }
 
-        res.send(page);
+        serveStaticHtml();
+
+        function serveStaticHtml() {
+          var worldName = escapeHtml((envelope.state && envelope.state.name) || objId);
+          var rows = versions.slice().reverse().map(function (v, idx) {
+            var isCurrent = idx === 0;
+            var dateStr   = v.createdAt
+              ? new Date(v.createdAt).toLocaleString(undefined,
+                  { dateStyle: "medium", timeStyle: "short" })
+              : "—";
+            var cidShort  = v.cid ? v.cid.slice(0, 16) + "…" : "—";
+            var vName     = escapeHtml(v.name || "—");
+            var viewUrl   = "/@" + escapeHtml(handle) + "/" + escapeHtml(objId) +
+                            "/at/" + encodeURIComponent(v.cid);
+            var actions = isCurrent
+              ? '<span class="badge">current</span>'
+              : '<a class="btn-view" href="' + viewUrl + '">view</a>' +
+                (isOwner
+                  ? ' <button class="btn-restore" onclick="doRestore(\'' +
+                    v.cid + '\')">restore to here</button>'
+                  : "");
+            return '<li class="row">' +
+              '<div class="meta">' +
+              '<span class="name">' + vName + '</span>' +
+              '<span class="date">' + dateStr + '</span>' +
+              '<span class="cid">' + cidShort + '</span></div>' +
+              '<div class="actions">' + actions + '</div></li>';
+          }).join("\n");
+
+          var page = '<!DOCTYPE html><html lang="en"><head>' +
+            '<meta charset="utf-8">' +
+            '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+            '<title>Versions — ' + worldName + '</title>' +
+            '<style>' +
+            'body{font-family:system-ui,sans-serif;max-width:680px;margin:48px auto;padding:0 20px;color:#222}' +
+            'h1{font-size:18px;font-weight:700;margin:0 0 4px}' +
+            '.sub{font-size:13px;color:#888;margin:0 0 28px}' +
+            'ul{list-style:none;margin:0;padding:0}' +
+            '.row{display:flex;align-items:center;padding:12px 0;border-bottom:1px solid #eee}' +
+            '.meta{flex:1}.name{font-size:14px;font-weight:700;display:block}' +
+            '.date{font-size:12px;color:#666;display:block}' +
+            '.cid{font-size:11px;color:#bbb;font-family:monospace}' +
+            '.actions{display:flex;gap:8px;align-items:center}' +
+            '.badge{font-size:11px;color:#aaa}' +
+            '.btn-view{font-size:12px;color:#f01a69;text-decoration:none}' +
+            '.btn-view:hover{text-decoration:underline}' +
+            '.btn-restore{font-size:12px;background:none;border:1px solid #d44;color:#d44;' +
+            'border-radius:4px;padding:2px 8px;cursor:pointer}' +
+            '.btn-restore:hover{background:#fdf0f0}' +
+            '#msg{margin-top:20px;font-size:13px}' +
+            '</style></head><body>' +
+            '<p><a href="/@' + escapeHtml(handle) + '/' + escapeHtml(objId) + '" ' +
+            'style="font-size:13px;color:#f01a69;text-decoration:none">← current version</a></p>' +
+            '<h1>' + worldName + '</h1>' +
+            '<p class="sub">Version history &mdash; newest first</p>' +
+            '<ul>' + rows + '</ul>' +
+            '<p id="msg"></p>' +
+            '<script>' +
+            'function doRestore(cid){' +
+            'if(!confirm("Restore to this version?\\nAll newer versions will be permanently deleted."))return;' +
+            'document.getElementById("msg").textContent="Restoring…";' +
+            'fetch("/@' + handle + '/' + objId + '/after/"+encodeURIComponent(cid),' +
+            '{method:"DELETE",credentials:"include"})' +
+            '.then(function(r){return r.json()})' +
+            '.then(function(b){' +
+            'if(b.ok){document.getElementById("msg").textContent="Restored. "+b.deleted+" newer version(s) removed.";' +
+            'setTimeout(function(){location.reload()},1200)}' +
+            'else{document.getElementById("msg").textContent="Error: "+(b.error||"unknown")}})' +
+            '.catch(function(e){document.getElementById("msg").textContent="Error: "+e.message});}' +
+            '<\/script></body></html>';
+
+          res.send(page);
+        }
       });
     });
   });
@@ -964,6 +1043,54 @@ module.exports = function (route, app) {
       });
     }
   );
+
+  // ─── version diff ──────────────────────────────────────────────────────────
+  // Returns a unified diff of two versions' payloads.
+  // ?from=<cid>&to=<cid>  (from = older, to = newer)
+
+  app.get("/@:handle/:objId/diff", auth.optionalAuth, function (req, res) {
+    var objId = req.params.objId;
+    var from  = req.query.from;
+    var to    = req.query.to;
+
+    if (!from || !to)
+      return res.status(400).json({ error: 'Missing "from" or "to" query params' });
+
+    objectRepo.getVersion(objId, from, function (err, envA) {
+      if (err)   return res.status(500).json({ error: String(err) });
+      if (!envA) return res.status(404).json({ error: "Version not found: " + from });
+
+      if (envA.visibility !== "public" && (!req.identity || req.identity.did !== envA.did))
+        return res.status(403).json({ error: "Forbidden" });
+
+      objectRepo.getVersion(objId, to, function (err, envB) {
+        if (err)   return res.status(500).json({ error: String(err) });
+        if (!envB) return res.status(404).json({ error: "Version not found: " + to });
+
+        var os   = require("os");
+        var fs   = require("fs");
+        var cp   = require("child_process");
+        var path = require("path");
+        var ts   = Date.now() + "-" + Math.random().toString(36).slice(2);
+        var tmpA = path.join(os.tmpdir(), "lk-diff-a-" + ts + ".json");
+        var tmpB = path.join(os.tmpdir(), "lk-diff-b-" + ts + ".json");
+
+        try {
+          fs.writeFileSync(tmpA, JSON.stringify((envA.record && envA.record.payload) || {}, null, 2));
+          fs.writeFileSync(tmpB, JSON.stringify((envB.record && envB.record.payload) || {}, null, 2));
+        } catch (e) {
+          return res.status(500).json({ error: "Could not write temp files: " + e.message });
+        }
+
+        cp.exec("diff -u " + tmpA + " " + tmpB, function (err, stdout) {
+          try { fs.unlinkSync(tmpA); } catch (e) {}
+          try { fs.unlinkSync(tmpB); } catch (e) {}
+          // diff exits 1 when there are differences — not an error
+          res.json({ diff: stdout || "(no differences)" });
+        });
+      });
+    });
+  });
 
   // ─── catch-all for unmatched /@handle paths ────────────────────────────────
   // Anything under /@handle/... that didn't match a registered route above

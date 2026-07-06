@@ -28,11 +28,12 @@ module("lively.net.tools.Wiki")
         ),
 
         morphMenuItems: function morphMenuItems() {
-          function cmd(name) {
-            return function () { lively.ide.commands.exec(name); };
-          }
           return [
-            ["saved versions", cmd("lively.ide.openVersionsViewer")],
+            ["saved versions", function () {
+              lively.require("lively.identity.VersionViewer").toRun(function () {
+                lively.identity.VersionViewer.open();
+              });
+            }],
           ];
         },
       }),

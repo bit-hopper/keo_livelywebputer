@@ -253,6 +253,7 @@ function getVersionsSince(objId, prevCid, thenDo) {
 }
 
 // List the latest envelope (head version) for every object owned by a DID.
+// Excludes type='recovery' (internal system world, never shown in UI).
 // Calls thenDo(null, envelope[]).
 function listForUser(did, thenDo) {
   withDB(function(err, db) {
@@ -261,7 +262,7 @@ function listForUser(did, thenDo) {
     db.all(
       'SELECT o.envelope FROM objects o' +
       ' INNER JOIN (' +
-      '   SELECT obj_id, MAX(id) AS max_id FROM objects WHERE did = ? GROUP BY obj_id' +
+      '   SELECT obj_id, MAX(id) AS max_id FROM objects WHERE did = ? AND type != \'recovery\' GROUP BY obj_id' +
       ' ) latest ON o.id = latest.max_id',
       [did],
       function(err, rows) {
@@ -288,6 +289,25 @@ function getProfileForDid(did, thenDo) {
         if (!row) return thenDo(null, null);
         try { thenDo(null, JSON.parse(row.envelope)); }
         catch (e) { thenDo(new Error('ObjectRepository.getProfileForDid: corrupt envelope JSON')); }
+      }
+    );
+  });
+}
+
+// Get the recovery world envelope for a DID.
+// Recovery worlds are type:'recovery' singletons created at registration.
+// Calls thenDo(null, envelope | null).
+function getRecoveryWorldForDid(did, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.get(
+      'SELECT envelope FROM objects WHERE did = ? AND type = \'recovery\' ORDER BY id DESC LIMIT 1',
+      [did],
+      function(err, row) {
+        if (err) return thenDo(err);
+        if (!row) return thenDo(null, null);
+        try { thenDo(null, JSON.parse(row.envelope)); }
+        catch (e) { thenDo(new Error('ObjectRepository.getRecoveryWorldForDid: corrupt envelope JSON')); }
       }
     );
   });
@@ -374,14 +394,15 @@ function deleteVersionsAfter(objId, cid, thenDo) {
 }
 
 module.exports = {
-  withDB:              withDB,
-  put:                 put,
-  get:                 get,
-  getVersion:          getVersion,
-  getVersionsSince:    getVersionsSince,
-  listForUser:         listForUser,
-  getProfileForDid:    getProfileForDid,
-  listVersions:        listVersions,
-  deleteVersionsAfter: deleteVersionsAfter,
-  addRecipient:        addRecipient
+  withDB:                  withDB,
+  put:                     put,
+  get:                     get,
+  getVersion:              getVersion,
+  getVersionsSince:        getVersionsSince,
+  listForUser:             listForUser,
+  getProfileForDid:        getProfileForDid,
+  getRecoveryWorldForDid:  getRecoveryWorldForDid,
+  listVersions:            listVersions,
+  deleteVersionsAfter:     deleteVersionsAfter,
+  addRecipient:            addRecipient
 };
