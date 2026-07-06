@@ -326,6 +326,7 @@ module.exports = function (route, app) {
               });
             });
           });
+        });
       } else {
         createHomeWorld(result.did, function (worldErr, homeWorldObjId) {
           createDefaultProfile(result.did, result.handle, function (profileErr, profileObjId) {
@@ -903,8 +904,14 @@ module.exports = function (route, app) {
                 '<script>' +
                 '(function waitForLively(){' +
                 'if(typeof lively==="undefined"||!lively.require)return setTimeout(waitForLively,200);' +
-                'if(lively.morphic&&lively.morphic.World.current())' +
-                'lively.morphic.World.current().showsMorphMenu=false;' +
+                'var _w=lively.morphic&&lively.morphic.World&&lively.morphic.World.current();' +
+                'if(_w){' +
+                  '_w.showsMorphMenu=false;' +
+                  // Recovery page is read-only — block the old WebDAV save from firing
+                  // (it would PUT to the full /versions URL which has no handler).
+                  '_w.saveWorldAs=function(u,c,b,done){done&&done(null);};' +
+                  '_w.saveWorld=function(done){done&&done(null);};' +
+                '}' +
                 'lively.require("lively.identity.VersionViewer").toRun(function(){' +
                 'lively.identity.VersionViewer.open("' + handle + '","' + objId + '");' +
                 '});})();' +
