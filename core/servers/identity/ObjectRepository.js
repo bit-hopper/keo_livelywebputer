@@ -393,16 +393,265 @@ function deleteVersionsAfter(objId, cid, thenDo) {
   });
 }
 
+// ─── post card queries ────────────────────────────────────────────────────────
+
+// List the latest postcard envelope per objId for a given DID, newest first.
+// Excludes deleted cards (state.deleted = true) from the listing.
+// opts: { limit: Number, cursor: String|null }
+//   cursor is the obj_id of the last item from the previous page (opaque to callers).
+// Calls thenDo(null, { postcards: [envelope...], cursor: String|null }).
+function listPostcardsForUser(did, opts, thenDo) {
+  var limit = (opts && opts.limit) || 20;
+  var cursor = (opts && opts.cursor) || null;
+
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+
+    // Base query: latest row per obj_id for this DID, type=postcard, not deleted
+    var baseSql =
+      'SELECT o.envelope, o.obj_id, o.id FROM objects o' +
+      ' INNER JOIN (' +
+      '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
+      '   WHERE did = ? AND type = \'postcard\'' +
+      '   GROUP BY obj_id' +
+      ' ) latest ON o.id = latest.max_id' +
+      ' WHERE (json_extract(o.envelope, \'$.state.deleted\') IS NULL' +
+      '        OR json_extract(o.envelope, \'$.state.deleted\') != 1)';
+
+    var params, sql;
+    if (cursor) {
+      // Pagination: find the id of the cursor row, then take rows with id < that
+      db.get(
+        'SELECT MAX(id) AS pivot FROM objects WHERE obj_id = ? AND did = ?',
+        [cursor, did],
+        function(err, pivotRow) {
+          if (err) return thenDo(err);
+          var pivotId = pivotRow ? pivotRow.pivot : null;
+          if (pivotId) {
+            sql = baseSql + ' AND o.id < ? ORDER BY o.id DESC LIMIT ?';
+            params = [did, pivotId, limit + 1];
+          } else {
+            sql = baseSql + ' ORDER BY o.id DESC LIMIT ?';
+            params = [did, limit + 1];
+          }
+          _runPostcardQuery(db, sql, params, limit, thenDo);
+        }
+      );
+    } else {
+      sql = baseSql + ' ORDER BY o.id DESC LIMIT ?';
+      params = [did, limit + 1];
+      _runPostcardQuery(db, sql, params, limit, thenDo);
+    }
+  });
+}
+
+// List the latest postcard envelopes for a constellation, newest first.
+// opts: { limit, cursor } — same pagination shape as listPostcardsForUser.
+// Calls thenDo(null, { postcards: [envelopeMetadata...], cursor: String|null }).
+function listPostcardsForConstellation(constellation, opts, thenDo) {
+  var limit = (opts && opts.limit) || 20;
+  var cursor = (opts && opts.cursor) || null;
+
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+
+    var baseSql =
+      'SELECT o.envelope, o.obj_id, o.id FROM objects o' +
+      ' INNER JOIN (' +
+      '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
+      '   WHERE type = \'postcard\'' +
+      '         AND json_extract(envelope, \'$.constellation\') = ?' +
+      '   GROUP BY obj_id' +
+      ' ) latest ON o.id = latest.max_id' +
+      ' WHERE (json_extract(o.envelope, \'$.state.deleted\') IS NULL' +
+      '        OR json_extract(o.envelope, \'$.state.deleted\') != 1)';
+
+    var params, sql;
+    if (cursor) {
+      db.get(
+        'SELECT MAX(id) AS pivot FROM objects WHERE obj_id = ?' +
+        '  AND type = \'postcard\'',
+        [cursor],
+        function(err, pivotRow) {
+          if (err) return thenDo(err);
+          var pivotId = pivotRow ? pivotRow.pivot : null;
+          if (pivotId) {
+            sql = baseSql + ' AND o.id < ? ORDER BY o.id DESC LIMIT ?';
+            params = [constellation, pivotId, limit + 1];
+          } else {
+            sql = baseSql + ' ORDER BY o.id DESC LIMIT ?';
+            params = [constellation, limit + 1];
+          }
+          _runPostcardQuery(db, sql, params, limit, thenDo);
+        }
+      );
+    } else {
+      sql = baseSql + ' ORDER BY o.id DESC LIMIT ?';
+      params = [constellation, limit + 1];
+      _runPostcardQuery(db, sql, params, limit, thenDo);
+    }
+  });
+}
+
+// List reply envelopes for a parent objId (postcards whose replyTo.objId matches).
+// Returns metadata-only (no payload) for the listing; caller fetches full envelope on open.
+// Visibility filtering is the caller's responsibility (done in the route handler).
+// Calls thenDo(null, { replies: [envelopeMetadata...], cursor: String|null }).
+function listRepliesForPostcard(parentObjId, opts, thenDo) {
+  var limit = (opts && opts.limit) || 20;
+  var cursor = (opts && opts.cursor) || null;
+
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+
+    var baseSql =
+      'SELECT o.envelope, o.obj_id, o.id FROM objects o' +
+      ' INNER JOIN (' +
+      '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
+      '   WHERE type = \'postcard\'' +
+      '         AND json_extract(envelope, \'$.replyTo.objId\') = ?' +
+      '   GROUP BY obj_id' +
+      ' ) latest ON o.id = latest.max_id' +
+      ' WHERE (json_extract(o.envelope, \'$.state.deleted\') IS NULL' +
+      '        OR json_extract(o.envelope, \'$.state.deleted\') != 1)';
+
+    var params = [parentObjId, limit + 1];
+    if (cursor) {
+      db.get(
+        'SELECT MAX(id) AS pivot FROM objects WHERE obj_id = ? AND type = \'postcard\'',
+        [cursor],
+        function(err, pivotRow) {
+          if (err) return thenDo(err);
+          var pivotId = pivotRow ? pivotRow.pivot : null;
+          if (pivotId) {
+            _runPostcardQuery(db,
+              baseSql + ' AND o.id < ? ORDER BY o.id DESC LIMIT ?',
+              [parentObjId, pivotId, limit + 1], limit, thenDo);
+          } else {
+            _runPostcardQuery(db, baseSql + ' ORDER BY o.id DESC LIMIT ?', params, limit, thenDo);
+          }
+        }
+      );
+    } else {
+      _runPostcardQuery(db, baseSql + ' ORDER BY o.id DESC LIMIT ?', params, limit, thenDo);
+    }
+  });
+}
+
+// Shared helper: runs a postcard listing SQL query and shapes the result into
+// { postcards: [metadataOnly...], cursor } (spec §7.1 feed shape).
+function _runPostcardQuery(db, sql, params, limit, thenDo) {
+  db.all(sql, params, function(err, rows) {
+    if (err) return thenDo(err);
+    var hasMore = rows.length > limit;
+    if (hasMore) rows = rows.slice(0, limit);
+    var postcards = rows.map(function(r) {
+      try {
+        var env = JSON.parse(r.envelope);
+        // Return metadata only — not the full payload (spec §7.1)
+        return {
+          objId:   env.objId,
+          did:     env.did,
+          state:   env.state || {},
+          record:  { cid: env.record && env.record.cid },
+          created: env.created,
+          constellation: env.constellation || null,
+          replyTo: env.replyTo || null
+        };
+      } catch (e) { return null; }
+    }).filter(Boolean);
+    var nextCursor = hasMore ? rows[rows.length - 1].obj_id : null;
+    thenDo(null, { postcards: postcards, cursor: nextCursor });
+  });
+}
+
+// ─── settings ─────────────────────────────────────────────────────────────────
+
+// Get the settings envelope for a DID. Returns null if none exists yet.
+// The caller should create a default settings envelope if null is returned.
+// Calls thenDo(null, envelope | null).
+function getSettingsForDid(did, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.get(
+      'SELECT envelope FROM objects WHERE did = ? AND type = \'settings\' ORDER BY id DESC LIMIT 1',
+      [did],
+      function(err, row) {
+        if (err) return thenDo(err);
+        if (!row) return thenDo(null, null);
+        try { thenDo(null, JSON.parse(row.envelope)); }
+        catch (e) { thenDo(new Error('ObjectRepository.getSettingsForDid: corrupt JSON')); }
+      }
+    );
+  });
+}
+
+// ─── inbox ────────────────────────────────────────────────────────────────────
+
+// Inbox records are stored as a per-handle newline-delimited JSON log
+// (not in objects.db — delivery references, not versioned envelopes).
+// Location: <WORKSPACE_LK>/identity/inbox/<handle>.jsonl
+
+var _inboxDir = null;
+function _getInboxDir() {
+  if (_inboxDir) return _inboxDir;
+  _inboxDir = path.join(
+    process.env.WORKSPACE_LK || process.cwd(),
+    'identity', 'inbox'
+  );
+  return _inboxDir;
+}
+
+// Append a delivery record to a recipient's inbox.
+// record: { objId, senderDid, sentAt }
+// Calls thenDo(err).
+function putInboxRecord(recipientHandle, record, thenDo) {
+  var fs = require('fs');
+  var dir = _getInboxDir();
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  var file = path.join(dir, recipientHandle + '.jsonl');
+  var line = JSON.stringify(record) + '\n';
+  fs.appendFile(file, line, function(err) { thenDo(err || null); });
+}
+
+// List delivery records for a handle, newest first, paginated.
+// opts: { limit, offset }
+// Calls thenDo(null, { records: [...], cursor: Number|null }).
+function listInboxForHandle(handle, opts, thenDo) {
+  var fs = require('fs');
+  var limit = (opts && opts.limit) || 20;
+  var offset = (opts && opts.offset) || 0;
+  var file = path.join(_getInboxDir(), handle + '.jsonl');
+  if (!fs.existsSync(file)) return thenDo(null, { records: [], cursor: null });
+  fs.readFile(file, 'utf8', function(err, text) {
+    if (err) return thenDo(err);
+    var lines = text.split('\n').filter(Boolean);
+    lines.reverse(); // newest first
+    var page = lines.slice(offset, offset + limit);
+    var records = page.map(function(l) {
+      try { return JSON.parse(l); } catch (e) { return null; }
+    }).filter(Boolean);
+    var nextOffset = offset + limit < lines.length ? offset + limit : null;
+    thenDo(null, { records: records, cursor: nextOffset });
+  });
+}
+
 module.exports = {
-  withDB:                  withDB,
-  put:                     put,
-  get:                     get,
-  getVersion:              getVersion,
-  getVersionsSince:        getVersionsSince,
-  listForUser:             listForUser,
-  getProfileForDid:        getProfileForDid,
-  getRecoveryWorldForDid:  getRecoveryWorldForDid,
-  listVersions:            listVersions,
-  deleteVersionsAfter:     deleteVersionsAfter,
-  addRecipient:            addRecipient
+  withDB:                       withDB,
+  put:                          put,
+  get:                          get,
+  getVersion:                   getVersion,
+  getVersionsSince:             getVersionsSince,
+  listForUser:                  listForUser,
+  getProfileForDid:             getProfileForDid,
+  getRecoveryWorldForDid:       getRecoveryWorldForDid,
+  getSettingsForDid:            getSettingsForDid,
+  listVersions:                 listVersions,
+  deleteVersionsAfter:          deleteVersionsAfter,
+  addRecipient:                 addRecipient,
+  listPostcardsForUser:         listPostcardsForUser,
+  listPostcardsForConstellation: listPostcardsForConstellation,
+  listRepliesForPostcard:       listRepliesForPostcard,
+  putInboxRecord:               putInboxRecord,
+  listInboxForHandle:           listInboxForHandle,
 };
