@@ -161,9 +161,27 @@ module("lively.identity.RegisterDialog")
         var displayName = (
           this.get("displayNameInput").textString || ""
         ).trim();
-        var deviceLabel =
-          (this.get("deviceLabelInput").textString || "").trim() ||
-          "This device";
+        var deviceLabel = (this.get("deviceLabelInput").textString || "").trim();
+        if (!deviceLabel) {
+          // auto-detect OS + browser from user agent
+          var ua = navigator.userAgent;
+          var os = 'Unknown OS';
+          if      (/iPad/.test(ua))                      os = 'iPadOS';
+          else if (/iPhone|iPod/.test(ua))               os = 'iOS';
+          else if (/Android/.test(ua))                   os = 'Android';
+          else if (/CrOS/.test(ua))                      os = 'ChromeOS';
+          else if (/Mac OS X/.test(ua))                  os = 'macOS';
+          else if (/Windows/.test(ua))                   os = 'Windows';
+          else if (/Linux/.test(ua))                     os = 'Linux';
+          var browser = 'Browser';
+          if      (/Edg\//.test(ua))                     browser = 'Edge';
+          else if (/OPR\/|Opera/.test(ua))               browser = 'Opera';
+          else if (/Chrome\//.test(ua))                  browser = 'Chrome';
+          else if (/Firefox\//.test(ua))                 browser = 'Firefox';
+          else if (/Safari\//.test(ua))                  browser = 'Safari';
+          else if (/SamsungBrowser/.test(ua))            browser = 'Samsung';
+          deviceLabel = os + ' · ' + browser;
+        }
 
         if (!handle) {
           return this.setStatus("Handle is required.", true);
