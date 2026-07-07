@@ -547,6 +547,59 @@ module("lively.identity.WebAuthn")
             });
         },
 
+        // Derive a stable per-credential KEK using a fixed PRF salt "lively-kek-v1".
+        // Called once per session; the result is cached in memory (never persisted).
+        // All per-object DEK wrapping uses this KEK via Crypto.wrapDek / unwrapDek.
+        //
+        // options: { challenge, rpId, credentialId }
+        // Returns thenDo(null, Uint8Array[32]) — the KEK bytes.
+        //
+        // Subsequent calls with the same credentialId return the cached KEK without
+        // a new WebAuthn ceremony. The cache is cleared if the page is unloaded.
+        deriveKek: function (options, thenDo) {
+          if (!this.isAvailable()) {
+            return thenDo(new Error('WebAuthn is not available in this browser'));
+          }
+
+          var self = this;
+          var credentialId = options.credentialId;
+          if (!credentialId) {
+            return thenDo(new Error('deriveKek: credentialId is required'));
+          }
+
+          // Return cached KEK if already derived this session
+          if (!self._kekCache) self._kekCache = {};
+          if (self._kekCache[credentialId]) {
+            return thenDo(null, self._kekCache[credentialId]);
+          }
+
+          var c = lively.identity.crypto;
+          var prfInput = new TextEncoder().encode('lively-kek-v1');
+
+          var publicKeyOptions = {
+            challenge: options.challenge,
+            rpId: options.rpId || (lively.Config && lively.Config.get('identityRpId')) || window.location.hostname,
+            allowCredentials: [{ type: 'public-key', id: c.base64urlDecode(credentialId) }],
+            userVerification: 'required',
+            extensions: { prf: { eval: { first: prfInput.buffer } } }
+          };
+
+          navigator.credentials.get({ publicKey: publicKeyOptions })
+            .then(function (credential) {
+              var ext = credential.getClientExtensionResults();
+              if (!ext.prf || !ext.prf.results || !ext.prf.results.first) {
+                return thenDo(new Error(
+                  'deriveKek: PRF extension not available for this credential. ' +
+                  'Re-register with PRF requested to enable encryption.'
+                ));
+              }
+              var kek = new Uint8Array(ext.prf.results.first);
+              self._kekCache[credentialId] = kek;
+              thenDo(null, kek);
+            })
+            .catch(function (err) { thenDo(err); });
+        },
+
         // Derive a second PRF output used as the X25519 private key for ECDH
         // sealed-box key unwrapping. Input: "lively-x25519:<credentialId>"
         //
@@ -609,7 +662,7 @@ module("lively.identity.WebAuthn")
               // Derive X25519 key pair using libsodium.
               // The PRF output is the private scalar; crypto_scalarmult_base derives
               // the corresponding public key.
-              crypto.withSodium(function (err, sodium) {
+              lively.identity.crypto.withSodium(function (err, sodium) {
                 if (err) return thenDo(err);
                 try {
                   // Clamp the private key as per X25519 spec

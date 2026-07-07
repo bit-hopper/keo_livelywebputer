@@ -128,7 +128,7 @@ module("lively.identity.SignedSerializer")
               if (err) return thenDo(err);
               var prevCid = params.prevEnvelope && params.prevEnvelope.record
                 ? params.prevEnvelope.record.cid || null : null;
-              thenDo(null, {
+              var envelope = {
                 objId: objId,
                 did: user.did,
                 publicKey: params.publicKeyJwk || null,
@@ -138,6 +138,48 @@ module("lively.identity.SignedSerializer")
                   new Date().toISOString(),
                 record: { cid: cid, prevCid: prevCid, payload: jso },
                 state: params.stateMeta || {},
+              };
+
+              // Sign with the device soft key if delegation cert + KEK are available.
+              // Resolves the long-standing "IDENTITY: privateKey removed — envelope signing deferred".
+              // Gracefully degrades: unsigned envelopes still work, same as before.
+              _signEnvelopeIfPossible(envelope, user, function (signErr, signedEnvelope) {
+                if (signErr) {
+                  console.warn('[SignedSerializer] Could not sign envelope (non-fatal):', signErr.message);
+                }
+                thenDo(null, signedEnvelope || envelope);
+              });
+            });
+          }
+
+          function _signEnvelopeIfPossible(envelope, user, thenDo) {
+            var method = lively.identity.did.findMethodByCredentialId(
+              user.document, user.credentialId
+            );
+            if (!method || !method.lively) return thenDo(null, envelope);
+
+            var livelyMeta = method.lively;
+            if (!livelyMeta.softSigningKeyWrapped || !livelyMeta.delegationCert) return thenDo(null, envelope);
+
+            var wa = lively.identity.webAuthn;
+            if (!wa._kekCache || !wa._kekCache[user.credentialId]) return thenDo(null, envelope);
+            var kek = wa._kekCache[user.credentialId];
+
+            // Decrypt the wrapped soft private key JWK
+            var wrapped;
+            try { wrapped = JSON.parse(livelyMeta.softSigningKeyWrapped); } catch (e) { return thenDo(e); }
+            c.decryptPayload(wrapped.ciphertext, wrapped.nonce, kek, function (err, softPrivJwk) {
+              if (err) return thenDo(err);
+              c.importPrivateKeyJwk(softPrivJwk, function (err, softPrivKey) {
+                if (err) return thenDo(err);
+                // Sign envelope without the sig field
+                var envelopeToSign = Object.assign({}, envelope);
+                delete envelopeToSign.sig;
+                c.signJws(envelopeToSign, softPrivKey, function (err, sig) {
+                  if (err) return thenDo(err);
+                  var signed = Object.assign({}, envelope, { sig: sig });
+                  thenDo(null, signed);
+                });
               });
             });
           }

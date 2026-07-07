@@ -269,32 +269,189 @@ module("lively.identity.RegisterDialog")
                   })
                   .then(function (serverBody) {
                     if (serverBody.error) throw new Error(serverBody.error);
-                    self.setStatus("Establishing session…");
+                    self.setStatus("Generating device signing key…");
 
-                    // Step 5: local session (saves DID document, fires identityChanged)
-                    did.completeRegistration(
-                      reg,
-                      {
-                        handle: handle,
-                        displayName: displayName || handle,
-                        deviceLabel: deviceLabel,
-                      },
-                      function (sessionErr) {
-                        if (btn) btn.setActive(true);
-                        if (sessionErr) {
-                          return self.setStatus(
-                            "Session setup failed: " + sessionErr.message,
-                            true,
-                          );
+                    // Step 5: generate soft signing key + delegation cert + KEK + X25519
+                    // All in one combined WebAuthn ceremony so the user sees only
+                    // one additional prompt after the registration passkey prompt.
+                    crypto.generateSigningKeyPair(function (err, softKeyPair) {
+                      if (err) {
+                        console.warn('[RegisterDialog] Could not generate soft key pair:', err);
+                        return finishRegistration(serverBody, null, null, null);
+                      }
+
+                      crypto.exportPublicKeyJwk(softKeyPair.publicKey, function (err, devicePubKeyJwk) {
+                        if (err) {
+                          console.warn('[RegisterDialog] Could not export soft public key:', err);
+                          return finishRegistration(serverBody, null, null, null);
                         }
-                        if (serverBody.homeWorldObjId) {
-                          if (typeof lively !== 'undefined' && lively.Config) lively.Config.askBeforeQuit = false;
-                          window.location.href = "/@" + handle + "/" + serverBody.homeWorldObjId + "?welcome=" + encodeURIComponent(handle);
-                        } else {
-                          self.remove();
-                        }
-                      },
-                    );
+
+                        var issuedAt = new Date().toISOString();
+                        var delegationPayload = {
+                          devicePubKeyJwk: devicePubKeyJwk,
+                          credentialId: reg.credentialId,
+                          issuedAt: issuedAt
+                        };
+                        // Compute H(delegationPayload) as the ceremony challenge
+                        crypto.sha256(crypto.canonicalJson(delegationPayload), function (err, digestB64) {
+                          if (err) {
+                            console.warn('[RegisterDialog] Could not hash delegation payload:', err);
+                            return finishRegistration(serverBody, null, null, null);
+                          }
+
+                          var certChallenge = crypto.base64urlDecode(digestB64);
+                          var prfKekInput = new TextEncoder().encode('lively-kek-v1');
+                          var prfX25519Input = new TextEncoder().encode('lively-x25519:' + reg.credentialId);
+
+                          self.setStatus("One more tap to set up encryption…");
+
+                          // Combined ceremony: delegation sig + KEK + X25519 private key
+                          navigator.credentials.get({
+                            publicKey: {
+                              challenge: certChallenge,
+                              rpId: rpId,
+                              allowCredentials: [{
+                                type: 'public-key',
+                                id: crypto.base64urlDecode(reg.credentialId)
+                              }],
+                              userVerification: 'required',
+                              extensions: {
+                                prf: {
+                                  eval: {
+                                    first:  prfKekInput.buffer,
+                                    second: prfX25519Input.buffer
+                                  }
+                                }
+                              }
+                            }
+                          }).then(function (credential) {
+                            var assertion = credential.response;
+                            var ext = credential.getClientExtensionResults();
+                            var c = crypto;
+
+                            // Build delegation cert from assertion
+                            var delegationCert = {
+                              devicePubKeyJwk: devicePubKeyJwk,
+                              credentialId: reg.credentialId,
+                              issuedAt: issuedAt,
+                              authenticatorData: c.base64urlEncode(new Uint8Array(assertion.authenticatorData)),
+                              clientDataJSON:    c.base64urlEncode(new Uint8Array(assertion.clientDataJSON)),
+                              signature:         c.base64urlEncode(new Uint8Array(assertion.signature))
+                            };
+
+                            var prfResults = ext && ext.prf && ext.prf.results;
+                            if (!prfResults || !prfResults.first) {
+                              console.warn('[RegisterDialog] PRF not available — KEK and X25519 skipped');
+                              return finishRegistration(serverBody, delegationCert, null, null, softKeyPair);
+                            }
+
+                            var kek = new Uint8Array(prfResults.first);
+                            // Cache the KEK for this session
+                            if (!lively.identity.webAuthn._kekCache) lively.identity.webAuthn._kekCache = {};
+                            lively.identity.webAuthn._kekCache[reg.credentialId] = kek;
+
+                            // Wrap soft private key with KEK
+                            crypto.exportPrivateKeyJwk(softKeyPair.privateKey, function (err, softPrivJwk) {
+                              if (err) {
+                                console.warn('[RegisterDialog] Could not export soft private key:', err);
+                                return finishRegistration(serverBody, delegationCert, null, null, softKeyPair);
+                              }
+                              crypto.wrapDek(kek, function (err, wrapped) {
+                                // Note: wrapDek wraps random bytes; here we need to wrap
+                                // the soft private key JWK. We encrypt it with encryptPayload instead.
+                                // The spec says "KEK-wrapped like everything else" — use encryptPayload
+                                // with the KEK as the symmetric key.
+                                crypto.encryptPayload(softPrivJwk, kek, function (err, enc) {
+                                  if (err) {
+                                    console.warn('[RegisterDialog] Could not wrap soft private key:', err);
+                                    return finishRegistration(serverBody, delegationCert, null, null, softKeyPair);
+                                  }
+                                  var softSigningKeyWrapped = JSON.stringify({ ciphertext: enc.ciphertext, nonce: enc.nonce });
+
+                                  // Derive X25519 keypair from PRF second output (if available)
+                                  var x25519Pub = null;
+                                  if (prfResults.second) {
+                                    lively.identity.crypto.withSodium(function (err, sodium) {
+                                      if (err || !sodium) {
+                                        return finishRegistration(serverBody, delegationCert, softSigningKeyWrapped, null, softKeyPair);
+                                      }
+                                      try {
+                                        var privBytes = new Uint8Array(prfResults.second);
+                                        // X25519 private key clamping (RFC 7748)
+                                        privBytes[0]  &= 248;
+                                        privBytes[31] &= 127;
+                                        privBytes[31] |= 64;
+                                        var pubBytes = sodium.crypto_scalarmult_base(privBytes);
+                                        x25519Pub = sodium.to_base64(pubBytes, sodium.base64_variants.URLSAFE_NO_PADDING);
+                                        finishRegistration(serverBody, delegationCert, softSigningKeyWrapped, x25519Pub, softKeyPair);
+                                      } catch (e) {
+                                        console.warn('[RegisterDialog] X25519 derivation failed:', e);
+                                        finishRegistration(serverBody, delegationCert, softSigningKeyWrapped, null, softKeyPair);
+                                      }
+                                    });
+                                  } else {
+                                    finishRegistration(serverBody, delegationCert, softSigningKeyWrapped, null, softKeyPair);
+                                  }
+                                });
+                              });
+                            });
+                          }).catch(function (e) {
+                            console.warn('[RegisterDialog] Delegation ceremony failed (non-fatal):', e.message);
+                            finishRegistration(serverBody, null, null, null, null);
+                          });
+                        });
+                      });
+                    });
+
+                    // Step 6: establish session with delegation cert fields
+                    function finishRegistration(serverBody, delegationCert, softSigningKeyWrapped, accountX25519Pub) {
+                      self.setStatus("Establishing session…");
+                      did.completeRegistration(
+                        reg,
+                        {
+                          handle: handle,
+                          displayName: displayName || handle,
+                          deviceLabel: deviceLabel,
+                          delegationCert:        delegationCert       || undefined,
+                          softSigningKeyWrapped:  softSigningKeyWrapped || undefined,
+                          accountX25519Pub:       accountX25519Pub      || undefined,
+                        },
+                        function (sessionErr) {
+                          if (btn) btn.setActive(true);
+                          if (sessionErr) {
+                            return self.setStatus(
+                              "Session setup failed: " + sessionErr.message,
+                              true,
+                            );
+                          }
+
+                          // If we have accountX25519Pub, save it to the profile
+                          if (accountX25519Pub) {
+                            fetch('/@' + handle + '/profile')
+                              .then(function(r) { return r.json(); })
+                              .then(function(env) {
+                                var payload = env.record && env.record.payload ? env.record.payload : {};
+                                payload.accountX25519Pub = accountX25519Pub;
+                                env.record.payload = payload;
+                                return fetch('/@' + handle + '/profile', {
+                                  method: 'PUT',
+                                  credentials: 'include',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify(env)
+                                });
+                              })
+                              .catch(function(e) { console.warn('[RegisterDialog] Could not save X25519 pub to profile:', e); });
+                          }
+
+                          if (serverBody.homeWorldObjId) {
+                            if (typeof lively !== 'undefined' && lively.Config) lively.Config.askBeforeQuit = false;
+                            window.location.href = "/@" + handle + "/" + serverBody.homeWorldObjId + "?welcome=" + encodeURIComponent(handle);
+                          } else {
+                            self.remove();
+                          }
+                        },
+                      );
+                    }
                   })
                   .catch(function (serverErr) {
                     if (btn) btn.setActive(true);

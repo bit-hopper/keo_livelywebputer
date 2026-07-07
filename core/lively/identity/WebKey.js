@@ -54,6 +54,26 @@ module("lively.identity.WebKey")
           lively.identity.crypto.computeObjId(publicKeyJwk, thenDo);
         },
 
+        // Generate a genesis-derived ObjID for a new object (anything except the home manifest).
+        //
+        // objId = base64url(SHA-256(authorDid + ":" + base64url(random16Bytes)))[0..12]
+        //
+        // Self-certifying: no per-object private key is created or stored.
+        // The genesisNonce is returned so callers can embed it in the genesis envelope
+        // as proof that the objId was derived correctly.
+        //
+        // authorDid: String — the did:jwk string of the author (from currentUser().did)
+        // Calls thenDo(null, { objId: String, genesisNonce: base64url String }).
+        generateGenesisObjId: function (authorDid, thenDo) {
+          var c = lively.identity.crypto;
+          var nonce = new Uint8Array(16);
+          crypto.getRandomValues(nonce);
+          c.computeGenesisObjId(authorDid, nonce, function (err, objId) {
+            if (err) return thenDo(err);
+            thenDo(null, { objId: objId, genesisNonce: c.base64urlEncode(nonce) });
+          });
+        },
+
         // True if a string looks like a valid ObjID (12 base64url chars).
         isValidObjId: function (str) {
           return typeof str === "string" && /^[A-Za-z0-9\-_]{12}$/.test(str);

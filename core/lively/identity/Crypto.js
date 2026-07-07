@@ -146,12 +146,32 @@ Object.subclass('lively.identity.Crypto',
 'objId', {
 
   // ObjID = base64url(SHA-256(canonicalJwk))[0..12]
-  // Derived from the public key JWK — stable across serialization round-trips.
+  // Used for the home manifest (backed by a held device key). All other objects
+  // use computeGenesisObjId below.
   computeObjId: function(publicKeyJwk, thenDo) {
     var self = this;
     var canonical = this.canonicalizeJwk(publicKeyJwk);
     var encoded = new TextEncoder().encode(canonical);
     crypto.subtle.digest('SHA-256', encoded)
+      .then(function(hash) {
+        thenDo(null, self.base64urlEncode(new Uint8Array(hash)).slice(0, 12));
+      })
+      .catch(function(err) { thenDo(err); });
+  },
+
+  // objId = base64url(SHA-256(authorDid + ":" + base64url(genesisNonce)))[0..12]
+  // Self-certifying: the genesis envelope proves it hashes to this objId;
+  // every version chains via prevCid; every version is signed by its author.
+  // No per-object private key exists.
+  //
+  // authorDid: String — the author's did:jwk string
+  // genesisNonce: Uint8Array (16 bytes) — caller provides fresh random bytes
+  // thenDo(null, objId) where objId is a 12-char base64url string.
+  computeGenesisObjId: function(authorDid, genesisNonce, thenDo) {
+    var self = this;
+    var nonceB64 = self.base64urlEncode(genesisNonce);
+    var input = new TextEncoder().encode(authorDid + ':' + nonceB64);
+    crypto.subtle.digest('SHA-256', input)
       .then(function(hash) {
         thenDo(null, self.base64urlEncode(new Uint8Array(hash)).slice(0, 12));
       })
@@ -293,6 +313,53 @@ Object.subclass('lively.identity.Crypto',
           ciphertext: sodium.to_base64(ciphertext, sodium.base64_variants.URLSAFE_NO_PADDING),
           nonce:      sodium.to_base64(nonce,       sodium.base64_variants.URLSAFE_NO_PADDING)
         });
+      } catch (e) { thenDo(e); }
+    });
+  },
+
+  // Generate a fresh random 32-byte DEK and wrap it under a KEK.
+  // Returns thenDo(null, { dek: Uint8Array[32], wrappedDek: base64url }).
+  // The wrappedDek is stored in the envelope; the dek is used for encryption
+  // and then discarded. To recover the dek, call unwrapDek(wrappedDek, kek).
+  wrapDek: function(kek, thenDo) {
+    this.withSodium(function(err, sodium) {
+      if (err) return thenDo(err);
+      try {
+        var dek = sodium.randombytes_buf(32); // fresh random DEK
+        var kekBytes = kek instanceof Uint8Array
+          ? kek
+          : sodium.from_base64(kek, sodium.base64_variants.URLSAFE_NO_PADDING);
+        var nonce = sodium.randombytes_buf(sodium.crypto_secretbox_NONCEBYTES);
+        var wrapped = sodium.crypto_secretbox_easy(dek, nonce, kekBytes);
+        // Store nonce prepended to ciphertext so unwrapDek is self-contained
+        var combined = new Uint8Array(nonce.length + wrapped.length);
+        combined.set(nonce);
+        combined.set(wrapped, nonce.length);
+        thenDo(null, {
+          dek: dek,
+          wrappedDek: sodium.to_base64(combined, sodium.base64_variants.URLSAFE_NO_PADDING)
+        });
+      } catch (e) { thenDo(e); }
+    });
+  },
+
+  // Unwrap a DEK that was wrapped by wrapDek.
+  // wrappedDek: base64url string produced by wrapDek.
+  // kek: Uint8Array or base64url string (32 bytes).
+  // Returns thenDo(null, Uint8Array[32] dek).
+  unwrapDek: function(wrappedDek, kek, thenDo) {
+    this.withSodium(function(err, sodium) {
+      if (err) return thenDo(err);
+      try {
+        var combined = sodium.from_base64(wrappedDek, sodium.base64_variants.URLSAFE_NO_PADDING);
+        var nonce = combined.slice(0, sodium.crypto_secretbox_NONCEBYTES);
+        var ct = combined.slice(sodium.crypto_secretbox_NONCEBYTES);
+        var kekBytes = kek instanceof Uint8Array
+          ? kek
+          : sodium.from_base64(kek, sodium.base64_variants.URLSAFE_NO_PADDING);
+        var dek = sodium.crypto_secretbox_open_easy(ct, nonce, kekBytes);
+        if (!dek) return thenDo(new Error('unwrapDek: authentication tag mismatch — wrong KEK or corrupted wrappedDek'));
+        thenDo(null, dek);
       } catch (e) { thenDo(e); }
     });
   },

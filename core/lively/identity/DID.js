@@ -86,11 +86,15 @@ module("lively.identity.DID")
         // Build a new DID document for a freshly registered identity.
         //
         // params: {
-        //   did:          String   — the did:jwk string (from didFromJwk)
-        //   publicKeyJwk: Object   — the device's EC P-256 public key JWK
-        //   credentialId: String   — base64url WebAuthn credential ID
-        //   deviceLabel:  String   — human-readable label, e.g. "MacBook Pro 2024"
-        //   handle:       String   — the user's chosen handle
+        //   did:                   String   — the did:jwk string (from didFromJwk)
+        //   publicKeyJwk:          Object   — the device's EC P-256 public key JWK
+        //   credentialId:          String   — base64url WebAuthn credential ID
+        //   deviceLabel:           String   — human-readable label, e.g. "MacBook Pro 2024"
+        //   handle:                String   — the user's chosen handle
+        //   // Optional delegation cert fields (§3.6):
+        //   delegationCert:        Object   — cert from DID.buildDelegationCert
+        //   softSigningKeyWrapped: String   — base64url KEK-wrapped soft signing key JWK
+        //   accountX25519Pub:      String   — base64url X25519 account public key
         // }
         //
         // The first verification method becomes both the authentication and
@@ -98,6 +102,14 @@ module("lively.identity.DID")
         buildDocument: function (params) {
           var methodId =
             params.did + "#" + this._methodFragment(params.credentialId);
+          var livelyMeta = {
+            credentialId: params.credentialId,
+            deviceLabel: params.deviceLabel || "Device",
+            addedAt: new Date().toISOString(),
+          };
+          if (params.delegationCert)        livelyMeta.delegationCert        = params.delegationCert;
+          if (params.softSigningKeyWrapped)  livelyMeta.softSigningKeyWrapped  = params.softSigningKeyWrapped;
+          if (params.accountX25519Pub)       livelyMeta.accountX25519Pub       = params.accountX25519Pub;
           return {
             "@context": [
               "https://www.w3.org/ns/did/v1",
@@ -112,11 +124,7 @@ module("lively.identity.DID")
                 publicKeyJwk: params.publicKeyJwk,
                 // Lively-specific metadata — not part of the W3C spec,
                 // stored here for convenience; servers may strip these.
-                lively: {
-                  credentialId: params.credentialId,
-                  deviceLabel: params.deviceLabel || "Device",
-                  addedAt: new Date().toISOString(),
-                },
+                lively: livelyMeta,
               },
             ],
             authentication: [methodId],
@@ -415,15 +423,15 @@ module("lively.identity.DID")
         // result (from lively.identity.WebAuthn.register), build the genesis
         // DID document and establish the session.
         //
-        // IDENTITY: DID document signing deferred. The document is stored
-        // unsigned; WebAuthn assertion signing will be added in a future
-        // iteration once the core login/encryption flow is working end-to-end.
-        //
         // registrationResult: the object returned by WebAuthn.register()
         // params: {
-        //   handle:      String
-        //   displayName: String
-        //   deviceLabel: String
+        //   handle:                String
+        //   displayName:           String
+        //   deviceLabel:           String
+        //   // Optional — populated when delegation cert ceremony succeeded:
+        //   delegationCert:        Object
+        //   softSigningKeyWrapped: String
+        //   accountX25519Pub:      String
         // }
         //
         // Calls thenDo(null, { did, document }).
@@ -437,6 +445,9 @@ module("lively.identity.DID")
             credentialId: registrationResult.credentialId,
             deviceLabel: params.deviceLabel || "Device",
             handle: params.handle,
+            delegationCert:        params.delegationCert        || null,
+            softSigningKeyWrapped:  params.softSigningKeyWrapped  || null,
+            accountX25519Pub:       params.accountX25519Pub       || null,
           });
 
           self.saveDocument(document, function (saveErr) {
@@ -457,6 +468,127 @@ module("lively.identity.DID")
               },
             );
           });
+        },
+
+        // Build a delegation certificate that lets a software device signing key
+        // sign envelopes on behalf of the user without per-save WebAuthn ceremonies.
+        //
+        // The passkey signs over H(delegationPayload) as the WebAuthn challenge.
+        // Verifiers follow the chain: envelope sig → devicePubKeyJwk → cert sig → passkey → did:jwk.
+        //
+        // options: {
+        //   credentialId:  String      — base64url WebAuthn credential ID
+        //   rpId:          String
+        //   softKeyPair:   CryptoKeyPair — from Crypto.generateSigningKeyPair
+        //   challenge:     Uint8Array  — fresh WebAuthn challenge from server
+        //                               (used only to satisfy the ceremony; the actual
+        //                               delegation challenge overrides it below)
+        // }
+        //
+        // Calls thenDo(null, { devicePubKeyJwk, credentialId, issuedAt, authenticatorData, clientDataJSON, signature }).
+        buildDelegationCert: function (options, thenDo) {
+          var self = this;
+          var c = lively.identity.crypto;
+          var wa = lively.identity.webAuthn;
+
+          c.exportPublicKeyJwk(options.softKeyPair.publicKey, function (err, devicePubKeyJwk) {
+            if (err) return thenDo(err);
+
+            var issuedAt = new Date().toISOString();
+            var delegationPayload = {
+              devicePubKeyJwk: devicePubKeyJwk,
+              credentialId: options.credentialId,
+              issuedAt: issuedAt
+            };
+
+            // challenge = SHA-256(canonicalJson(delegationPayload))
+            c.sha256(c.canonicalJson(delegationPayload), function (err, digestB64) {
+              if (err) return thenDo(err);
+              var delegationChallenge = c.base64urlDecode(digestB64);
+
+              wa.authenticate({
+                challenge: delegationChallenge,
+                rpId: options.rpId,
+                credentialIds: [options.credentialId]
+              }, function (err, assertion) {
+                if (err) return thenDo(err);
+                thenDo(null, {
+                  devicePubKeyJwk: devicePubKeyJwk,
+                  credentialId: options.credentialId,
+                  issuedAt: issuedAt,
+                  authenticatorData: assertion.authenticatorData,
+                  clientDataJSON: assertion.clientDataJSON,
+                  signature: assertion.signature
+                });
+              });
+            });
+          });
+        },
+
+        // Verify a delegation certificate.
+        // Confirms: (1) clientDataJSON.challenge === H(delegationPayload),
+        //           (2) the WebAuthn assertion signature is valid for the passkey in `did`.
+        //
+        // cert: delegation cert object from buildDelegationCert
+        // did:  the did:jwk string of the passkey that should have signed this cert
+        //
+        // Calls thenDo(null, true|false).
+        verifyDelegationCert: function (cert, did, thenDo) {
+          var c = lively.identity.crypto;
+
+          // Reconstruct the delegation payload to verify the challenge
+          var delegationPayload = {
+            devicePubKeyJwk: cert.devicePubKeyJwk,
+            credentialId: cert.credentialId,
+            issuedAt: cert.issuedAt
+          };
+
+          c.sha256(c.canonicalJson(delegationPayload), function (err, expectedDigestB64) {
+            if (err) return thenDo(err);
+
+            // Parse clientDataJSON (base64url encoded)
+            var clientDataBytes = c.base64urlDecode(cert.clientDataJSON);
+            var clientData;
+            try {
+              clientData = JSON.parse(new TextDecoder().decode(clientDataBytes));
+            } catch (e) {
+              return thenDo(null, false);
+            }
+
+            // clientData.challenge is base64url in the WebAuthn spec
+            if (clientData.challenge !== expectedDigestB64) return thenDo(null, false);
+
+            // Verify the assertion signature: signed over authenticatorData + SHA256(clientDataJSON)
+            // This mirrors what @simplewebauthn/server does on the server side.
+            // We use the passkey public key extracted from the did:jwk.
+            this.jwkFromDid(did, function (err, passkeyJwk) {
+              if (err) return thenDo(null, false);
+
+              var authDataBytes = c.base64urlDecode(cert.authenticatorData);
+              var clientDataBytesForSig = c.base64urlDecode(cert.clientDataJSON);
+
+              // signingInput = authenticatorData || SHA-256(clientDataJSON)
+              c.sha256(clientDataBytesForSig, function (err, clientDataHashB64) {
+                if (err) return thenDo(null, false);
+                var clientDataHash = c.base64urlDecode(clientDataHashB64);
+                var signingInput = new Uint8Array(authDataBytes.length + clientDataHash.length);
+                signingInput.set(authDataBytes);
+                signingInput.set(clientDataHash, authDataBytes.length);
+
+                c.importPublicKeyJwk(passkeyJwk, function (err, pubKey) {
+                  if (err) return thenDo(null, false);
+                  var sigBytes = c.base64urlDecode(cert.signature);
+                  crypto.subtle.verify(
+                    { name: 'ECDSA', hash: { name: 'SHA-256' } },
+                    pubKey,
+                    sigBytes,
+                    signingInput
+                  ).then(function (valid) { thenDo(null, valid); })
+                  .catch(function () { thenDo(null, false); });
+                });
+              });
+            }.bind(this));
+          }.bind(this));
         },
 
         // Complete authentication flow: given a successful WebAuthn assertion,
