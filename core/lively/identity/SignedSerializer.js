@@ -521,21 +521,41 @@ module("lively.identity.SignedSerializer")
               ) {
                 var world = this;
 
-                // No session → original behaviour unchanged
+                // Identity URLs (/@handle/objId) are owned by the identity server.
+                // The original WebDAV PUT sends raw HTML to that route, which the
+                // server rejects with 400.  Never let it run for identity URLs —
+                // including when a session hasn't been restored yet.
+                var isIdentityUrl = url && /^\/@[^/]+\/[^/]/.test(url);
+
                 if (!lively.identity.did.isLoggedIn()) {
+                  if (isIdentityUrl) {
+                    // Session not yet restored; skip silently — the next auto-save
+                    // will succeed once the session is available.
+                    return thenDo && thenDo(null);
+                  }
                   return originalSaveWorldAs.apply(world, arguments);
                 }
 
                 var user = lively.identity.did.currentUser();
 
-                // Proceed with original save first (writes the HTML to WebDAV)
-                originalSaveWorldAs.call(
-                  world,
-                  url,
-                  checkForOverwrites,
-                  bootstrapModuleURL,
-                  function (err) {
-                    if (err) return thenDo && thenDo(err);
+                function afterOriginalSave(continueWithEnvelope) {
+                  if (isIdentityUrl) {
+                    continueWithEnvelope();
+                  } else {
+                    originalSaveWorldAs.call(
+                      world,
+                      url,
+                      checkForOverwrites,
+                      bootstrapModuleURL,
+                      function (err) {
+                        if (err) return thenDo && thenDo(err);
+                        continueWithEnvelope();
+                      },
+                    );
+                  }
+                }
+
+                afterOriginalSave(function () {
 
                     // Then additionally write a signed envelope to the identity URL
                     var rawName = world.name;
@@ -625,8 +645,7 @@ module("lively.identity.SignedSerializer")
                           });
                       },
                     );
-                  },
-                );
+                });
               };
             })(lively.morphic.World.prototype.saveWorldAs),
           });
