@@ -556,7 +556,9 @@ function _runPostcardQuery(db, sql, params, limit, thenDo) {
           record:  { cid: env.record && env.record.cid },
           created: env.created,
           constellation: env.constellation || null,
-          replyTo: env.replyTo || null
+          replyTo: env.replyTo || null,
+          visibility: env.visibility || 'public',
+          recipients: (env.record && env.record.recipients) || []
         };
       } catch (e) { return null; }
     }).filter(Boolean);

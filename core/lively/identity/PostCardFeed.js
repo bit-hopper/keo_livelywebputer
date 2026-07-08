@@ -10,7 +10,7 @@
  *   lively.identity.PostCardFeed.open('@handle', { target: aMorph }) — embeds
  *
  * Feed shape from server (§7.1):
- *   GET /@:handle/postcards?after=<cursor>&limit=<n>
+ *   GET /@:handle/postcards?cursor=<cursor>&limit=<n>
  *   → { postcards: [{objId, did, state:{title}, record:{cid}, created, constellation, replyTo}],
  *       cursor: <lastObjId | null> }
  *
@@ -108,7 +108,7 @@ module('lively.identity.PostCardFeed')
         var self = this;
         var base = lively.identity.did.baseUrl();
         var url = base + '/' + encodeURIComponent(this._handle) + '/postcards?limit=20';
-        if (this._cursor) url += '&after=' + encodeURIComponent(this._cursor);
+        if (this._cursor) url += '&cursor=' + encodeURIComponent(this._cursor);
 
         var xhr = new XMLHttpRequest();
         xhr.open('GET', url, true);

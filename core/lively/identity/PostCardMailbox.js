@@ -180,17 +180,18 @@ module('lively.identity.PostCardMailbox')
           when.style.cssText = 'color:#8e8e93;font-size:11px;';
           when.textContent   = self._formatDate(rec.sentAt);
 
-          var openBtn = self._makeOpenBtn(function () {
-            var path = rec.senderHandle
-              ? '/@' + rec.senderHandle + '/' + rec.objId
-              : '/@' + rec.senderDid   + '/' + rec.objId;
-            window.open(path, '_blank');
-          });
-
           card.appendChild(from);
           card.appendChild(id);
           card.appendChild(when);
-          card.appendChild(openBtn);
+          // /@:handle/... routes resolve handles, not DIDs — without a
+          // senderHandle there is no working link to open, so omit the
+          // button rather than ship a 404 (audit F4).
+          if (rec.senderHandle) {
+            var openBtn = self._makeOpenBtn(function () {
+              window.open('/@' + rec.senderHandle + '/' + rec.objId, '_blank');
+            });
+            card.appendChild(openBtn);
+          }
           content.appendChild(card);
         });
       },

@@ -2,9 +2,14 @@
  * lively.identity.PostCardUtils
  *
  * Shared client-side utilities for rendering ProseMirror snapshot JSON as HTML.
- * Used by PostCardFeed and PostCardPlayback — single source of truth for the
- * snapshot → HTML transform so all three render paths (feed preview, playback
- * viewer, server-side) stay in sync.
+ * Used by PostCardFeed and PostCardPlayback, so those two stay in sync.
+ *
+ * NOT shared with the server: IdentityServer.js's `_pmNodeToHtml` is an
+ * independent copy for static server-side rendering, and PostCardEditor.js's
+ * ProseMirror `toDOM` specs are a third independent render path for the live
+ * editor view. All three currently support a different subset of marks/nodes
+ * (audit F21) — treat changes here as needing the same change made in both
+ * other places until they're consolidated into one shared module.
  */
 
 module('lively.identity.PostCardUtils')
@@ -71,8 +76,9 @@ module('lively.identity.PostCardUtils')
               case 'italic': text = '<em>' + text + '</em>'; break;
               case 'code':   text = '<code>' + text + '</code>'; break;
               case 'link': {
-                var href = mark.attrs && mark.attrs.href ? escapeAttr(mark.attrs.href) : '#';
-                text = '<a href="' + href + '">' + text + '</a>';
+                var raw  = mark.attrs && mark.attrs.href ? mark.attrs.href : '#';
+                var href = escapeAttr(safeHref(raw));
+                text = '<a href="' + href + '" rel="noopener noreferrer">' + text + '</a>';
                 break;
               }
             }
@@ -93,6 +99,18 @@ module('lively.identity.PostCardUtils')
 
     function escapeAttr(str) {
       return String(str).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    // Returns a safe href, or '#' if the scheme is not allow-listed.
+    // Blocks javascript:, data:, vbscript:, etc. Allows http(s), mailto, and
+    // relative/anchor URLs (no scheme).
+    function safeHref(raw) {
+      var s = String(raw || '').trim();
+      var m = /^([a-z][a-z0-9+.\-]*):/i.exec(s);
+      if (!m) return s; // relative or anchor — allowed
+      var scheme = m[1].toLowerCase();
+      if (scheme === 'http' || scheme === 'https' || scheme === 'mailto') return s;
+      return '#';
     }
 
   }); // end module('lively.identity.PostCardUtils')

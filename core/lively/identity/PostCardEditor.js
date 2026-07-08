@@ -622,7 +622,12 @@ module('lively.identity.PostCardEditor')
             code:   { parseDOM: [{ tag: 'code' }],                  toDOM: function() { return ['code', 0]; } },
             link:   { attrs: { href: {}, title: { default: null } },
                       parseDOM: [{ tag: 'a[href]', getAttrs: function(d) { return { href: d.getAttribute('href'), title: d.getAttribute('title') }; } }],
-                      toDOM: function(m) { return ['a', m.attrs, 0]; } },
+                      toDOM: function(m) {
+                        var href = m.attrs.href || '';
+                        var scheme = /^([a-z][a-z0-9+.\-]*):/i.exec(href);
+                        var safeHref = (!scheme || scheme[1].toLowerCase() === 'http' || scheme[1].toLowerCase() === 'https' || scheme[1].toLowerCase() === 'mailto') ? href : '#';
+                        return ['a', { href: safeHref, title: m.attrs.title, rel: 'noopener noreferrer' }, 0];
+                      } },
           },
         });
       },

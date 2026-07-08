@@ -176,6 +176,18 @@ function escapeHtml(str) {
   });
 }
 
+// Returns a safe href, or '#' if the scheme is not allow-listed.
+// Blocks javascript:, data:, vbscript:, etc. Allows http(s), mailto, and
+// relative/anchor URLs (no scheme).
+function safeHref(raw) {
+  var s = String(raw || '').trim();
+  var m = /^([a-z][a-z0-9+.\-]*):/i.exec(s);
+  if (!m) return s; // relative or anchor — allowed
+  var scheme = m[1].toLowerCase();
+  if (scheme === 'http' || scheme === 'https' || scheme === 'mailto') return s;
+  return '#';
+}
+
 // Serves a stored world envelope as a bootable Lively page.
 // Embeds record.payload as JSON in a <script type="text/x-lively-world"> tag
 // so the existing JSONMorphicData / World.createFromJSOOn path picks it up
@@ -300,7 +312,8 @@ function _pmNodeToHtml(node) {
         else if (mark.type === 'underline') text = '<u>' + text + '</u>';
         else if (mark.type === 'strike') text = '<s>' + text + '</s>';
         else if (mark.type === 'link' && mark.attrs && mark.attrs.href)
-          text = '<a href="' + escapeHtml(mark.attrs.href) + '">' + text + '</a>';
+          text = '<a href="' + escapeHtml(safeHref(mark.attrs.href)) +
+                 '" rel="noopener noreferrer">' + text + '</a>';
       });
     }
     return text;
@@ -361,6 +374,33 @@ function buildAccessDeniedPage(params) {
     action +
     "</body></html>"
   );
+}
+
+// Can the requester read this envelope? True if public, or the requester is
+// the owner, or the requester's DID is in envelope.record.recipients (shared
+// visibility). Shared by every full-envelope GET route so they don't drift
+// out of sync with each other (audit F19).
+function _canReadEnvelope(envelope, identity) {
+  if (envelope.visibility === "public") return true;
+  if (!identity) return false;
+  if (identity.did === envelope.did) return true;
+  var recipients = (envelope.record && envelope.record.recipients) || [];
+  return recipients.some(function (r) {
+    return (r.did || r) === identity.did;
+  });
+}
+
+// Can `viewerDid` (may be null for anonymous) see this postcard metadata row?
+// meta comes from ObjectRepository's postcard listing projection, which
+// carries `visibility` and `recipients` for exactly this decision (§10.4).
+function _canSeePostcardMeta(meta, viewerDid) {
+  if (!meta) return false;
+  if (meta.visibility === 'public' || meta.visibility == null) return true;
+  if (!viewerDid) return false;
+  if (meta.did === viewerDid) return true; // owner
+  return (meta.recipients || []).some(function (r) {
+    return (r && (r.did || r)) === viewerDid; // shared recipient
+  });
 }
 
 module.exports = function (route, app) {
@@ -723,6 +763,10 @@ module.exports = function (route, app) {
       if (!did) return res.status(404).json({ error: "Handle not found: @" + handle });
       objectRepo.listPostcardsForUser(did, { limit: limit, cursor: cursor }, function (err, result) {
         if (err) return res.status(500).json({ error: String(err) });
+        var viewerDid = req.identity ? req.identity.did : null;
+        result.postcards = result.postcards
+          .filter(function (m) { return _canSeePostcardMeta(m, viewerDid); })
+          .map(function (m) { delete m.recipients; return m; });
         res.json(result);
       });
     });
@@ -746,54 +790,67 @@ module.exports = function (route, app) {
   // POST /@:handle/inbox — deliver a post card reference to a recipient.
   // Checks the recipient's block list before writing.
   // Returns the byte-identical postal response for all failure causes (§2.3 anti-leak invariant).
-  // Also records the delivery outcome in the sender's own deliveries log (fire-and-forget).
+  // Also records the delivery outcome in the sender's own deliveries log.
+  //
+  // Timing: every outcome (unknown handle, blocked, delivered) performs the
+  // same registry lookup + settings lookup + one awaited write before
+  // responding, so response latency doesn't reveal which outcome occurred
+  // (§2.3 INVARIANT — audit F7). The settings lookup runs even for an unknown
+  // handle (recipientDid null is a normal, equally-fast no-match query); the
+  // delivery-log write is awaited on every path instead of fire-and-forget.
+  // The one residual asymmetry — a delivered card also writes an inbox
+  // record — is an unavoidable extra write the audit calls out as acceptable
+  // residual, not the structural gap being closed here.
   app.post("/@:handle/inbox", auth.requireAuth, function (req, res) {
     var handle       = req.params.handle;
     var body         = req.body;
     var senderHandle = req.identity ? req.identity.handle : null;
+    var senderDid    = req.identity ? req.identity.did : null;
     var POSTAL_REJECTION = { returned: true, reason: "Returned to sender. Not deliverable as addressed / unable to forward." };
 
-    if (!body || !body.objId || !body.senderDid) {
-      return res.status(400).json({ error: "Missing required fields: objId, senderDid" });
+    if (!body || !body.objId) {
+      return res.status(400).json({ error: "Missing required field: objId" });
+    }
+    if (!senderDid) {
+      return res.status(401).json({ error: "Not authenticated" });
     }
 
-    function _recordDelivery(status) {
-      if (!senderHandle) return;
+    function _recordDelivery(status, thenDo) {
+      if (!senderHandle) return thenDo();
       var rec = { objId: body.objId, recipientHandle: handle, sentAt: new Date().toISOString(), status: status };
       objectRepo.putDeliveryRecord(senderHandle, rec, function (err) {
         if (err) console.warn('[IdentityServer] putDeliveryRecord failed:', err.message);
+        thenDo();
       });
     }
 
     handleRegistry.resolve(handle, function (err, recipientDid) {
-      // Unknown handle → postal response (does not reveal the reason)
-      if (err || !recipientDid) {
-        _recordDelivery('returned');
-        return res.json(POSTAL_REJECTION);
-      }
+      var unknownHandle = !!(err || !recipientDid);
 
-      // Load recipient's settings to check block list
-      objectRepo.getSettingsForDid(recipientDid, function (err, settingsEnv) {
-        var settings = (settingsEnv && settingsEnv.record && settingsEnv.record.payload) || {};
+      // Load settings unconditionally — even for an unknown handle — so the
+      // response timing is the same shape regardless of outcome.
+      objectRepo.getSettingsForDid(recipientDid || null, function (err2, settingsEnv) {
+        var settings = (settingsEnv && settingsEnv.state) || {};
         var blockedDids    = settings.blockedDids    || [];
         var blockedHandles = settings.blockedHandles || [];
 
-        var senderDid = body.senderDid;
-
-        var isBlocked =
+        var isBlocked = !unknownHandle && (
           blockedDids.indexOf(senderDid) !== -1 ||
-          (senderHandle && blockedHandles.indexOf(senderHandle) !== -1);
+          (senderHandle && blockedHandles.indexOf(senderHandle) !== -1)
+        );
 
-        if (isBlocked) {
-          _recordDelivery('returned');
-          return res.json(POSTAL_REJECTION);
+        if (unknownHandle || isBlocked) {
+          return _recordDelivery('returned', function () {
+            res.json(POSTAL_REJECTION);
+          });
         }
 
         var record = { objId: body.objId, senderDid: senderDid, senderHandle: senderHandle, sentAt: new Date().toISOString() };
-        objectRepo.putInboxRecord(handle, record, function (err) {
-          if (err) return res.status(500).json({ error: String(err) });
-          _recordDelivery('delivered');
-          res.json({ ok: true, delivered: true });
+        objectRepo.putInboxRecord(handle, record, function (err3) {
+          if (err3) return res.status(500).json({ error: String(err3) });
+          _recordDelivery('delivered', function () {
+            res.json({ ok: true, delivered: true });
+          });
         });
       });
     });
@@ -825,14 +882,17 @@ module.exports = function (route, app) {
     objectRepo.getSettingsForDid(req.identity.did, function (err, envelope) {
       if (err) return res.status(500).json({ error: String(err) });
       if (envelope) return res.json(envelope);
-      // Auto-create default settings on first read
-      var payload  = { blockedDids: [], blockedHandles: [] };
+      // Auto-create default settings on first read.
+      // Block list lives in state (server-readable denormalized metadata),
+      // not payload — settings need to be checked without decrypting a
+      // payload (audit F18).
+      var payload  = {};
       var objId    = genObjId();
       var defEnv   = {
         objId: objId, did: req.identity.did, type: 'settings', visibility: 'private',
         created: new Date().toISOString(),
         record: { cid: computeCidSync(payload), prevCid: null, payload: payload },
-        state: { name: 'settings' }
+        state: { name: 'settings', blockedDids: [], blockedHandles: [] }
       };
       objectRepo.put(defEnv, function (putErr) {
         if (putErr) return res.status(500).json({ error: String(putErr) });
@@ -852,6 +912,28 @@ module.exports = function (route, app) {
       return res.status(400).json({ error: 'Envelope type must be "settings"' });
     if (envelope.did !== req.identity.did)
       return res.status(403).json({ error: "Forbidden: DID mismatch" });
+    // Normalize: block list must live in state so the inbox handler can read it
+    // without decrypting a payload. Move it out of payload if an old client
+    // put it there (audit F18). record.cid is defined as the hash of
+    // record.payload (SignedSerializer.js hard-fails deserialize on a
+    // mismatch) — since we're changing payload's content, cid must be
+    // recomputed for it, not carried over from what the client sent.
+    var pl = (envelope.record && envelope.record.payload) || {};
+    if (pl.blockedDids || pl.blockedHandles) {
+      var newPayload = Object.assign({}, pl);
+      delete newPayload.blockedDids;
+      delete newPayload.blockedHandles;
+      envelope = Object.assign({}, envelope, {
+        state: Object.assign({}, envelope.state || {}, {
+          blockedDids:    pl.blockedDids    || (envelope.state && envelope.state.blockedDids)    || [],
+          blockedHandles: pl.blockedHandles || (envelope.state && envelope.state.blockedHandles) || [],
+        }),
+        record: Object.assign({}, envelope.record, {
+          payload: newPayload,
+          cid: computeCidSync(newPayload),
+        }),
+      });
+    }
     objectRepo.put(envelope, function (err, result) {
       if (err) return res.status(500).json({ error: String(err) });
       res.json({ ok: true, objId: result.objId, cid: result.cid, changed: result.changed });
@@ -874,13 +956,9 @@ module.exports = function (route, app) {
         if (err) return res.status(500).json({ error: String(err) });
         // Visibility filter: omit envelopes the requester cannot read (§10.4)
         var viewerDid = req.identity ? req.identity.did : null;
-        result.postcards = result.postcards.filter(function (meta) {
-          if (!meta) return false;
-          // Public postcards are always visible; private/shared only to owner
-          // We only have metadata here so we check the full envelope lazily via a
-          // flag if it becomes relevant; for listing just expose public and owned items.
-          return true; // full filtering happens on individual GET /@:handle/:objId calls
-        });
+        result.postcards = result.postcards
+          .filter(function (m) { return _canSeePostcardMeta(m, viewerDid); })
+          .map(function (m) { delete m.recipients; return m; });
         res.json(result);
       });
     });
@@ -897,35 +975,25 @@ module.exports = function (route, app) {
       if (!envelope)
         return res.status(404).json({ error: "Object not found: " + objId });
 
-      if (envelope.visibility !== "public") {
-        var isOwner = req.identity && req.identity.did === envelope.did;
-        var recipients = (envelope.record && envelope.record.recipients) || [];
-        var isRecipient =
-          req.identity &&
-          recipients.some(function (r) {
-            return (r.did || r) === req.identity.did;
-          });
-
-        if (!isOwner && !isRecipient) {
-          if (req.accepts(["html", "json"]) === "html") {
-            return res
-              .status(403)
-              .send(
-                buildAccessDeniedPage({
-                  title: "Access denied",
-                  heading: "This world is private",
-                  message:
-                    "@" +
-                    handle +
-                    " has not shared this object with you.",
-                  objId: objId,
-                  showRequestButton: true,
-                  loggedIn: !!req.identity,
-                }),
-              );
-          }
-          return res.status(403).json({ error: "Forbidden" });
+      if (!_canReadEnvelope(envelope, req.identity)) {
+        if (req.accepts(["html", "json"]) === "html") {
+          return res
+            .status(403)
+            .send(
+              buildAccessDeniedPage({
+                title: "Access denied",
+                heading: "This world is private",
+                message:
+                  "@" +
+                  handle +
+                  " has not shared this object with you.",
+                objId: objId,
+                showRequestButton: true,
+                loggedIn: !!req.identity,
+              }),
+            );
         }
+        return res.status(403).json({ error: "Forbidden" });
       }
 
       if (envelope.type === "world" && req.accepts(["html", "json"]) === "html") {
@@ -1390,6 +1458,10 @@ module.exports = function (route, app) {
     var cursor = req.query.cursor || null;
     objectRepo.listPostcardsForConstellation(constellation, { limit: limit, cursor: cursor }, function (err, result) {
       if (err) return res.status(500).json({ error: String(err) });
+      var viewerDid = req.identity ? req.identity.did : null;
+      result.postcards = result.postcards
+        .filter(function (m) { return _canSeePostcardMeta(m, viewerDid); })
+        .map(function (m) { delete m.recipients; return m; });
       res.json(result);
     });
   });
@@ -1408,9 +1480,8 @@ module.exports = function (route, app) {
         return res.status(404).json({ error: "Post card " + objId + " is not in constellation " + constellation });
       }
 
-      if (envelope.visibility !== "public") {
-        var isOwner = req.identity && req.identity.did === envelope.did;
-        if (!isOwner) return res.status(403).json({ error: "Forbidden" });
+      if (!_canReadEnvelope(envelope, req.identity)) {
+        return res.status(403).json({ error: "Forbidden" });
       }
 
       if (req.accepts(["html", "json"]) === "html") {
@@ -1426,7 +1497,11 @@ module.exports = function (route, app) {
     var cursor = req.query.cursor || null;
     objectRepo.listPostcardsForConstellation(constellation, { limit: limit, cursor: cursor }, function (err, result) {
       if (err) return res.status(500).json({ error: String(err) });
-      res.json({ constellation: constellation, postcards: result.postcards, cursor: result.cursor });
+      var viewerDid = req.identity ? req.identity.did : null;
+      var postcards = result.postcards
+        .filter(function (m) { return _canSeePostcardMeta(m, viewerDid); })
+        .map(function (m) { delete m.recipients; return m; });
+      res.json({ constellation: constellation, postcards: postcards, cursor: result.cursor });
     });
   });
 
