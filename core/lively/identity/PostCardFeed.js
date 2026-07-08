@@ -21,7 +21,7 @@
  */
 
 module('lively.identity.PostCardFeed')
-  .requires('lively.identity.DID')
+  .requires('lively.identity.DID', 'lively.identity.PostCardUtils')
   .toRun(function () {
 
     lively.morphic.Box.subclass('lively.identity.PostCardFeed',
@@ -303,7 +303,7 @@ module('lively.identity.PostCardFeed')
           try { envelope = JSON.parse(xhr.responseText); } catch (e) { return callback(e); }
           var snapshot = envelope.record && envelope.record.payload && envelope.record.payload.snapshot;
           if (!snapshot) return callback(null, '(no preview)');
-          callback(null, _snapshotToHtml(snapshot));
+          callback(null, lively.identity.postCardUtils.snapshotToHtml(snapshot));
         };
         xhr.onerror = function () { callback(new Error('network error')); };
         xhr.send();
@@ -328,84 +328,6 @@ module('lively.identity.PostCardFeed')
       },
 
     });
-
-    // ─── ProseMirror snapshot → HTML (client-side; mirrors server _pmNodeToHtml) ──
-
-    function _snapshotToHtml(snapshot) {
-      if (!snapshot || !snapshot.content) return '';
-      return snapshot.content.map(_pmNodeToHtml).join('');
-    }
-
-    function _pmNodeToHtml(node) {
-      if (!node) return '';
-      var tag, inner;
-      switch (node.type) {
-        case 'paragraph':
-          inner = _inlineContent(node.content);
-          return '<p>' + inner + '</p>';
-        case 'heading':
-          var level = (node.attrs && node.attrs.level) ? node.attrs.level : 1;
-          tag = 'h' + Math.min(6, Math.max(1, level));
-          return '<' + tag + '>' + _inlineContent(node.content) + '</' + tag + '>';
-        case 'bullet_list':
-          return '<ul>' + (node.content || []).map(_pmNodeToHtml).join('') + '</ul>';
-        case 'ordered_list':
-          return '<ol>' + (node.content || []).map(_pmNodeToHtml).join('') + '</ol>';
-        case 'list_item':
-          return '<li>' + (node.content || []).map(_pmNodeToHtml).join('') + '</li>';
-        case 'blockquote':
-          return '<blockquote>' + (node.content || []).map(_pmNodeToHtml).join('') + '</blockquote>';
-        case 'code_block':
-          return '<pre><code>' + _escapeHtml(_inlineContent(node.content)) + '</code></pre>';
-        case 'hard_break':
-          return '<br>';
-        case 'math_inline':
-          return '<code class="math-inline">' + _escapeHtml((node.attrs && node.attrs.value) || '') + '</code>';
-        case 'math_display':
-          return '<pre class="math-display">' + _escapeHtml((node.attrs && node.attrs.value) || '') + '</pre>';
-        case 'embeddedPart':
-          var partId = (node.attrs && node.attrs.objId) ? node.attrs.objId : '(embedded)';
-          return '<div class="embedded-part-placeholder" data-obj-id="' + _escapeAttr(partId) + '">[Embedded Part: ' + _escapeHtml(partId) + ']</div>';
-        default:
-          if (node.content) return (node.content || []).map(_pmNodeToHtml).join('');
-          return '';
-      }
-    }
-
-    function _inlineContent(content) {
-      if (!content) return '';
-      return content.map(function (node) {
-        if (node.type === 'text') {
-          var text = _escapeHtml(node.text || '');
-          var marks = node.marks || [];
-          marks.forEach(function (mark) {
-            switch (mark.type) {
-              case 'bold':   text = '<strong>' + text + '</strong>'; break;
-              case 'italic': text = '<em>' + text + '</em>'; break;
-              case 'code':   text = '<code>' + text + '</code>'; break;
-              case 'link':
-                var href = mark.attrs && mark.attrs.href ? _escapeAttr(mark.attrs.href) : '#';
-                text = '<a href="' + href + '">' + text + '</a>';
-                break;
-            }
-          });
-          return text;
-        }
-        return _pmNodeToHtml(node);
-      }).join('');
-    }
-
-    function _escapeHtml(str) {
-      return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-    }
-
-    function _escapeAttr(str) {
-      return String(str).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    }
 
     Object.extend(lively.identity.PostCardFeed, {
       openFeed: function (handle, options) {

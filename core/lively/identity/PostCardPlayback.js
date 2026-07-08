@@ -29,7 +29,7 @@
  */
 
 module('lively.identity.PostCardPlayback')
-  .requires('lively.identity.DID')
+  .requires('lively.identity.DID', 'lively.identity.PostCardUtils')
   .toRun(function () {
 
     lively.morphic.Box.subclass('lively.identity.PostCardPlayback',
@@ -44,6 +44,9 @@ module('lively.identity.PostCardPlayback')
         this._versions = [];
         this._currentIndex = 0;
         this._loading = false;
+        this._playing = false;
+        this._playTimer = null;
+        this._playBtn = null;
         this._buildChrome();
         this._fetchVersions();
       },
@@ -87,9 +90,23 @@ module('lively.identity.PostCardPlayback')
         this.addMorph(timelinePanel);
         this._timelinePanel = timelinePanel;
 
+        // Play/pause button
+        var playBtn = document.createElement('button');
+        playBtn.textContent = '▶';
+        playBtn.title = 'Play / pause auto-advance';
+        playBtn.style.cssText = [
+          'position:absolute', 'top:10px', 'left:12px',
+          'width:32px', 'height:28px', 'font-size:14px',
+          'cursor:pointer', 'border:1px solid #ccc',
+          'border-radius:3px', 'background:#fff',
+        ].join(';');
+        playBtn.addEventListener('click', function () { self._togglePlay(); });
+        timelinePanel.renderContext().shapeNode.appendChild(playBtn);
+        this._playBtn = playBtn;
+
         // Slider — rendered as an <input type="range"> via HtmlWrapperMorph
-        var sliderWrap = new lively.morphic.HtmlWrapperMorph(lively.pt(520, 28));
-        sliderWrap.setPosition(lively.pt(12, 8));
+        var sliderWrap = new lively.morphic.HtmlWrapperMorph(lively.pt(456, 28));
+        sliderWrap.setPosition(lively.pt(52, 8));
         var sliderInput = document.createElement('input');
         sliderInput.type = 'range';
         sliderInput.min = '0';
@@ -109,8 +126,8 @@ module('lively.identity.PostCardPlayback')
           'Loading versions…',
           { fontSize: 11, textColor: Color.gray }
         );
-        versionInfo.setPosition(lively.pt(540, 14));
-        versionInfo.setExtent(lively.pt(110, 20));
+        versionInfo.setPosition(lively.pt(516, 14));
+        versionInfo.setExtent(lively.pt(136, 20));
         versionInfo.setTextAlignment('right');
         timelinePanel.addMorph(versionInfo);
         this._versionInfo = versionInfo;
@@ -202,6 +219,31 @@ module('lively.identity.PostCardPlayback')
 
     'playback', {
 
+      _togglePlay: function () {
+        if (this._playing) { this._stopPlay(); } else { this._startPlay(); }
+      },
+
+      _startPlay: function () {
+        if (this._playing || !this._versions || !this._versions.length) return;
+        this._playing = true;
+        if (this._playBtn) this._playBtn.textContent = '⏸';
+        var self = this;
+        // Advance every 2 s; skip the tick if still loading the previous version.
+        this._playTimer = setInterval(function () {
+          if (self._loading) return;
+          var next = self._currentIndex + 1;
+          if (next >= self._versions.length) { self._stopPlay(); return; }
+          self._seekTo(next);
+        }, 2000);
+      },
+
+      _stopPlay: function () {
+        this._playing = false;
+        clearInterval(this._playTimer);
+        this._playTimer = null;
+        if (this._playBtn) this._playBtn.textContent = '▶';
+      },
+
       _seekTo: function (index) {
         if (this._loading) return;
         var versions = this._versions;
@@ -255,7 +297,7 @@ module('lively.identity.PostCardPlayback')
             titleHtml = '<h1 style="font-size:22px;margin:0 0 16px">' +
                         _escapeHtml(envelope.state.title) + '</h1>';
           }
-          self._setSnapHtml(titleHtml + _snapshotToHtml(snapshot));
+          self._setSnapHtml(titleHtml + lively.identity.postCardUtils.snapshotToHtml(snapshot));
         };
         xhr.onerror = function () {
           self._loading = false;
@@ -271,8 +313,7 @@ module('lively.identity.PostCardPlayback')
     'navigation', {
 
       _exitPlayback: function () {
-        // Attempt to find an existing PostCardEditor for this card and bring it forward.
-        // If none exists, open a new editor.
+        this._stopPlay();
         var self = this;
         var existing = null;
         (lively.morphic.World.current().submorphs || []).forEach(function (m) {
@@ -304,84 +345,6 @@ module('lively.identity.PostCardPlayback')
       },
 
     });
-
-    // ─── ProseMirror snapshot → HTML ─────────────────────────────────────────────
-    // (local copy; mirrors PostCardFeed / IdentityServer._pmNodeToHtml)
-
-    function _snapshotToHtml(snapshot) {
-      if (!snapshot || !snapshot.content) return '';
-      return snapshot.content.map(_pmNodeToHtml).join('');
-    }
-
-    function _pmNodeToHtml(node) {
-      if (!node) return '';
-      switch (node.type) {
-        case 'paragraph':
-          return '<p>' + _inlineContent(node.content) + '</p>';
-        case 'heading': {
-          var level = Math.min(6, Math.max(1, (node.attrs && node.attrs.level) ? node.attrs.level : 1));
-          return '<h' + level + '>' + _inlineContent(node.content) + '</h' + level + '>';
-        }
-        case 'bullet_list':
-          return '<ul>' + (node.content || []).map(_pmNodeToHtml).join('') + '</ul>';
-        case 'ordered_list':
-          return '<ol>' + (node.content || []).map(_pmNodeToHtml).join('') + '</ol>';
-        case 'list_item':
-          return '<li>' + (node.content || []).map(_pmNodeToHtml).join('') + '</li>';
-        case 'blockquote':
-          return '<blockquote>' + (node.content || []).map(_pmNodeToHtml).join('') + '</blockquote>';
-        case 'code_block':
-          return '<pre><code>' + _escapeHtml(_inlineContent(node.content)) + '</code></pre>';
-        case 'hard_break':
-          return '<br>';
-        case 'math_inline':
-          return '<code class="math-inline">' + _escapeHtml((node.attrs && node.attrs.value) || '') + '</code>';
-        case 'math_display':
-          return '<pre class="math-display">' + _escapeHtml((node.attrs && node.attrs.value) || '') + '</pre>';
-        case 'embeddedPart': {
-          var partId = (node.attrs && node.attrs.objId) ? node.attrs.objId : '(embedded)';
-          return '<div class="embedded-part-placeholder" data-obj-id="' + _escapeAttr(partId) + '">[Embedded Part: ' + _escapeHtml(partId) + ']</div>';
-        }
-        default:
-          if (node.content) return (node.content || []).map(_pmNodeToHtml).join('');
-          return '';
-      }
-    }
-
-    function _inlineContent(content) {
-      if (!content) return '';
-      return content.map(function (node) {
-        if (node.type === 'text') {
-          var text = _escapeHtml(node.text || '');
-          (node.marks || []).forEach(function (mark) {
-            switch (mark.type) {
-              case 'bold':   text = '<strong>' + text + '</strong>'; break;
-              case 'italic': text = '<em>' + text + '</em>'; break;
-              case 'code':   text = '<code>' + text + '</code>'; break;
-              case 'link': {
-                var href = mark.attrs && mark.attrs.href ? _escapeAttr(mark.attrs.href) : '#';
-                text = '<a href="' + href + '">' + text + '</a>';
-                break;
-              }
-            }
-          });
-          return text;
-        }
-        return _pmNodeToHtml(node);
-      }).join('');
-    }
-
-    function _escapeHtml(str) {
-      return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-    }
-
-    function _escapeAttr(str) {
-      return String(str).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    }
 
     Object.extend(lively.identity.PostCardPlayback, {
       openPlayback: function (handle, objId, options) {
