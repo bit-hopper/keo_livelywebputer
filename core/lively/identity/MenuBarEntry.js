@@ -42,6 +42,7 @@ module("lively.identity.MenuBarEntry")
           }
           return [
             ["Mailbox", [
+              ["New Postcard", function () { self.newPostcard(); }],
               ["Received",  function () { self.openMailbox("received");  }],
               ["Delivered", function () { self.openMailbox("delivered"); }],
               ["Returned",  function () { self.openMailbox("returned");  }],
@@ -110,6 +111,13 @@ module("lively.identity.MenuBarEntry")
         openMyWorlds: function openMyWorlds() {
           lively.require("lively.identity.WorldsBrowser").toRun(function () {
             lively.BuildSpec("lively.identity.WorldsBrowser").createMorph().openInWorldCenter();
+          });
+        },
+
+        newPostcard: function newPostcard() {
+          var handle = lively.identity.did.currentUser().handle;
+          lively.require("lively.identity.PostCardEditor").toRun(function () {
+            lively.identity.PostCardEditor.newCard(handle);
           });
         },
 
