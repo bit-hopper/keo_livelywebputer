@@ -2185,7 +2185,15 @@ lively.morphic.World.addMethods(
                 ['My user config', this.showUserConfig.bind(this)],
                 ['Preferences', this.openPreferences.bind(this)],
                 ['Set world extent', this.askForNewWorldExtent.bind(this)],
-                ['Set background color', this.askForNewBackgroundColor.bind(this)],
+                ['Themes', (function() {
+                    var Th = lively.morphic.Themes;
+                    if (!Th || typeof Th.menuItemsFor !== 'function') {
+                        lively.require('lively.morphic.Themes').toRun(function() {});
+                        return [['(loading…)', function() {}]];
+                    }
+                    return Th.menuItemsFor(world);
+                })()],
+                ['Set background color', this.openBackgroundColorPicker.bind(this)],
                 ['Set grid spacing', function() { lively.ide.commands.exec("lively.morphic.Morph.setGridSpacing") }]]
             ],
             ['Debugging', this.debuggingMenuItems(world)],

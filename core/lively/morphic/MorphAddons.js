@@ -1589,6 +1589,113 @@ module("lively.morphic.MorphAddons")
             "Color." + oldColor,
           );
         },
+
+        openBackgroundColorPicker: function() {
+          var world = this,
+              originalFill = world.getFill(),
+              originalCSS = world.getStyleSheet(),
+              committed = false;
+
+          var cols = 8, size = 26, gap = 4, pad = 6;
+          var names = CrayonColors.colorNames();
+          var rows = Math.ceil(names.length / cols);
+          var gridH = pad + rows * (size + gap);
+          var panelW = pad * 2 + cols * (size + gap) - gap;
+          var panelH = gridH + 60;
+
+          var panel = new lively.morphic.Box(lively.rect(0, 0, panelW, panelH));
+          panel.setFill(Color.rgb(245, 245, 245));
+          panel.setBorderWidth(0);
+
+          function commitColor(color, label) {
+              committed = true;
+              if (world.themeName) {
+                  var Th = lively.morphic.Themes;
+                  if (Th && Th.stripThemeCSS) {
+                      world.setStyleSheet(Th.stripThemeCSS(world.getStyleSheet()) || null);
+                  }
+                  delete world.themeName;
+              }
+              world.setFill(color);
+              win.remove();
+              world.alertOK(label);
+          }
+
+          // swatch grid
+          names.forEach(function(name, i) {
+              var color = CrayonColors[name];
+              var x = pad + (i % cols) * (size + gap),
+                  y = pad + Math.floor(i / cols) * (size + gap),
+                  sw = new lively.morphic.Box(lively.rect(x, y, size, size));
+              sw.setFill(color);
+              sw.setBorderWidth(1);
+              sw.setBorderColor(Color.gray);
+              sw.onMouseMove = function(evt) { world.setFill(color); };
+              sw.onMouseDown = function(evt) {
+                  commitColor(color, 'Background set to ' + name);
+                  return true;
+              };
+              panel.addMorph(sw);
+          });
+
+          // current-color chip
+          var chipY = gridH + 4;
+          var chip = new lively.morphic.Box(lively.rect(pad, chipY, size * 2, size));
+          chip.setFill(originalFill instanceof Color ? originalFill : Color.white);
+          chip.setBorderWidth(1);
+          chip.setBorderColor(Color.gray);
+          panel.addMorph(chip);
+
+          // hex/rgb text field
+          var fieldX = pad + size * 2 + gap;
+          var field = new lively.morphic.Text(
+              lively.rect(fieldX, chipY, panelW - fieldX - pad, size),
+              originalFill instanceof Color ? '#' + originalFill.toHexString() : '');
+          field.setFill(Color.white);
+          field.setBorderWidth(1);
+          field.setBorderColor(Color.gray);
+          panel.addMorph(field);
+
+          var btnY = chipY + size + 6;
+          var btnW = 70, btnH = 24;
+
+          var applyBtn = new lively.morphic.Button(
+              lively.rect(panelW - pad - btnW * 2 - gap, btnY, btnW, btnH), 'Apply');
+          lively.bindings.connect(applyBtn, 'fire', {fire: function() {
+              var str = field.textString.trim();
+              var newColor;
+              try {
+                  newColor = str.match(/^Color\./) ? eval(str) : Color.fromString(str);
+              } catch(e) {}
+              if (!(newColor instanceof Color)) {
+                  world.alert('Not a valid color: ' + str);
+                  return;
+              }
+              commitColor(newColor, 'Background color applied.');
+          }}, 'fire');
+          panel.addMorph(applyBtn);
+
+          var cancelBtn = new lively.morphic.Button(
+              lively.rect(panelW - pad - btnW, btnY, btnW, btnH), 'Cancel');
+          lively.bindings.connect(cancelBtn, 'fire', {fire: function() {
+              world.setFill(originalFill);
+              world.setStyleSheet(originalCSS);
+              win.remove();
+          }}, 'fire');
+          panel.addMorph(cancelBtn);
+
+          var win = world.addFramedMorph(panel, 'Background color');
+
+          // restore original fill/CSS when closed via the X button
+          var origShutdown = win.initiateShutdown.bind(win);
+          win.initiateShutdown = function() {
+              if (!committed) {
+                  world.setFill(originalFill);
+                  world.setStyleSheet(originalCSS);
+              }
+              origShutdown();
+          };
+        },
       },
       "auth",
       {
