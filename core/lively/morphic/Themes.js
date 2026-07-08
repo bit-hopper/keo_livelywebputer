@@ -68,4 +68,15 @@ Object.extend(lively.morphic, { Themes: {
     });
 })();
 
+(function defineSavanna() {
+    var tileURL = lively.Config.codeBase + 'styles/themes/savanna_tile.svg';
+    var bgString = 'linear-gradient(rgba(233,237,228,0.75),rgba(233,237,228,0.75)),' +
+                   'rgb(233,237,228) url("' + tileURL + '") 0 0/440px 440px repeat';
+    lively.morphic.Themes.register('savanna', {
+        description: 'Topographic contour map, sage palette',
+        fill: new lively.morphic.CSS.Fill(bgString),
+        css: null
+    });
+})();
+
 }) // end of module
