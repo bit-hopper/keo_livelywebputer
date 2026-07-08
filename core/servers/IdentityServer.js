@@ -264,6 +264,7 @@ function buildPostCardPage(envelope) {
     'codeBase:location.protocol+"//"+location.host+"/core/",' +
     'rootPath:location.protocol+"//"+location.host+"/"' +
     '}</script>' +
+    '<script src="/core/lib/postcard/postcard-runtime.js"></script>' +
     '<script src="/core/lively/bootstrap.js"></script>' +
     '<script>' +
     '(function waitForLively(){' +

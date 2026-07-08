@@ -43,11 +43,12 @@
 module('lively.identity.PostCardEditor')
   .requires(
     'lively.identity.PostCardSerializer',
+    'lively.identity.PostCardPlayback',
     'lively.identity.DID',
   )
   .toRun(function () {
 
-    lively.morphic.Box.subclass('lively.identity.PostCardEditor',
+    var PostCardEditorClass = lively.morphic.Box.subclass('lively.identity.PostCardEditor',
 
     // ─── serialization guard ──────────────────────────────────────────────────────
 
@@ -71,7 +72,8 @@ module('lively.identity.PostCardEditor')
         this._saveTimer = null;
         this._pmContainer = null;
         this._statusLabel = null;
-        this._titleInput = null;
+        this._statusEl = null;
+        this._toolbarDiv = null;
         this._buildChrome();
         if (this._isNew) {
           this._createNewDoc();
@@ -90,44 +92,35 @@ module('lively.identity.PostCardEditor')
         var self = this;
         this.setFill(Color.white);
 
-        // Toolbar strip at the top
-        var toolbar = new lively.morphic.Box(lively.rect(0, 0, 680, 36));
-        toolbar.setFill(Color.rgb(240, 240, 245));
-        this.addMorph(toolbar);
-        this._toolbar = toolbar;
-        this._buildToolbar(toolbar);
-
-        // Title input below toolbar
-        var titleBox = new lively.morphic.Box(lively.rect(0, 36, 680, 34));
-        titleBox.setFill(Color.white);
-        this.addMorph(titleBox);
-
-        // We use a lively Text morph as an editable input for the title.
-        // Alternatively, an HtmlWrapMorph with <input> could be used.
-        var titleText = new lively.morphic.Text(lively.rect(12, 6, 640, 22));
-        titleText.setFontSize(15);
-        titleText.textString = 'Title…';
-        titleText.beInputLine();
-        titleText.onKeyUp = function () { self._markEdited(); };
-        titleBox.addMorph(titleText);
-        this._titleInput = titleText;
-
-        // Status label (auto-save feedback)
-        var statusLabel = lively.morphic.Text.makeLabel('', { fontSize: 10, textColor: Color.gray });
-        statusLabel.setPosition(lively.pt(600, 14));
-        statusLabel.setExtent(lively.pt(70, 16));
-        toolbar.addMorph(statusLabel);
-        this._statusLabel = statusLabel;
-
-        // ProseMirror container div — appended directly to the DOM node
         var shapeNode = this.renderContext().shapeNode;
         shapeNode.style.borderRadius = '8px';
         shapeNode.style.boxShadow = '0 4px 12px rgba(0,0,0,0.18)';
+
+        // Toolbar as a plain DOM div — keeping it out of Lively's morph hierarchy
+        // prevents Lively from grabbing the toolbar as an independent draggable morph.
+        // The shapeNode background acts as the drag handle for the whole window.
+        var toolbarDiv = document.createElement('div');
+        toolbarDiv.style.cssText = [
+          'position:absolute',
+          'top:0',
+          'left:0',
+          'right:0',
+          'height:36px',
+          'background:#f0f0f5',
+          'border-bottom:1px solid #ccc',
+          'box-sizing:border-box',
+          'overflow:hidden',
+        ].join(';');
+        shapeNode.appendChild(toolbarDiv);
+        this._toolbarDiv = toolbarDiv;
+        this._buildToolbar(toolbarDiv);
+
+        // ProseMirror container div
         var pmDiv = document.createElement('div');
         pmDiv.className = 'lively-postcard-editor-container';
         pmDiv.style.cssText = [
           'position:absolute',
-          'top:70px',
+          'top:36px',
           'left:0',
           'right:0',
           'bottom:0',
@@ -142,37 +135,49 @@ module('lively.identity.PostCardEditor')
         shapeNode.appendChild(pmDiv);
         this._pmContainer = pmDiv;
 
-        // Isolate pmDiv from Lively's EventHandler (which lives on shapeNode in bubble phase).
-        // Without this: mousedown bubbles up and Lively starts a morph drag; keydown is
-        // intercepted before ProseMirror can handle Backspace/Delete/Enter.
-        ['mousedown', 'mousemove', 'mouseup', 'click', 'dblclick'].forEach(function (t) {
+        if (!document.getElementById('lively-postcard-editor-style')) {
+          var styleEl = document.createElement('style');
+          styleEl.id = 'lively-postcard-editor-style';
+          styleEl.textContent =
+            '.lively-postcard-editor-container .ProseMirror > :first-child {' +
+            '  font-size:20px;font-weight:bold;margin-bottom:8px;' +
+            '}';
+          document.head.appendChild(styleEl);
+        }
+
+        // Stop keyboard and mouse events from bubbling up to Lively's morph handlers.
+        // Bubble phase only — capture phase would block events from reaching PM's div inside pmDiv.
+        ['keydown', 'keyup', 'keypress', 'input'].forEach(function (t) {
           pmDiv.addEventListener(t, function (e) { e.stopPropagation(); });
         });
-        ['keydown', 'keyup', 'keypress', 'input'].forEach(function (t) {
+        ['mousedown', 'mousemove', 'mouseup', 'click', 'dblclick'].forEach(function (t) {
           pmDiv.addEventListener(t, function (e) { e.stopPropagation(); });
         });
       },
 
-      _buildToolbar: function (toolbar) {
+      _buildToolbar: function (toolbarDiv) {
         var self = this;
-        var buttons = [
-          { label: 'B',  title: 'Bold',          cmd: 'toggleMark', markType: 'bold' },
-          { label: 'I',  title: 'Italic',         cmd: 'toggleMark', markType: 'italic' },
-          { label: 'H1', title: 'Heading 1',      cmd: 'setBlockType', nodeType: 'heading', attrs: { level: 1 } },
-          { label: 'H2', title: 'Heading 2',      cmd: 'setBlockType', nodeType: 'heading', attrs: { level: 2 } },
-          { label: '•',  title: 'Bullet list',    cmd: 'wrapInList', nodeType: 'bullet_list' },
-          { label: '1.', title: 'Ordered list',   cmd: 'wrapInList', nodeType: 'ordered_list' },
-          { label: '∑',  title: 'Math inline',    cmd: 'insertMath', mathType: 'inline' },
-          { label: '∑²', title: 'Math display',   cmd: 'insertMath', mathType: 'display' },
+        var btnDefs = [
+          { label: 'B',    title: 'Bold',        cmd: 'toggleMark',  markType: 'bold' },
+          { label: 'I',    title: 'Italic',       cmd: 'toggleMark',  markType: 'italic' },
+          { label: '`',    title: 'Inline code',  cmd: 'toggleMark',  markType: 'code' },
+          { label: 'H1',   title: 'Heading 1',    cmd: 'setBlockType',nodeType: 'heading', attrs: { level: 1 } },
+          { label: 'H2',   title: 'Heading 2',    cmd: 'setBlockType',nodeType: 'heading', attrs: { level: 2 } },
+          { label: '•', title: 'Bullet list',  cmd: 'wrapInList',  nodeType: 'bullet_list' },
+          { label: '1.',   title: 'Ordered list', cmd: 'wrapInList',  nodeType: 'ordered_list' },
+          { label: '❝', title: 'Blockquote',   cmd: 'wrapIn',      nodeType: 'blockquote' },
+          { label: '</>',  title: 'Code block',   cmd: 'setBlockType',nodeType: 'code_block', attrs: {} },
+          { label: '∑',  title: 'Math inline',  cmd: 'insertMath',  mathType: 'inline' },
+          { label: '∑²', title: 'Math display', cmd: 'insertMath',  mathType: 'display' },
         ];
 
         var x = 8;
-        buttons.forEach(function (btnDef) {
-          var w = btnDef.label.length > 1 ? 32 : 26;
-          var domBtn = document.createElement('button');
-          domBtn.textContent = btnDef.label;
-          domBtn.title = btnDef.title;
-          domBtn.style.cssText = [
+        btnDefs.forEach(function (btnDef) {
+          var w = btnDef.label.length > 1 ? 36 : 26;
+          var btn = document.createElement('button');
+          btn.textContent = btnDef.label;
+          btn.title = btnDef.title;
+          btn.style.cssText = [
             'position:absolute',
             'top:6px',
             'left:' + x + 'px',
@@ -185,26 +190,42 @@ module('lively.identity.PostCardEditor')
             'border-radius:3px',
             'background:#fff',
           ].join(';');
-          domBtn.addEventListener('mousedown', function (e) {
+          btn.addEventListener('mousedown', function (e) {
             e.preventDefault();
             e.stopPropagation();
             self._execToolbarCmd(btnDef);
           });
-          toolbar.renderContext().shapeNode.appendChild(domBtn);
+          toolbarDiv.appendChild(btn);
           x += w + 4;
         });
 
-        // Separator, then save button
-        var saveBtn = new lively.morphic.Button(lively.rect(540, 6, 50, 24));
-        saveBtn.setLabel('Save');
-        saveBtn.onMouseDown = function () { self._saveNow(); };
-        toolbar.addMorph(saveBtn);
+        // Status feedback (auto-save state)
+        var statusSpan = document.createElement('span');
+        statusSpan.style.cssText = 'position:absolute;top:11px;right:152px;font-size:10px;color:#888;pointer-events:none;';
+        toolbarDiv.appendChild(statusSpan);
+        this._statusEl = statusSpan;
 
-        // Playback button
-        var playBtn = new lively.morphic.Button(lively.rect(476, 6, 60, 24));
-        playBtn.setLabel('History');
-        playBtn.onMouseDown = function () { self._openPlayback(); };
-        toolbar.addMorph(playBtn);
+        // Save button (green tint)
+        var saveBtn = document.createElement('button');
+        saveBtn.textContent = 'Save';
+        saveBtn.title = 'Save now';
+        saveBtn.style.cssText = 'position:absolute;top:6px;right:76px;width:48px;height:24px;padding:0;font-size:12px;cursor:pointer;border:1px solid #5a5;border-radius:3px;background:#efe;';
+        saveBtn.addEventListener('mousedown', function (e) {
+          e.preventDefault(); e.stopPropagation();
+          self._saveNow();
+        });
+        toolbarDiv.appendChild(saveBtn);
+
+        // History button
+        var histBtn = document.createElement('button');
+        histBtn.textContent = 'History';
+        histBtn.title = 'View version history (save first)';
+        histBtn.style.cssText = 'position:absolute;top:6px;right:4px;width:68px;height:24px;padding:0;font-size:12px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
+        histBtn.addEventListener('mousedown', function (e) {
+          e.preventDefault(); e.stopPropagation();
+          self._openPlayback();
+        });
+        toolbarDiv.appendChild(histBtn);
       },
 
     },
@@ -213,17 +234,49 @@ module('lively.identity.PostCardEditor')
 
     'editor', {
 
+      // Inject postcard-runtime.js if Yjs/PM aren't on the page yet, then call back.
+      _ensureRuntime: function (callback) {
+        if (this._Y() && this._ProseMirror() && this._yProsemirror()) {
+          return callback();
+        }
+        var self = this;
+        if (window._postcardRuntimeLoading) {
+          var poll = setInterval(function () {
+            if (self._Y() && self._ProseMirror()) { clearInterval(poll); callback(); }
+          }, 80);
+          return;
+        }
+        window._postcardRuntimeLoading = true;
+        this._setStatus('Loading…');
+        var s = document.createElement('script');
+        s.src = '/core/lib/postcard/postcard-runtime.js';
+        s.onload = function () { window._postcardRuntimeLoading = false; callback(); };
+        s.onerror = function () {
+          window._postcardRuntimeLoading = false;
+          self._showError('Failed to load /core/lib/postcard/postcard-runtime.js');
+        };
+        document.head.appendChild(s);
+      },
+
       // Create a fresh Y.Doc (gc: false) and attach a ProseMirror editor.
       _createNewDoc: function () {
-        var Y = this._Y();
-        if (!Y) return this._showError('Yjs not loaded — cannot create editor');
-        this.yDoc = new Y.Doc({ gc: false });
-        this._attachEditor();
-        this._connectSync();
+        var self = this;
+        this._ensureRuntime(function () {
+          var Y = self._Y();
+          if (!Y) return self._showError('Yjs not loaded — cannot create editor');
+          self.yDoc = new Y.Doc({ gc: false });
+          self._attachEditor();
+          self._connectSync();
+        });
       },
 
       // Load the existing envelope from the server, reconstruct the Y.Doc, then attach.
       _loadExisting: function () {
+        var self = this;
+        this._ensureRuntime(function () { self._loadExistingNow(); });
+      },
+
+      _loadExistingNow: function () {
         var self = this;
         var base = lively.identity.did.baseUrl();
         var url = base + '/' + encodeURIComponent(this._handle) + '/' + encodeURIComponent(this._objId);
@@ -237,9 +290,6 @@ module('lively.identity.PostCardEditor')
             return self._showError('Invalid envelope JSON: ' + e.message);
           }
           self._envelope = envelope;
-          if (self._titleInput && envelope.state && envelope.state.title) {
-            self._titleInput.textString = envelope.state.title;
-          }
           lively.identity.postCardSerializer.deserializeFromEnvelope(envelope, function (err, yDoc) {
             if (err) return self._showError('Failed to deserialize: ' + err.message);
             self.yDoc = yDoc;
@@ -273,11 +323,21 @@ module('lively.identity.PostCardEditor')
 
         var plugins = [
           yPM.ySyncPlugin(yXmlFragment),
-          yPM.yUndoPlugin(),
-          prosemirror.history.history(),
+          yPM.yUndoPlugin(), // sole undo/redo — do NOT add prosemirror history() alongside this
           prosemirror.keymap.keymap({ 'Shift-Enter': hardBreakCmd }),
           prosemirror.keymap.keymap(prosemirror.commands.baseKeymap),
         ];
+
+        // List-aware keymaps: Enter splits list items, Tab sinks/lifts them.
+        // Must be inserted before baseKeymap so Enter is handled by splitListItem first.
+        var sl = prosemirror.schemaList;
+        if (sl && schema.nodes.list_item) {
+          plugins.unshift(prosemirror.keymap.keymap({
+            'Enter':     sl.splitListItem(schema.nodes.list_item),
+            'Tab':       sl.sinkListItem(schema.nodes.list_item),
+            'Shift-Tab': sl.liftListItem(schema.nodes.list_item),
+          }));
+        }
 
         this.editorView = new prosemirror.view.EditorView(this._pmContainer, {
           state: prosemirror.state.EditorState.create({ schema: schema, plugins: plugins }),
@@ -288,7 +348,11 @@ module('lively.identity.PostCardEditor')
             var view = self.editorView || this;
             var newState = view.state.apply(tr);
             view.updateState(newState);
-            if (tr.docChanged) self._markEdited();
+            if (tr.docChanged) {
+              console.log('[PostCardEditor] docChanged steps:', tr.steps.length,
+                'content:', JSON.stringify(newState.doc.toJSON()).slice(0, 120));
+              self._markEdited();
+            }
           },
         });
       },
@@ -344,17 +408,23 @@ module('lively.identity.PostCardEditor')
 
         var params = {
           yDoc:         this.yDoc,
-          title:        this._titleInput ? this._titleInput.textString : '',
           prevEnvelope: this._envelope || null,
           constellation: this._constellation,
           replyTo:      this._replyTo,
+          // title omitted — PostCardSerializer extracts it from the first PM block (§10.5)
         };
 
         this._setStatus('Saving…');
         lively.identity.postCardSerializer.serializeToEnvelope(params, function (err, envelope) {
-          if (err) return self._setStatus('Error');
+          if (err) {
+            console.error('[PostCardEditor] serializeToEnvelope error:', err && (err.message || String(err)));
+            return self._setStatus('Error');
+          }
           self._putEnvelope(envelope, function (putErr) {
-            if (putErr) return self._setStatus('Error');
+            if (putErr) {
+              console.error('[PostCardEditor] PUT error:', putErr && (putErr.message || String(putErr)));
+              return self._setStatus('Error');
+            }
             self._envelope = envelope;
             self._objId = envelope.objId;
             // If this was a new card, wire up sync now that we have an objId
@@ -422,10 +492,19 @@ module('lively.identity.PostCardEditor')
             }
             break;
           }
+          case 'wrapIn': {
+            var wrapNodeType = state.schema.nodes[btnDef.nodeType];
+            if (!wrapNodeType) return;
+            prosemirror.commands.wrapIn(wrapNodeType)(state, dispatch);
+            break;
+          }
           case 'insertMath': {
-            var mathStr = btnDef.mathType === 'display' ? '$$  $$' : '$  $';
-            var tr = state.tr.insertText(mathStr);
-            dispatch(tr);
+            var mathNodeType = btnDef.mathType === 'display'
+              ? state.schema.nodes.math_display
+              : state.schema.nodes.math_inline;
+            if (!mathNodeType) return;
+            var mathNode = mathNodeType.create({ value: '' });
+            dispatch(state.tr.replaceSelectionWith(mathNode));
             break;
           }
         }
@@ -483,42 +562,74 @@ module('lively.identity.PostCardEditor')
                null;
       },
 
-      // Builds a minimal ProseMirror schema with heading, lists, code, blockquote.
+      // Builds the PostCard ProseMirror schema: prose nodes + math + embeddedPart.
       _buildSchema: function (modelModule) {
-        var nodes = modelModule.schema ? modelModule.schema.spec.nodes : null;
-        if (!nodes) {
-          // Build a minimal basic schema matching our PM snapshot format
-          return new modelModule.Schema({
-            nodes: {
-              doc:        { content: 'block+' },
-              paragraph:  { group: 'block', content: 'inline*', parseDOM: [{ tag: 'p' }], toDOM: function() { return ['p', 0]; } },
-              heading:    { group: 'block', content: 'inline*', attrs: { level: { default: 1 } },
+        return new modelModule.Schema({
+          nodes: {
+            doc:          { content: 'block+' },
+            paragraph:    { group: 'block', content: 'inline*',
+                            parseDOM: [{ tag: 'p' }], toDOM: function() { return ['p', 0]; } },
+            heading:      { group: 'block', content: 'inline*', attrs: { level: { default: 1 } },
                             parseDOM: [1,2,3,4,5,6].map(function(l) { return { tag: 'h'+l, attrs: { level: l } }; }),
                             toDOM: function(n) { return ['h'+n.attrs.level, 0]; } },
-              bullet_list:  { group: 'block', content: 'list_item+', parseDOM: [{ tag: 'ul' }], toDOM: function() { return ['ul', 0]; } },
-              ordered_list: { group: 'block', content: 'list_item+', attrs: { order: { default: 1 } },
-                              parseDOM: [{ tag: 'ol' }], toDOM: function() { return ['ol', 0]; } },
-              list_item:    { content: 'paragraph block*', parseDOM: [{ tag: 'li' }], toDOM: function() { return ['li', 0]; } },
-              blockquote:   { group: 'block', content: 'block+', parseDOM: [{ tag: 'blockquote' }], toDOM: function() { return ['blockquote', 0]; } },
-              code_block:   { group: 'block', content: 'text*', marks: '', parseDOM: [{ tag: 'pre' }], toDOM: function() { return ['pre', ['code', 0]]; } },
-              text:         { group: 'inline' },
-              hard_break:   { group: 'inline', inline: true, selectable: false, parseDOM: [{ tag: 'br' }], toDOM: function() { return ['br']; } },
-            },
-            marks: {
-              bold:   { parseDOM: [{ tag: 'strong' }, { tag: 'b' }], toDOM: function() { return ['strong', 0]; } },
-              italic: { parseDOM: [{ tag: 'em' }, { tag: 'i' }],     toDOM: function() { return ['em', 0]; } },
-              code:   { parseDOM: [{ tag: 'code' }],                   toDOM: function() { return ['code', 0]; } },
-              link:   { attrs: { href: {}, title: { default: null } },
-                        parseDOM: [{ tag: 'a[href]', getAttrs: function(d) { return { href: d.getAttribute('href'), title: d.getAttribute('title') }; } }],
-                        toDOM: function(m) { return ['a', m.attrs, 0]; } },
-            },
-          });
-        }
-        return modelModule.schema;
+            bullet_list:  { group: 'block', content: 'list_item+',
+                            parseDOM: [{ tag: 'ul' }], toDOM: function() { return ['ul', 0]; } },
+            ordered_list: { group: 'block', content: 'list_item+', attrs: { order: { default: 1 } },
+                            parseDOM: [{ tag: 'ol' }], toDOM: function() { return ['ol', 0]; } },
+            list_item:    { content: 'paragraph block*',
+                            parseDOM: [{ tag: 'li' }], toDOM: function() { return ['li', 0]; } },
+            blockquote:   { group: 'block', content: 'block+',
+                            parseDOM: [{ tag: 'blockquote' }], toDOM: function() { return ['blockquote', 0]; } },
+            code_block:   { group: 'block', content: 'text*', marks: '',
+                            parseDOM: [{ tag: 'pre' }], toDOM: function() { return ['pre', ['code', 0]]; } },
+            // Math nodes (§10.1): attrs.value holds the LaTeX source string.
+            // atom:true keeps the cursor outside the node; editing is via the value attr.
+            // TODO (later session): add a KaTeX NodeView that renders the formula when
+            // the node is not selected and shows an editable input when it is — the
+            // standard prosemirror-math interaction pattern. Also load KaTeX from CDN.
+            math_inline:  { group: 'inline', inline: true, atom: true,
+                            attrs: { value: { default: '' } },
+                            parseDOM: [{ tag: 'code.math-inline', getAttrs: function(d) { return { value: d.textContent }; } }],
+                            toDOM: function(n) { return ['code', { class: 'math-inline' }, n.attrs.value]; } },
+            math_display: { group: 'block', atom: true,
+                            attrs: { value: { default: '' } },
+                            parseDOM: [{ tag: 'pre.math-display', getAttrs: function(d) { return { value: d.textContent }; } }],
+                            toDOM: function(n) { return ['pre', { class: 'math-display' }, n.attrs.value]; } },
+            // Embedded parts (§6.1): embedId used as key into ydoc.getMap('partState') (§10.8).
+            embeddedPart: { group: 'block', atom: true,
+                            attrs: { objId: { default: null }, cid: { default: null },
+                                     handle: { default: null }, embedId: { default: null } },
+                            parseDOM: [{ tag: 'div.lively-embedded-part', getAttrs: function(d) {
+                              return { objId: d.getAttribute('data-obj-id'),
+                                       cid:   d.getAttribute('data-cid'),
+                                       handle: d.getAttribute('data-handle'),
+                                       embedId: d.getAttribute('data-embed-id') };
+                            }}],
+                            toDOM: function(n) {
+                              return ['div', { class: 'lively-embedded-part',
+                                'data-obj-id': n.attrs.objId || '',
+                                'data-cid':    n.attrs.cid    || '',
+                                'data-handle': n.attrs.handle || '',
+                                'data-embed-id': n.attrs.embedId || '' }];
+                            } },
+            text:         { group: 'inline' },
+            hard_break:   { group: 'inline', inline: true, selectable: false,
+                            parseDOM: [{ tag: 'br' }], toDOM: function() { return ['br']; } },
+          },
+          marks: {
+            bold:   { parseDOM: [{ tag: 'strong' }, { tag: 'b' }], toDOM: function() { return ['strong', 0]; } },
+            italic: { parseDOM: [{ tag: 'em' }, { tag: 'i' }],     toDOM: function() { return ['em', 0]; } },
+            code:   { parseDOM: [{ tag: 'code' }],                  toDOM: function() { return ['code', 0]; } },
+            link:   { attrs: { href: {}, title: { default: null } },
+                      parseDOM: [{ tag: 'a[href]', getAttrs: function(d) { return { href: d.getAttribute('href'), title: d.getAttribute('title') }; } }],
+                      toDOM: function(m) { return ['a', m.attrs, 0]; } },
+          },
+        });
       },
 
       _setStatus: function (msg) {
         console.log('[PostCardEditor] status:', msg);
+        if (this._statusEl) this._statusEl.textContent = msg;
         if (this._statusLabel) this._statusLabel.textString = msg;
       },
 
@@ -534,7 +645,7 @@ module('lively.identity.PostCardEditor')
     // 'class-side' is not a magic keyword in Lively's Object.subclass —
     // it would have added these as instance methods, shadowing Object.create.
 
-    Object.extend(lively.identity.PostCardEditor, {
+    Object.extend(PostCardEditorClass, {
 
       // Load an existing postcard and open the editor.
       openCard: function (handle, objId, options) {

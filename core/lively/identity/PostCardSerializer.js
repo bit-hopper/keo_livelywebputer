@@ -330,7 +330,11 @@ module('lively.identity.PostCardSerializer')
                 if (genesisNonce) envelope.genesisNonce = genesisNonce;
                 if (params.constellation) envelope.constellation = params.constellation;
                 if (params.replyTo) envelope.replyTo = params.replyTo;
-                thenDo(null, envelope);
+
+                _signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
+                  if (signErr) console.warn('[PostCardSerializer] Could not sign encrypted envelope (non-fatal):', signErr.message);
+                  thenDo(null, signed || envelope);
+                });
               }
 
               function _withObjId(callback) {
@@ -401,6 +405,10 @@ module('lively.identity.PostCardSerializer')
               if (!myEntry) return callback(new Error('deserializeEncrypted: no sealed DEK for current user'));
               // X25519 private key: derived from PRF in this session
               // For now, require it to be passed via options or derived from WebAuthn
+              // TODO (later session): wire up recipient DEK unwrap. Requires the
+              // account X25519 private key to be derived once per session via
+              // WebAuthn.deriveX25519KeyPair and cached (same pattern as _kekCache).
+              // Then: c.openSealedDek(myEntry.sealedDek, x25519PrivKey, callback).
               callback(new Error('deserializeEncrypted: recipient DEK unwrapping requires account X25519 key — call WebAuthn.deriveX25519KeyPair first and cache the private key'));
             }
           }
