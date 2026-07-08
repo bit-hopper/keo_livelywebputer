@@ -41,10 +41,15 @@ module("lively.identity.MenuBarEntry")
             ];
           }
           return [
+            ["Mailbox", [
+              ["Received",  function () { self.openMailbox("received");  }],
+              ["Delivered", function () { self.openMailbox("delivered"); }],
+              ["Returned",  function () { self.openMailbox("returned");  }],
+            ]],
+            ["My profile",  function () { self.openMyProfile(); }],
+            ["My worlds",   function () { self.openMyWorlds(); }],
             ["Add device",  function () { self.openRegisterDialog(); }],
             ["Sign out",    function () { self.signOut(); }],
-            ["My worlds",   function () { self.openMyWorlds(); }],
-            ["My profile",  function () { self.openMyProfile(); }],
           ];
         },
 
@@ -105,6 +110,12 @@ module("lively.identity.MenuBarEntry")
         openMyWorlds: function openMyWorlds() {
           lively.require("lively.identity.WorldsBrowser").toRun(function () {
             lively.BuildSpec("lively.identity.WorldsBrowser").createMorph().openInWorldCenter();
+          });
+        },
+
+        openMailbox: function openMailbox(tab) {
+          lively.require("lively.identity.PostCardMailbox").toRun(function () {
+            lively.identity.PostCardMailbox.open(tab);
           });
         },
 

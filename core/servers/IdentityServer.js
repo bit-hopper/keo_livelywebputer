@@ -746,40 +746,72 @@ module.exports = function (route, app) {
   // POST /@:handle/inbox — deliver a post card reference to a recipient.
   // Checks the recipient's block list before writing.
   // Returns the byte-identical postal response for all failure causes (§2.3 anti-leak invariant).
+  // Also records the delivery outcome in the sender's own deliveries log (fire-and-forget).
   app.post("/@:handle/inbox", auth.requireAuth, function (req, res) {
-    var handle = req.params.handle;
-    var body   = req.body;
+    var handle       = req.params.handle;
+    var body         = req.body;
+    var senderHandle = req.identity ? req.identity.handle : null;
     var POSTAL_REJECTION = { returned: true, reason: "Returned to sender. Not deliverable as addressed / unable to forward." };
 
     if (!body || !body.objId || !body.senderDid) {
       return res.status(400).json({ error: "Missing required fields: objId, senderDid" });
     }
 
+    function _recordDelivery(status) {
+      if (!senderHandle) return;
+      var rec = { objId: body.objId, recipientHandle: handle, sentAt: new Date().toISOString(), status: status };
+      objectRepo.putDeliveryRecord(senderHandle, rec, function (err) {
+        if (err) console.warn('[IdentityServer] putDeliveryRecord failed:', err.message);
+      });
+    }
+
     handleRegistry.resolve(handle, function (err, recipientDid) {
       // Unknown handle → postal response (does not reveal the reason)
-      if (err || !recipientDid) return res.json(POSTAL_REJECTION);
+      if (err || !recipientDid) {
+        _recordDelivery('returned');
+        return res.json(POSTAL_REJECTION);
+      }
 
       // Load recipient's settings to check block list
       objectRepo.getSettingsForDid(recipientDid, function (err, settingsEnv) {
         var settings = (settingsEnv && settingsEnv.record && settingsEnv.record.payload) || {};
-        var blockedDids     = settings.blockedDids     || [];
-        var blockedHandles  = settings.blockedHandles  || [];
+        var blockedDids    = settings.blockedDids    || [];
+        var blockedHandles = settings.blockedHandles || [];
 
-        var senderDid    = body.senderDid;
-        var senderHandle = req.identity ? req.identity.handle : null;
+        var senderDid = body.senderDid;
 
         var isBlocked =
           blockedDids.indexOf(senderDid) !== -1 ||
           (senderHandle && blockedHandles.indexOf(senderHandle) !== -1);
 
-        if (isBlocked) return res.json(POSTAL_REJECTION);
+        if (isBlocked) {
+          _recordDelivery('returned');
+          return res.json(POSTAL_REJECTION);
+        }
 
-        var record = { objId: body.objId, senderDid: senderDid, sentAt: new Date().toISOString() };
+        var record = { objId: body.objId, senderDid: senderDid, senderHandle: senderHandle, sentAt: new Date().toISOString() };
         objectRepo.putInboxRecord(handle, record, function (err) {
           if (err) return res.status(500).json({ error: String(err) });
+          _recordDelivery('delivered');
           res.json({ ok: true, delivered: true });
         });
       });
+    });
+  });
+
+  // ─── deliveries (sender-side outbound log) ─────────────────────────────────
+  // Must be registered before /@:handle/:objId.
+
+  app.get("/@:handle/deliveries", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your deliveries" });
+    var limit  = Math.min(parseInt(req.query.limit,  10) || 20, 100);
+    var offset = parseInt(req.query.offset, 10) || 0;
+    var status = req.query.status || null; // 'delivered' | 'returned' | null (all)
+    objectRepo.listDeliveriesForHandle(handle, { limit: limit, offset: offset, status: status }, function (err, result) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json(result);
     });
   });
 

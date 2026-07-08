@@ -381,6 +381,16 @@ module("lively.identity.DID")
           return this._currentUser;
         },
 
+        // Base URL for identity server API calls (scheme + host, no trailing slash).
+        // Uses window.location.origin when available, otherwise empty string so
+        // relative paths still resolve correctly in the same origin.
+        baseUrl: function () {
+          if (typeof window !== 'undefined' && window.location && window.location.origin) {
+            return window.location.origin;
+          }
+          return '';
+        },
+
         // True if a DID session is currently active.
         isLoggedIn: function () {
           return !!this._currentUser;

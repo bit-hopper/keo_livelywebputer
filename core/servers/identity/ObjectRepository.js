@@ -636,22 +636,84 @@ function listInboxForHandle(handle, opts, thenDo) {
   });
 }
 
+// ─── deliveries (sender-side outbound log) ────────────────────────────────────
+//
+// Mirrors the inbox pattern: a per-sender newline-delimited JSON log.
+// Location: <WORKSPACE_LK>/identity/deliveries/<senderHandle>.jsonl
+// Each record: { objId, recipientHandle, sentAt, status: 'delivered'|'returned' }
+//
+// The status field matches the postal model in PostcardDesignSpec.md §2.3:
+//   'delivered' — POST /@:handle/inbox succeeded (recipient accepted the card)
+//   'returned'  — server returned the postal rejection (blocked/unknown handle)
+//
+// The reason for a 'returned' delivery is never stored — per the spec's
+// anti-leak invariant the sender already knows the postal response text and
+// recording a richer reason here would not add information they don't have.
+
+var _deliveriesDir = null;
+function _getDeliveriesDir() {
+  if (_deliveriesDir) return _deliveriesDir;
+  _deliveriesDir = path.join(
+    process.env.WORKSPACE_LK || process.cwd(),
+    'identity', 'deliveries'
+  );
+  return _deliveriesDir;
+}
+
+// Append an outbound delivery record to the sender's deliveries log.
+// record: { objId, recipientHandle, sentAt, status: 'delivered'|'returned' }
+// Calls thenDo(err). Fire-and-forget safe — never blocks the HTTP response.
+function putDeliveryRecord(senderHandle, record, thenDo) {
+  var fs  = require('fs');
+  var dir = _getDeliveriesDir();
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  var file = path.join(dir, senderHandle + '.jsonl');
+  var line = JSON.stringify(record) + '\n';
+  fs.appendFile(file, line, function (err) { thenDo(err || null); });
+}
+
+// List outbound delivery records for a sender, newest first, paginated.
+// opts: { limit, offset, status }  — status filters to 'delivered' or 'returned' when set.
+// Calls thenDo(null, { records: [...], cursor: Number|null }).
+function listDeliveriesForHandle(senderHandle, opts, thenDo) {
+  var fs     = require('fs');
+  var limit  = (opts && opts.limit)  || 20;
+  var offset = (opts && opts.offset) || 0;
+  var status = (opts && opts.status) || null;
+  var file   = path.join(_getDeliveriesDir(), senderHandle + '.jsonl');
+  if (!fs.existsSync(file)) return thenDo(null, { records: [], cursor: null });
+  fs.readFile(file, 'utf8', function (err, text) {
+    if (err) return thenDo(err);
+    var lines = text.split('\n').filter(Boolean);
+    lines.reverse(); // newest first
+    var records = lines.map(function (l) {
+      try { return JSON.parse(l); } catch (e) { return null; }
+    }).filter(Boolean);
+    if (status) records = records.filter(function (r) { return r.status === status; });
+    var page       = records.slice(offset, offset + limit);
+    var nextOffset = offset + limit < records.length ? offset + limit : null;
+    thenDo(null, { records: page, cursor: nextOffset });
+  });
+}
+
 module.exports = {
-  withDB:                       withDB,
-  put:                          put,
-  get:                          get,
-  getVersion:                   getVersion,
-  getVersionsSince:             getVersionsSince,
-  listForUser:                  listForUser,
-  getProfileForDid:             getProfileForDid,
-  getRecoveryWorldForDid:       getRecoveryWorldForDid,
-  getSettingsForDid:            getSettingsForDid,
-  listVersions:                 listVersions,
-  deleteVersionsAfter:          deleteVersionsAfter,
-  addRecipient:                 addRecipient,
-  listPostcardsForUser:         listPostcardsForUser,
+  withDB:                        withDB,
+  put:                           put,
+  get:                           get,
+  getVersion:                    getVersion,
+  getVersionsSince:              getVersionsSince,
+  listForUser:                   listForUser,
+  getProfileForDid:              getProfileForDid,
+  getRecoveryWorldForDid:        getRecoveryWorldForDid,
+  getSettingsForDid:             getSettingsForDid,
+  listVersions:                  listVersions,
+  deleteVersionsAfter:           deleteVersionsAfter,
+  addRecipient:                  addRecipient,
+  listPostcardsForUser:          listPostcardsForUser,
   listPostcardsForConstellation: listPostcardsForConstellation,
-  listRepliesForPostcard:       listRepliesForPostcard,
-  putInboxRecord:               putInboxRecord,
-  listInboxForHandle:           listInboxForHandle,
+  listRepliesForPostcard:        listRepliesForPostcard,
+  putInboxRecord:                putInboxRecord,
+  listInboxForHandle:            listInboxForHandle,
+  putDeliveryRecord:             putDeliveryRecord,
+  listDeliveriesForHandle:       listDeliveriesForHandle,
 };
