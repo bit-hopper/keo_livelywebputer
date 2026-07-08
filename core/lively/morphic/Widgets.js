@@ -1398,7 +1398,7 @@ lively.morphic.Text.subclass("lively.morphic.MenuItem",
     select: function(evt) {
         this.isSelected = true;
         this.applyStyle({
-            fill: Color.rgb(43, 88, 255),
+            fill: Color.rgb(240, 26, 105),
             textColor: Color.white,
             borderRadius: 4
         });
