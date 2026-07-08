@@ -47,9 +47,11 @@ module("lively.identity.MenuBarEntry")
               ["Delivered", function () { self.openMailbox("delivered"); }],
               ["Returned",  function () { self.openMailbox("returned");  }],
             ]],
-            ["My profile",  function () { self.openMyProfile(); }],
-            ["My worlds",   function () { self.openMyWorlds(); }],
-            ["Add device",  function () { self.openRegisterDialog(); }],
+            ["My profile",         function () { self.openMyProfile(); }],
+            ["My worlds",          function () { self.openMyWorlds(); }],
+            ["My Constellations",  function () { self.openMyConstellations(); }],
+            ["Wallet",             function () { self.openWallet(); }],
+            ["Add device",         function () { self.openRegisterDialog(); }],
             ["Sign out",    function () { self.signOut(); }],
           ];
         },
@@ -125,6 +127,14 @@ module("lively.identity.MenuBarEntry")
           lively.require("lively.identity.PostCardMailbox").toRun(function () {
             lively.identity.PostCardMailbox.open(tab);
           });
+        },
+
+        openMyConstellations: function openMyConstellations() {
+          $world.alert("My Constellations — coming soon");
+        },
+
+        openWallet: function openWallet() {
+          $world.alert("Wallet — coming soon");
         },
 
         openMyProfile: function openMyProfile() {
