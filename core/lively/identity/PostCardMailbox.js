@@ -69,6 +69,7 @@ module('lively.identity.PostCardMailbox')
           { id: 'received',  label: 'Received'  },
           { id: 'delivered', label: 'Delivered' },
           { id: 'returned',  label: 'Returned'  },
+          { id: 'blocked',   label: 'Blocked'   },
         ];
         tabs.forEach(function (t) {
           var btn = document.createElement('button');
@@ -115,6 +116,7 @@ module('lively.identity.PostCardMailbox')
         if (tab === 'received')  this._loadReceived();
         if (tab === 'delivered') this._loadDeliveries('delivered');
         if (tab === 'returned')  this._loadDeliveries('returned');
+        if (tab === 'blocked')   this._loadBlocked();
       },
 
       // ── data fetching ─────────────────────────────────────────────────────
@@ -148,6 +150,24 @@ module('lively.identity.PostCardMailbox')
           var result;
           try { result = JSON.parse(xhr.responseText); } catch (e) { return self._showError('Bad response'); }
           self._renderDeliveryRecords(result.records || [], status);
+        };
+        xhr.onerror = function () { self._showError('Network error'); };
+        xhr.send();
+      },
+
+      _loadBlocked: function () {
+        var self   = this;
+        var handle = lively.identity.did.currentUser().handle;
+        var base   = lively.identity.did.baseUrl();
+        var xhr    = new XMLHttpRequest();
+        xhr.open('GET', base + '/@' + handle + '/settings');
+        xhr.withCredentials = true;
+        xhr.onload = function () {
+          if (xhr.status !== 200) return self._showError('Could not load settings (' + xhr.status + ')');
+          var env;
+          try { env = JSON.parse(xhr.responseText); } catch (e) { return self._showError('Bad response'); }
+          self._settingsEnvelope = env;
+          self._renderBlockedList((env.state && env.state.blockedHandles) || []);
         };
         xhr.onerror = function () { self._showError('Network error'); };
         xhr.send();
@@ -238,7 +258,9 @@ module('lively.identity.PostCardMailbox')
 
           var openBtn = self._makeOpenBtn(function () {
             var user = lively.identity.did.currentUser();
-            lively.identity.PostCardEditor.openCard('@' + user.handle, rec.objId);
+            // _handle is bare (no '@') — PostCardEditor prepends '/@' itself
+            // when building its GET/PUT URLs.
+            lively.identity.PostCardEditor.openCard(user.handle, rec.objId);
           });
 
           card.appendChild(to);
@@ -246,6 +268,131 @@ module('lively.identity.PostCardMailbox')
           card.appendChild(when);
           card.appendChild(openBtn);
           content.appendChild(card);
+        });
+      },
+
+      _renderBlockedList: function (blockedHandles) {
+        var self    = this;
+        var content = this._contentDiv;
+        content.innerHTML = '';
+
+        var addRow = document.createElement('div');
+        addRow.style.cssText = 'display:flex;gap:6px;margin-bottom:12px;';
+
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.placeholder = 'handle to block (no @)';
+        input.style.cssText = 'flex:1;font-size:12px;padding:6px 8px;border:1px solid #d1d1d6;border-radius:4px;box-sizing:border-box;';
+        addRow.appendChild(input);
+
+        var addBtn = document.createElement('button');
+        addBtn.textContent = 'Block';
+        addBtn.style.cssText = 'font-size:12px;padding:6px 12px;cursor:pointer;border:1px solid #ff3b30;color:#ff3b30;background:#fff;border-radius:4px;';
+        function submitBlock() {
+          var h = input.value.trim().replace(/^@/, '');
+          if (!h) return;
+          addBtn.disabled = true;
+          self._blockHandle(h, function (err) {
+            addBtn.disabled = false;
+            if (err) return self._showError(err.message || 'Failed to block');
+            input.value = '';
+            self._loadBlocked();
+          });
+        }
+        addBtn.addEventListener('click', submitBlock);
+        input.addEventListener('keydown', function (e) { if (e.key === 'Enter') submitBlock(); });
+        addRow.appendChild(addBtn);
+        content.appendChild(addRow);
+
+        if (!blockedHandles.length) {
+          var empty = document.createElement('div');
+          empty.style.cssText = 'color:#999;padding:20px 0;text-align:center;';
+          empty.textContent = 'No blocked handles.';
+          content.appendChild(empty);
+          return;
+        }
+
+        blockedHandles.forEach(function (h) {
+          var card = self._makeCard();
+
+          var label = document.createElement('div');
+          label.style.cssText = 'font-weight:600;color:#1c1c1e;';
+          label.textContent = '@' + h;
+          card.appendChild(label);
+
+          var removeBtn = document.createElement('button');
+          removeBtn.textContent = 'Unblock';
+          removeBtn.style.cssText = [
+            'position:absolute', 'top:10px', 'right:10px',
+            'font-size:11px', 'padding:3px 8px', 'cursor:pointer',
+            'border:1px solid #ff3b30', 'color:#ff3b30',
+            'background:#fff', 'border-radius:4px',
+          ].join(';');
+          removeBtn.addEventListener('click', function () {
+            removeBtn.disabled = true;
+            self._unblockHandle(h, function (err) {
+              removeBtn.disabled = false;
+              if (err) return self._showError(err.message || 'Failed to unblock');
+              self._loadBlocked();
+            });
+          });
+          card.appendChild(removeBtn);
+          content.appendChild(card);
+        });
+      },
+
+      // Resolve to a DID too so both blockedDids and blockedHandles get
+      // populated — the inbox check (IdentityServer.js) matches on either.
+      _blockHandle: function (handle, thenDo) {
+        var self = this;
+        lively.identity.webKey.resolveHandle(handle, function (err, info) {
+          var did = (!err && info) ? info.did : null;
+          self._patchBlockList(function (state) {
+            if (state.blockedHandles.indexOf(handle) === -1) state.blockedHandles.push(handle);
+            if (did && state.blockedDids.indexOf(did) === -1) state.blockedDids.push(did);
+          }, thenDo);
+        });
+      },
+
+      _unblockHandle: function (handle, thenDo) {
+        this._patchBlockList(function (state) {
+          state.blockedHandles = state.blockedHandles.filter(function (h) { return h !== handle; });
+          // Any DID entry for this handle is left as-is here — a stale DID
+          // left in blockedDids fails closed (over-blocks), not open, so
+          // it's not a correctness risk, just a minor cleanup gap.
+        }, thenDo);
+      },
+
+      // mutate(state) edits state.blockedDids/blockedHandles in place. The
+      // settings payload never changes here (block list lives in state per
+      // tranche 2's F18), but record.cid is still recomputed over it before
+      // every PUT — same discipline as the rest of this codebase's
+      // envelope writes, cheap and avoids ever landing a stale cid.
+      _patchBlockList: function (mutate, thenDo) {
+        var handle = lively.identity.did.currentUser().handle;
+        var base   = lively.identity.did.baseUrl();
+        var env    = this._settingsEnvelope;
+        if (!env) return thenDo(new Error('Settings not loaded yet'));
+
+        env.state = env.state || {};
+        env.state.blockedDids    = env.state.blockedDids    || [];
+        env.state.blockedHandles = env.state.blockedHandles || [];
+        mutate(env.state);
+
+        var payload = (env.record && env.record.payload) || {};
+        lively.identity.crypto.computeCid(payload, function (err, cid) {
+          if (err) return thenDo(err);
+          env.record.cid = cid;
+          var xhr = new XMLHttpRequest();
+          xhr.open('PUT', base + '/@' + handle + '/settings', true);
+          xhr.setRequestHeader('Content-Type', 'application/json');
+          xhr.withCredentials = true;
+          xhr.onload = function () {
+            if (xhr.status === 200) return thenDo(null);
+            thenDo(new Error('PUT failed: ' + xhr.status));
+          };
+          xhr.onerror = function () { thenDo(new Error('Network error')); };
+          xhr.send(JSON.stringify(env));
         });
       },
 

@@ -45,6 +45,8 @@ module('lively.identity.PostCardEditor')
     'lively.identity.PostCardSerializer',
     'lively.identity.PostCardPlayback',
     'lively.identity.DID',
+    'lively.identity.WebAuthn',
+    'lively.identity.WebKey',
   )
   .toRun(function () {
 
@@ -74,6 +76,12 @@ module('lively.identity.PostCardEditor')
         this._statusLabel = null;
         this._statusEl = null;
         this._toolbarDiv = null;
+        // Public/Private toggle — 'shared' is not a distinct editor-side state,
+        // it's what serializeEncrypted derives automatically once
+        // _recipientHandles is non-empty.
+        this._visibility = 'public';
+        this._recipientHandles = [];
+        this._visibilityBtn = null;
         this._buildChrome();
         if (this._isNew) {
           this._createNewDoc();
@@ -201,7 +209,7 @@ module('lively.identity.PostCardEditor')
 
         // Status feedback (auto-save state)
         var statusSpan = document.createElement('span');
-        statusSpan.style.cssText = 'position:absolute;top:11px;right:152px;font-size:10px;color:#888;pointer-events:none;';
+        statusSpan.style.cssText = 'position:absolute;top:11px;right:248px;font-size:10px;color:#888;pointer-events:none;';
         toolbarDiv.appendChild(statusSpan);
         this._statusEl = statusSpan;
 
@@ -226,6 +234,42 @@ module('lively.identity.PostCardEditor')
           self._openPlayback();
         });
         toolbarDiv.appendChild(histBtn);
+
+        // Visibility toggle (Public ⇄ Private). 'shared' is not a state this
+        // button sets — it's derived automatically once a card has recipients.
+        var visBtn = document.createElement('button');
+        visBtn.style.cssText = 'position:absolute;top:6px;right:128px;width:52px;height:24px;padding:0;font-size:11px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
+        visBtn.addEventListener('mousedown', function (e) {
+          e.preventDefault(); e.stopPropagation();
+          self._visibility = self._visibility === 'public' ? 'private' : 'public';
+          self._updateVisibilityBtn();
+          self._markEdited();
+        });
+        toolbarDiv.appendChild(visBtn);
+        this._visibilityBtn = visBtn;
+        this._updateVisibilityBtn();
+
+        // Share/Send button
+        var sendBtn = document.createElement('button');
+        sendBtn.textContent = 'Send';
+        sendBtn.title = 'Send to a handle';
+        sendBtn.style.cssText = 'position:absolute;top:6px;right:184px;width:52px;height:24px;padding:0;font-size:12px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
+        sendBtn.addEventListener('mousedown', function (e) {
+          e.preventDefault(); e.stopPropagation();
+          self._promptAndSend();
+        });
+        toolbarDiv.appendChild(sendBtn);
+      },
+
+      _updateVisibilityBtn: function () {
+        if (!this._visibilityBtn) return;
+        var isPublic = this._visibility === 'public';
+        this._visibilityBtn.textContent = isPublic ? 'Public' : (this._recipientHandles.length ? 'Shared' : 'Private');
+        this._visibilityBtn.title = isPublic
+          ? 'Public — anyone can read. Click to make private.'
+          : 'Encrypted — only you' + (this._recipientHandles.length ? ' and ' + this._recipientHandles.length + ' recipient(s)' : '') + ' can read. Click to make public.';
+        this._visibilityBtn.style.background = isPublic ? '#fff' : '#eef';
+        this._visibilityBtn.style.borderColor = isPublic ? '#ccc' : '#55c';
       },
 
     },
@@ -279,7 +323,7 @@ module('lively.identity.PostCardEditor')
       _loadExistingNow: function () {
         var self = this;
         var base = lively.identity.did.baseUrl();
-        var url = base + '/' + encodeURIComponent(this._handle) + '/' + encodeURIComponent(this._objId);
+        var url = base + '/@' + encodeURIComponent(this._handle) + '/' + encodeURIComponent(this._objId);
         var xhr = new XMLHttpRequest();
         xhr.open('GET', url, true);
         xhr.setRequestHeader('Accept', 'application/json');
@@ -290,7 +334,13 @@ module('lively.identity.PostCardEditor')
             return self._showError('Invalid envelope JSON: ' + e.message);
           }
           self._envelope = envelope;
-          lively.identity.postCardSerializer.deserializeFromEnvelope(envelope, function (err, yDoc) {
+          self._visibility = envelope.visibility === 'public' ? 'public' : 'private';
+          self._recipientHandles = (envelope.state && envelope.state.recipientHandles) || [];
+          self._updateVisibilityBtn();
+          var deserialize = envelope.visibility === 'public'
+            ? lively.identity.postCardSerializer.deserializeFromEnvelope
+            : lively.identity.postCardSerializer.deserializeEncrypted;
+          deserialize.call(lively.identity.postCardSerializer, envelope, function (err, yDoc) {
             if (err) return self._showError('Failed to deserialize: ' + err.message);
             self.yDoc = yDoc;
             self._attachEditor();
@@ -399,47 +449,163 @@ module('lively.identity.PostCardEditor')
         this._scheduleSave();
       },
 
-      _saveNow: function () {
+      // callback: optional (err) — invoked after PUT completes/fails, in
+      // addition to the normal status-line feedback. Used by _doSend to wait
+      // for a reseal-save to finish before notifying the recipient.
+      _saveNow: function (callback) {
         clearTimeout(this._saveTimer);
-        var self = this;
+        var cb = callback || function () {};
         var user = lively.identity.did.currentUser();
-        if (!user) return this._setStatus('Not signed in');
-        if (!this.yDoc) return this._setStatus('No document');
+        if (!user) { this._setStatus('Not signed in'); return cb(new Error('Not signed in')); }
+        if (!this.yDoc) { this._setStatus('No document'); return cb(new Error('No document')); }
 
+        if (this._visibility === 'public') return this._saveNowPublic(user, cb);
+        this._saveNowPrivate(user, cb);
+      },
+
+      _saveNowPublic: function (user, callback) {
+        var self = this;
+        var cb = callback || function () {};
         var params = {
-          yDoc:         this.yDoc,
-          prevEnvelope: this._envelope || null,
+          yDoc:          this.yDoc,
+          prevEnvelope:  this._envelope || null,
           constellation: this._constellation,
-          replyTo:      this._replyTo,
+          replyTo:       this._replyTo,
+          visibility:    'public',
           // title omitted — PostCardSerializer extracts it from the first PM block (§10.5)
         };
-
         this._setStatus('Saving…');
         lively.identity.postCardSerializer.serializeToEnvelope(params, function (err, envelope) {
+          self._finishSave(err, envelope, cb);
+        });
+      },
+
+      // Private/shared save: cache the KEK for this session (one WebAuthn
+      // prompt), re-resolve every recipient's current public key (their key
+      // may have changed since the last save, and serializeEncrypted always
+      // reseals a fresh DEK for the full recipient list — there is no
+      // persistent DEK across versions), then encrypt.
+      _saveNowPrivate: function (user, callback) {
+        var self = this;
+        var cb = callback || function () {};
+        var wa = lively.identity.webAuthn;
+        this._setStatus('Saving…');
+
+        function withKek(cb2) {
+          if (wa._kekCache && wa._kekCache[user.credentialId]) return cb2(null);
+          self._setStatus('Confirm passkey…');
+          var ch = new Uint8Array(32);
+          crypto.getRandomValues(ch);
+          wa.deriveKek({ credentialId: user.credentialId, challenge: ch }, function (err) { cb2(err); });
+        }
+
+        withKek(function (err) {
           if (err) {
-            console.error('[PostCardEditor] serializeToEnvelope error:', err && (err.message || String(err)));
-            return self._setStatus('Error');
+            console.error('[PostCardEditor] deriveKek error:', err.message);
+            self._setStatus('Error (passkey)');
+            return cb(err);
           }
-          self._putEnvelope(envelope, function (putErr) {
-            if (putErr) {
-              console.error('[PostCardEditor] PUT error:', putErr && (putErr.message || String(putErr)));
-              return self._setStatus('Error');
+          self._resolveRecipientPubKeys(self._recipientHandles, function (_e, result) {
+            if (result.failed.length) {
+              console.warn('[PostCardEditor] Dropping recipient(s) with no published key from this save:', result.failed.join(', '));
             }
-            self._envelope = envelope;
-            self._objId = envelope.objId;
-            // If this was a new card, wire up sync now that we have an objId
-            if (self._isNew) {
-              self._isNew = false;
-              self._connectSync();
-            }
-            self._setStatus('Saved');
+            var params = {
+              yDoc:          self.yDoc,
+              prevEnvelope:  self._envelope || null,
+              constellation: self._constellation,
+              replyTo:       self._replyTo,
+              recipients:    result.resolved.map(function (r) {
+                return { did: r.did, x25519PublicKey: r.x25519PublicKey };
+              }),
+              stateMeta: {
+                recipientHandles: result.resolved.map(function (r) { return r.handle; }),
+              },
+            };
+            lively.identity.postCardSerializer.serializeEncrypted(params, function (err, envelope) {
+              self._finishSave(err, envelope, cb);
+            });
           });
+        });
+      },
+
+      // Resolve each handle to { did, handle, x25519PublicKey }, cached
+      // per-session so repeated autosaves of a shared card don't refetch
+      // every recipient's profile on every 2s debounce tick.
+      // Calls thenDo(null, { resolved: [...], failed: [handle, ...] }).
+      _resolveRecipientPubKeys: function (handles, thenDo) {
+        var self = this;
+        if (!handles || !handles.length) return thenDo(null, { resolved: [], failed: [] });
+        if (!this._recipientPubKeyCache) this._recipientPubKeyCache = {};
+
+        var base = lively.identity.did.baseUrl();
+        var resolved = [];
+        var failed = [];
+        var remaining = handles.length;
+
+        function done() {
+          if (--remaining === 0) thenDo(null, { resolved: resolved, failed: failed });
+        }
+
+        handles.forEach(function (handle) {
+          var cached = self._recipientPubKeyCache[handle];
+          if (cached) { resolved.push(cached); return done(); }
+
+          lively.identity.webKey.resolveHandle(handle, function (err, info) {
+            if (err || !info || !info.did) { failed.push(handle); return done(); }
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', base + '/@' + encodeURIComponent(handle) + '/profile', true);
+            xhr.withCredentials = true;
+            xhr.onload = function () {
+              var pub = null;
+              if (xhr.status === 200) {
+                try {
+                  var env = JSON.parse(xhr.responseText);
+                  pub = env.record && env.record.payload && env.record.payload.accountX25519Pub;
+                } catch (e) { /* fall through to failed */ }
+              }
+              if (!pub) { failed.push(handle); return done(); }
+              var entry = { did: info.did, handle: handle, x25519PublicKey: pub };
+              self._recipientPubKeyCache[handle] = entry;
+              resolved.push(entry);
+              done();
+            };
+            xhr.onerror = function () { failed.push(handle); done(); };
+            xhr.send();
+          });
+        });
+      },
+
+      _finishSave: function (err, envelope, callback) {
+        var self = this;
+        var cb = callback || function () {};
+        if (err) {
+          console.error('[PostCardEditor] serialize error:', err && (err.message || String(err)));
+          self._setStatus('Error');
+          return cb(err);
+        }
+        self._putEnvelope(envelope, function (putErr) {
+          if (putErr) {
+            console.error('[PostCardEditor] PUT error:', putErr && (putErr.message || String(putErr)));
+            self._setStatus('Error');
+            return cb(putErr);
+          }
+          self._envelope = envelope;
+          self._objId = envelope.objId;
+          self._recipientHandles = (envelope.state && envelope.state.recipientHandles) || self._recipientHandles;
+          self._updateVisibilityBtn();
+          // If this was a new card, wire up sync now that we have an objId
+          if (self._isNew) {
+            self._isNew = false;
+            self._connectSync();
+          }
+          self._setStatus('Saved');
+          cb(null);
         });
       },
 
       _putEnvelope: function (envelope, callback) {
         var base = lively.identity.did.baseUrl();
-        var url = base + '/' + encodeURIComponent(this._handle) + '/' + encodeURIComponent(envelope.objId);
+        var url = base + '/@' + encodeURIComponent(this._handle) + '/' + encodeURIComponent(envelope.objId);
         console.log('[PostCardEditor] PUT', url, 'objId:', envelope.objId);
         var xhr = new XMLHttpRequest();
         xhr.open('PUT', url, true);
@@ -455,6 +621,153 @@ module('lively.identity.PostCardEditor')
           callback(new Error('Network error'));
         };
         xhr.send(JSON.stringify(envelope));
+      },
+
+    },
+
+    // ─── send ─────────────────────────────────────────────────────────────────────
+    // Per spec §2.3, sending = grant access (reseal the DEK to include the
+    // recipient, for private/shared cards) + POST /@:handle/inbox to notify
+    // them. A public card just gets the notify — anyone can already read it.
+
+    'send', {
+
+      _promptAndSend: function () {
+        if (this._sendPanel) { this._sendPanel.remove(); this._sendPanel = null; return; }
+        var self = this;
+        var shapeNode = this.renderContext().shapeNode;
+
+        var panel = document.createElement('div');
+        panel.style.cssText = [
+          'position:absolute', 'top:40px', 'right:4px', 'width:220px',
+          'background:#fff', 'border:1px solid #ccc', 'border-radius:6px',
+          'box-shadow:0 4px 12px rgba(0,0,0,0.18)', 'padding:10px',
+          'z-index:1000', 'box-sizing:border-box', 'font-family:sans-serif',
+        ].join(';');
+
+        var label = document.createElement('div');
+        label.textContent = this._visibility === 'public' ? 'Send to @handle' : 'Share & send to @handle';
+        label.style.cssText = 'font-size:12px;font-weight:600;margin-bottom:6px;color:#333;';
+        panel.appendChild(label);
+
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.placeholder = 'handle (no @)';
+        input.style.cssText = 'width:100%;box-sizing:border-box;font-size:12px;padding:4px 6px;border:1px solid #ccc;border-radius:3px;margin-bottom:6px;';
+        panel.appendChild(input);
+
+        var msg = document.createElement('div');
+        msg.style.cssText = 'font-size:11px;color:#999;min-height:14px;margin-bottom:6px;';
+        panel.appendChild(msg);
+
+        var btnRow = document.createElement('div');
+        btnRow.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;';
+
+        var cancelBtn = document.createElement('button');
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.style.cssText = 'font-size:11px;padding:4px 10px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
+        cancelBtn.addEventListener('mousedown', function (e) {
+          e.preventDefault(); e.stopPropagation();
+          panel.remove();
+          self._sendPanel = null;
+        });
+        btnRow.appendChild(cancelBtn);
+
+        var sendBtn = document.createElement('button');
+        sendBtn.textContent = 'Send';
+        sendBtn.style.cssText = 'font-size:11px;padding:4px 10px;cursor:pointer;border:1px solid #5a5;border-radius:3px;background:#efe;';
+        function submit() {
+          var handle = input.value.trim().replace(/^@/, '');
+          if (!handle) { msg.textContent = 'Enter a handle'; msg.style.color = '#c33'; return; }
+          sendBtn.disabled = true;
+          msg.textContent = 'Sending…';
+          msg.style.color = '#888';
+          self._doSend(handle, function (err, result) {
+            sendBtn.disabled = false;
+            if (err) { msg.textContent = err.message || 'Failed'; msg.style.color = '#c33'; return; }
+            if (result && result.returned) {
+              msg.textContent = 'Not delivered (blocked, or handle unknown)';
+              msg.style.color = '#c33';
+              return;
+            }
+            msg.textContent = 'Sent to @' + handle;
+            msg.style.color = '#2a2';
+            self._updateVisibilityBtn();
+            setTimeout(function () {
+              if (self._sendPanel === panel) { panel.remove(); self._sendPanel = null; }
+            }, 1200);
+          });
+        }
+        sendBtn.addEventListener('mousedown', function (e) {
+          e.preventDefault(); e.stopPropagation();
+          submit();
+        });
+        btnRow.appendChild(sendBtn);
+        panel.appendChild(btnRow);
+
+        ['keydown', 'keyup', 'keypress', 'mousedown', 'mousemove', 'mouseup', 'click'].forEach(function (t) {
+          panel.addEventListener(t, function (e) { e.stopPropagation(); });
+        });
+        input.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') submit();
+        });
+
+        shapeNode.appendChild(panel);
+        this._sendPanel = panel;
+        input.focus();
+      },
+
+      // thenDo(err, result) — result is the inbox POST's JSON body
+      // ({ok:true, delivered:true} or the POSTAL_REJECTION shape).
+      _doSend: function (handle, thenDo) {
+        var self = this;
+        if (!this._objId) return thenDo(new Error('Save the card before sending'));
+
+        lively.identity.webKey.resolveHandle(handle, function (err, info) {
+          if (err || !info || !info.did) return thenDo(new Error('Handle not found: @' + handle));
+
+          if (self._visibility === 'public') {
+            return self._postInbox(handle, thenDo);
+          }
+
+          // Private/shared: grant access first — add as a recipient (if not
+          // already one) and reseal, then notify once that's landed.
+          if (self._recipientHandles.indexOf(handle) === -1) {
+            self._recipientHandles = self._recipientHandles.concat([handle]);
+          }
+          self._saveNow(function (saveErr) {
+            if (saveErr) return thenDo(saveErr);
+            // _saveNow -> _finishSave refreshes _recipientHandles from the
+            // envelope actually stored. If the handle isn't in it, their key
+            // couldn't be resolved and they were silently dropped from
+            // record.recipients (see _resolveRecipientPubKeys) — don't
+            // notify someone who was never actually granted access, or
+            // they'd see the card in their inbox and hit a 403 opening it.
+            if (self._recipientHandles.indexOf(handle) === -1) {
+              return thenDo(new Error('@' + handle + ' has not published an encryption key yet — cannot share with them.'));
+            }
+            self._postInbox(handle, thenDo);
+          });
+        });
+      },
+
+      _postInbox: function (handle, thenDo) {
+        var base = lively.identity.did.baseUrl();
+        var url = base + '/@' + encodeURIComponent(handle) + '/inbox';
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', url, true);
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.withCredentials = true;
+        xhr.onload = function () {
+          var result;
+          try { result = JSON.parse(xhr.responseText); } catch (e) { result = null; }
+          if (xhr.status !== 200) {
+            return thenDo(new Error('Send failed: ' + xhr.status));
+          }
+          thenDo(null, result);
+        };
+        xhr.onerror = function () { thenDo(new Error('Network error')); };
+        xhr.send(JSON.stringify({ objId: this._objId }));
       },
 
     },
