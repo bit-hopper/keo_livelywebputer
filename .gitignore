@@ -94,12 +94,17 @@ htpasswd
 .env.local
 .env.*.local
 
-# Database files and user uploads (identity system)
+# Database files and user data (identity system) — everything under the
+# repo-root identity/ dir is runtime-generated user data (objects.db,
+# handles.db, deliveries/, inbox/, uploads/, and any future subdirs) and
+# must never be committed, same as @*/ above. Ignore the whole directory
+# rather than enumerating subdirs one at a time — a new data subdir (e.g.
+# deliveries/, inbox/) silently wasn't covered until this rule caught it.
 *.sqlite
 *.sqlite3
 *.db
 *.db-journal
-identity/uploads/
+/identity/
 
 # Log files
 *.log
