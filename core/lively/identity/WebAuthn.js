@@ -26,7 +26,8 @@
  *   - lively.IndexedDB        — credential roster persistence (already in lively)
  *   - lively.LocalStorage     — lightweight flags (e.g. "has any credential?")
  *   - libsodium-wrappers      — X25519 key derivation from PRF bytes
- *     (loaded as /lib/libsodium/sodium.js; not a Lively module)
+ *     (lazily injected by Crypto.withSodium as /core/lib/libsodium/sodium.js;
+ *     not a Lively module)
  *
  * WebAuthn PRF extension note:
  *   The PRF extension is defined in WebAuthn Level 3 (W3C Editor's Draft).
@@ -608,6 +609,11 @@ module("lively.identity.WebAuthn")
         //
         // Calls thenDo(null, { publicKey: Uint8Array[32], privateKey: Uint8Array[32] })
         // — the X25519 key pair derived from PRF bytes via libsodium crypto_scalarmult_base.
+        // Deterministic per (credentialId, PRF salt) — reproduces the same keypair
+        // derived and published to the profile at registration (RegisterDialog.js).
+        //
+        // Subsequent calls with the same credentialId return the cached pair without
+        // a new WebAuthn ceremony. The cache is cleared if the page is unloaded.
         deriveX25519KeyPair: function (options, thenDo) {
           if (!this.isAvailable()) {
             return thenDo(
@@ -615,12 +621,18 @@ module("lively.identity.WebAuthn")
             );
           }
 
+          var self = this;
           var c = lively.identity.crypto;
           var credentialId = options.credentialId;
           if (!credentialId) {
             return thenDo(
               new Error("deriveX25519KeyPair: credentialId is required"),
             );
+          }
+
+          if (!self._x25519Cache) self._x25519Cache = {};
+          if (self._x25519Cache[credentialId]) {
+            return thenDo(null, self._x25519Cache[credentialId]);
           }
 
           var prfInput = new TextEncoder().encode(
@@ -672,7 +684,9 @@ module("lively.identity.WebAuthn")
                   privKey[31] |= 64;
 
                   var pubKey = sodium.crypto_scalarmult_base(privKey);
-                  thenDo(null, { publicKey: pubKey, privateKey: privKey });
+                  var pair = { publicKey: pubKey, privateKey: privKey };
+                  self._x25519Cache[credentialId] = pair;
+                  thenDo(null, pair);
                 } catch (e) {
                   thenDo(e);
                 }
