@@ -161,7 +161,7 @@ module('lively.identity.PostCardPlayback')
       _fetchVersions: function () {
         var self = this;
         var base = lively.identity.did.baseUrl();
-        var url = base + '/' + encodeURIComponent(this._handle) +
+        var url = base + '/@' + encodeURIComponent(this._handle) +
                   '/' + encodeURIComponent(this._objId) + '/versions';
         var xhr = new XMLHttpRequest();
         xhr.open('GET', url, true);
@@ -269,7 +269,7 @@ module('lively.identity.PostCardPlayback')
         this._setSnapHtml('<p style="color:gray">Loading…</p>');
 
         var base = lively.identity.did.baseUrl();
-        var url = base + '/' + encodeURIComponent(this._handle) +
+        var url = base + '/@' + encodeURIComponent(this._handle) +
                   '/' + encodeURIComponent(this._objId) +
                   '/at/' + encodeURIComponent(cid);
         var xhr = new XMLHttpRequest();

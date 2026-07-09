@@ -119,6 +119,9 @@ module("lively.identity.MenuBarEntry")
         newPostcard: function newPostcard() {
           var handle = lively.identity.did.currentUser().handle;
           lively.require("lively.identity.PostCardEditor").toRun(function () {
+            // _handle is bare (no '@') — PostCardEditor's PUT/GET URL building
+            // literally prepends '/@' to it (same convention as PostCardMailbox's
+            // inbox/deliveries/settings routes).
             lively.identity.PostCardEditor.newCard(handle);
           });
         },
