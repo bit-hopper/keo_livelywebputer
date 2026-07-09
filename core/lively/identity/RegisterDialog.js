@@ -425,7 +425,10 @@ module("lively.identity.RegisterDialog")
                             );
                           }
 
-                          // If we have accountX25519Pub, save it to the profile
+                          // If we have accountX25519Pub, save it to the profile.
+                          // record.cid is the hash of record.payload (SignedSerializer
+                          // hard-fails deserialize on a mismatch) — must be recomputed
+                          // after patching payload, not carried over from the GET.
                           if (accountX25519Pub) {
                             fetch('/@' + handle + '/profile')
                               .then(function(r) { return r.json(); })
@@ -433,11 +436,17 @@ module("lively.identity.RegisterDialog")
                                 var payload = env.record && env.record.payload ? env.record.payload : {};
                                 payload.accountX25519Pub = accountX25519Pub;
                                 env.record.payload = payload;
-                                return fetch('/@' + handle + '/profile', {
-                                  method: 'PUT',
-                                  credentials: 'include',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify(env)
+                                return new Promise(function (resolve, reject) {
+                                  lively.identity.crypto.computeCid(payload, function (err, cid) {
+                                    if (err) return reject(err);
+                                    env.record.cid = cid;
+                                    resolve(fetch('/@' + handle + '/profile', {
+                                      method: 'PUT',
+                                      credentials: 'include',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify(env)
+                                    }));
+                                  });
                                 });
                               })
                               .catch(function(e) { console.warn('[RegisterDialog] Could not save X25519 pub to profile:', e); });
