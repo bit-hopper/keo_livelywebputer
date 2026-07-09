@@ -18,6 +18,7 @@
     "colorize": "^0.1.0",
     "escodegen": "^1.12.0",
     "jsonwebtoken": "^9.0.0",
+    "libsodium-wrappers": "^0.8.4",
     "life_star": "^0.9.0",
     "lively-loader": "^0.2.5",
     "lively.ast": "^0.7.47",
@@ -51,6 +52,7 @@
   "scripts": {
     "test": "$npm_node_execpath bin/lk-test.js",
     "start": "$npm_node_execpath bin/lk-server.js",
-    "build:postcard": "esbuild build/postcard-deps-entry.js --bundle --outfile=core/lib/postcard/postcard-deps.js --format=iife --platform=browser"
+    "build:postcard": "esbuild build/postcard-deps-entry.js --bundle --outfile=core/lib/postcard/postcard-deps.js --format=iife --platform=browser",
+    "postinstall": "node scripts/build-postcard-libs.js && node scripts/build-libsodium.js"
   }
 }

@@ -1,10 +1,11 @@
 /**
- * build-postcard-libs.js
+ * scripts/build-postcard-libs.js
  *
  * One-time build step: bundles Yjs + y-websocket + y-prosemirror + ProseMirror
  * into a single browser-ready IIFE at core/lib/postcard/postcard-runtime.js.
  *
- * Run from the project root: node build-postcard-libs.js
+ * Run from the project root: node scripts/build-postcard-libs.js
+ * (also runs automatically via the postinstall npm script)
  *
  * All libs share one copy of Yjs so Y.Doc instances are compatible across
  * the PostCardEditor, WebsocketProvider, and y-prosemirror.
@@ -22,7 +23,8 @@ var esbuild = require('esbuild');
 var path = require('path');
 var fs = require('fs');
 
-var outDir = path.join(__dirname, 'core', 'lib', 'postcard');
+var rootDir = path.join(__dirname, '..');
+var outDir = path.join(rootDir, 'core', 'lib', 'postcard');
 fs.mkdirSync(outDir, { recursive: true });
 
 var entryContents = [
@@ -52,7 +54,7 @@ var entryContents = [
 esbuild.build({
   stdin: {
     contents:   entryContents,
-    resolveDir: __dirname,  // resolve imports from project root's node_modules
+    resolveDir: rootDir,  // resolve imports from project root's node_modules
     sourcefile: 'postcard-runtime-entry.js',
   },
   bundle:    true,

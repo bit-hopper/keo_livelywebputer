@@ -1,1 +1,8 @@
 *.*	-crlf
+
+# Generated bundles (esbuild output, rebuilt by scripts/build-*.js via the
+# postinstall npm script) — treat as opaque blobs: no line-by-line diffs in
+# review, and conflicts resolve as a clean binary pick-one-side-and-rebuild
+# instead of a garbled text merge.
+core/lib/postcard/postcard-runtime.js binary
+core/lib/libsodium/sodium.js binary

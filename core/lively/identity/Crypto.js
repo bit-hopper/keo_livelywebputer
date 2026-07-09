@@ -17,16 +17,18 @@
  * Async pattern: all async ops take a final `thenDo(err, result)` callback,
  * consistent with Lively's WebResource and lively.bindings signal patterns.
  *
- * libsodium dependency: load /lib/libsodium/sodium.js before calling any
- * hashing, encryption, or ECDH methods. The sodium global must expose
- * `sodium.ready` (a Promise) as in libsodium-wrappers 0.7.x.
+ * libsodium dependency: withSodium() lazily injects
+ * /core/lib/libsodium/sodium.js (built by scripts/build-libsodium.js, which
+ * runs automatically via the postinstall npm script) the first time it's
+ * needed, so callers don't need to load it themselves. The sodium global
+ * exposes `sodium.ready` (a Promise), matching libsodium-wrappers' classic
+ * API.
  */
 
 module('lively.identity.Crypto')
   .requires()
-  // Note: libsodium-wrappers (/lib/libsodium/sodium.js) must be loaded as a
-  // plain script before calling any hashing or encryption methods. It is NOT
-  // a Lively module so it cannot appear in .requires().
+  // Note: libsodium-wrappers is NOT a Lively module so it cannot appear in
+  // .requires() — withSodium() injects it as a plain script on first use.
   .toRun(function() {
 
 Object.subclass('lively.identity.Crypto',
@@ -185,24 +187,48 @@ Object.subclass('lively.identity.Crypto',
 'sodium', {
 
   // Ensures libsodium is loaded and initialized, then calls thenDo(null, sodium).
-  // libsodium-wrappers exposes `window.sodium` with a `.ready` Promise.
+  // libsodium-wrappers exposes `window.sodium` with a `.ready` Promise. If it
+  // isn't present yet in a browser context, lazily injects the bundled build
+  // (see scripts/build-libsodium.js) the same way PostCardEditor._ensureRuntime
+  // does for Yjs/ProseMirror — so callers don't each need their own loading logic.
   //
   // For Node.js testing, inject a sodium instance directly:
   //   lively.identity.crypto._sodium = require('libsodium-wrappers');
   withSodium: function(thenDo) {
+    var self = this;
     var _sodium = this._sodium ||
                   (typeof window !== 'undefined' && window.sodium) ||
                   (typeof global !== 'undefined' && global.sodium) ||
                   (typeof sodium !== 'undefined' && sodium) ||
                   null;
-    if (!_sodium) {
+    if (_sodium) {
+      return _sodium.ready.then(function() { thenDo(null, _sodium); })
+        .catch(function(err) { thenDo(err); });
+    }
+
+    if (typeof document === 'undefined') {
       return thenDo(new Error(
-        'libsodium-wrappers not loaded. ' +
-        'Include /lib/libsodium/sodium.js before calling Crypto hashing or encryption methods.'
+        'libsodium-wrappers not loaded and no document to inject it into ' +
+        '(non-browser context) — set lively.identity.crypto._sodium directly.'
       ));
     }
-    _sodium.ready.then(function() { thenDo(null, _sodium); })
-      .catch(function(err) { thenDo(err); });
+
+    if (window._sodiumLoading) {
+      var poll = setInterval(function () {
+        if (window.sodium) { clearInterval(poll); self.withSodium(thenDo); }
+      }, 50);
+      return;
+    }
+
+    window._sodiumLoading = true;
+    var s = document.createElement('script');
+    s.src = '/core/lib/libsodium/sodium.js';
+    s.onload = function () { window._sodiumLoading = false; self.withSodium(thenDo); };
+    s.onerror = function () {
+      window._sodiumLoading = false;
+      thenDo(new Error('Failed to load /core/lib/libsodium/sodium.js'));
+    };
+    document.head.appendChild(s);
   }
 
 },
