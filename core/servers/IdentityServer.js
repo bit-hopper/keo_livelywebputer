@@ -34,6 +34,21 @@ var url = require("url");
 var fs = require("fs");
 var path = require("path");
 var nodeCrypto = require("crypto");
+var katex = require("katex");
+var hljs = require("highlight.js/lib/core");
+hljs.registerLanguage("bash", require("highlight.js/lib/languages/bash"));
+hljs.registerLanguage("c", require("highlight.js/lib/languages/c"));
+hljs.registerLanguage("cpp", require("highlight.js/lib/languages/cpp"));
+hljs.registerLanguage("css", require("highlight.js/lib/languages/css"));
+hljs.registerLanguage("java", require("highlight.js/lib/languages/java"));
+hljs.registerLanguage("javascript", require("highlight.js/lib/languages/javascript"));
+hljs.registerLanguage("json", require("highlight.js/lib/languages/json"));
+hljs.registerLanguage("markdown", require("highlight.js/lib/languages/markdown"));
+hljs.registerLanguage("plaintext", require("highlight.js/lib/languages/plaintext"));
+hljs.registerLanguage("python", require("highlight.js/lib/languages/python"));
+hljs.registerLanguage("sql", require("highlight.js/lib/languages/sql"));
+hljs.registerLanguage("typescript", require("highlight.js/lib/languages/typescript"));
+hljs.registerLanguage("xml", require("highlight.js/lib/languages/xml"));
 var handleRegistry = require("./identity/HandleRegistry");
 var objectRepo = require("./identity/ObjectRepository");
 var auth = require("./identity/AuthMiddleware");
@@ -260,11 +275,15 @@ function buildPostCardPage(envelope) {
     '<meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width,initial-scale=1">' +
     '<link rel="shortcut icon" href="/core/media/lively.ico">' +
+    '<link rel="stylesheet" href="/core/lib/postcard/katex.min.css">' +
+    '<link rel="stylesheet" href="/core/lib/postcard/hljs-github.css">' +
     '<title>' + title + '</title>' +
     '<style>' +
     'body{margin:0;font-family:system-ui,sans-serif;background:#fafafa}' +
     '.postcard-static{max-width:720px;margin:48px auto;padding:0 24px}' +
     '.postcard-static h1{font-size:2em;font-weight:700;margin:0 0 24px}' +
+    '.postcard-static .lively-postcard-image{max-width:100%;max-height:480px;border-radius:4px;' +
+    'vertical-align:middle}' +
     '.postcard-loader{position:fixed;bottom:12px;right:12px;font-size:12px;' +
     'color:#999;background:#fff;border:1px solid #eee;border-radius:4px;padding:4px 8px}' +
     '</style>' +
@@ -300,6 +319,47 @@ function _snapshotToHtml(snapshot) {
   }).join('');
 }
 
+// Syntax-highlighted code_block render. hljs.highlightAuto's .value output
+// already HTML-escapes the source text itself — reads raw text directly
+// from node.content rather than the pre-escaped `inner` the caller built,
+// to avoid double-escaping.
+function _renderHighlightedCode(node) {
+  var text = (node.content || []).map(function(n) { return n.text || ''; }).join('');
+  if (!text) return '<pre><code class="hljs"></code></pre>';
+  try {
+    return '<pre><code class="hljs">' + hljs.highlightAuto(text).value + '</code></pre>';
+  } catch (e) {
+    return '<pre><code class="hljs">' + escapeHtml(text) + '</code></pre>';
+  }
+}
+
+// Server-side KaTeX render for static pages (§10.1/F17). Falls back to the
+// raw LaTeX source, escaped, if the input doesn't parse — matches the
+// editor NodeView's non-throwing behavior for malformed input.
+function _renderKatex(value, displayMode) {
+  if (!value) {
+    return displayMode
+      ? '<pre class="math-display"></pre>'
+      : '<code class="math-inline"></code>';
+  }
+  try {
+    return katex.renderToString(value, { throwOnError: true, displayMode: displayMode });
+  } catch (e) {
+    var tag = displayMode ? 'pre' : 'code';
+    return '<' + tag + ' class="math-' + (displayMode ? 'display' : 'inline') + ' math-error">' +
+           escapeHtml(value) + '</' + tag + '>';
+  }
+}
+
+// §10.1 align/indent (matches PostCardEditor.js's _alignIndentAttrs).
+function _alignIndentAttr(node) {
+  var attrs = node.attrs || {};
+  var style = '';
+  if (attrs.align && attrs.align !== 'left') style += 'text-align:' + attrs.align + ';';
+  if (attrs.indent) style += 'margin-left:' + (attrs.indent * 24) + 'px;';
+  return style ? ' style="' + escapeHtml(style) + '"' : '';
+}
+
 function _pmNodeToHtml(node) {
   if (!node) return '';
   var text = '';
@@ -307,10 +367,22 @@ function _pmNodeToHtml(node) {
     text = escapeHtml(node.text);
     if (node.marks) {
       node.marks.forEach(function(mark) {
-        if (mark.type === 'strong') text = '<strong>' + text + '</strong>';
-        else if (mark.type === 'em') text = '<em>' + text + '</em>';
+        // Mark type names match the client schema (PostCardEditor.js's
+        // _buildSchema), not ProseMirror's own default 'strong'/'em' names.
+        if (mark.type === 'bold') text = '<strong>' + text + '</strong>';
+        else if (mark.type === 'italic') text = '<em>' + text + '</em>';
         else if (mark.type === 'underline') text = '<u>' + text + '</u>';
         else if (mark.type === 'strike') text = '<s>' + text + '</s>';
+        else if (mark.type === 'superscript') text = '<sup>' + text + '</sup>';
+        else if (mark.type === 'subscript') text = '<sub>' + text + '</sub>';
+        else if (mark.type === 'textColor' && mark.attrs && mark.attrs.color)
+          text = '<span style="color:' + escapeHtml(mark.attrs.color) + '">' + text + '</span>';
+        else if (mark.type === 'backgroundColor' && mark.attrs && mark.attrs.color)
+          text = '<span style="background-color:' + escapeHtml(mark.attrs.color) + '">' + text + '</span>';
+        else if (mark.type === 'fontFamily' && mark.attrs && mark.attrs.family)
+          text = '<span style="font-family:' + escapeHtml(mark.attrs.family) + '">' + text + '</span>';
+        else if (mark.type === 'fontSize' && mark.attrs && mark.attrs.size)
+          text = '<span style="font-size:' + escapeHtml(mark.attrs.size) + '">' + text + '</span>';
         else if (mark.type === 'link' && mark.attrs && mark.attrs.href)
           text = '<a href="' + escapeHtml(safeHref(mark.attrs.href)) +
                  '" rel="noopener noreferrer">' + text + '</a>';
@@ -320,19 +392,25 @@ function _pmNodeToHtml(node) {
   }
   var inner = (node.content || []).map(_pmNodeToHtml).join('');
   switch (node.type) {
-    case 'paragraph': return '<p>' + inner + '</p>';
+    case 'paragraph': return '<p' + _alignIndentAttr(node) + '>' + inner + '</p>';
     case 'heading':
       var level = (node.attrs && node.attrs.level) || 1;
-      return '<h' + level + '>' + inner + '</h' + level + '>';
+      return '<h' + level + _alignIndentAttr(node) + '>' + inner + '</h' + level + '>';
     case 'bullet_list': return '<ul>' + inner + '</ul>';
     case 'ordered_list': return '<ol>' + inner + '</ol>';
-    case 'list_item': return '<li>' + inner + '</li>';
+    case 'list_item': return '<li' + _alignIndentAttr(node) + '>' + inner + '</li>';
     case 'blockquote': return '<blockquote>' + inner + '</blockquote>';
-    case 'code_block': return '<pre><code>' + inner + '</code></pre>';
+    case 'code_block': return _renderHighlightedCode(node);
     case 'horizontal_rule': return '<hr>';
     case 'hard_break': return '<br>';
-    case 'math_inline': return '<code class="math-inline">' + inner + '</code>';
-    case 'math_display': return '<pre class="math-display">' + inner + '</pre>';
+    case 'image':
+      var src = (node.attrs && node.attrs.src) || '';
+      var alt = (node.attrs && node.attrs.alt) || '';
+      var imgTitle = node.attrs && node.attrs.title;
+      return '<img class="lively-postcard-image" src="' + escapeHtml(src) + '" alt="' + escapeHtml(alt) + '"' +
+             (imgTitle ? ' title="' + escapeHtml(imgTitle) + '"' : '') + '>';
+    case 'math_inline': return _renderKatex((node.attrs && node.attrs.value) || '', false);
+    case 'math_display': return _renderKatex((node.attrs && node.attrs.value) || '', true);
     case 'embeddedPart':
       var objId = (node.attrs && node.attrs.objId) || '';
       return '<div class="lively-embedded-part" data-obj-id="' + escapeHtml(objId) +

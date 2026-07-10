@@ -1466,6 +1466,9 @@ lively.morphic.Morph.addMethods(
         // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
         // partsbin related
         items.push(['Publish', function(evt) { self.copyToPartsBinWithUserRequest(); }]);
+        if (typeof lively !== 'undefined' && lively.identity && lively.identity.did && lively.identity.did.isLoggedIn()) {
+            items.push(['Save to My Parts', function(evt) { self.copyToIdentityPartsSpace(); }]);
+        }
         if (this.reset) {
             [].pushAt
             var idx=-1; items.detect(function(item, i) { idx = i; return item[0] === 'Publish'; });

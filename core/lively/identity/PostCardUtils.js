@@ -33,27 +33,34 @@ module('lively.identity.PostCardUtils')
       if (!node) return '';
       switch (node.type) {
         case 'paragraph':
-          return '<p>' + inlineContent(node.content) + '</p>';
+          return '<p' + alignIndentAttr(node) + '>' + inlineContent(node.content) + '</p>';
         case 'heading': {
           var level = Math.min(6, Math.max(1, (node.attrs && node.attrs.level) ? node.attrs.level : 1));
-          return '<h' + level + '>' + inlineContent(node.content) + '</h' + level + '>';
+          return '<h' + level + alignIndentAttr(node) + '>' + inlineContent(node.content) + '</h' + level + '>';
         }
         case 'bullet_list':
           return '<ul>' + (node.content || []).map(pmNodeToHtml).join('') + '</ul>';
         case 'ordered_list':
           return '<ol>' + (node.content || []).map(pmNodeToHtml).join('') + '</ol>';
         case 'list_item':
-          return '<li>' + (node.content || []).map(pmNodeToHtml).join('') + '</li>';
+          return '<li' + alignIndentAttr(node) + '>' + (node.content || []).map(pmNodeToHtml).join('') + '</li>';
         case 'blockquote':
           return '<blockquote>' + (node.content || []).map(pmNodeToHtml).join('') + '</blockquote>';
         case 'code_block':
-          return '<pre><code>' + escapeHtml(inlineContent(node.content)) + '</code></pre>';
+          return renderHighlightedCode(node);
         case 'hard_break':
           return '<br>';
+        case 'image': {
+          var src = (node.attrs && node.attrs.src) || '';
+          var alt = (node.attrs && node.attrs.alt) || '';
+          var imgTitle = node.attrs && node.attrs.title;
+          return '<img class="lively-postcard-image" src="' + escapeAttr(src) + '" alt="' + escapeAttr(alt) + '"' +
+                 (imgTitle ? ' title="' + escapeAttr(imgTitle) + '"' : '') + '>';
+        }
         case 'math_inline':
-          return '<code class="math-inline">' + escapeHtml((node.attrs && node.attrs.value) || '') + '</code>';
+          return renderKatex((node.attrs && node.attrs.value) || '', false);
         case 'math_display':
-          return '<pre class="math-display">' + escapeHtml((node.attrs && node.attrs.value) || '') + '</pre>';
+          return renderKatex((node.attrs && node.attrs.value) || '', true);
         case 'embeddedPart': {
           var partId = (node.attrs && node.attrs.objId) ? node.attrs.objId : '(embedded)';
           return '<div class="embedded-part-placeholder" data-obj-id="' + escapeAttr(partId) + '">' +
@@ -63,6 +70,15 @@ module('lively.identity.PostCardUtils')
           if (node.content) return (node.content || []).map(pmNodeToHtml).join('');
           return '';
       }
+    }
+
+    // §10.1 align/indent (matches PostCardEditor.js's _alignIndentAttrs).
+    function alignIndentAttr(node) {
+      var attrs = node.attrs || {};
+      var style = '';
+      if (attrs.align && attrs.align !== 'left') style += 'text-align:' + attrs.align + ';';
+      if (attrs.indent) style += 'margin-left:' + (attrs.indent * 24) + 'px;';
+      return style ? ' style="' + escapeAttr(style) + '"' : '';
     }
 
     function inlineContent(content) {
@@ -75,6 +91,26 @@ module('lively.identity.PostCardUtils')
               case 'bold':   text = '<strong>' + text + '</strong>'; break;
               case 'italic': text = '<em>' + text + '</em>'; break;
               case 'code':   text = '<code>' + text + '</code>'; break;
+              case 'underline':   text = '<u>' + text + '</u>'; break;
+              case 'strike':      text = '<s>' + text + '</s>'; break;
+              case 'superscript': text = '<sup>' + text + '</sup>'; break;
+              case 'subscript':   text = '<sub>' + text + '</sub>'; break;
+              case 'textColor':
+                if (mark.attrs && mark.attrs.color)
+                  text = '<span style="color:' + escapeAttr(mark.attrs.color) + '">' + text + '</span>';
+                break;
+              case 'backgroundColor':
+                if (mark.attrs && mark.attrs.color)
+                  text = '<span style="background-color:' + escapeAttr(mark.attrs.color) + '">' + text + '</span>';
+                break;
+              case 'fontFamily':
+                if (mark.attrs && mark.attrs.family)
+                  text = '<span style="font-family:' + escapeAttr(mark.attrs.family) + '">' + text + '</span>';
+                break;
+              case 'fontSize':
+                if (mark.attrs && mark.attrs.size)
+                  text = '<span style="font-size:' + escapeAttr(mark.attrs.size) + '">' + text + '</span>';
+                break;
               case 'link': {
                 var raw  = mark.attrs && mark.attrs.href ? mark.attrs.href : '#';
                 var href = escapeAttr(safeHref(raw));
@@ -87,6 +123,38 @@ module('lively.identity.PostCardUtils')
         }
         return pmNodeToHtml(node);
       }).join('');
+    }
+
+    // Client-side KaTeX render for the read-only feed/playback/standalone-page
+    // paths (window.katex comes from postcard-runtime.js). Falls back to the
+    // raw LaTeX source, escaped, if katex isn't loaded yet or input is malformed.
+    function renderKatex(value, displayMode) {
+      var tag = displayMode ? 'pre' : 'code';
+      if (!value) return '<' + tag + ' class="math-' + (displayMode ? 'display' : 'inline') + '"></' + tag + '>';
+      var katex = (typeof window !== 'undefined' && window.katex) || null;
+      if (!katex) return '<' + tag + ' class="math-' + (displayMode ? 'display' : 'inline') + '">' + escapeHtml(value) + '</' + tag + '>';
+      try {
+        return katex.renderToString(value, { throwOnError: true, displayMode: displayMode });
+      } catch (e) {
+        return '<' + tag + ' class="math-' + (displayMode ? 'display' : 'inline') + ' math-error">' +
+               escapeHtml(value) + '</' + tag + '>';
+      }
+    }
+
+    // Client-side syntax-highlighted code_block render (window.hljs comes
+    // from postcard-runtime.js). Reads raw text directly from node.content —
+    // hljs's .value output already escapes it, so running it through
+    // escapeHtml() again would double-escape entities.
+    function renderHighlightedCode(node) {
+      var text = (node.content || []).map(function (n) { return n.text || ''; }).join('');
+      if (!text) return '<pre><code class="hljs"></code></pre>';
+      var hljs = (typeof window !== 'undefined' && window.hljs) || null;
+      if (!hljs) return '<pre><code class="hljs">' + escapeHtml(text) + '</code></pre>';
+      try {
+        return '<pre><code class="hljs">' + hljs.highlightAuto(text).value + '</code></pre>';
+      } catch (e) {
+        return '<pre><code class="hljs">' + escapeHtml(text) + '</code></pre>';
+      }
     }
 
     function escapeHtml(str) {

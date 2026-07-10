@@ -846,6 +846,75 @@ Trait('lively.PartsBin.PartTrait', {
         this.getPartItem().uploadPart();
     },
 
+    // Save this part as an identity-aware envelope (postcard-audit F15) rather
+    // than to WebDAV's PartsBin — makes it browsable from the postcard editor's
+    // insert-part picker (lively.identity.IdentityPartsSpace), which reads
+    // type:'part' envelopes instead of a WebDAV directory.
+    copyToIdentityPartsSpace: function() {
+        var morph = this;
+        if (!this.name) {
+            alert('Cannot save to My Parts without a name');
+            return;
+        }
+        if (typeof lively === 'undefined' || !lively.require) {
+            alert('Cannot save to My Parts: Lively module system not available');
+            return;
+        }
+        lively.require('lively.identity.UserSpace', 'lively.identity.WebKey').toRun(function() {
+            var user = lively.identity.did.currentUser();
+            if (!user) { alert('Cannot save to My Parts: not signed in'); return; }
+
+            var serialized;
+            try {
+                serialized = morph.getPartItem().serializePart(morph);
+            } catch (e) {
+                alert('Could not serialize part: ' + e.message);
+                return;
+            }
+            var json = serialized.json;
+            var c = lively.identity.crypto;
+
+            c.computeCid(json, function(err, cid) {
+                if (err) { alert('Could not compute CID: ' + err.message); return; }
+                lively.identity.webKey.generateGenesisObjId(user.did, function(err, result) {
+                    if (err) { alert('Could not derive objId: ' + err.message); return; }
+
+                    var envelope = {
+                        objId: result.objId,
+                        did: user.did,
+                        type: 'part',
+                        visibility: 'public',
+                        created: new Date().toISOString(),
+                        genesisNonce: result.genesisNonce,
+                        record: { cid: cid, prevCid: null, payload: json },
+                        state: { partName: morph.name, comment: '', tags: [] },
+                    };
+
+                    var base = lively.identity.did.baseUrl();
+                    var url = base + '/@' + encodeURIComponent(user.handle) + '/' + encodeURIComponent(envelope.objId);
+                    var xhr = new XMLHttpRequest();
+                    xhr.open('PUT', url, true);
+                    xhr.setRequestHeader('Content-Type', 'application/json');
+                    xhr.withCredentials = true;
+                    xhr.onload = function() {
+                        if (xhr.status !== 200 && xhr.status !== 201) {
+                            alert('Save to My Parts failed: HTTP ' + xhr.status);
+                            return;
+                        }
+                        lively.identity.userSpace.addPart('general', {
+                            objId: envelope.objId, cid: cid, title: morph.name, partName: morph.name,
+                        }, function(addErr) {
+                            if (addErr) alert('Saved, but could not register in My Parts: ' + addErr.message);
+                            else alert('Saved "' + morph.name + '" to My Parts.');
+                        });
+                    };
+                    xhr.onerror = function() { alert('Save to My Parts failed: network error'); };
+                    xhr.send(JSON.stringify(envelope));
+                });
+            });
+        });
+    },
+
     getPartsBinMetaInfo: function() {
         if (!this.partsBinMetaInfo) {
             this.partsBinMetaInfo = new lively.PartsBin.PartsBinMetaInfo();
