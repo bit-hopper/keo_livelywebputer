@@ -50,6 +50,9 @@ module('lively.identity.PostCardEditor')
   )
   .toRun(function () {
 
+    // See _resolveRecipientPubKeys (postcard-audit F25).
+    var RECIPIENT_KEY_CACHE_TTL_MS = 60 * 1000;
+
     var PostCardEditorClass = lively.morphic.Box.subclass('lively.identity.PostCardEditor',
 
     // ─── serialization guard ──────────────────────────────────────────────────────
@@ -569,7 +572,11 @@ module('lively.identity.PostCardEditor')
 
       // Resolve each handle to { did, handle, x25519PublicKey }, cached
       // per-session so repeated autosaves of a shared card don't refetch
-      // every recipient's profile on every 2s debounce tick.
+      // every recipient's profile on every 2s debounce tick. Cache entries
+      // expire after RECIPIENT_KEY_CACHE_TTL_MS so a key rotated by a
+      // recipient mid-session is eventually picked up rather than never
+      // (postcard-audit F25) — long enough to still absorb the debounce
+      // storm, short enough to not go stale for an editor left open a while.
       // Calls thenDo(null, { resolved: [...], failed: [handle, ...] }).
       _resolveRecipientPubKeys: function (handles, thenDo) {
         var self = this;
@@ -580,6 +587,7 @@ module('lively.identity.PostCardEditor')
         var resolved = [];
         var failed = [];
         var remaining = handles.length;
+        var now = Date.now();
 
         function done() {
           if (--remaining === 0) thenDo(null, { resolved: resolved, failed: failed });
@@ -587,7 +595,10 @@ module('lively.identity.PostCardEditor')
 
         handles.forEach(function (handle) {
           var cached = self._recipientPubKeyCache[handle];
-          if (cached) { resolved.push(cached); return done(); }
+          if (cached && (now - cached.at) < RECIPIENT_KEY_CACHE_TTL_MS) {
+            resolved.push(cached.entry);
+            return done();
+          }
 
           lively.identity.webKey.resolveHandle(handle, function (err, info) {
             if (err || !info || !info.did) { failed.push(handle); return done(); }
@@ -595,18 +606,36 @@ module('lively.identity.PostCardEditor')
             xhr.open('GET', base + '/@' + encodeURIComponent(handle) + '/profile', true);
             xhr.withCredentials = true;
             xhr.onload = function () {
-              var pub = null;
-              if (xhr.status === 200) {
-                try {
-                  var env = JSON.parse(xhr.responseText);
-                  pub = env.record && env.record.payload && env.record.payload.accountX25519Pub;
-                } catch (e) { /* fall through to failed */ }
-              }
+              if (xhr.status !== 200) { failed.push(handle); return done(); }
+              var env;
+              try { env = JSON.parse(xhr.responseText); } catch (e) { failed.push(handle); return done(); }
+              var pub = env.record && env.record.payload && env.record.payload.accountX25519Pub;
               if (!pub) { failed.push(handle); return done(); }
-              var entry = { did: info.did, handle: handle, x25519PublicKey: pub };
-              self._recipientPubKeyCache[handle] = entry;
-              resolved.push(entry);
-              done();
+
+              // Integrity check (postcard-audit F22): every other envelope
+              // consumer in this codebase verifies record.cid before trusting
+              // record.payload; this was the one that didn't, despite the
+              // payload feeding straight into who a DEK gets sealed to. This
+              // only catches accidental corruption / a CID that doesn't match
+              // its own payload — it does not by itself prove the payload is
+              // the real recipient's, since a malicious server can compute a
+              // matching CID for a substituted payload too. Full protection
+              // needs signature verification against the recipient's
+              // delegated device key (see the envelope-signing added in
+              // RegisterDialog.js/UserSpace.js), which isn't wired up yet —
+              // tracked as the F20/F22 verifier follow-up.
+              lively.identity.crypto.computeCid(env.record.payload, function (cidErr, expectedCid) {
+                if (cidErr || expectedCid !== env.record.cid) {
+                  console.warn('[PostCardEditor] Profile envelope for @' + handle +
+                    ' failed CID integrity check — refusing to seal to its accountX25519Pub');
+                  failed.push(handle);
+                  return done();
+                }
+                var entry = { did: info.did, handle: handle, x25519PublicKey: pub };
+                self._recipientPubKeyCache[handle] = { entry: entry, at: Date.now() };
+                resolved.push(entry);
+                done();
+              });
             };
             xhr.onerror = function () { failed.push(handle); done(); };
             xhr.send();
@@ -712,6 +741,42 @@ module('lively.identity.PostCardEditor')
         });
         btnRow.appendChild(cancelBtn);
 
+        // Live encryption-status hint as the handle is typed, for private/shared
+        // cards only — surfaces "hasn't set up encryption yet" up front rather
+        // than only after a failed Send attempt (the failure path below still
+        // applies as a safety net; this is purely informational and doesn't
+        // block clicking Send).
+        var checkTimer = null;
+        if (this._visibility !== 'public') {
+          input.addEventListener('input', function () {
+            clearTimeout(checkTimer);
+            var handle = input.value.trim().replace(/^@/, '');
+            if (!handle) { msg.textContent = ''; return; }
+            msg.textContent = 'Checking…';
+            msg.style.color = '#999';
+            checkTimer = setTimeout(function () {
+              lively.identity.webKey.resolveHandle(handle, function (err, info) {
+                if (input.value.trim().replace(/^@/, '') !== handle) return; // stale — input changed since
+                if (err || !info || !info.did) {
+                  msg.textContent = 'Handle not found';
+                  msg.style.color = '#c33';
+                  return;
+                }
+                self._resolveRecipientPubKeys([handle], function (_e, result) {
+                  if (input.value.trim().replace(/^@/, '') !== handle) return; // stale
+                  if (result.resolved.length) {
+                    msg.textContent = '🔒 can receive encrypted cards';
+                    msg.style.color = '#2a2';
+                  } else {
+                    msg.textContent = "🔓 hasn't set up encryption yet";
+                    msg.style.color = '#c60';
+                  }
+                });
+              });
+            }, 400);
+          });
+        }
+
         var sendBtn = document.createElement('button');
         sendBtn.textContent = 'Send';
         sendBtn.style.cssText = 'font-size:11px;padding:4px 10px;cursor:pointer;border:1px solid #5a5;border-radius:3px;background:#efe;';
@@ -769,23 +834,34 @@ module('lively.identity.PostCardEditor')
             return self._postInbox(handle, thenDo);
           }
 
-          // Private/shared: grant access first — add as a recipient (if not
-          // already one) and reseal, then notify once that's landed.
-          if (self._recipientHandles.indexOf(handle) === -1) {
-            self._recipientHandles = self._recipientHandles.concat([handle]);
-          }
-          self._saveNow(function (saveErr) {
-            if (saveErr) return thenDo(saveErr);
-            // _saveNow -> _finishSave refreshes _recipientHandles from the
-            // envelope actually stored. If the handle isn't in it, their key
-            // couldn't be resolved and they were silently dropped from
-            // record.recipients (see _resolveRecipientPubKeys) — don't
-            // notify someone who was never actually granted access, or
-            // they'd see the card in their inbox and hit a 403 opening it.
-            if (self._recipientHandles.indexOf(handle) === -1) {
-              return thenDo(new Error('@' + handle + ' has not published an encryption key yet — cannot share with them.'));
+          // Private/shared: preflight-check the recipient can actually
+          // receive encrypted content before doing a full autosave + reseal
+          // of every existing recipient just to find out they can't. The
+          // post-save check below stays as a safety net (their key could in
+          // principle stop resolving between this check and the save).
+          self._resolveRecipientPubKeys([handle], function (_e, preflight) {
+            if (preflight.failed.length) {
+              return thenDo(new Error("@" + handle + " hasn't set up encryption yet — cannot share with them."));
             }
-            self._postInbox(handle, thenDo);
+
+            // Grant access — add as a recipient (if not already one) and
+            // reseal, then notify once that's landed.
+            if (self._recipientHandles.indexOf(handle) === -1) {
+              self._recipientHandles = self._recipientHandles.concat([handle]);
+            }
+            self._saveNow(function (saveErr) {
+              if (saveErr) return thenDo(saveErr);
+              // _saveNow -> _finishSave refreshes _recipientHandles from the
+              // envelope actually stored. If the handle isn't in it, their key
+              // couldn't be resolved and they were silently dropped from
+              // record.recipients (see _resolveRecipientPubKeys) — don't
+              // notify someone who was never actually granted access, or
+              // they'd see the card in their inbox and hit a 403 opening it.
+              if (self._recipientHandles.indexOf(handle) === -1) {
+                return thenDo(new Error("@" + handle + " hasn't set up encryption yet — cannot share with them."));
+              }
+              self._postInbox(handle, thenDo);
+            });
           });
         });
       },

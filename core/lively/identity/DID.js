@@ -227,14 +227,42 @@ module("lively.identity.DID")
 
       "persistence",
       {
-        // Persist the current user's DID document to IndexedDB.
-        saveDocument: function (document, thenDo) {
+        // Persist the current user's DID document to IndexedDB, and — when a
+        // handle is given — sync it to the server too. The server sync
+        // matters because the delegation ceremony (soft signing key + KEK +
+        // account X25519 key, see RegisterDialog.js) runs *after* the initial
+        // POST /register already stored a DID document without that info;
+        // without this PUT, delegationCert/softSigningKeyWrapped/
+        // accountX25519Pub would only ever live in this device's own
+        // IndexedDB and never reach the server's did_documents table —
+        // confirmed as the root cause of postcard_fixes_tranche3.md's
+        // "still shows no encryption" report (the local ceremony was
+        // succeeding; nothing was pushing the result to the server).
+        // handle: optional for backwards compatibility — omit to save
+        // locally only (server sync failure is itself non-fatal either way;
+        // the IndexedDB save is what local signing/encryption depends on).
+        saveDocument: function (document, handle, thenDo) {
+          if (typeof handle === "function") { thenDo = handle; handle = null; }
+          var cb = thenDo || function () {};
           lively.IndexedDB.set(
             "identity-did-document",
             JSON.stringify(document),
             function (err) {
               if (!err) console.log("[DID] saveDocument: DID document saved to IndexedDB");
-              (thenDo || function () {})(err);
+              if (err || !handle) return cb(err);
+              fetch("/@" + handle + "/did-document", {
+                method: "PUT",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(document),
+              }).then(function (res) {
+                if (!res.ok) console.warn("[DID] saveDocument: server sync failed, HTTP " + res.status);
+                else console.log("[DID] saveDocument: DID document synced to server");
+                cb(null);
+              }).catch(function (e) {
+                console.warn("[DID] saveDocument: server sync network error:", e.message);
+                cb(null);
+              });
             },
             "identity",
           );
@@ -485,7 +513,7 @@ module("lively.identity.DID")
             accountX25519Pub:       params.accountX25519Pub       || null,
           });
 
-          self.saveDocument(document, function (saveErr) {
+          self.saveDocument(document, params.handle, function (saveErr) {
             if (saveErr) return thenDo(saveErr);
 
             self.establishSession(

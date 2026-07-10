@@ -390,6 +390,26 @@ function _canReadEnvelope(envelope, identity) {
   });
 }
 
+// A shared envelope's record.recipients carries every recipient's
+// {did, sealedDek} — needed in full by the owner (to reseal on the next
+// save) but a non-owner recipient has no need to see who else has access.
+// Trims to just the requester's own entry for non-owner readers. Shared by
+// every full-envelope GET route, same reasoning as _canReadEnvelope above
+// (audit F23).
+function _trimRecipientsForNonOwner(envelope, identity) {
+  if (!envelope.record || !envelope.record.recipients || !envelope.record.recipients.length) {
+    return envelope;
+  }
+  if (identity && identity.did === envelope.did) return envelope;
+  return Object.assign({}, envelope, {
+    record: Object.assign({}, envelope.record, {
+      recipients: envelope.record.recipients.filter(function (r) {
+        return identity && (r.did || r) === identity.did;
+      }),
+    }),
+  });
+}
+
 // Can `viewerDid` (may be null for anonymous) see this postcard metadata row?
 // meta comes from ObjectRepository's postcard listing projection, which
 // carries `visibility` and `recipients` for exactly this decision (§10.4).
@@ -597,6 +617,33 @@ module.exports = function (route, app) {
           return res.status(404).json({ error: "No DID document stored for @" + handle });
 
         res.json(doc);
+      });
+    });
+  });
+
+  // Owner-only update — needed because the delegation ceremony (soft signing
+  // key + KEK + account X25519 key, see RegisterDialog.js) runs *after* the
+  // initial POST /register that first stores the DID document, so its
+  // results (delegationCert/softSigningKeyWrapped/accountX25519Pub on the
+  // matching verificationMethod's "lively" metadata) have to be pushed here
+  // afterward. Full-document overwrite, same trust model as the initial
+  // register write (client sends the authoritative rebuilt document; no
+  // signature verification anywhere yet, see postcard_audit.md F20).
+  app.put("/@:handle/did-document", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    var doc = req.body;
+    if (!doc || !doc.id || !doc.verificationMethod)
+      return res.status(400).json({ error: "Invalid DID document" });
+
+    handleRegistry.resolve(handle, function (err, did) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!did) return res.status(404).json({ error: "Handle not found: @" + handle });
+      if (req.identity.did !== did || doc.id !== did)
+        return res.status(403).json({ error: "Forbidden: not your DID document" });
+
+      handleRegistry.saveDIDDocument(did, doc, function (saveErr) {
+        if (saveErr) return res.status(500).json({ error: String(saveErr) });
+        res.json({ ok: true });
       });
     });
   });
@@ -979,11 +1026,29 @@ module.exports = function (route, app) {
           });
         }
 
-        var record = { objId: body.objId, senderDid: senderDid, senderHandle: senderHandle, sentAt: new Date().toISOString() };
-        objectRepo.putInboxRecord(handle, record, function (err3) {
-          if (err3) return res.status(500).json({ error: String(err3) });
-          _recordDelivery('delivered', function () {
-            res.json({ ok: true, delivered: true });
+        // Confirm the sender actually has access to what they're claiming to
+        // send — without this, any authenticated user could push an
+        // arbitrary objId into anyone's inbox (postcard-audit F24). Runs
+        // after the block-list decision above so the two existing outcomes'
+        // response shape/timing (F7) is untouched; a bad objId is a
+        // genuinely different error class, not a delivery outcome.
+        objectRepo.get(body.objId, function (getErr, objEnvelope) {
+          if (getErr) return res.status(500).json({ error: String(getErr) });
+          if (!objEnvelope) return res.status(404).json({ error: "Object not found: " + body.objId });
+          var isOwner = objEnvelope.did === senderDid;
+          var isRecipient = ((objEnvelope.record && objEnvelope.record.recipients) || []).some(function (r) {
+            return (r.did || r) === senderDid;
+          });
+          if (!isOwner && !isRecipient) {
+            return res.status(403).json({ error: "Forbidden: you do not have access to this object" });
+          }
+
+          var record = { objId: body.objId, senderDid: senderDid, senderHandle: senderHandle, sentAt: new Date().toISOString() };
+          objectRepo.putInboxRecord(handle, record, function (err3) {
+            if (err3) return res.status(500).json({ error: String(err3) });
+            _recordDelivery('delivered', function () {
+              res.json({ ok: true, delivered: true });
+            });
           });
         });
       });
@@ -1129,6 +1194,8 @@ module.exports = function (route, app) {
         }
         return res.status(403).json({ error: "Forbidden" });
       }
+
+      envelope = _trimRecipientsForNonOwner(envelope, req.identity);
 
       if (envelope.type === "world" && req.accepts(["html", "json"]) === "html") {
         var welcomeHandle = null;
@@ -1617,6 +1684,8 @@ module.exports = function (route, app) {
       if (!_canReadEnvelope(envelope, req.identity)) {
         return res.status(403).json({ error: "Forbidden" });
       }
+
+      envelope = _trimRecipientsForNonOwner(envelope, req.identity);
 
       if (req.accepts(["html", "json"]) === "html") {
         return res.send(buildPostCardPage(envelope));

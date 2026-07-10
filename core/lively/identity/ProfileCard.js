@@ -286,6 +286,19 @@ module("lively.identity.ProfileCard")
         var dividerY = y;
         y += 12;
 
+        // encryption status — whether this account can receive private/shared
+        // postcards. Surfaced here (rather than only failing at Send time,
+        // see PostCardEditor.js's Send dialog) so it's visible up front,
+        // including to the owner themselves if their own device never
+        // completed the WebAuthn PRF delegation ceremony that publishes this.
+        var encLabel = payload.accountX25519Pub
+          ? "🔒 Can receive encrypted postcards"
+          : "🔓 Hasn't set up encryption yet";
+        var encColor = payload.accountX25519Pub ? [46, 125, 50] : [170, 130, 20];
+        pane.addMorph(txt(encLabel, contentX, y, cw, 14, 10,
+          encColor[0], encColor[1], encColor[2], false));
+        y += 17;
+
         // Friends button — shown to all; behaviour is ownership-aware
         // TODO: wire to /identity/friends/:handle once that endpoint exists
         (function () {

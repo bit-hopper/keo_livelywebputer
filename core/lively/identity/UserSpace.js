@@ -348,7 +348,16 @@ module("lively.identity.UserSpace")
                 ),
               );
 
-            c.computeCid(payload, function (err, cid) {
+            // Merge onto the existing payload rather than replacing it outright:
+            // this editor's payload only carries display fields (displayName,
+            // bio, avatarUrl, ...), never accountX25519Pub (set once at
+            // registration, see RegisterDialog.js). Replacing wholesale would
+            // silently wipe a previously-published encryption key on every
+            // profile edit, breaking new shared-postcard sends to this user
+            // from that point on (postcard-audit F26).
+            var mergedPayload = Object.assign({}, existing.record.payload || {}, payload);
+
+            c.computeCid(mergedPayload, function (err, cid) {
               if (err) return thenDo(err);
 
               var primaryKey =
@@ -365,26 +374,35 @@ module("lively.identity.UserSpace")
                 type:       "profile",
                 visibility: "public",
                 created:    existing.created || new Date().toISOString(),
-                record:     { cid: cid, prevCid: existing.record.cid, payload: payload },
+                record:     { cid: cid, prevCid: existing.record.cid, payload: mergedPayload },
                 state:      { name: "profile" },
               };
 
-              fetch("/@" + user.handle + "/profile", {
-                method: "PUT",
-                credentials: "include",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(envelope),
-              })
-                .then(function (res) {
-                  if (!res.ok)
-                    return res.json().then(function (b) {
-                      throw new Error(
-                        b.error || "PUT profile HTTP " + res.status,
-                      );
-                    });
-                  return res.json().then(function (r) { thenDo(null, r); });
+              // Sign the envelope if possible (postcard-audit F22) — same
+              // opportunistic pattern as SignedSerializer/PostCardSerializer;
+              // profile envelopes were previously never signed anywhere,
+              // including the accountX25519Pub other users' clients read to
+              // seal a shared postcard's DEK.
+              _signProfileEnvelopeIfPossible(envelope, function (signErr, signedEnvelope) {
+                if (signErr) console.warn('[UserSpace] Could not sign profile envelope (non-fatal):', signErr.message);
+
+                fetch("/@" + user.handle + "/profile", {
+                  method: "PUT",
+                  credentials: "include",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(signedEnvelope || envelope),
                 })
-                .catch(thenDo);
+                  .then(function (res) {
+                    if (!res.ok)
+                      return res.json().then(function (b) {
+                        throw new Error(
+                          b.error || "PUT profile HTTP " + res.status,
+                        );
+                      });
+                    return res.json().then(function (r) { thenDo(null, r); });
+                  })
+                  .catch(thenDo);
+              });
             });
           });
         },
@@ -392,5 +410,36 @@ module("lively.identity.UserSpace")
     );
 
     lively.identity.userSpace = new lively.identity.UserSpace();
+
+    // Mirrors SignedSerializer.js / PostCardSerializer.js's private
+    // _signEnvelopeIfPossible — signs with the device's soft signing key if
+    // a delegation cert and cached KEK are available, no-ops otherwise.
+    function _signProfileEnvelopeIfPossible(envelope, thenDo) {
+      var did = lively.identity.did;
+      var user = did.currentUser();
+      if (!user) return thenDo(null, envelope);
+      var method = did.findMethodByCredentialId(user.document, user.credentialId);
+      if (!method || !method.lively) return thenDo(null, envelope);
+      var livelyMeta = method.lively;
+      if (!livelyMeta.softSigningKeyWrapped || !livelyMeta.delegationCert) return thenDo(null, envelope);
+      var wa = lively.identity.webAuthn;
+      if (!wa._kekCache || !wa._kekCache[user.credentialId]) return thenDo(null, envelope);
+      var kek = wa._kekCache[user.credentialId];
+      var c = lively.identity.crypto;
+      var wrapped;
+      try { wrapped = JSON.parse(livelyMeta.softSigningKeyWrapped); } catch (e) { return thenDo(e); }
+      c.decryptPayload(wrapped.ciphertext, wrapped.nonce, kek, function (err, softPrivJwk) {
+        if (err) return thenDo(err);
+        c.importPrivateKeyJwk(softPrivJwk, function (err, softPrivKey) {
+          if (err) return thenDo(err);
+          var envelopeToSign = Object.assign({}, envelope);
+          delete envelopeToSign.sig;
+          c.signJws(envelopeToSign, softPrivKey, function (err, sig) {
+            if (err) return thenDo(err);
+            thenDo(null, Object.assign({}, envelope, { sig: sig }));
+          });
+        });
+      });
+    }
 
   }); // end module('lively.identity.UserSpace')
