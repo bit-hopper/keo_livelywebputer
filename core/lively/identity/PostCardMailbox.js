@@ -208,7 +208,13 @@ module('lively.identity.PostCardMailbox')
           // button rather than ship a 404 (audit F4).
           if (rec.senderHandle) {
             var openBtn = self._makeOpenBtn(function () {
-              window.open('/@' + rec.senderHandle + '/' + rec.objId, '_blank');
+              // In-world, same as the Delivered tab's Open button — not
+              // window.open() to the standalone page, which has no working
+              // live-render path (audit F2, deliberately not fixed; see
+              // postcard_audit.md). The editor already handles decrypt-on-load
+              // for private/shared cards; _applyReadOnlyMode makes it inert
+              // for non-owners.
+              lively.identity.PostCardEditor.openCard(rec.senderHandle, rec.objId);
             });
             card.appendChild(openBtn);
           }

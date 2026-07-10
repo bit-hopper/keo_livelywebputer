@@ -82,6 +82,11 @@ module('lively.identity.PostCardEditor')
         this._visibility = 'public';
         this._recipientHandles = [];
         this._visibilityBtn = null;
+        // True for a new card (you're creating it) or once _loadExistingNow
+        // compares envelope.did to the session DID. Gates editing, Save,
+        // Send, and the visibility toggle — a non-owner viewing a shared
+        // card is read-only (PUT is owner-only server-side regardless).
+        this._isOwner = true;
         this._buildChrome();
         if (this._isNew) {
           this._createNewDoc();
@@ -336,6 +341,8 @@ module('lively.identity.PostCardEditor')
           self._envelope = envelope;
           self._visibility = envelope.visibility === 'public' ? 'public' : 'private';
           self._recipientHandles = (envelope.state && envelope.state.recipientHandles) || [];
+          var user = lively.identity.did.currentUser();
+          self._isOwner = !!(user && user.did === envelope.did);
           self._updateVisibilityBtn();
           var deserialize = envelope.visibility === 'public'
             ? lively.identity.postCardSerializer.deserializeFromEnvelope
@@ -344,6 +351,7 @@ module('lively.identity.PostCardEditor')
             if (err) return self._showError('Failed to deserialize: ' + err.message);
             self.yDoc = yDoc;
             self._attachEditor();
+            self._applyReadOnlyMode();
             self._connectSync();
           });
         };
@@ -407,6 +415,32 @@ module('lively.identity.PostCardEditor')
         });
       },
 
+      // Makes the view read-only for non-owners: a shared/public card opened
+      // by anyone but its author (PUT is owner-only server-side regardless,
+      // see IdentityServer.js). Strips the toolbar down to a plain label
+      // rather than leaving Save/Send/visibility controls that would just
+      // 403 or make no sense for someone who isn't the owner.
+      _applyReadOnlyMode: function () {
+        if (this._isOwner) return;
+        if (this.editorView) {
+          this.editorView.setProps({ editable: function () { return false; } });
+        }
+        if (this._toolbarDiv) {
+          this._toolbarDiv.innerHTML = '';
+          this._toolbarDiv.style.cssText = [
+            'position:absolute', 'top:0', 'left:0', 'right:0', 'height:28px',
+            'background:#f0f0f5', 'border-bottom:1px solid #ccc',
+            'box-sizing:border-box', 'display:flex', 'align-items:center',
+            'padding:0 10px',
+          ].join(';');
+          var label = document.createElement('span');
+          label.style.cssText = 'font-size:11px;color:#888;font-family:sans-serif;';
+          label.textContent = 'Read-only — shared by @' + (this._handle || '');
+          this._toolbarDiv.appendChild(label);
+        }
+        if (this._pmContainer) this._pmContainer.style.top = '28px';
+      },
+
       // Connects to PostCardSyncServer via WebsocketProvider for live collaboration.
       // Gracefully degrades if y-websocket is unavailable.
       _connectSync: function () {
@@ -445,6 +479,11 @@ module('lively.identity.PostCardEditor')
       },
 
       _markEdited: function () {
+        // Belt-and-suspenders: _applyReadOnlyMode already makes the
+        // ProseMirror view non-editable for non-owners, so this shouldn't
+        // fire from real user input, but PUT is owner-only server-side
+        // regardless — no reason to ever schedule a save that can only 403.
+        if (!this._isOwner) return;
         this._userHasEdited = true;
         this._scheduleSave();
       },
