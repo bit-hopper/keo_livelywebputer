@@ -397,7 +397,14 @@ module("lively.identity.DID")
         },
 
         // Attempt to restore a session from persisted meta on page load.
-        // Does NOT re-run WebAuthn — only restores the lightweight user record.
+        // Does NOT re-run WebAuthn — only restores the lightweight user record,
+        // after confirming the server's cookie session still agrees (it can be
+        // gone while this IndexedDB meta persists — life_star's cookieSession
+        // has maxAge: null, so it dies when the browser fully closes, while
+        // IndexedDB does not — see GET /nodejs/IdentityServer/session).
+        // Without that check the rest of the app (menu bar, mailbox) would
+        // trust a stale local record and fire requireAuth-gated calls that
+        // just 401.
         // Full re-authentication still required to derive encryption keys.
         //
         // Calls thenDo(null, meta) if restored, thenDo(null, null) if not found.
@@ -415,11 +422,29 @@ module("lively.identity.DID")
                 rpId: meta.rpId,
                 document: doc,
               };
-              // Restore lively.Config.UserName without re-running L2L registration
-              // (the L2L connection will register itself when it connects)
-              lively.Config.set("UserName", meta.handle);
-              self._currentUser = params;
-              thenDo(null, params);
+              function acceptLocalSession() {
+                // Restore lively.Config.UserName without re-running L2L registration
+                // (the L2L connection will register itself when it connects)
+                lively.Config.set("UserName", meta.handle);
+                self._currentUser = params;
+                thenDo(null, params);
+              }
+              fetch("/nodejs/IdentityServer/session", { credentials: "include" })
+                .then(function (res) { return res.json(); })
+                .then(function (body) {
+                  if (!body || !body.identity || body.identity.did !== meta.did) {
+                    // Server has no session (or a different one) for this
+                    // device's identity — clear the stale local record instead
+                    // of telling the rest of the app we're signed in.
+                    return self.clearSession(function () { thenDo(null, null); });
+                  }
+                  acceptLocalSession();
+                })
+                .catch(function () {
+                  // Server unreachable during boot — trust local state rather
+                  // than signing the user out over a transient network error.
+                  acceptLocalSession();
+                });
             });
           });
         },
