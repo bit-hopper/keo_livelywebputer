@@ -642,8 +642,9 @@ module.exports = function (route, app) {
   });
 
   // ─── user file uploads ─────────────────────────────────────────────────────
-  // PUT /@handle/uploads/<path> — store a file to identity/uploads/<handle>/
-  // GET /@handle/uploads/<path> — serve the file back
+  // GET /@handle/uploads         — list files (owner-only)
+  // PUT /@handle/uploads/<path>  — store a file to identity/uploads/<handle>/
+  // GET /@handle/uploads/<path>  — serve the file back
   //
   // Files are kept in identity/uploads/ alongside objects.db — outside the
   // git repo (identity/uploads/ is gitignored). Registered before the generic
@@ -682,6 +683,139 @@ module.exports = function (route, app) {
     ".pdf": "application/pdf",
     ".txt": "text/plain", ".json": "application/json",
   };
+
+  // GET  /@:handle/uploads       — recursively list the owner's upload space
+  // POST /@:handle/uploads       — create an empty folder ({path: "..."})
+  // Owner-only (unlike GET .../uploads/<path>'s optionalAuth — a single
+  // upload like an avatar is meant to be publicly fetchable by URL, but
+  // browsing/managing the space is treated as private, same as PUT/DELETE).
+  // Registered as an exact match, distinct from the "/uploads/*" wildcard
+  // below (Express's "*" requires a segment after "uploads/", so a bare
+  // "/uploads" request never reaches that route).
+  app.get("/@:handle/uploads", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your upload space" });
+    var root = path.resolve(_uploadsBase, handle);
+    _walkUploads(root, root, function (err, result) {
+      if (err) {
+        if (err.code === "ENOENT") return res.json({ files: [], folders: [] });
+        return res.status(500).json({ error: String(err) });
+      }
+      result.files.sort(function (a, b) { return b.mtime.localeCompare(a.mtime); });
+      result.folders.sort();
+      res.json({
+        files: result.files.map(function (f) {
+          return {
+            path: f.path,
+            size: f.size,
+            mtime: f.mtime,
+            url: "/@" + handle + "/uploads/" + _encodeUploadPath(f.path),
+          };
+        }),
+        folders: result.folders,
+      });
+    });
+  });
+
+  app.post("/@:handle/uploads", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your upload space" });
+    var folderPath = req.body && req.body.path;
+    if (!folderPath || typeof folderPath !== "string")
+      return res.status(400).json({ error: "path is required" });
+    var resolved = _resolveUploadPath(handle, folderPath);
+    if (!resolved) return res.status(400).json({ error: "Invalid folder path" });
+    fs.mkdir(resolved.full, { recursive: true }, function (err) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json({ ok: true, path: resolved.urlPath });
+    });
+  });
+
+  // POST /@:handle/uploads/move — {from, to}, both relative to the owner's
+  // upload root. Registered under a literal "move" segment so it never
+  // collides with the "/uploads/*" GET/PUT/DELETE file routes below (those
+  // are registered for different HTTP methods, and Express matches routes
+  // per-method — a POST here only matches a route explicitly registered
+  // for POST).
+  app.post("/@:handle/uploads/move", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your upload space" });
+    var fromRaw = req.body && req.body.from;
+    var toRaw   = req.body && req.body.to;
+    if (!fromRaw || typeof fromRaw !== "string" || !toRaw || typeof toRaw !== "string")
+      return res.status(400).json({ error: "from and to are required" });
+    var from = _resolveUploadPath(handle, fromRaw);
+    var to   = _resolveUploadPath(handle, toRaw);
+    if (!from || !to) return res.status(400).json({ error: "Invalid path" });
+    fs.stat(to.full, function (err, stat) {
+      if (!err && stat.isFile() && to.full !== from.full)
+        return res.status(409).json({ error: "A file already exists at the destination" });
+      fs.mkdir(to.dir, { recursive: true }, function (err) {
+        if (err) return res.status(500).json({ error: String(err) });
+        fs.rename(from.full, to.full, function (err) {
+          if (err) {
+            if (err.code === "ENOENT") return res.status(404).json({ error: "File not found" });
+            return res.status(500).json({ error: String(err) });
+          }
+          res.json({ ok: true, url: "/@" + handle + "/uploads/" + _encodeUploadPath(to.urlPath) });
+        });
+      });
+    });
+  });
+
+  // Encodes each segment of a relative upload path for safe use in a URL —
+  // f.path/urlPath are raw filesystem paths (e.g. from fs.readdir), which
+  // can contain characters like "#", "?", "&", or spaces that would
+  // otherwise corrupt the URL for any client consuming it directly
+  // (<img src>, window.open(), fetch()).
+  function _encodeUploadPath(relPath) {
+    return (relPath || "").split("/").map(encodeURIComponent).join("/");
+  }
+
+  // Recursively lists dir, returning { files: [{path, size, mtime}, ...],
+  // folders: [path, ...] } — both relative to root (posix-style forward
+  // slashes). folders includes every directory encountered, even empty
+  // ones, so explicitly-created folders (see the POST route above) show up
+  // before anything is uploaded into them.
+  function _walkUploads(root, dir, thenDo) {
+    fs.readdir(dir, { withFileTypes: true }, function (err, entries) {
+      if (err) return thenDo(err);
+      var files = [];
+      var folders = [];
+      var pending = entries.length;
+      var failed = false;
+      if (!pending) return thenDo(null, { files: files, folders: folders });
+      entries.forEach(function (entry) {
+        var full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          folders.push(path.relative(root, full).replace(/\\/g, "/"));
+          _walkUploads(root, full, function (err, sub) {
+            if (failed) return;
+            if (err) { failed = true; return thenDo(err); }
+            files = files.concat(sub.files);
+            folders = folders.concat(sub.folders);
+            if (--pending === 0) thenDo(null, { files: files, folders: folders });
+          });
+        } else if (entry.isFile()) {
+          fs.stat(full, function (err, stat) {
+            if (failed) return;
+            if (err) { failed = true; return thenDo(err); }
+            files.push({
+              path: path.relative(root, full).replace(/\\/g, "/"),
+              size: stat.size,
+              mtime: stat.mtime.toISOString(),
+            });
+            if (--pending === 0) thenDo(null, { files: files, folders: folders });
+          });
+        } else if (--pending === 0) {
+          thenDo(null, { files: files, folders: folders });
+        }
+      });
+    });
+  }
 
   app.get("/@:handle/uploads/*", auth.optionalAuth, function (req, res) {
     var resolved = _resolveUploadPath(req.params.handle, req.params[0]);

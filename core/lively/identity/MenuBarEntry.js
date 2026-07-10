@@ -51,6 +51,8 @@ module("lively.identity.MenuBarEntry")
             ["My worlds",          function () { self.openMyWorlds(); }],
             ["My Constellations",  function () { self.openMyConstellations(); }],
             ["Wallet",             function () { self.openWallet(); }],
+            ["Files",              function () { self.openFiles(); }],
+            ["Settings",           function () { self.openSettings(); }],
             ["Add device",         function () { self.openRegisterDialog(); }],
             ["Sign out",    function () { self.signOut(); }],
           ];
@@ -134,6 +136,21 @@ module("lively.identity.MenuBarEntry")
 
         openMyConstellations: function openMyConstellations() {
           $world.alert("My Constellations — coming soon");
+        },
+
+        openFiles: function openFiles() {
+          lively.require("lively.identity.FilesBrowser").toRun(function () {
+            lively.identity.FilesBrowser.open();
+          });
+        },
+
+        // Opens Mailbox's Blocked tab — the only account setting that exists
+        // today. Not a dedicated Settings page yet; more settings (e.g.
+        // constellation preferences) are expected to land here later.
+        openSettings: function openSettings() {
+          lively.require("lively.identity.PostCardMailbox").toRun(function () {
+            lively.identity.PostCardMailbox.open("blocked");
+          });
         },
 
         openWallet: function openWallet() {
