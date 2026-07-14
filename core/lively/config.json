@@ -525,7 +525,8 @@
       "lively.morphic.tools.LogMenuBarEntry",
       "lively.net.tools.Wiki",
       "lively.ide.tools.JavaScriptToolsMenuBarEntries",
-      "lively.identity.MenuBarEntry"
+      "lively.identity.MenuBarEntry",
+      "lively.morphic.tools.WorldNameMenuBarEntry"
       ], "Which menu bar entries to add by default? Specifies modules that should implement a getMenuBarEntries() method."]
   ],
 

@@ -48,6 +48,7 @@ module("lively.identity.SignedSerializer")
     "lively.identity.Crypto",
     "lively.identity.DID",
     "lively.identity.WebKey",
+    "lively.identity.WebAuthn",
     "lively.persistence.Serializer",
   )
   .toRun(function () {
@@ -162,7 +163,7 @@ module("lively.identity.SignedSerializer")
             if (!livelyMeta.softSigningKeyWrapped || !livelyMeta.delegationCert) return thenDo(null, envelope);
 
             var wa = lively.identity.webAuthn;
-            if (!wa._kekCache || !wa._kekCache[user.credentialId]) return thenDo(null, envelope);
+            if (!wa || !wa._kekCache || !wa._kekCache[user.credentialId]) return thenDo(null, envelope);
             var kek = wa._kekCache[user.credentialId];
 
             // Decrypt the wrapped soft private key JWK

@@ -40,6 +40,7 @@ module("lively.identity.UserSpace")
   .requires(
     "lively.identity.DID",
     "lively.identity.Crypto",
+    "lively.identity.WebAuthn",
     "lively.identity.ObjectStore",
     "lively.identity.IdentityPartsSpace",
     "lively.PartsBin",
@@ -423,7 +424,7 @@ module("lively.identity.UserSpace")
       var livelyMeta = method.lively;
       if (!livelyMeta.softSigningKeyWrapped || !livelyMeta.delegationCert) return thenDo(null, envelope);
       var wa = lively.identity.webAuthn;
-      if (!wa._kekCache || !wa._kekCache[user.credentialId]) return thenDo(null, envelope);
+      if (!wa || !wa._kekCache || !wa._kekCache[user.credentialId]) return thenDo(null, envelope);
       var kek = wa._kekCache[user.credentialId];
       var c = lively.identity.crypto;
       var wrapped;

@@ -43,6 +43,7 @@ module('lively.identity.PostCardSerializer')
     'lively.identity.Crypto',
     'lively.identity.DID',
     'lively.identity.WebKey',
+    'lively.identity.WebAuthn',
   )
   .toRun(function () {
 
@@ -259,7 +260,7 @@ module('lively.identity.PostCardSerializer')
 
         if (!user) return thenDo(new Error('serializeEncrypted: no identity session'));
 
-        if (!wa._kekCache || !wa._kekCache[user.credentialId]) {
+        if (!wa || !wa._kekCache || !wa._kekCache[user.credentialId]) {
           return thenDo(new Error(
             'serializeEncrypted: KEK not cached for this session. ' +
             'Call WebAuthn.deriveKek first (prompts once per session).'
@@ -392,7 +393,7 @@ module('lively.identity.PostCardSerializer')
           function _unwrapDek(callback) {
             var isOwner = user.did === envelope.did;
             if (isOwner) {
-              if (!wa._kekCache || !wa._kekCache[user.credentialId]) {
+              if (!wa || !wa._kekCache || !wa._kekCache[user.credentialId]) {
                 return callback(new Error('deserializeEncrypted: KEK not cached. Call deriveKek first.'));
               }
               var kek = wa._kekCache[user.credentialId];
@@ -476,7 +477,7 @@ module('lively.identity.PostCardSerializer')
       var livelyMeta = method.lively;
       if (!livelyMeta.softSigningKeyWrapped || !livelyMeta.delegationCert) return thenDo(null, envelope);
       var wa = lively.identity.webAuthn;
-      if (!wa._kekCache || !wa._kekCache[user.credentialId]) return thenDo(null, envelope);
+      if (!wa || !wa._kekCache || !wa._kekCache[user.credentialId]) return thenDo(null, envelope);
       var kek = wa._kekCache[user.credentialId];
       var wrapped;
       try { wrapped = JSON.parse(livelyMeta.softSigningKeyWrapped); } catch (e) { return thenDo(e); }
