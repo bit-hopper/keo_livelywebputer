@@ -17,6 +17,7 @@ module('lively.identity.FilesBrowser')
   .requires(
     'lively.identity.DID',
     'lively.identity.FilePreview',
+    'lively.identity.WarpDrop',
   )
   .toRun(function () {
 
@@ -253,6 +254,14 @@ module('lively.identity.FilesBrowser')
         uploadBtn.addEventListener('click', function () { fileInput.click(); });
         bar.appendChild(uploadBtn);
         bar.appendChild(fileInput);
+
+        var dropBtn = this._makeToolbarBtn('Drop');
+        dropBtn.addEventListener('click', function () {
+          lively.require('lively.identity.WarpDrop').toRun(function () {
+            lively.identity.WarpDrop.open();
+          });
+        });
+        bar.appendChild(dropBtn);
       },
 
       _makeToolbarBtn: function (label) {

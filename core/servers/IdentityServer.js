@@ -255,6 +255,49 @@ function buildWorldPage(envelope, welcomeHandle) {
   );
 }
 
+// Serves the standalone WarpDrop world at GET /warpdrop: a plain Lively
+// world (no saved envelope, no @handle) that opens the WarpDrop panel
+// immediately on boot. Modeled on buildWorldPage() above, minus the
+// <script type="text/x-lively-world"> payload tag. Omitting that tag is
+// NOT enough by itself: lively.Main.WorldDataAccessor.forHTMLDoc (Main.js)
+// still tries to JSON-parse whatever it finds in the (now missing) tag,
+// throwing "Unexpected end of JSON input" on an empty match. Setting
+// manuallyCreateWorld routes world creation through WorldDataAccessor.
+// fromScratch instead (see Main.js's Loader#getWorldData), which builds a
+// blank World directly -- this is the actual fresh-world mechanism.
+//
+// Mobile-friendly by design (this is meant to be reachable from a phone
+// browser, not just desktop): a real viewport meta tag (buildWorldPage()
+// above has never set one -- without it mobile browsers render at a fake
+// ~980px desktop width) and showMenuBar:false to skip booting the full
+// desktop IDE chrome (system browser, code editor tools, etc.), which
+// has no purpose on this single-panel entry point and would otherwise
+// load by default. WarpDrop.open() itself sizes the panel responsively
+// (see WarpDrop.js) based on the now-correctly-reported viewport size.
+function buildWarpDropPage() {
+  return (
+    "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" +
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
+    "<meta name=\"apple-mobile-web-app-capable\" content=\"yes\">" +
+    "<link rel=\"shortcut icon\" href=\"/core/media/lively.ico\">" +
+    "<title>WarpDrop</title>" +
+    "<script>window.Config={" +
+    "codeBase:location.protocol+'//'+location.host+'/core/'," +
+    "rootPath:location.protocol+'//'+location.host+'/'," +
+    "manuallyCreateWorld:true," +
+    "showMenuBar:false," +
+    "onStartWorld:function(){" +
+    "lively.require('lively.identity.WarpDrop').toRun(function(){" +
+    "lively.identity.WarpDrop.open();" +
+    "});" +
+    "}" +
+    "}</script>" +
+    "</head><body>" +
+    "<script type=\"text/javascript\" src=\"/core/lively/bootstrap.js\"></script>" +
+    "</body></html>"
+  );
+}
+
 // Serve a post card envelope as a standalone HTML page (§4.3).
 // Static mode: renders record.payload.snapshot as server-side HTML for fast
 // first paint, crawlers, and link previews — no Lively runtime required.
@@ -656,6 +699,13 @@ module.exports = function (route, app) {
       worlds.sort(function (a, b) { return a.created < b.created ? -1 : 1; });
       res.redirect("/@" + req.identity.handle + "/" + worlds[0].objId);
     });
+  });
+
+  // ─── WarpDrop standalone entry point ───────────────────────────────────────
+  // No FilesBrowser, no saved world, no @handle required -- see WarpDrop.md.
+
+  app.get("/warpdrop", function (req, res) {
+    res.send(buildWarpDropPage());
   });
 
   // ─── home manifest ─────────────────────────────────────────────────────────

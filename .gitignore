@@ -58,9 +58,10 @@ QBFHighScores.json
 # backup
 .exclude-from-backup
 
-# ignore lively-web specific subservers (glob so negations can reach inside)
+# ignore lively-web specific subservers (glob so negations can reach inside),
+# but keep tracking all subserver source (only non-.js artifacts stay ignored)
 core/servers/*
-!core/servers/IdentityServer.js
+!core/servers/*.js
 !core/servers/identity/
 
 # R
