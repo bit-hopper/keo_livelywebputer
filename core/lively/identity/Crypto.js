@@ -139,6 +139,45 @@ Object.subclass('lively.identity.Crypto',
       ['sign']
     ).then(function(key) { thenDo(null, key); })
     .catch(function(err) { thenDo(err); });
+  },
+
+  // Convert a DER-encoded ECDSA signature (ASN.1 SEQUENCE of two INTEGERs
+  // r, s — the format a real WebAuthn assertion signature comes in, per the
+  // WebAuthn/CTAP2 spec) to the raw r||s format crypto.subtle.verify
+  // requires for ECDSA (Web Crypto always uses raw IEEE P1363, never DER).
+  // P-256 only (32-byte r/s, 64-byte output). Throws on malformed input.
+  derToRawEcdsaSignature: function(derBytes) {
+    var bytes = derBytes instanceof Uint8Array ? derBytes : new Uint8Array(derBytes);
+    if (bytes[0] !== 0x30) throw new Error('derToRawEcdsaSignature: not a DER SEQUENCE');
+    // P-256 signatures are always short enough for single-byte DER lengths
+    // (content length <= ~70 bytes, well under the 0x80 long-form threshold).
+    var offset = 2;
+    if (bytes[offset] !== 0x02) throw new Error('derToRawEcdsaSignature: expected INTEGER (r)');
+    var rLen = bytes[offset + 1];
+    var rStart = offset + 2;
+    var rBytes = bytes.slice(rStart, rStart + rLen);
+    offset = rStart + rLen;
+    if (bytes[offset] !== 0x02) throw new Error('derToRawEcdsaSignature: expected INTEGER (s)');
+    var sLen = bytes[offset + 1];
+    var sStart = offset + 2;
+    var sBytes = bytes.slice(sStart, sStart + sLen);
+
+    function toFixed32(intBytes) {
+      // DER INTEGER is signed — a leading 0x00 pad byte is present whenever
+      // the true value's high bit would otherwise look negative. Strip it,
+      // then left-pad (with zeros) to the fixed 32-byte P-256 field width.
+      var b = intBytes;
+      if (b.length > 32 && b[0] === 0x00) b = b.slice(1);
+      if (b.length > 32) throw new Error('derToRawEcdsaSignature: integer too long for P-256');
+      var out = new Uint8Array(32);
+      out.set(b, 32 - b.length);
+      return out;
+    }
+
+    var raw = new Uint8Array(64);
+    raw.set(toFixed32(rBytes), 0);
+    raw.set(toFixed32(sBytes), 32);
+    return raw;
   }
 
 },

@@ -640,7 +640,15 @@ module("lively.identity.DID")
 
                 c.importPublicKeyJwk(passkeyJwk, function (err, pubKey) {
                   if (err) return thenDo(null, false);
-                  var sigBytes = c.base64urlDecode(cert.signature);
+                  // cert.signature is a real WebAuthn assertion signature
+                  // (DER-encoded per the WebAuthn/CTAP2 spec) — crypto.subtle.verify
+                  // requires raw r||s (IEEE P1363) for ECDSA, so convert first.
+                  var sigBytes;
+                  try {
+                    sigBytes = c.derToRawEcdsaSignature(c.base64urlDecode(cert.signature));
+                  } catch (e) {
+                    return thenDo(null, false);
+                  }
                   crypto.subtle.verify(
                     { name: 'ECDSA', hash: { name: 'SHA-256' } },
                     pubKey,
