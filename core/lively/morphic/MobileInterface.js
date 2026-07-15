@@ -1,4 +1,4 @@
-module('lively.morphic.MobileInterface').requires('users.robertkrahn.Canvas', 'lively.persistence.BuildSpec').toRun(function() {
+module('lively.morphic.MobileInterface').requires('lively.persistence.BuildSpec').toRun(function() {
 lively.morphic.World.addMethods(
     'overwrite',{
         addMorph: function ($super, morph, optMorphBefore) {
