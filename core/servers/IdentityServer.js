@@ -52,6 +52,8 @@ hljs.registerLanguage("xml", require("highlight.js/lib/languages/xml"));
 var handleRegistry = require("./identity/HandleRegistry");
 var objectRepo = require("./identity/ObjectRepository");
 var auth = require("./identity/AuthMiddleware");
+var constellationRegistry = require("./identity/ConstellationRegistry");
+var cryptoVerify = require("./identity/CryptoVerify");
 
 // ─── home-world bootstrap helpers ─────────────────────────────────────────────
 
@@ -1776,63 +1778,171 @@ module.exports = function (route, app) {
     });
   });
 
-  // ─── constellation routes (§4.2) ───────────────────────────────────────────
+  // ─── constellation routes (ConstellationDesignSpec.md) ─────────────────────
   // /c/:constellation routes are app-level, not under /@:handle.
-  // Phase 3 stub: constellation objects don't exist yet; these routes provide
-  // the feed and postcard membership endpoints that post cards already reference.
+  // Foundation slice: registry + did:web identity only. The live space doc,
+  // membership/invites, wiki, and moderation are later slices — see
+  // ConstellationDesignSpec.md. Route ordering: named segments (did.json)
+  // must be registered before the /:objId wildcard, same discipline as
+  // /@:handle/* above.
+
+  // Checks whether `identity` may read a constellation's contents given its
+  // stored visibility/members. Mirrors the byte-identical-rejection posture
+  // _canReadEnvelope already uses for private post cards.
+  function _canReadConstellation(constellation, identity) {
+    if (constellation.visibility === "public") return true;
+    if (!identity) return false;
+    return constellation.members.indexOf(identity.did) !== -1;
+  }
+
+  app.post("/c/:name", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var body = req.body || {};
+
+    if (!constellationRegistry.isValidName(name)) {
+      return res.status(400).json({ error: "Invalid or reserved constellation name: " + name });
+    }
+    if (!body.did || !body.genesisObjId || !body.genesisNonce || !body.createdAt || !body.creationSig) {
+      return res
+        .status(400)
+        .json({ error: "Missing required fields: did, genesisObjId, genesisNonce, createdAt, creationSig" });
+    }
+
+    constellationRegistry.exists(name, function (err, taken) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (taken) return res.status(409).json({ error: "Constellation name already taken: " + name });
+
+      var expectedPayload = {
+        name: name,
+        did: body.did,
+        controller: [req.identity.did],
+        threshold: 1,
+        createdBy: req.identity.did,
+        createdAt: body.createdAt
+      };
+
+      handleRegistry.getDIDDocument(req.identity.did, function (err, didDocument) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!didDocument) {
+          return res.status(400).json({ error: "No DID document on file for " + req.identity.did });
+        }
+
+        var verification = cryptoVerify.verifySignedPayload(expectedPayload, body.creationSig, didDocument);
+        if (!verification.valid) {
+          return res.status(400).json({ error: "creationSig verification failed: " + verification.reason });
+        }
+
+        constellationRegistry.create({
+          name: name,
+          did: body.did,
+          genesisObjId: body.genesisObjId,
+          genesisNonce: body.genesisNonce,
+          controllers: [req.identity.did],
+          threshold: 1,
+          members: [req.identity.did],
+          createdBy: req.identity.did,
+          createdAt: body.createdAt,
+          creationSig: body.creationSig,
+          visibility: body.visibility === "private" ? "private" : "public"
+        }, function (err) {
+          if (err) return res.status(500).json({ error: String(err) });
+          res.status(201).json({ name: name, did: body.did, genesisObjId: body.genesisObjId });
+        });
+      });
+    });
+  });
+
+  app.get("/c/:name/did.json", auth.optionalAuth, function (req, res) {
+    constellationRegistry.get(req.params.name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + req.params.name });
+      res.json({
+        id: constellation.did,
+        controller: constellation.controllers,
+        threshold: constellation.threshold,
+        createdBy: constellation.createdBy,
+        createdAt: constellation.createdAt,
+        creationSig: constellation.creationSig
+      });
+    });
+  });
 
   app.get("/c/:constellation/feed", auth.optionalAuth, function (req, res) {
-    var constellation = req.params.constellation;
-    var limit  = Math.min(parseInt(req.query.limit,  10) || 20, 100);
-    var cursor = req.query.cursor || null;
-    objectRepo.listPostcardsForConstellation(constellation, { limit: limit, cursor: cursor }, function (err, result) {
+    var name = req.params.constellation;
+    constellationRegistry.get(name, function (err, constellation) {
       if (err) return res.status(500).json({ error: String(err) });
-      var viewerDid = req.identity ? req.identity.did : null;
-      result.postcards = result.postcards
-        .filter(function (m) { return _canSeePostcardMeta(m, viewerDid); })
-        .map(function (m) { delete m.recipients; return m; });
-      res.json(result);
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!_canReadConstellation(constellation, req.identity)) {
+        return res.status(404).json({ error: "Constellation not found: " + name });
+      }
+
+      var limit  = Math.min(parseInt(req.query.limit,  10) || 20, 100);
+      var cursor = req.query.cursor || null;
+      objectRepo.listPostcardsForConstellation(name, { limit: limit, cursor: cursor }, function (err, result) {
+        if (err) return res.status(500).json({ error: String(err) });
+        var viewerDid = req.identity ? req.identity.did : null;
+        result.postcards = result.postcards
+          .filter(function (m) { return _canSeePostcardMeta(m, viewerDid); })
+          .map(function (m) { delete m.recipients; return m; });
+        res.json(result);
+      });
     });
   });
 
   app.get("/c/:constellation/:objId", auth.optionalAuth, function (req, res) {
-    var constellation = req.params.constellation;
-    var objId         = req.params.objId;
+    var name  = req.params.constellation;
+    var objId = req.params.objId;
 
-    objectRepo.get(objId, function (err, envelope) {
-      if (err)      return res.status(500).json({ error: String(err) });
-      if (!envelope) return res.status(404).json({ error: "Object not found: " + objId });
-
-      // Validate constellation membership — this route's purpose is membership
-      // verification, so the check is load-bearing (spec §4.2)
-      if (envelope.constellation !== constellation) {
-        return res.status(404).json({ error: "Post card " + objId + " is not in constellation " + constellation });
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!_canReadConstellation(constellation, req.identity)) {
+        return res.status(404).json({ error: "Constellation not found: " + name });
       }
 
-      if (!_canReadEnvelope(envelope, req.identity)) {
-        return res.status(403).json({ error: "Forbidden" });
-      }
+      objectRepo.get(objId, function (err, envelope) {
+        if (err)      return res.status(500).json({ error: String(err) });
+        if (!envelope) return res.status(404).json({ error: "Object not found: " + objId });
 
-      envelope = _trimRecipientsForNonOwner(envelope, req.identity);
+        // Validate constellation membership — this route's purpose is membership
+        // verification, so the check is load-bearing (spec §4.2)
+        if (envelope.constellation !== name) {
+          return res.status(404).json({ error: "Post card " + objId + " is not in constellation " + name });
+        }
 
-      if (req.accepts(["html", "json"]) === "html") {
-        return res.send(buildPostCardPage(envelope));
-      }
-      res.json(envelope);
+        if (!_canReadEnvelope(envelope, req.identity)) {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+
+        envelope = _trimRecipientsForNonOwner(envelope, req.identity);
+
+        if (req.accepts(["html", "json"]) === "html") {
+          return res.send(buildPostCardPage(envelope));
+        }
+        res.json(envelope);
+      });
     });
   });
 
   app.get("/c/:constellation", auth.optionalAuth, function (req, res) {
-    var constellation = req.params.constellation;
-    var limit  = Math.min(parseInt(req.query.limit,  10) || 20, 100);
-    var cursor = req.query.cursor || null;
-    objectRepo.listPostcardsForConstellation(constellation, { limit: limit, cursor: cursor }, function (err, result) {
+    var name = req.params.constellation;
+    constellationRegistry.get(name, function (err, constellation) {
       if (err) return res.status(500).json({ error: String(err) });
-      var viewerDid = req.identity ? req.identity.did : null;
-      var postcards = result.postcards
-        .filter(function (m) { return _canSeePostcardMeta(m, viewerDid); })
-        .map(function (m) { delete m.recipients; return m; });
-      res.json({ constellation: constellation, postcards: postcards, cursor: result.cursor });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!_canReadConstellation(constellation, req.identity)) {
+        return res.status(404).json({ error: "Constellation not found: " + name });
+      }
+
+      var limit  = Math.min(parseInt(req.query.limit,  10) || 20, 100);
+      var cursor = req.query.cursor || null;
+      objectRepo.listPostcardsForConstellation(name, { limit: limit, cursor: cursor }, function (err, result) {
+        if (err) return res.status(500).json({ error: String(err) });
+        var viewerDid = req.identity ? req.identity.did : null;
+        var postcards = result.postcards
+          .filter(function (m) { return _canSeePostcardMeta(m, viewerDid); })
+          .map(function (m) { delete m.recipients; return m; });
+        res.json({ constellation: name, postcards: postcards, cursor: result.cursor });
+      });
     });
   });
 
