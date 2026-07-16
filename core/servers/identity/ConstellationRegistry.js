@@ -1,11 +1,9 @@
 /**
  * core/servers/identity/ConstellationRegistry.js
  *
- * SQLite-backed registry of constellations (ConstellationDesignSpec.md).
- * This is the foundation slice only: identity (did:web) and registration.
- * The live space document, membership/invites, wiki, and moderation are
- * later slices — see ConstellationDesignSpec.md and the plan this was
- * built from.
+ * SQLite-backed registry of constellations: identity (did:web),
+ * registration, and membership checks shared by both the HTTP routes
+ * (IdentityServer.js) and the Yjs sync socket (PostCardSyncServer.js).
  *
  * Schema:
  *   constellations table:
@@ -128,6 +126,29 @@ function exists(name, thenDo) {
   });
 }
 
+function _rowToConstellation(row, name) {
+  var controllers, members;
+  try {
+    controllers = JSON.parse(row.controllers);
+    members = JSON.parse(row.members);
+  } catch (e) {
+    throw new Error('ConstellationRegistry: corrupt row for ' + name);
+  }
+  return {
+    name: row.name,
+    did: row.did,
+    genesisObjId: row.genesis_obj_id,
+    genesisNonce: row.genesis_nonce,
+    controllers: controllers,
+    threshold: row.threshold,
+    members: members,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    creationSig: row.creation_sig,
+    visibility: row.visibility
+  };
+}
+
 // Calls thenDo(null, constellation) or thenDo(null, null) if not found.
 // constellation: { name, did, genesisObjId, genesisNonce, controllers: [...],
 //                   threshold, members: [...], createdBy, createdAt,
@@ -138,28 +159,57 @@ function get(name, thenDo) {
     db.get('SELECT * FROM constellations WHERE name = ?', [name], function(err, row) {
       if (err) return thenDo(err);
       if (!row) return thenDo(null, null);
-      var controllers, members;
       try {
-        controllers = JSON.parse(row.controllers);
-        members = JSON.parse(row.members);
+        thenDo(null, _rowToConstellation(row, name));
       } catch (e) {
-        return thenDo(new Error('ConstellationRegistry: corrupt row for ' + name));
+        thenDo(e);
       }
-      thenDo(null, {
-        name: row.name,
-        did: row.did,
-        genesisObjId: row.genesis_obj_id,
-        genesisNonce: row.genesis_nonce,
-        controllers: controllers,
-        threshold: row.threshold,
-        members: members,
-        createdBy: row.created_by,
-        createdAt: row.created_at,
-        creationSig: row.creation_sig,
-        visibility: row.visibility
-      });
     });
   });
+}
+
+// Maps a Yjs sync room name (the constellation's genesisObjId) back to its
+// constellation row. Used by the sync socket's room-join auth check, since
+// the room only knows the objId, not the constellation's name.
+// Calls thenDo(null, constellation) or thenDo(null, null) if not found.
+function getByGenesisObjId(genesisObjId, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.get('SELECT * FROM constellations WHERE genesis_obj_id = ?', [genesisObjId], function(err, row) {
+      if (err) return thenDo(err);
+      if (!row) return thenDo(null, null);
+      try {
+        thenDo(null, _rowToConstellation(row, row.name));
+      } catch (e) {
+        thenDo(e);
+      }
+    });
+  });
+}
+
+// ─── membership checks ──────────────────────────────────────────────────────
+// Shared by IdentityServer.js's HTTP routes and PostCardSyncServer.js's Yjs
+// room-join check, so there is exactly one place that decides who can read
+// or write a constellation's contents.
+
+// True if `did` (or an anonymous visitor, did === null) may read this
+// constellation's contents: public constellations are readable by anyone,
+// private ones only by members.
+function canRead(constellation, did) {
+  if (constellation.visibility === 'public') return true;
+  if (!did) return false;
+  return constellation.members.indexOf(did) !== -1;
+}
+
+// True if `did` may write to this constellation's space (place/move/remove
+// placements): members only, regardless of visibility. Note this is only
+// enforced at HTTP-route granularity and at Yjs-room-connection granularity
+// (see PostCardSyncServer.js's TODO(constellation-write-gate)) — a connected
+// visitor on a public room is not currently blocked from sending doc-mutating
+// sync messages once the connection itself is accepted.
+function canWrite(constellation, did) {
+  if (!did) return false;
+  return constellation.members.indexOf(did) !== -1;
 }
 
 module.exports = {
@@ -168,5 +218,8 @@ module.exports = {
   RESERVED_NAMES: RESERVED_NAMES,
   create: create,
   exists: exists,
-  get: get
+  get: get,
+  getByGenesisObjId: getByGenesisObjId,
+  canRead: canRead,
+  canWrite: canWrite
 };

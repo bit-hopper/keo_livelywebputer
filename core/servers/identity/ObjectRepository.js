@@ -120,6 +120,7 @@ function put(envelope, thenDo) {
     if (existing && existing.record.cid === envelope.record.cid) {
       var metadataChanged =
         existing.visibility !== envelope.visibility ||
+        existing.constellation !== envelope.constellation ||
         JSON.stringify(existing.state || {}) !== JSON.stringify(envelope.state || {}) ||
         JSON.stringify(existing.record.recipients || []) !== JSON.stringify(envelope.record.recipients || []);
 

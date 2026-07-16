@@ -54,6 +54,7 @@ var objectRepo = require("./identity/ObjectRepository");
 var auth = require("./identity/AuthMiddleware");
 var constellationRegistry = require("./identity/ConstellationRegistry");
 var cryptoVerify = require("./identity/CryptoVerify");
+var constellationSpace = require("./identity/ConstellationSpace");
 
 // ─── home-world bootstrap helpers ─────────────────────────────────────────────
 
@@ -351,6 +352,106 @@ function buildPostCardPage(envelope) {
     'document.getElementById("postcard-loader").style.display="none";' +
     '});})();' +
     '</script>' +
+    '</body></html>'
+  );
+}
+
+// Convert a constellation space's stored layout snapshot to simple
+// absolutely-positioned HTML for static rendering — same "fast first paint,
+// no runtime required" purpose as _snapshotToHtml below, just over a
+// placement map instead of a ProseMirror doc.
+function _layoutSnapshotToHtml(snapshot) {
+  var layout = (snapshot && snapshot.layout) || {};
+  var ids = Object.keys(layout);
+  if (!ids.length) {
+    return '<p class="constellation-empty">No items placed yet.</p>';
+  }
+  return ids.map(function (id) {
+    var p = layout[id] || {};
+    var x = p.x || 0, y = p.y || 0, w = p.w || 200, h = p.h || 120;
+    var kind = escapeHtml(p.kind || 'item');
+    var objId = (p.ref && p.ref.objId) ? escapeHtml(p.ref.objId) : '';
+    return '<div class="constellation-placement" style="left:' + x + 'px;top:' + y +
+      'px;width:' + w + 'px;height:' + h + 'px">' +
+      '<div class="constellation-placement-label">' + kind + (objId ? ': ' + objId : '') + '</div>' +
+      '</div>';
+  }).join('');
+}
+
+// Serve a constellation's space as a standalone HTML page, same two-mode
+// shape as buildPostCardPage: static layout render for fast first paint,
+// then boots the live ConstellationSpace morph (Yjs-synced, multi-user).
+// A constellation's space is served as a full, freshly-built Lively world
+// (same category as a user's home world at /@handle, just shared/synced
+// instead of private), not a window opened inside someone else's world.
+//
+// A bare page that boots bootstrap.js without an embedded
+// <script type="text/x-lively-world"> tag (the mechanism buildWorldPage
+// uses for stored worlds) never gets a working $world: the default fallback
+// tries to load the *viewing* user's own home-world config
+// (/users/<handle>/config.js) to construct one, which 404s today for every
+// account (a separate, pre-existing gap — per-user config.js is never
+// auto-created on registration) and aborts startup entirely.
+//
+// manuallyCreateWorld routes world creation through
+// WorldDataAccessor.fromScratch instead (see Main.js's Loader#getWorldData)
+// — builds a blank, viewport-sized World directly, sidestepping that
+// fallback altogether. Same mechanism buildWarpDropPage already uses for
+// GET /warpdrop; onStartWorld is Lively's own "$world is ready" callback,
+// used here instead of polling for it.
+function buildConstellationSpacePage(constellation, spaceEnvelope) {
+  var title = escapeHtml(constellation.name);
+  var snapshot = spaceEnvelope && spaceEnvelope.record && spaceEnvelope.record.payload &&
+    spaceEnvelope.record.payload.snapshot;
+  var staticHtml = _layoutSnapshotToHtml(snapshot);
+  var pageData = {
+    name: constellation.name,
+    did: constellation.did,
+    genesisObjId: constellation.genesisObjId,
+    visibility: constellation.visibility
+  };
+  var dataJson = JSON.stringify(pageData).replace(/<\/script>/gi, '<\\/script>');
+
+  return (
+    '<!DOCTYPE html><html lang="en"><head>' +
+    '<meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<meta name="apple-mobile-web-app-capable" content="yes">' +
+    '<link rel="shortcut icon" href="/core/media/lively.ico">' +
+    '<title>' + title + '</title>' +
+    '<style>' +
+    'body{margin:0;font-family:system-ui,sans-serif;background:#fafafa}' +
+    '.constellation-static{position:relative;min-height:100vh;overflow:auto}' +
+    '.constellation-empty{padding:48px;text-align:center;color:#999}' +
+    '.constellation-placement{position:absolute;border:1px solid #ddd;background:#fff;' +
+    'border-radius:4px;box-shadow:0 1px 3px rgba(0,0,0,.08);overflow:hidden}' +
+    '.constellation-placement-label{padding:6px 8px;font-size:12px;color:#666}' +
+    '.constellation-loader{position:fixed;bottom:12px;right:12px;font-size:12px;' +
+    'color:#999;background:#fff;border:1px solid #eee;border-radius:4px;padding:4px 8px}' +
+    '</style>' +
+    '</head><body>' +
+    '<div class="constellation-static" id="constellation-static">' + staticHtml + '</div>' +
+    '<div class="constellation-loader" id="constellation-loader">Loading live mode…</div>' +
+    '<script type="application/json" id="constellation-data">' + dataJson + '</script>' +
+    '<script src="/core/lib/postcard/postcard-runtime.js"></script>' +
+    '<script>window.Config={' +
+    'codeBase:location.protocol+"//"+location.host+"/core/",' +
+    'rootPath:location.protocol+"//"+location.host+"/",' +
+    'manuallyCreateWorld:true,' +
+    // Unlike WarpDrop's kiosk-style panel, a constellation is a place the
+    // user inhabits — they need their normal menu bar (identity, "my
+    // postcards", etc.) available here, not a stripped-down single-purpose
+    // view.
+    'onStartWorld:function(){' +
+    // removeDOMContentBeforeWorldLoad (default true) already wiped
+    // #constellation-static/#constellation-loader along with the rest of
+    // the page's prior DOM before this callback runs — nothing left to hide.
+    'lively.require("lively.identity.ConstellationSpace").toRun(function(){' +
+    'lively.identity.ConstellationSpace.open(' + JSON.stringify(constellation.name) + ');' +
+    '});' +
+    '}' +
+    '}</script>' +
+    '<script src="/core/lively/bootstrap.js"></script>' +
     '</body></html>'
   );
 }
@@ -1778,22 +1879,13 @@ module.exports = function (route, app) {
     });
   });
 
-  // ─── constellation routes (ConstellationDesignSpec.md) ─────────────────────
-  // /c/:constellation routes are app-level, not under /@:handle.
-  // Foundation slice: registry + did:web identity only. The live space doc,
-  // membership/invites, wiki, and moderation are later slices — see
-  // ConstellationDesignSpec.md. Route ordering: named segments (did.json)
-  // must be registered before the /:objId wildcard, same discipline as
-  // /@:handle/* above.
-
-  // Checks whether `identity` may read a constellation's contents given its
-  // stored visibility/members. Mirrors the byte-identical-rejection posture
-  // _canReadEnvelope already uses for private post cards.
-  function _canReadConstellation(constellation, identity) {
-    if (constellation.visibility === "public") return true;
-    if (!identity) return false;
-    return constellation.members.indexOf(identity.did) !== -1;
-  }
+  // ─── constellation routes ───────────────────────────────────────────────────
+  // /c/:constellation routes are app-level, not under /@:handle. Route
+  // ordering: named segments (did.json, space-token) must be registered
+  // before the /:objId wildcard, same discipline as /@:handle/* above.
+  // Membership logic (canRead/canWrite) lives in ConstellationRegistry.js so
+  // the HTTP routes here and the Yjs sync socket (PostCardSyncServer.js)
+  // share exactly one source of truth for who can read/write a constellation.
 
   app.post("/c/:name", auth.requireAuth, function (req, res) {
     var name = req.params.name;
@@ -1867,12 +1959,72 @@ module.exports = function (route, app) {
     });
   });
 
+  app.get("/c/:name/space-token", auth.optionalAuth, function (req, res) {
+    var name = req.params.name;
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      var viewerDid = req.identity ? req.identity.did : null;
+      if (!constellationRegistry.canRead(constellation, viewerDid)) {
+        return res.status(404).json({ error: "Constellation not found: " + name });
+      }
+      res.json({
+        token: constellationSpace.mintSpaceToken(constellation, req.identity),
+        genesisObjId: constellation.genesisObjId,
+        canWrite: constellationRegistry.canWrite(constellation, viewerDid)
+      });
+    });
+  });
+
+  // Post an existing (owned) post card to a constellation: tags the card
+  // with this constellation (so it shows in the feed, same as the original
+  // stub routes already relied on) and adds it to the live space's layout
+  // map at a default cascading position (server-side, no WS connection
+  // needed — see ConstellationSpace.js's addPlacementToSpace).
+  app.post("/c/:name/posts", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var objId = (req.body || {}).objId;
+    if (!objId) return res.status(400).json({ error: "Missing required field: objId" });
+
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.canWrite(constellation, req.identity.did)) {
+        return res.status(403).json({ error: "Forbidden: not a member of " + name });
+      }
+
+      objectRepo.get(objId, function (err, envelope) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!envelope) return res.status(404).json({ error: "Post card not found: " + objId });
+        if (envelope.type !== "postcard") {
+          return res.status(400).json({ error: "Not a post card: " + objId });
+        }
+        if (envelope.did !== req.identity.did) {
+          return res.status(403).json({ error: "Forbidden: you can only post your own post cards" });
+        }
+
+        var updated = Object.assign({}, envelope, { constellation: name });
+        objectRepo.put(updated, function (err) {
+          if (err) return res.status(500).json({ error: String(err) });
+
+          constellationSpace.addPlacementToSpace(constellation, {
+            ref: { handle: req.identity.handle, objId: objId, cid: envelope.record.cid },
+            kind: "postcard"
+          }, function (err, result) {
+            if (err) return res.status(500).json({ error: String(err) });
+            res.status(200).json({ ok: true, placementId: result.id });
+          });
+        });
+      });
+    });
+  });
+
   app.get("/c/:constellation/feed", auth.optionalAuth, function (req, res) {
     var name = req.params.constellation;
     constellationRegistry.get(name, function (err, constellation) {
       if (err) return res.status(500).json({ error: String(err) });
       if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
-      if (!_canReadConstellation(constellation, req.identity)) {
+      if (!constellationRegistry.canRead(constellation, req.identity ? req.identity.did : null)) {
         return res.status(404).json({ error: "Constellation not found: " + name });
       }
 
@@ -1896,7 +2048,7 @@ module.exports = function (route, app) {
     constellationRegistry.get(name, function (err, constellation) {
       if (err) return res.status(500).json({ error: String(err) });
       if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
-      if (!_canReadConstellation(constellation, req.identity)) {
+      if (!constellationRegistry.canRead(constellation, req.identity ? req.identity.did : null)) {
         return res.status(404).json({ error: "Constellation not found: " + name });
       }
 
@@ -1926,18 +2078,28 @@ module.exports = function (route, app) {
 
   app.get("/c/:constellation", auth.optionalAuth, function (req, res) {
     var name = req.params.constellation;
+    var viewerDid = req.identity ? req.identity.did : null;
     constellationRegistry.get(name, function (err, constellation) {
       if (err) return res.status(500).json({ error: String(err) });
       if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
-      if (!_canReadConstellation(constellation, req.identity)) {
+      if (!constellationRegistry.canRead(constellation, viewerDid)) {
         return res.status(404).json({ error: "Constellation not found: " + name });
+      }
+
+      // HTML: the constellation's live space (static layout render, then
+      // boots the live ConstellationSpace morph). JSON: unchanged, still the
+      // post card feed listing — no breaking change for existing API callers.
+      if (req.accepts(["html", "json"]) === "html") {
+        return objectRepo.get(constellation.genesisObjId, function (err, spaceEnvelope) {
+          if (err) return res.status(500).json({ error: String(err) });
+          res.send(buildConstellationSpacePage(constellation, spaceEnvelope));
+        });
       }
 
       var limit  = Math.min(parseInt(req.query.limit,  10) || 20, 100);
       var cursor = req.query.cursor || null;
       objectRepo.listPostcardsForConstellation(name, { limit: limit, cursor: cursor }, function (err, result) {
         if (err) return res.status(500).json({ error: String(err) });
-        var viewerDid = req.identity ? req.identity.did : null;
         var postcards = result.postcards
           .filter(function (m) { return _canSeePostcardMeta(m, viewerDid); })
           .map(function (m) { delete m.recipients; return m; });
