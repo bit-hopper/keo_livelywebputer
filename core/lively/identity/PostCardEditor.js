@@ -488,6 +488,16 @@ module('lively.identity.PostCardEditor')
           self._promptAndSend();
         });
         footerDiv.appendChild(sendBtn);
+
+        var postBtn = document.createElement('button');
+        postBtn.textContent = 'Post to…';
+        postBtn.title = 'Post this card to a constellation you are a member of';
+        postBtn.style.cssText = 'position:absolute;top:6px;right:320px;width:80px;height:24px;padding:0;font-size:11px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
+        postBtn.addEventListener('mousedown', function (e) {
+          e.preventDefault(); e.stopPropagation();
+          self._promptPostToConstellation();
+        });
+        footerDiv.appendChild(postBtn);
       },
 
       // Reflects the current selection's formatting into the toolbar: active
@@ -1090,8 +1100,13 @@ module('lively.identity.PostCardEditor')
           return;
         }
 
+        // PostCardSyncServer runs on its own standalone port (must be
+        // separately reachable over TLS wherever this app is deployed).
+        // wss: required whenever the page itself is https: — browsers
+        // block insecure ws: connections from a secure page.
         var syncPort = (typeof window !== 'undefined' && window.POSTCARD_SYNC_PORT) || 1234;
-        var wsUrl = 'ws://' + location.hostname + ':' + syncPort;
+        var wsScheme = (typeof location !== 'undefined' && location.protocol === 'https:') ? 'wss:' : 'ws:';
+        var wsUrl = wsScheme + '//' + location.hostname + ':' + syncPort;
         try {
           this.wsProvider = new WebsocketProvider(wsUrl, this._objId, this.yDoc, { connect: true });
           this.wsProvider.on('status', function (event) {
@@ -1324,6 +1339,48 @@ module('lively.identity.PostCardEditor')
           callback(new Error('Network error'));
         };
         xhr.send(JSON.stringify(envelope));
+      },
+
+    },
+
+    // ─── constellation posting ──────────────────────────────────────────────────
+    // "Post to a constellation": tags this card with that constellation (so
+    // it shows in its feed, same field the original constellation stub
+    // routes already read) and places it in the constellation's live space
+    // at a default position — server-side, see POST /c/:name/posts.
+
+    'constellation', {
+
+      _promptPostToConstellation: function () {
+        var self = this;
+        if (!this._objId) {
+          this._setStatus('Save first');
+          return;
+        }
+        var name = window.prompt('Post to which constellation? (must be a member)');
+        if (!name) return;
+
+        var objId = this._objId;
+        var base = lively.identity.did.baseUrl();
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', base + '/c/' + encodeURIComponent(name) + '/posts', true);
+        xhr.withCredentials = true;
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.onload = function () {
+          if (xhr.status === 200) {
+            self._setStatus('Posted to ' + name);
+            return;
+          }
+          var msg = 'Post failed (' + xhr.status + ')';
+          try {
+            var body = JSON.parse(xhr.responseText);
+            if (body && body.error) msg = body.error;
+          } catch (e) {}
+          self._setStatus(msg);
+          console.error('[PostCardEditor] post-to-constellation failed:', msg);
+        };
+        xhr.onerror = function () { self._setStatus('Network error'); };
+        xhr.send(JSON.stringify({ objId: objId }));
       },
 
     },
