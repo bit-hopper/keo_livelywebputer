@@ -21,7 +21,7 @@
  */
 
 module('lively.identity.PostCardFeed')
-  .requires('lively.identity.DID', 'lively.identity.PostCardUtils')
+  .requires('lively.identity.DID', 'lively.identity.PostCardView')
   .toRun(function () {
 
     lively.morphic.Box.subclass('lively.identity.PostCardFeed',
@@ -32,7 +32,10 @@ module('lively.identity.PostCardFeed')
 
       // No initialize override — state is initialised in _start() after openInWorld.
 
-      // Called by openFeed after the morph is in the world.
+      // Called by openFeed after the morph is in the world. Also re-invoked
+      // by prepareForNewRenderContext below after a world-reload restore —
+      // see that method for why a full rebuild (not just a re-render) is
+      // needed here specifically.
       _start: function () {
         this._cursor = null;
         this._handle = this.handle || '';
@@ -41,6 +44,26 @@ module('lively.identity.PostCardFeed')
         this._flipObjId = null;
         this._buildLayout();
         this._fetchPage();
+      },
+
+      // Row/header/button content here is built from real morphic submorphs
+      // (addMorph), which DO survive a normal world save/reload — unlike
+      // PostCardEditor/View/Mailbox's hand-built shapeNode DOM, they don't
+      // just vanish. But their onMouseDown/onClick handlers are closures
+      // over row/card/self, and closures aren't meaningfully serializable
+      // (the function's source can be captured, the closed-over variables
+      // can't) — restored buttons would silently do nothing. The scroll
+      // container's overflow-y (set via raw style, not a morph property)
+      // doesn't survive either. Simplest correct fix: on restore, discard
+      // whatever came back and rebuild from scratch via _start(), same as
+      // a fresh open — guarded on `this.handle`, set by openFeed() before
+      // the first _start() call and still unset during the harmless
+      // construction-time call this fires from (Morph.initialize's $super).
+      prepareForNewRenderContext: function ($super, renderCtx) {
+        $super(renderCtx);
+        if (!this.handle) return;
+        this.submorphs.slice().forEach(function (m) { m.remove(); });
+        this._start();
       },
 
       _buildLayout: function () {
@@ -209,8 +232,9 @@ module('lively.identity.PostCardFeed')
 
     'flip', {
 
-      // "Flip" a row to show the ProseMirror snapshot HTML preview in-place.
-      // Flipping a second card collapses the currently-flipped one first.
+      // "Flip" a row to reveal a real PostCardView (front/back flip card of
+      // its own) embedded in-place. Flipping a second card collapses the
+      // currently-flipped one first.
       _flipRow: function (row, card) {
         var self = this;
 
@@ -224,33 +248,16 @@ module('lively.identity.PostCardFeed')
           return;
         }
 
-        // Expand this row to show a preview
+        // Expand this row to show the card
         row._flipped = true;
         this._flipObjId = card.objId;
-        var previewHeight = 200;
+        var previewHeight = 220;
         var originalExtent = row.getExtent();
         row.setExtent(lively.pt(originalExtent.x, originalExtent.y + previewHeight));
 
-        // Show spinner while fetching envelope
-        var loadingLabel = lively.morphic.Text.makeLabel('Loading preview…', { fontSize: 11, textColor: Color.gray });
-        loadingLabel.setPosition(lively.pt(10, 76));
-        row.addMorph(loadingLabel);
-        row._previewLoadingLabel = loadingLabel;
-
-        self._fetchEnvelopeSnapshot(card, function (err, snapshotHtml) {
-          if (row._previewLoadingLabel) { row._previewLoadingLabel.remove(); row._previewLoadingLabel = null; }
-          if (err || !snapshotHtml) {
-            var errLabel = lively.morphic.Text.makeLabel('(preview unavailable)', { fontSize: 11, textColor: Color.gray });
-            errLabel.setPosition(lively.pt(10, 76));
-            row.addMorph(errLabel);
-            row._previewErrorLabel = errLabel;
-            return;
-          }
-          var htmlMorph = new lively.morphic.HtmlWrapperMorph(lively.pt(480, previewHeight - 8));
-          htmlMorph.setPosition(lively.pt(10, 76));
-          htmlMorph.setHTML(snapshotHtml);
-          row.addMorph(htmlMorph);
-          row._previewMorph = htmlMorph;
+        row._previewMorph = lively.identity.PostCardView.open(this._handle, card.objId, {
+          target: row,
+          bounds: lively.rect(10, 76, 480, previewHeight - 8),
         });
 
         // Shift subsequent rows down
@@ -260,8 +267,6 @@ module('lively.identity.PostCardFeed')
       _collapseRow: function (row) {
         row._flipped = false;
         if (row._previewMorph) { row._previewMorph.remove(); row._previewMorph = null; }
-        if (row._previewErrorLabel) { row._previewErrorLabel.remove(); row._previewErrorLabel = null; }
-        if (row._previewLoadingLabel) { row._previewLoadingLabel.remove(); row._previewLoadingLabel = null; }
         row.setExtent(lively.pt(row.getExtent().x, 68));
         this._flipObjId = null;
         this._reLayoutRows();
@@ -286,29 +291,6 @@ module('lively.identity.PostCardFeed')
         if (container.setContentHeight) container.setContentHeight(y);
       },
 
-      // Fetch the envelope from the server and build a snippet of HTML from
-      // payload.snapshot (the ProseMirror JSON). Falls back to the snapshot
-      // HTML already served by the identity server's /html route.
-      _fetchEnvelopeSnapshot: function (card, callback) {
-        var base = lively.identity.did.baseUrl();
-        var url = base + '/' + encodeURIComponent(this._handle) + '/' + encodeURIComponent(card.objId);
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', url, true);
-        // Accept JSON to get the raw envelope; we'll render snapshot ourselves.
-        // The server returns 'postcard' type envelopes as JSON when Accept=application/json.
-        xhr.setRequestHeader('Accept', 'application/json');
-        xhr.onload = function () {
-          if (xhr.status !== 200) return callback(new Error('fetch failed: ' + xhr.status));
-          var envelope;
-          try { envelope = JSON.parse(xhr.responseText); } catch (e) { return callback(e); }
-          var snapshot = envelope.record && envelope.record.payload && envelope.record.payload.snapshot;
-          if (!snapshot) return callback(null, '(no preview)');
-          callback(null, lively.identity.postCardUtils.snapshotToHtml(snapshot));
-        };
-        xhr.onerror = function () { callback(new Error('network error')); };
-        xhr.send();
-      },
-
     },
 
     // ─── navigation ──────────────────────────────────────────────────────────────
@@ -316,15 +298,7 @@ module('lively.identity.PostCardFeed')
     'navigation', {
 
       _openCard: function (card) {
-        // Delegate to PostCardEditor / reader (Phase 5b/c).
-        // For now, open the server-rendered HTML page in a new window morph.
-        var base = lively.identity.did.baseUrl();
-        var url = base + '/' + encodeURIComponent(this._handle) + '/' + encodeURIComponent(card.objId);
-        if (typeof lively.ide !== 'undefined' && lively.ide.openBrowser) {
-          lively.ide.openBrowser(url);
-        } else {
-          window.open(url, '_blank');
-        }
+        lively.identity.PostCardView.open(this._handle, card.objId);
       },
 
     });

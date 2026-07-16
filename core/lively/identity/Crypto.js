@@ -345,13 +345,50 @@ Object.subclass('lively.identity.Crypto',
     });
   },
 
-  // IDENTITY: signEnvelope and verifyEnvelope are deferred.
-  // Public object envelopes will use WebAuthn assertion signing (the challenge
-  // will be SHA-256(canonicalJson(envelopeWithoutSig))) in a future iteration.
-  // Private object envelopes are tamper-protected by libsodium authentication
-  // tags on the ciphertext (XSalsa20-Poly1305 includes an auth tag).
-  // signJws and verifyJws below are kept — they will be wired to WebAuthn
-  // assertion verification when signing is implemented.
+  // IDENTITY: signEnvelope (as a WebAuthn-assertion-gated operation) is still
+  // deferred. This is the display-only counterpart: given an envelope and the
+  // signer's device public key (resolve via DID.resolveEnvelopeSignerJwk —
+  // fetching that key requires a network call, kept out of this file per its
+  // "no Lively UI deps, testable in isolation" contract), report whether the
+  // envelope's content is intact and its signature (if any) checks out.
+  // Calls thenDo(null, { cidValid, sigStatus }) where sigStatus is one of
+  // 'verified' | 'invalid' | 'unsigned' | 'unresolved' (signerJwk missing).
+  // Not a security gate — postcard-audit F20/F22's "not wired up yet" note
+  // for PostCardEditor._resolveRecipientPubKeys still applies to encryption
+  // sealing; this only drives a UI badge.
+  verifyEnvelopeIntegrity: function(envelope, signerJwk, thenDo) {
+    var self = this;
+    self.computeCid(envelope.record.payload, function(cidErr, cid) {
+      var cidValid = !cidErr && cid === envelope.record.cid;
+      if (!envelope.sig) return thenDo(null, { cidValid: cidValid, sigStatus: 'unsigned' });
+      if (!signerJwk) return thenDo(null, { cidValid: cidValid, sigStatus: 'unresolved' });
+
+      var parts = envelope.sig.split('.');
+      if (parts.length !== 3) return thenDo(null, { cidValid: cidValid, sigStatus: 'invalid' });
+
+      // The JWS's own embedded payload must match the envelope-minus-sig
+      // exactly — verifyJws alone only proves the signature is valid over
+      // whatever payload the JWS carries, not that it's still THIS envelope's
+      // content (e.g. title/visibility changed after signing, cid untouched).
+      var envelopeSigned = Object.assign({}, envelope);
+      delete envelopeSigned.sig;
+      var expectedPayload = self.canonicalJson(envelopeSigned);
+      var actualPayload;
+      try {
+        actualPayload = new TextDecoder().decode(self.base64urlDecode(parts[1]));
+      } catch (e) {
+        return thenDo(null, { cidValid: cidValid, sigStatus: 'invalid' });
+      }
+      if (actualPayload !== expectedPayload) {
+        return thenDo(null, { cidValid: cidValid, sigStatus: 'invalid' });
+      }
+
+      self.verifyJws(envelope.sig, signerJwk, function(err, valid) {
+        if (err) return thenDo(null, { cidValid: cidValid, sigStatus: 'invalid' });
+        thenDo(null, { cidValid: cidValid, sigStatus: valid ? 'verified' : 'invalid' });
+      });
+    });
+  },
 
 },
 

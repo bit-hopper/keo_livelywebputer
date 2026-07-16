@@ -29,6 +29,14 @@
  */
 
 module('lively.identity.PostCardPlayback')
+  // Deliberately does NOT declare lively.identity.PostCardEditor or
+  // lively.identity.PostCardView as requires: PostCardEditor.js requires
+  // PostCardPlayback, so either edge back here would be a module cycle.
+  // Both are referenced lazily in _exitPlayback below, relying on them
+  // having been loaded by whatever opened this playback view in the first
+  // place (PostCardEditor itself, or the world's own bootstrap already
+  // having pulled in PostCardMailbox/ConstellationSpace, which do require
+  // PostCardView).
   .requires('lively.identity.DID', 'lively.identity.PostCardUtils')
   .toRun(function () {
 
@@ -40,7 +48,13 @@ module('lively.identity.PostCardPlayback')
 
       // No initialize override — state is set by openPlayback before _setup().
 
+      // Also re-invoked by prepareForNewRenderContext below after a
+      // world-reload restore. _buildChrome mixes real morphic submorphs
+      // (header/timelinePanel/snapViewer) with raw DOM nested inside them
+      // (playBtn, sliderInput, snapDiv) — clear old submorphs first so a
+      // restore rebuild doesn't stack a second header/timeline on top.
       _setup: function () {
+        (this.submorphs || []).slice().forEach(function (m) { m.remove(); });
         this._versions = [];
         this._currentIndex = 0;
         this._loading = false;
@@ -49,6 +63,17 @@ module('lively.identity.PostCardPlayback')
         this._playBtn = null;
         this._buildChrome();
         this._fetchVersions();
+      },
+
+      // Fires once, harmlessly, during construction — before openPlayback
+      // has set _handle, so the guard below skips it (openPlayback calls
+      // _setup() itself once configured). Fires again, recursively, on
+      // every submorph in the world whenever a saved world is reloaded (see
+      // Rendering.js's prepareForNewRenderContext) or this morph is copied.
+      prepareForNewRenderContext: function ($super, renderCtx) {
+        $super(renderCtx);
+        if (!this._handle) return;
+        this._setup();
       },
 
     },
@@ -315,17 +340,27 @@ module('lively.identity.PostCardPlayback')
       _exitPlayback: function () {
         this._stopPlay();
         var self = this;
-        var existing = null;
-        (lively.morphic.World.current().submorphs || []).forEach(function (m) {
-          if (m instanceof lively.identity.PostCardEditor &&
-              m._handle === self._handle && m._objId === self._objId) {
-            existing = m;
+        // this._handle is the card's owning handle (same assumption
+        // PostCardView.open callers make elsewhere) — only the owner should
+        // land back in the editor; anyone else returns to the read-only view.
+        var user = lively.identity.did.currentUser();
+        var isOwner = !!(user && user.handle === this._handle);
+
+        if (isOwner) {
+          var existing = null;
+          (lively.morphic.World.current().submorphs || []).forEach(function (m) {
+            if (m instanceof lively.identity.PostCardEditor &&
+                m._handle === self._handle && m._objId === self._objId) {
+              existing = m;
+            }
+          });
+          if (existing) {
+            existing.bringToFront();
+          } else {
+            lively.identity.PostCardEditor.openCard(this._handle, this._objId);
           }
-        });
-        if (existing) {
-          existing.bringToFront();
         } else {
-          lively.identity.PostCardEditor.openCard(this._handle, this._objId);
+          lively.identity.PostCardView.open(this._handle, this._objId);
         }
         this.remove();
       },

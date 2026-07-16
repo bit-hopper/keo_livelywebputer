@@ -662,6 +662,29 @@ module("lively.identity.DID")
           }.bind(this));
         },
 
+        // Resolve the public key that actually signs a given handle's
+        // envelopes: the delegated "soft signing" device key published in
+        // their DID document's verification method (see
+        // PostCardSerializer.js's _signEnvelopeIfPossible, which signs with
+        // this delegated key, not the passkey itself) — NOT the key
+        // recoverable via jwkFromDid(did), which is the passkey's own key.
+        // Calls thenDo(null, devicePubKeyJwk) or thenDo(err).
+        resolveEnvelopeSignerJwk: function (handle, thenDo) {
+          fetch("/@" + encodeURIComponent(handle) + "/did-document", { credentials: "include" })
+            .then(function (res) {
+              if (!res.ok) throw new Error("did-document fetch failed: HTTP " + res.status);
+              return res.json();
+            })
+            .then(function (doc) {
+              var method = (doc.verificationMethod || []).find(function (vm) {
+                return vm.lively && vm.lively.delegationCert && vm.lively.delegationCert.devicePubKeyJwk;
+              });
+              if (!method) throw new Error("No delegation cert published for @" + handle);
+              thenDo(null, method.lively.delegationCert.devicePubKeyJwk);
+            })
+            .catch(function (err) { thenDo(err); });
+        },
+
         // Complete authentication flow: given a successful WebAuthn assertion,
         // load the persisted DID document and establish the session.
         //

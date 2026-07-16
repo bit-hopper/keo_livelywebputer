@@ -15,6 +15,7 @@ module("lively.identity.ProfileCard")
   .requires(
     "lively.identity.UserSpace",
     "lively.identity.DID",
+    "lively.identity.PostCardUtils",
     "lively.persistence.BuildSpec",
     "lively.morphic.Complete",
   )
@@ -147,48 +148,10 @@ module("lively.identity.ProfileCard")
           img.applyStyle({ borderRadius: AV / 2, borderWidth: 0, clipMode: 'hidden' });
           pane.addMorph(img);
         } else {
-          (function () {
-            var seed = (handle || '?').toLowerCase();
-            var SZ = 8, SC = Math.ceil(AV / SZ);
-            var rs = [0, 0, 0, 0];
-            for (var i = 0; i < seed.length; i++) {
-              rs[i % 4] = ((rs[i % 4] << 5) - rs[i % 4]) + seed.charCodeAt(i);
-              rs[i % 4] |= 0;
-            }
-            function rnd() {
-              var t = rs[0] ^ (rs[0] << 11);
-              rs[0] = rs[1]; rs[1] = rs[2]; rs[2] = rs[3];
-              rs[3] = (rs[3] ^ (rs[3] >> 19) ^ t ^ (t >> 8));
-              return (rs[3] >>> 0) / ((1 << 31) >>> 0);
-            }
-            function hsl() {
-              return 'hsl(' + Math.floor(rnd() * 360) + ',' +
-                (rnd() * 60 + 40) + '%,' +
-                ((rnd() + rnd() + rnd() + rnd()) * 25) + '%)';
-            }
-            var fg = hsl(), bg = hsl(), spot = hsl();
-            var half = Math.ceil(SZ / 2);
-            var cells = [];
-            for (var r = 0; r < SZ; r++) {
-              var row = [];
-              for (var x = 0; x < half; x++) row.push(Math.floor(rnd() * 2.3));
-              var mir = row.slice(0, SZ - half).reverse();
-              cells.push(row.concat(mir));
-            }
-            var bc = document.createElement('canvas');
-            bc.width = bc.height = SZ * SC;
-            var bctx = bc.getContext('2d');
-            cells.forEach(function (row, r) {
-              row.forEach(function (v, col) {
-                bctx.fillStyle = v === 1 ? fg : v === 2 ? spot : bg;
-                bctx.fillRect(col * SC, r * SC, SC, SC);
-              });
-            });
-            var bi = new lively.morphic.Image(lively.rect(avX, avY, AV, AV));
-            bi.setImageURL(bc.toDataURL());
-            bi.applyStyle({ borderRadius: AV / 2, borderWidth: 0, clipMode: 'hidden' });
-            pane.addMorph(bi);
-          })();
+          var bi = new lively.morphic.Image(lively.rect(avX, avY, AV, AV));
+          bi.setImageURL(lively.identity.postCardUtils.identiconDataUrl(handle, AV));
+          bi.applyStyle({ borderRadius: AV / 2, borderWidth: 0, clipMode: 'hidden' });
+          pane.addMorph(bi);
         }
 
         var y = avY + AV + 12;
@@ -372,8 +335,7 @@ module("lively.identity.ProfileCard")
         pane.addMorph(txt("Verified identity", contentX, y, cw, 16, 10, 140, 140, 140, false)).applyStyle({ fixedWidth: false });
         y += 18;
 
-        var didStr = did
-          ? (did.length > 36 ? did.slice(0, 20) + "…" + did.slice(-12) : did) : "—";
+        var didStr = did ? lively.identity.postCardUtils.truncateDid(did) : "—";
         var didW = Math.ceil(didStr.length * 7.5) + 16;
         pane.addMorph(txt(didStr, contentX, y, didW, 16, 10, 50, 50, 50, false));
 

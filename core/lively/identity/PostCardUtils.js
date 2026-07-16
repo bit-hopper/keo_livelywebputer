@@ -19,9 +19,11 @@ module('lively.identity.PostCardUtils')
     lively.identity = lively.identity || {};
 
     lively.identity.postCardUtils = {
-      snapshotToHtml: snapshotToHtml,
-      pmNodeToHtml:   pmNodeToHtml,
-      escapeHtml:     escapeHtml,
+      snapshotToHtml:    snapshotToHtml,
+      pmNodeToHtml:      pmNodeToHtml,
+      escapeHtml:        escapeHtml,
+      identiconDataUrl:  identiconDataUrl,
+      truncateDid:       truncateDid,
     };
 
     function snapshotToHtml(snapshot) {
@@ -155,6 +157,58 @@ module('lively.identity.PostCardUtils')
       } catch (e) {
         return '<pre><code class="hljs">' + escapeHtml(text) + '</code></pre>';
       }
+    }
+
+    // Deterministic seeded-PRNG "blockie" identicon, rendered to a canvas and
+    // returned as a data URL. Extracted from ProfileCard.js's inline avatar
+    // fallback (same xorshift128 PRNG + mirrored-cell layout) so PostCardView
+    // can embed it as a plain <img src="..."> alongside ProfileCard's morphic
+    // Image use of the same bits — keep both in sync if this changes.
+    function identiconDataUrl(seedStr, sizePx) {
+      var seed = (seedStr || '?').toLowerCase();
+      var SZ = 8, SC = Math.ceil(sizePx / SZ);
+      var rs = [0, 0, 0, 0];
+      for (var i = 0; i < seed.length; i++) {
+        rs[i % 4] = ((rs[i % 4] << 5) - rs[i % 4]) + seed.charCodeAt(i);
+        rs[i % 4] |= 0;
+      }
+      function rnd() {
+        var t = rs[0] ^ (rs[0] << 11);
+        rs[0] = rs[1]; rs[1] = rs[2]; rs[2] = rs[3];
+        rs[3] = (rs[3] ^ (rs[3] >> 19) ^ t ^ (t >> 8));
+        return (rs[3] >>> 0) / ((1 << 31) >>> 0);
+      }
+      function hsl() {
+        return 'hsl(' + Math.floor(rnd() * 360) + ',' +
+          (rnd() * 60 + 40) + '%,' +
+          ((rnd() + rnd() + rnd() + rnd()) * 25) + '%)';
+      }
+      var fg = hsl(), bg = hsl(), spot = hsl();
+      var half = Math.ceil(SZ / 2);
+      var cells = [];
+      for (var r = 0; r < SZ; r++) {
+        var row = [];
+        for (var x = 0; x < half; x++) row.push(Math.floor(rnd() * 2.3));
+        var mir = row.slice(0, SZ - half).reverse();
+        cells.push(row.concat(mir));
+      }
+      var bc = document.createElement('canvas');
+      bc.width = bc.height = SZ * SC;
+      var bctx = bc.getContext('2d');
+      cells.forEach(function (row, r) {
+        row.forEach(function (v, col) {
+          bctx.fillStyle = v === 1 ? fg : v === 2 ? spot : bg;
+          bctx.fillRect(col * SC, r * SC, SC, SC);
+        });
+      });
+      return bc.toDataURL();
+    }
+
+    // Shortened display form of a DID: first 20 + last 12 chars, matching
+    // the pattern originally inline in ProfileCard.js's identity panel.
+    function truncateDid(did) {
+      var s = String(did || '');
+      return s.length > 36 ? s.slice(0, 20) + '…' + s.slice(-12) : s;
     }
 
     function escapeHtml(str) {

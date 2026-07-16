@@ -86,7 +86,11 @@ module('lively.identity.PostCardEditor')
       // No initialize override — Lively's Morph.initialize sets up submorphs etc.
       // State is set directly in newCard/openCard before _setup() is called.
 
-      // Called after the morph is in the world and DOM is available.
+      // Called after the morph is in the world and DOM is available. Also
+      // re-invoked by prepareForNewRenderContext below after a world
+      // save/reload restores this morph — none of the DOM _buildChrome
+      // builds (toolbar, pmDiv, etc.) survives serialization, so without
+      // that it would come back as a blank shell.
       _setup: function () {
         // This morph is meant to live inside a lively.morphic.Window (see
         // openCard/newCard) whose title bar is the drag handle — without this,
@@ -115,12 +119,38 @@ module('lively.identity.PostCardEditor')
         // Send, and the visibility toggle — a non-owner viewing a shared
         // card is read-only (PUT is owner-only server-side regardless).
         this._isOwner = true;
+        // Set by PostCardEditor.openCard's forceReadOnly option — used only
+        // by PostCardView, which embeds a target-mode editor purely to
+        // decrypt+render private-card content (no plaintext snapshot exists
+        // for encrypted envelopes, unlike public ones) and must never let
+        // that embed become editable/autosaving, even for the card's own
+        // owner. See _applyReadOnlyMode and _markEdited.
+        // Preserved (not reset to false) across a restore-triggered re-run
+        // of _setup() — openCard already set it correctly before the first
+        // run, and a world reload must not silently turn a forced-read-only
+        // content viewer back into an editable instance.
+        this._forceReadOnly = !!this._forceReadOnly;
         this._buildChrome();
         if (this._isNew) {
           this._createNewDoc();
         } else {
           this._loadExisting();
         }
+      },
+
+      // Fires once, harmlessly, during construction — before openCard/
+      // newCard have set _handle, so the guard below skips it (those
+      // factories call _setup() themselves once configured). Fires again,
+      // recursively for every submorph in the world, whenever a saved world
+      // is reloaded (see Rendering.js's prepareForNewRenderContext) or this
+      // morph is copied — _handle/_objId/_isNew/_forceReadOnly are plain
+      // fields and survive serialization fine, but the DOM _buildChrome
+      // builds does not, so without this a restored editor comes back
+      // blank. Matches the identical fix in PostCardView.js.
+      prepareForNewRenderContext: function ($super, renderCtx) {
+        $super(renderCtx);
+        if (!this._handle) return;
+        this._setup();
       },
 
     },
@@ -134,6 +164,7 @@ module('lively.identity.PostCardEditor')
         this.setFill(Color.white);
 
         var shapeNode = this.renderContext().shapeNode;
+        shapeNode.innerHTML = ''; // idempotent: safe if _setup() ever runs twice on one instance
         shapeNode.style.borderRadius = '8px';
         shapeNode.style.boxShadow = '0 4px 12px rgba(0,0,0,0.18)';
 
@@ -1065,7 +1096,7 @@ module('lively.identity.PostCardEditor')
       // rather than leaving Save/Send/visibility controls that would just
       // 403 or make no sense for someone who isn't the owner.
       _applyReadOnlyMode: function () {
-        if (this._isOwner) return;
+        if (this._isOwner && !this._forceReadOnly) return;
         if (this.editorView) {
           this.editorView.setProps({ editable: function () { return false; } });
         }
@@ -1136,7 +1167,7 @@ module('lively.identity.PostCardEditor')
         // ProseMirror view non-editable for non-owners, so this shouldn't
         // fire from real user input, but PUT is owner-only server-side
         // regardless — no reason to ever schedule a save that can only 403.
-        if (!this._isOwner) return;
+        if (!this._isOwner || this._forceReadOnly) return;
         this._userHasEdited = true;
         this._scheduleSave();
       },
@@ -2259,12 +2290,17 @@ module('lively.identity.PostCardEditor')
       },
 
       // Load an existing postcard and open the editor.
+      // opts.forceReadOnly: used only by PostCardView to embed this editor
+      // purely as a decrypt+render engine for private/shared card content —
+      // strips all editing chrome and disables autosave regardless of
+      // ownership (see _forceReadOnly, _applyReadOnlyMode, _markEdited).
       openCard: function (handle, objId, options) {
         var opts = options || {};
-        var editor = new lively.identity.PostCardEditor(lively.rect(0, 0, 680, 520));
+        var editor = new lively.identity.PostCardEditor(opts.bounds || lively.rect(0, 0, 680, 520));
         editor._handle = handle;
         editor._objId = objId;
         editor._isNew = false;
+        editor._forceReadOnly = !!opts.forceReadOnly;
         if (opts.target) {
           opts.target.addMorph(editor);
           editor._setup();

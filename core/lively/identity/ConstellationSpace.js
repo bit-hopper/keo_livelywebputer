@@ -31,7 +31,7 @@ module("lively.identity.ConstellationSpace")
   .requires(
     "lively.identity.DID",
     "lively.identity.IdentityPartsSpace",
-    "lively.identity.PostCardUtils",
+    "lively.identity.PostCardView",
     "lively.morphic.Complete",
   )
   .toRun(function () {
@@ -244,30 +244,20 @@ module("lively.identity.ConstellationSpace")
         else this._renderPostcardPlacement(wrapper, ref);
       },
 
+      // Embeds a real, interactive PostCardView morph — click-to-flip and
+      // all — instead of a static HTML excerpt, so a placed postcard
+      // actually persists as a living card in the space rather than a
+      // snapshot (see file header). Position/size stay driven entirely by
+      // the wrapper's own Yjs-synced layout (_commitPlacementPosition/
+      // _commitPlacementSize) — the view just fills it, same as
+      // _renderPartPlacement's embedded part morph does.
       _renderPostcardPlacement: function (wrapper, ref) {
-        var base = lively.identity.did.baseUrl();
-        var url = base + "/@" + encodeURIComponent(ref.handle) + "/" + encodeURIComponent(ref.objId) +
-          (ref.cid ? ("/at/" + encodeURIComponent(ref.cid)) : "");
-        var xhr = new XMLHttpRequest();
-        xhr.open("GET", url, true);
-        xhr.setRequestHeader("Accept", "application/json");
-        xhr.onload = function () {
-          if (xhr.status !== 200) return;
-          var envelope;
-          try { envelope = JSON.parse(xhr.responseText); } catch (e) { return; }
-          var utils = lively.identity.postCardUtils;
-          var title = (envelope.state && envelope.state.title) || envelope.objId;
-          var snapshot = envelope.record && envelope.record.payload && envelope.record.payload.snapshot;
-          var excerptHtml = snapshot ? utils.snapshotToHtml(snapshot) : "";
-          var node = wrapper.renderContext && wrapper.renderContext().shapeNode;
-          if (!node) return;
-          node.innerHTML =
-            '<div style="padding:6px;font-family:sans-serif;font-size:12px;height:100%;' +
-            'box-sizing:border-box;overflow:hidden">' +
-            '<div style="font-weight:600;margin-bottom:4px">' + utils.escapeHtml(title) + "</div>" +
-            '<div style="color:#666;max-height:80%;overflow:hidden">' + excerptHtml + "</div></div>";
-        };
-        xhr.send();
+        var extent = wrapper.getExtent();
+        lively.identity.PostCardView.open(ref.handle, ref.objId, {
+          target: wrapper,
+          cid: ref.cid || null,
+          bounds: lively.rect(0, 0, extent.x, extent.y),
+        });
       },
 
       _renderPartPlacement: function (wrapper, ref, id) {

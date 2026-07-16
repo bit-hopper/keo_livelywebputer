@@ -15,7 +15,7 @@
 module('lively.identity.PostCardMailbox')
   .requires(
     'lively.identity.DID',
-    'lively.identity.PostCardEditor',
+    'lively.identity.PostCardView',
   )
   .toRun(function () {
 
@@ -36,10 +36,27 @@ module('lively.identity.PostCardMailbox')
         this._switchTab('received');
       },
 
+      // $super(bounds) above (Morph.initialize) is what calls
+      // prepareForNewRenderContext the first time, before _activeTab exists
+      // yet — the guard there skips that call, leaving this constructor's
+      // own _buildChrome()/_switchTab() as the only build on fresh
+      // construction. On a world-reload restore, _activeTab already has its
+      // serialized value (survives fine, it's a plain string) but none of
+      // the DOM _buildChrome built does, so it re-runs here instead.
+      prepareForNewRenderContext: function ($super, renderCtx) {
+        $super(renderCtx);
+        if (!this._activeTab) return;
+        var tab = this._activeTab;
+        this._tabBtns = {};
+        this._buildChrome();
+        this._switchTab(tab);
+      },
+
       _buildChrome: function () {
         var self = this;
         this.setFill(Color.white);
         var shapeNode = this.renderContext().shapeNode;
+        shapeNode.innerHTML = ''; // idempotent: safe if this ever runs twice on one instance
         shapeNode.style.borderRadius = '8px';
         shapeNode.style.boxShadow    = '0 4px 16px rgba(0,0,0,0.18)';
 
@@ -211,10 +228,9 @@ module('lively.identity.PostCardMailbox')
               // In-world, same as the Delivered tab's Open button — not
               // window.open() to the standalone page, which has no working
               // live-render path (audit F2, deliberately not fixed; see
-              // postcard_audit.md). The editor already handles decrypt-on-load
-              // for private/shared cards; _applyReadOnlyMode makes it inert
-              // for non-owners.
-              lively.identity.PostCardEditor.openCard(rec.senderHandle, rec.objId);
+              // postcard_audit.md). PostCardView shows an Edit button of its
+              // own when the viewer turns out to be the card's owner.
+              lively.identity.PostCardView.open(rec.senderHandle, rec.objId);
             });
             card.appendChild(openBtn);
           }
@@ -264,9 +280,9 @@ module('lively.identity.PostCardMailbox')
 
           var openBtn = self._makeOpenBtn(function () {
             var user = lively.identity.did.currentUser();
-            // _handle is bare (no '@') — PostCardEditor prepends '/@' itself
-            // when building its GET/PUT URLs.
-            lively.identity.PostCardEditor.openCard(user.handle, rec.objId);
+            // _handle is bare (no '@') — PostCardView prepends '/@' itself
+            // when building its GET URL.
+            lively.identity.PostCardView.open(user.handle, rec.objId);
           });
 
           card.appendChild(to);
