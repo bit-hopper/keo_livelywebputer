@@ -1,5 +1,47 @@
 module('lively.morphic.ColorChooserDraft').requires('lively.morphic.Core', 'lively.morphic.Widgets', 'lively.morphic.TextCore', 'lively.CrayonColors').toRun(function() {
 
+function hslToRgb(h, s, l) {
+    var r, g, b;
+    if (s == 0) {
+        r = g = b = l; // achromatic
+    } else {
+        var hue2rgb = function(p, q, t) {
+            if (t < 0) t += 1;
+            if (t > 1) t -= 1;
+            if (t < 1/6) return p + (q - p) * 6 * t;
+            if (t < 1/2) return q;
+            if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+            return p;
+        };
+        var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+        var p = 2 * l - q;
+        r = hue2rgb(p, q, h + 1/3);
+        g = hue2rgb(p, q, h);
+        b = hue2rgb(p, q, h - 1/3);
+    }
+    return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+}
+
+function colorToHSB(color) {
+    // implementation in the color class produces strange results
+    var r = color.r, g = color.g, b = color.b,
+        max = Math.max(r, g, b), min = Math.min(r, g, b),
+        h, s, l = (max + min) / 2;
+    if (max == min) {
+        h = s = 0; // achromatic
+    } else {
+        var d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        switch (max) {
+            case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+            case g: h = (b - r) / d + 2; break;
+            case b: h = (r - g) / d + 4; break;
+        }
+        h /= 6;
+    }
+    return [h, s, l];
+}
+
 lively.morphic.Box.subclass('lively.morphic.ColorChooser',
 'settings', {
     defaultBounds: new Rectangle(0,0, 160, 120)
@@ -472,20 +514,265 @@ lively.morphic.ColorChooser.subclass('lively.morphic.SimpleColorChooser',
     }
 });
 
+lively.morphic.Box.subclass('lively.morphic.AwesomeColorPicker',
+'documentation', {
+    documentation: 'A self-contained saturation/brightness + hue + hex + alpha color ' +
+        'picker popup. Hand-written (no PartsBin part involved) so it stays fully ' +
+        'version-controlled.'
+},
+'settings', {
+    style: {
+        fill: Color.gray.lighter(3),
+        borderWidth: 0,
+        borderRadius: 4
+    },
+    isEpiMorph: true,
+    tileSize: 6,
+    hueFieldExtent: pt(24, 190),
+    satBrtFieldExtent: pt(190, 190)
+},
+'initializing', {
+    initialize: function($super) {
+        $super(new Rectangle(0, 0, 10, 10));
+        this.hue = 0;
+        this.sat = 1;
+        this.brt = 1;
+        this.alpha = 1;
+        this.color = Color.red;
+        this.buildSubmorphs();
+        this.setExtent(pt(this.satBrtField.bounds().right() + 8, this.rgbValueField.bounds().bottom() + 8));
+        this.redraw();
+    },
+
+    buildSubmorphs: function() {
+        var margin = 8;
+
+        this.hueField = this.addMorph(this.buildHueField(
+            new Rectangle(margin, margin, this.hueFieldExtent.x, this.hueFieldExtent.y)));
+
+        this.satBrtField = this.addMorph(this.buildSatBrtField(new Rectangle(
+            this.hueField.bounds().right() + margin, margin,
+            this.satBrtFieldExtent.x, this.satBrtFieldExtent.y)));
+
+        var bottomY = this.satBrtField.bounds().bottom() + margin,
+            rowLeft = margin,
+            rowRight = this.satBrtField.bounds().right() - margin,
+            gap = 10,
+            labelHexW = 28,
+            hexFieldW = 70,
+            labelAlphaW = 38,
+            x = rowLeft;
+
+        this.rgbLabel = this.addMorph(new lively.morphic.Text(new Rectangle(x, bottomY, labelHexW, 20), 'hex:'));
+        this.rgbLabel.applyStyle({allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true,
+            borderWidth: 0, fill: Color.rgba(0,0,0,0)});
+        x += labelHexW + gap;
+
+        this.rgbValueField = this.addMorph(new lively.morphic.Text(
+            new Rectangle(x, bottomY, hexFieldW, 20), '#FF0000'));
+        this.rgbValueField.applyStyle({
+            allowInput: true, selectable: true,
+            fixedWidth: true, fixedHeight: true, borderWidth: 1, borderColor: Color.gray
+        });
+        this.rgbValueField.isInputLine = true;
+        this.rgbValueField.setName('RGBValue');
+        lively.bindings.connect(this.rgbValueField, 'savedTextString', this, 'updateColorFromString');
+        x += hexFieldW + gap;
+
+        this.alphaLabel = this.addMorph(new lively.morphic.Text(
+            new Rectangle(x, bottomY, labelAlphaW, 20), 'alpha:'));
+        this.alphaLabel.applyStyle({allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true,
+            borderWidth: 0, fill: Color.rgba(0,0,0,0)});
+        x += labelAlphaW + gap;
+
+        this.alphaSlider = this.addMorph(new lively.morphic.Slider(
+            new Rectangle(x, bottomY + 4, rowRight - x, 12)));
+        this.alphaSlider.setValueScale(1);
+        this.alphaSlider.setValue(1);
+        lively.bindings.connect(this.alphaSlider, 'value', this, 'updateAlpha');
+    },
+
+    buildHueField: function(bounds) {
+        var field = new lively.morphic.Box(bounds);
+        field.applyStyle({borderWidth: 1, borderColor: Color.gray, fill: Color.white});
+        field.disableDragging();
+        field.disableGrabbing();
+
+        var rows = Math.max(1, Math.round(bounds.height / this.tileSize)),
+            tileHeight = bounds.height / rows;
+        for (var i = 0; i < rows; i++) {
+            var h = i / rows,
+                rgb = hslToRgb(h, 1, 0.5),
+                tile = new lively.morphic.Box(new Rectangle(0, i * tileHeight, bounds.width, tileHeight + 1));
+            tile.applyStyle({fill: new Color(rgb[0]/255, rgb[1]/255, rgb[2]/255), borderWidth: 0});
+            tile.ignoreEvents();
+            field.addMorph(tile);
+        }
+
+        field.indicator = field.addMorph(new lively.morphic.Box(new Rectangle(0, 0, bounds.width, 2)));
+        field.indicator.applyStyle({fill: Color.black, borderWidth: 1, borderColor: Color.white});
+        field.indicator.ignoreEvents();
+
+        field.addScript(function onMouseDown(evt) { return this.onDrag(evt); });
+        field.addScript(function onDrag(evt) {
+            var pos = evt.getPositionIn(this),
+                extent = this.getExtent(),
+                hue = Math.max(0, Math.min(1, pos.y / extent.y));
+            this.owner.updateHue(hue);
+            evt.stop();
+            return true;
+        });
+        return field;
+    },
+
+    buildSatBrtField: function(bounds) {
+        var field = new lively.morphic.Box(bounds);
+        field.applyStyle({borderWidth: 1, borderColor: Color.gray, fill: Color.white});
+        field.disableDragging();
+        field.disableGrabbing();
+        field.tiles = [];
+
+        var cols = Math.max(1, Math.round(bounds.width / this.tileSize)),
+            rows = Math.max(1, Math.round(bounds.height / this.tileSize)),
+            tileW = bounds.width / cols,
+            tileH = bounds.height / rows;
+        for (var x = 0; x < cols; x++) {
+            for (var y = 0; y < rows; y++) {
+                var tile = new lively.morphic.Box(new Rectangle(x * tileW, y * tileH, tileW + 1, tileH + 1));
+                tile.applyStyle({fill: Color.white, borderWidth: 0});
+                tile.ignoreEvents();
+                tile.sat = x / cols;
+                tile.brt = 1 - (y / rows);
+                field.addMorph(tile);
+                field.tiles.push(tile);
+            }
+        }
+        field.redraw = function(hue) {
+            this.tiles.forEach(function(tile) {
+                var rgb = hslToRgb(hue, tile.sat, tile.brt);
+                tile.setFill(new Color(rgb[0]/255, rgb[1]/255, rgb[2]/255));
+            });
+        };
+
+        field.indicator = field.addMorph(new lively.morphic.Box(new Rectangle(0, 0, 8, 8)));
+        field.indicator.applyStyle({
+            fill: Color.rgba(0,0,0,0), borderWidth: 1, borderColor: Color.white, borderRadius: 4
+        });
+        field.indicator.ignoreEvents();
+
+        field.addScript(function onMouseDown(evt) { return this.onDrag(evt); });
+        field.addScript(function onDrag(evt) {
+            var pos = evt.getPositionIn(this),
+                extent = this.getExtent(),
+                sat = Math.max(0, Math.min(1, pos.x / extent.x)),
+                brt = Math.max(0, Math.min(1, 1 - (pos.y / extent.y)));
+            this.owner.updateSat(sat);
+            this.owner.updateBrt(brt);
+            evt.stop();
+            return true;
+        });
+        return field;
+    }
+},
+'accessing', {
+    setColor: function(color) {
+        if (!color) return;
+        this.color = color;
+        var hsb = colorToHSB(color);
+        this.hue = hsb[0];
+        this.sat = hsb[1];
+        this.brt = hsb[2];
+        this.alpha = (color.a === undefined) ? 1 : color.a;
+        this.redraw();
+    },
+
+    updateColorFromString: function(hexString) {
+        if (this.isJustChangingTheString) return;
+        var color = Color.rgbHex(hexString);
+        if (color) this.setColor(color);
+    },
+
+    updateHue: function(hue) { this.hue = hue; this.redraw(); },
+    updateSat: function(sat) { this.sat = sat; this.redraw(); },
+    updateBrt: function(brt) { this.brt = brt; this.redraw(); },
+    updateAlpha: function(alpha) { this.alpha = alpha; this.redraw(); },
+
+    redraw: function() {
+        var rgb = hslToRgb(this.hue, this.sat, this.brt);
+        this.color = (new Color(rgb[0]/255, rgb[1]/255, rgb[2]/255)).withA(this.alpha);
+
+        this.isJustChangingTheString = true;
+        this.rgbValueField.textString = this.color.toHexString().toUpperCase();
+        this.isJustChangingTheString = false;
+        this.alphaSlider.setValue(this.alpha);
+
+        this.satBrtField.redraw(this.hue);
+
+        var hueExtent = this.hueField.getExtent(),
+            hy = this.hue * hueExtent.y;
+        this.hueField.indicator.setPosition(pt(0, Math.max(0, Math.min(hueExtent.y - 2, hy - 1))));
+
+        var sbExtent = this.satBrtField.getExtent(),
+            sx = this.sat * sbExtent.x,
+            sy = (1 - this.brt) * sbExtent.y;
+        this.satBrtField.indicator.setPosition(pt(sx - 4, sy - 4));
+    }
+},
+'opening and closing', {
+    open: function(parentMorph, pos) {
+        this.setPosition(pos || pt(0,0));
+        var owner = parentMorph || lively.morphic.World.current();
+        if (owner.currentMenu) { owner.currentMenu.remove(); }
+        owner.currentMenu = this;
+        owner.addMorph(this);
+        this.offsetForWorld(pos);
+        return this;
+    },
+    remove: function($super) {
+        var w = this.world();
+        if (w && w.currentMenu === this) w.currentMenu = null;
+        $super();
+    },
+    offsetForWorld: function(pos) {
+        var bounds = this.innerBounds().translatedBy(pos);
+        if (this.owner.visibleBounds) {
+            bounds = this.moveBoundsForVisibility(bounds, this.owner.visibleBounds());
+        }
+        this.setBounds(bounds);
+    },
+    moveBoundsForVisibility: function(menuBounds, visibleBounds) {
+        var offsetX = 0, offsetY = 0;
+
+        if (menuBounds.right() > visibleBounds.right())
+            offsetX = -1 * (menuBounds.right() - visibleBounds.right());
+
+        var overlapLeft = menuBounds.left() + offsetX;
+        if (overlapLeft < 0) offsetX += -overlapLeft;
+
+        if (menuBounds.bottom() > visibleBounds.bottom()) {
+            offsetY = -1 * (menuBounds.bottom() - visibleBounds.bottom());
+            offsetX += 1;
+        }
+        var overlapTop = menuBounds.top() + offsetY;
+        if (overlapTop < 0) offsetY += -overlapTop;
+
+        return menuBounds.translatedBy(pt(offsetX, offsetY));
+    }
+});
+
 lively.morphic.SimpleColorField.subclass('lively.morphic.AwesomeColorField',
 'init', {
     setValue: function(bool) {
         this.value = bool;
         // buttons should fire on mouse up
         if (!bool) {
-            var picker = this.world().loadPartItem('ColorPicker', 'PartsBin/Tools');
-            var bounds = this.globalBounds();
-            var pos = pt(bounds.x, bounds.y);
-            var menuPos = pos.addPt(pt(0, bounds.height));
-            picker.open(lively.morphic.World.current(), menuPos, false);
-            (function(color) { picker.setColor(color); }).curry(this.color).delay(.001);
+            var picker = new lively.morphic.AwesomeColorPicker(),
+                bounds = this.globalBounds(),
+                pos = pt(bounds.x, bounds.y),
+                menuPos = pos.addPt(pt(0, bounds.height));
+            picker.setColor(this.color);
+            picker.open(lively.morphic.World.current(), menuPos);
             lively.bindings.connect(picker, 'color', this, 'setColor');
-            lively.bindings.connect(picker, 'color-drag-end', picker, 'remove');
         }
     }
 });

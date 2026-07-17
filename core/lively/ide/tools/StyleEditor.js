@@ -1,4 +1,4 @@
-module('lively.ide.tools.StyleEditor').requires('lively.persistence.BuildSpec', 'lively.morphic.Widgets').toRun(function() {
+module('lively.ide.tools.StyleEditor').requires('lively.persistence.BuildSpec', 'lively.morphic.Widgets', 'lively.morphic.ColorChooserDraft').toRun(function() {
 
 lively.BuildSpec("lively.ide.tools.StyleEditor", {
     _Extent: lively.pt(301.0,483.0),
@@ -3878,6 +3878,10 @@ lively.BuildSpec("lively.ide.tools.StyleEditor", {
         // fix buttons
         ['TargetName', 'MagnifierButton', 'CopyStyleButton', 'CreateCustomStyleButton', 'CSSApplyButton', 'StyleFillColorField', 'StyleBorderColorField'].each(function(buttonName) {
             var button = this.get(buttonName);
+            if (!button) {
+                console.warn('StyleEditor onFromBuildSpecCreated: could not find submorph named "' + buttonName + '", skipping border fixup');
+                return;
+            }
             button.setBorderWidth(0)
             button.setBorderRadius(0)
         }.bind(this))
