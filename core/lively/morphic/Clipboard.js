@@ -18,8 +18,12 @@ Object.extend(lively.morphic.Clipboard, {
         try {
             if (Array.from(data.types).any(function(type) { return type.toLowerCase() === 'files'; })) {
                 evt.getPosition = function() { return $world.firstHand().getPosition(); };
-                var items = Array.from(data.items);
-                lively.data.FileUpload.handleDroppedFiles(items.invoke('getAsFile'), evt);
+                // data.items can include non-file entries (e.g. a text/html
+                // placeholder pasted alongside an image). getAsFile() returns
+                // null for those, so filter to file items before invoking it.
+                var items = Array.from(data.items).filter(function(item) { return item.kind === 'file'; });
+                var files = items.invoke('getAsFile').compact();
+                if (files.length) lively.data.FileUpload.handleDroppedFiles(files, evt);
                 return;
             }
             var text = data.getData('Text');

@@ -259,6 +259,14 @@ module("lively.data.FileUpload")
             }
           });
 
+          if (!handlerClass) {
+            console.warn(
+              "[FileUpload] no handler found for dropped/pasted file" +
+                (file ? " of type " + file.type : " (empty item)"),
+            );
+            return;
+          }
+
           i++;
           var handler = new handlerClass(evt, file),
             options = handler.getUploadSpec(evt, file),
