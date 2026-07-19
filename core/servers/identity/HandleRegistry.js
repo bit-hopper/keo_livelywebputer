@@ -114,6 +114,22 @@ function resolve(handle, thenDo) {
   });
 }
 
+// Reverse of resolve(): look up the handle registered for a DID.
+// Calls thenDo(null, handle) or thenDo(null, null) if not found. Handles
+// are unique-per-DID by registration (register() upserts one row per
+// handle, and a DID only ever gets one handle in this system), so a single
+// row (if any) is always the right answer.
+function resolveHandleForDid(did, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.get(
+      'SELECT handle FROM handles WHERE did = ?',
+      [did],
+      function(err, row) { thenDo(err || null, row ? row.handle : null); }
+    );
+  });
+}
+
 // List all registered handles with their DIDs.
 // Calls thenDo(null, [{ handle, did, created_at, updated_at }]).
 function listAll(thenDo) {
@@ -256,6 +272,7 @@ module.exports = {
   withDB:           withDB,
   register:         register,
   resolve:          resolve,
+  resolveHandleForDid: resolveHandleForDid,
   listAll:          listAll,
   remove:           remove,
   registerDomain:   registerDomain,

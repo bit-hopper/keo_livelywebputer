@@ -20,12 +20,14 @@
     "highlight.js": "^11.11.1",
     "jsonwebtoken": "^9.0.0",
     "katex": "^0.17.0",
+    "leaflet": "^1.9.4",
     "libsodium-wrappers": "^0.8.4",
     "life_star": "^0.9.0",
     "lively-loader": "^0.2.5",
     "lively.ast": "^0.7.47",
     "lively.lang": "^0.7.9",
     "mysql": "^2.17.1",
+    "open-location-code": "^1.0.3",
     "optparse": "^1.0.5",
     "shelljs": "^0.8.5",
     "source-map-concat": "^1.0.1",
@@ -55,6 +57,6 @@
     "test": "$npm_node_execpath bin/lk-test.js",
     "start": "$npm_node_execpath bin/lk-server.js",
     "build:postcard": "esbuild build/postcard-deps-entry.js --bundle --outfile=core/lib/postcard/postcard-deps.js --format=iife --platform=browser",
-    "postinstall": "node scripts/build-postcard-libs.js && node scripts/build-libsodium.js"
+    "postinstall": "node scripts/build-postcard-libs.js && node scripts/build-libsodium.js && node scripts/build-geo-libs.js"
   }
 }

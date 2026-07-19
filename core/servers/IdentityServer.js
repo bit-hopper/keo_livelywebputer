@@ -55,6 +55,7 @@ var auth = require("./identity/AuthMiddleware");
 var constellationRegistry = require("./identity/ConstellationRegistry");
 var cryptoVerify = require("./identity/CryptoVerify");
 var constellationSpace = require("./identity/ConstellationSpace");
+var plusCode = require("./identity/PlusCode");
 
 // ─── home-world bootstrap helpers ─────────────────────────────────────────────
 
@@ -68,6 +69,31 @@ function getBlankWorldJso() {
   var contentEnd = html.indexOf("</script>", contentStart);
   _blankWorldJso = JSON.parse(html.slice(contentStart, contentEnd));
   return _blankWorldJso;
+}
+
+// welcome.html is a static saved-world snapshot (no separate template) —
+// this doesn't rewrite any of that snapshot's morph JSON, it splices one
+// small <script> in before the bootstrap.js tag that mounts LocalMap once
+// $world exists, via Config.onStartWorld (fires after world-load regardless
+// of snapshot vs. from-scratch loading — same mechanism buildWarpDropPage/
+// buildConstellationSpacePage use, just without manuallyCreateWorld since
+// there's no snapshot to bypass here). Cached like getBlankWorldJso below —
+// read once, not per-request.
+var _welcomeHtmlWithMap = null;
+function getWelcomeHtmlWithMap() {
+  if (_welcomeHtmlWithMap) return _welcomeHtmlWithMap;
+  var html = fs.readFileSync(path.join(__dirname, "..", "..", "welcome.html"), "utf8");
+  var bootstrapTag = '<script type="text/javascript" src="core/lively/bootstrap.js">';
+  var idx = html.indexOf(bootstrapTag);
+  if (idx === -1) throw new Error("welcome.html: bootstrap.js script tag not found");
+  var mountScript =
+    "<script>window.Config=window.Config||{};window.Config.onStartWorld=function(){" +
+    "lively.require('lively.identity.LocalMap').toRun(function(){" +
+    'var el=document.createElement("div");el.id="lofi-social-map";' +
+    "document.body.appendChild(el);lively.identity.LocalMap.open(el);" +
+    "});};</script>";
+  _welcomeHtmlWithMap = html.slice(0, idx) + mountScript + html.slice(idx);
+  return _welcomeHtmlWithMap;
 }
 
 // restore.html is a stable copy of blank.html used exclusively as the seed
@@ -647,6 +673,29 @@ function _canSeePostcardMeta(meta, viewerDid) {
   });
 }
 
+// Batch DID -> handle resolution for a set of postcard metadata rows (the
+// listing projection only carries `did` — see _runPostcardQuery in
+// ObjectRepository.js — but PostCardView.open(handle, objId) needs a
+// handle. Every other existing caller of this projection already has
+// `handle` from its own data, e.g. ConstellationSpace's placement layout;
+// /postcards/nearby is the first cross-user listing route that doesn't, so
+// it resolves once here rather than adding handle to the shared projection
+// for every caller). Calls thenDo(null, { [did]: handle|null }).
+function _resolveHandlesForDids(dids, thenDo) {
+  var uniqueDids = dids.filter(function (d, i, a) { return d && a.indexOf(d) === i; });
+  if (!uniqueDids.length) return thenDo(null, {});
+  var map = {};
+  var remaining = uniqueDids.length;
+  var firstErr = null;
+  uniqueDids.forEach(function (did) {
+    handleRegistry.resolveHandleForDid(did, function (err, handle) {
+      if (err) firstErr = firstErr || err;
+      map[did] = handle || null;
+      if (--remaining === 0) thenDo(firstErr, map);
+    });
+  });
+}
+
 module.exports = function (route, app) {
   // ─── challenge ─────────────────────────────────────────────────────────────
 
@@ -789,16 +838,22 @@ module.exports = function (route, app) {
 
   // ─── welcome.html redirect for signed-in users ────────────────────────────
   // Intercept GET /welcome.html before the static file server.
-  // Visitors with a valid session cookie are redirected straight to their
-  // home world so they don't have to click "login" again.
-  // Non-authenticated visitors fall through to the static file.
+  // Visitors with a valid session cookie and a saved world are redirected
+  // straight to their home world so they don't have to click "login" again.
+  // Everyone else (true anonymous visitors, and signed-in visitors who
+  // haven't saved a world yet — both are "landing page" traffic) gets the
+  // static welcome world with the lofi social map (LocalMap.js) mounted
+  // into it, via getWelcomeHtmlWithMap() below.
 
-  app.get("/welcome.html", auth.optionalAuth, function (req, res, next) {
-    if (!req.identity) return next();
+  app.get("/welcome.html", auth.optionalAuth, function (req, res) {
+    function serveWelcomeWithMap() {
+      res.send(getWelcomeHtmlWithMap());
+    }
+    if (!req.identity) return serveWelcomeWithMap();
     objectRepo.listForUser(req.identity.did, function (err, envelopes) {
-      if (err || !envelopes || !envelopes.length) return next();
+      if (err || !envelopes || !envelopes.length) return serveWelcomeWithMap();
       var worlds = envelopes.filter(function (e) { return e.type === "world"; });
-      if (!worlds.length) return next();
+      if (!worlds.length) return serveWelcomeWithMap();
       worlds.sort(function (a, b) { return a.created < b.created ? -1 : 1; });
       res.redirect("/@" + req.identity.handle + "/" + worlds[0].objId);
     });
@@ -1499,6 +1554,23 @@ module.exports = function (route, app) {
           .json({ error: "Forbidden: handle DID mismatch" });
       }
 
+      // Location tags (state.location, a Plus Code) must never be stored
+      // more precisely than a 6-significant-digit floor (~5.5km cell) —
+      // enforced here regardless of what the client sent, since the client
+      // is not the trust boundary. Coerces (floors) a too-precise code
+      // rather than hard-rejecting it — a no-op for an honest client, which
+      // already floors before ever sending; only a malformed/unparseable
+      // code is a hard 400.
+      if (envelope.state && envelope.state.location != null) {
+        var flooredLocation = plusCode.truncateToFloor(envelope.state.location);
+        if (!flooredLocation) {
+          return res.status(400).json({ error: "Invalid location code" });
+        }
+        envelope = Object.assign({}, envelope, {
+          state: Object.assign({}, envelope.state, { location: flooredLocation }),
+        });
+      }
+
       objectRepo.put(envelope, function (err, result) {
         if (err) return res.status(500).json({ error: String(err) });
         // IDENTITY: future — WaveBus-style fan-out on PUT.
@@ -2015,6 +2087,40 @@ module.exports = function (route, app) {
             res.status(200).json({ ok: true, placementId: result.id });
           });
         });
+      });
+    });
+  });
+
+  // Cross-user public postcards near a (already-coarse) Plus Code prefix —
+  // backs the welcome page's lofi social map (LocalMap.js). No lat/lng
+  // bounding-box math: Plus Codes are prefix-friendly, so a shared string
+  // prefix already means a shared/nearby grid cell.
+  app.get("/postcards/nearby", auth.optionalAuth, function (req, res) {
+    // Floor the caller-supplied prefix through the same invariant as the
+    // PUT path — never let an un-truncated code reach the query, even
+    // though it only narrows the caller's own search (consistency, not a
+    // privacy hole either way).
+    var truncated = plusCode.truncateToFloor(req.query.code || "");
+    if (!truncated) return res.status(400).json({ error: "Invalid location code" });
+    var limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+    var cursor = req.query.cursor || null;
+
+    objectRepo.listPostcardsNearby(truncated, { limit: limit, cursor: cursor }, function (err, result) {
+      if (err) return res.status(500).json({ error: String(err) });
+      var viewerDid = req.identity ? req.identity.did : null;
+      // visibility:'public' is already filtered at the SQL level — this is
+      // defense-in-depth matching the other listing routes' pattern, so a
+      // future SQL change can't silently drop the safety net.
+      var visible = result.postcards.filter(function (m) { return _canSeePostcardMeta(m, viewerDid); });
+      var dids = visible.map(function (m) { return m.did; });
+      _resolveHandlesForDids(dids, function (resolveErr, didToHandle) {
+        if (resolveErr) return res.status(500).json({ error: String(resolveErr) });
+        result.postcards = visible.map(function (m) {
+          var out = Object.assign({}, m, { handle: didToHandle[m.did] || null });
+          delete out.recipients;
+          return out;
+        });
+        res.json(result);
       });
     });
   });

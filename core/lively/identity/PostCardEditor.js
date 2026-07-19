@@ -114,6 +114,15 @@ module('lively.identity.PostCardEditor')
         this._visibility = 'public';
         this._recipientHandles = [];
         this._visibilityBtn = null;
+        // Optional location tag (a floored, <=6-significant-digit Plus
+        // Code — see PostCardUtils.js's encodeLocation). _locationCleared
+        // distinguishes "never attached one" (both null) from "explicitly
+        // removed" (code null, cleared true) — a save must be able to send
+        // stateMeta.location: null on removal rather than just omitting the
+        // field, or the server can't tell "no change" from "clear it."
+        this._locationCode = null;
+        this._locationCleared = false;
+        this._locationBtn = null;
         // True for a new card (you're creating it) or once _loadExistingNow
         // compares envelope.did to the session DID. Gates editing, Save,
         // Send, and the visibility toggle — a non-owner viewing a shared
@@ -529,6 +538,20 @@ module('lively.identity.PostCardEditor')
           self._promptPostToConstellation();
         });
         footerDiv.appendChild(postBtn);
+
+        // Opt-in coarse location tag (~5.5km cell, never more precise —
+        // see PostCardUtils.js's encodeLocation) — click attaches your
+        // current location, click again (once attached) to remove it.
+        var locationBtn = document.createElement('button');
+        locationBtn.style.cssText = 'position:absolute;top:6px;right:410px;width:110px;height:24px;padding:0;font-size:11px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
+        locationBtn.addEventListener('mousedown', function (e) {
+          e.preventDefault(); e.stopPropagation();
+          if (self._locationCode) self._removeLocation();
+          else self._promptAttachLocation();
+        });
+        footerDiv.appendChild(locationBtn);
+        this._locationBtn = locationBtn;
+        this._updateLocationBtn();
       },
 
       // Reflects the current selection's formatting into the toolbar: active
@@ -592,6 +615,63 @@ module('lively.identity.PostCardEditor')
           : 'Encrypted — only you' + (this._recipientHandles.length ? ' and ' + this._recipientHandles.length + ' recipient(s)' : '') + ' can read. Click to make public.';
         this._visibilityBtn.style.background = isPublic ? '#fff' : '#eef';
         this._visibilityBtn.style.borderColor = isPublic ? '#ccc' : '#55c';
+      },
+
+      _updateLocationBtn: function () {
+        if (!this._locationBtn) return;
+        var has = !!this._locationCode;
+        this._locationBtn.textContent = has ? ('📍 ' + this._locationCode) : '📍 Add location';
+        this._locationBtn.title = has
+          ? 'Location tag: ' + this._locationCode + ' (click to remove)'
+          : 'Tag this card with your current coarse location (~5.5km, never more precise)';
+        this._locationBtn.style.background = has ? '#eef' : '#fff';
+        this._locationBtn.style.borderColor = has ? '#55c' : '#ccc';
+      },
+
+      // Captures the device's current position and immediately floors it to
+      // a 6-significant-digit Plus Code (encodeLocation) — raw coordinates
+      // are never assigned to a persistent field or held past this callback,
+      // so there's nothing more precise than the floor left to leak even if
+      // a bug elsewhere mishandled it (server-side PlusCode.js enforces the
+      // same floor independently as the actual trust boundary).
+      _promptAttachLocation: function () {
+        var self = this;
+        if (!navigator.geolocation) {
+          this._setStatus('Geolocation unavailable');
+          return;
+        }
+        this._ensureGeoRuntime(function () {
+          self._setStatus('Locating…');
+          navigator.geolocation.getCurrentPosition(function (pos) {
+            var code = lively.identity.postCardUtils.encodeLocation(pos.coords.latitude, pos.coords.longitude);
+            if (!code) { self._setStatus('Location error'); return; }
+            self._locationCode = code;
+            self._locationCleared = false;
+            self._updateLocationBtn();
+            self._markEdited();
+            self._setStatus('Location attached');
+          }, function () {
+            self._setStatus('Location unavailable');
+          }, { timeout: 8000, maximumAge: 300000 });
+        });
+      },
+
+      _removeLocation: function () {
+        this._locationCode = null;
+        this._locationCleared = true;
+        this._updateLocationBtn();
+        this._markEdited();
+      },
+
+      // A save's stateMeta.location: value | null | undefined — omitted
+      // entirely when a location was never attached/removed this session
+      // (so an unrelated save doesn't touch an existing stored value),
+      // explicit null on removal (so the server can tell "clear it" apart
+      // from "no change"), or the floored code when attached.
+      _locationStateMeta: function () {
+        if (this._locationCode) return { location: this._locationCode };
+        if (this._locationCleared) return { location: null };
+        return null;
       },
 
       // A small floating chip shown under the cursor when it's inside a link
@@ -788,6 +868,39 @@ module('lively.identity.PostCardEditor')
         document.head.appendChild(s);
       },
 
+      // Lazy-loads core/lib/geo/geo-runtime.js (window.L + window.OpenLocationCode
+      // — Leaflet + open-location-code, bundled together since LocalMap.js
+      // needs both; PostCardEditor only needs OpenLocationCode, but shares
+      // the one bundle rather than adding a second lazy-load path, matching
+      // this file's own _ensureRuntime combining several unrelated libs
+      // behind one load). Same guard/poll/CSS-link shape as _ensureRuntime.
+      _ensureGeoRuntime: function (callback) {
+        if (window.L && window.OpenLocationCode) return callback();
+        var self = this;
+        if (window._geoRuntimeLoading) {
+          var poll = setInterval(function () {
+            if (window.L && window.OpenLocationCode) { clearInterval(poll); callback(); }
+          }, 80);
+          return;
+        }
+        window._geoRuntimeLoading = true;
+        if (!document.getElementById('leaflet-css')) {
+          var link = document.createElement('link');
+          link.id = 'leaflet-css';
+          link.rel = 'stylesheet';
+          link.href = '/core/lib/geo/leaflet.css';
+          document.head.appendChild(link);
+        }
+        var s = document.createElement('script');
+        s.src = '/core/lib/geo/geo-runtime.js';
+        s.onload = function () { window._geoRuntimeLoading = false; callback(); };
+        s.onerror = function () {
+          window._geoRuntimeLoading = false;
+          self._showError('Failed to load /core/lib/geo/geo-runtime.js');
+        };
+        document.head.appendChild(s);
+      },
+
       // Create a fresh Y.Doc (gc: false) and attach a ProseMirror editor.
       _createNewDoc: function () {
         var self = this;
@@ -822,6 +935,9 @@ module('lively.identity.PostCardEditor')
           self._envelope = envelope;
           self._visibility = envelope.visibility === 'public' ? 'public' : 'private';
           self._recipientHandles = (envelope.state && envelope.state.recipientHandles) || [];
+          self._locationCode = (envelope.state && envelope.state.location) || null;
+          self._locationCleared = false;
+          self._updateLocationBtn();
           var user = lively.identity.did.currentUser();
           self._isOwner = !!(user && user.did === envelope.did);
           self._updateVisibilityBtn();
@@ -1189,6 +1305,7 @@ module('lively.identity.PostCardEditor')
       _saveNowPublic: function (user, callback) {
         var self = this;
         var cb = callback || function () {};
+        var locationMeta = this._locationStateMeta();
         var params = {
           yDoc:          this.yDoc,
           prevEnvelope:  this._envelope || null,
@@ -1197,6 +1314,7 @@ module('lively.identity.PostCardEditor')
           visibility:    'public',
           // title omitted — PostCardSerializer extracts it from the first PM block (§10.5)
         };
+        if (locationMeta) params.stateMeta = locationMeta;
         this._setStatus('Saving…');
         lively.identity.postCardSerializer.serializeToEnvelope(params, function (err, envelope) {
           self._finishSave(err, envelope, cb);
@@ -1240,9 +1358,10 @@ module('lively.identity.PostCardEditor')
               recipients:    result.resolved.map(function (r) {
                 return { did: r.did, x25519PublicKey: r.x25519PublicKey };
               }),
-              stateMeta: {
-                recipientHandles: result.resolved.map(function (r) { return r.handle; }),
-              },
+              stateMeta: Object.assign(
+                { recipientHandles: result.resolved.map(function (r) { return r.handle; }) },
+                self._locationStateMeta()
+              ),
             };
             lively.identity.postCardSerializer.serializeEncrypted(params, function (err, envelope) {
               self._finishSave(err, envelope, cb);
@@ -1341,6 +1460,9 @@ module('lively.identity.PostCardEditor')
           self._envelope = envelope;
           self._objId = envelope.objId;
           self._recipientHandles = (envelope.state && envelope.state.recipientHandles) || self._recipientHandles;
+          self._locationCode = (envelope.state && envelope.state.location) || null;
+          self._locationCleared = false;
+          self._updateLocationBtn();
           self._updateVisibilityBtn();
           // If this was a new card, wire up sync now that we have an objId
           if (self._isNew) {

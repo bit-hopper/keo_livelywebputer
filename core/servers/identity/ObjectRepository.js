@@ -494,6 +494,71 @@ function listPostcardsForConstellation(constellation, opts, thenDo) {
   });
 }
 
+// Escapes SQL LIKE wildcards (% and _) in a string that's about to be used
+// as a LIKE prefix — Plus Codes' own alphabet ('23456789CFGHJMPQRVWX' plus
+// '+'/'0') never contains either character, but a caller-supplied query
+// param shouldn't be trusted to actually be a well-formed Plus Code by the
+// time it reaches SQL, so escape defensively rather than relying on that
+// implicitly.
+function _escapeLikePrefix(s) {
+  return String(s).replace(/[%_]/g, '\\$&');
+}
+
+// List latest public postcard envelopes whose state.location Plus Code
+// starts with the given (already-floored) prefix — Plus Codes are
+// naturally prefix-friendly: a longer shared prefix means a smaller shared
+// grid cell, so this needs no lat/lng bounding-box math. Only
+// visibility:'public' postcards are eligible (there is no "list all
+// private/shared postcards near X" — that would defeat the point of
+// marking them private).
+// opts: { limit, cursor } — same pagination shape as listPostcardsForUser.
+// Calls thenDo(null, { postcards: [envelopeMetadata...], cursor }).
+function listPostcardsNearby(codePrefix, opts, thenDo) {
+  var limit = (opts && opts.limit) || 20;
+  var cursor = (opts && opts.cursor) || null;
+  var likePrefix = _escapeLikePrefix(codePrefix) + '%';
+
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+
+    var baseSql =
+      'SELECT o.envelope, o.obj_id, o.id FROM objects o' +
+      ' INNER JOIN (' +
+      '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
+      '   WHERE type = \'postcard\' AND visibility = \'public\'' +
+      '         AND json_extract(envelope, \'$.state.location\') LIKE ? ESCAPE \'\\\'' +
+      '   GROUP BY obj_id' +
+      ' ) latest ON o.id = latest.max_id' +
+      ' WHERE (json_extract(o.envelope, \'$.state.deleted\') IS NULL' +
+      '        OR json_extract(o.envelope, \'$.state.deleted\') != 1)';
+
+    var params, sql;
+    if (cursor) {
+      db.get(
+        'SELECT MAX(id) AS pivot FROM objects WHERE obj_id = ?' +
+        '  AND type = \'postcard\'',
+        [cursor],
+        function(err, pivotRow) {
+          if (err) return thenDo(err);
+          var pivotId = pivotRow ? pivotRow.pivot : null;
+          if (pivotId) {
+            sql = baseSql + ' AND o.id < ? ORDER BY o.id DESC LIMIT ?';
+            params = [likePrefix, pivotId, limit + 1];
+          } else {
+            sql = baseSql + ' ORDER BY o.id DESC LIMIT ?';
+            params = [likePrefix, limit + 1];
+          }
+          _runPostcardQuery(db, sql, params, limit, thenDo);
+        }
+      );
+    } else {
+      sql = baseSql + ' ORDER BY o.id DESC LIMIT ?';
+      params = [likePrefix, limit + 1];
+      _runPostcardQuery(db, sql, params, limit, thenDo);
+    }
+  });
+}
+
 // List reply envelopes for a parent objId (postcards whose replyTo.objId matches).
 // Returns metadata-only (no payload) for the listing; caller fetches full envelope on open.
 // Visibility filtering is the caller's responsibility (done in the route handler).
@@ -714,6 +779,7 @@ module.exports = {
   addRecipient:                  addRecipient,
   listPostcardsForUser:          listPostcardsForUser,
   listPostcardsForConstellation: listPostcardsForConstellation,
+  listPostcardsNearby:           listPostcardsNearby,
   listRepliesForPostcard:        listRepliesForPostcard,
   putInboxRecord:                putInboxRecord,
   listInboxForHandle:            listInboxForHandle,

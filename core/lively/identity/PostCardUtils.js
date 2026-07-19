@@ -19,11 +19,13 @@ module('lively.identity.PostCardUtils')
     lively.identity = lively.identity || {};
 
     lively.identity.postCardUtils = {
-      snapshotToHtml:    snapshotToHtml,
-      pmNodeToHtml:      pmNodeToHtml,
-      escapeHtml:        escapeHtml,
-      identiconDataUrl:  identiconDataUrl,
-      truncateDid:       truncateDid,
+      snapshotToHtml:      snapshotToHtml,
+      pmNodeToHtml:        pmNodeToHtml,
+      escapeHtml:          escapeHtml,
+      identiconDataUrl:    identiconDataUrl,
+      truncateDid:         truncateDid,
+      encodeLocation:      encodeLocation,
+      sanitizeLocationCode: sanitizeLocationCode,
     };
 
     function snapshotToHtml(snapshot) {
@@ -233,6 +235,41 @@ module('lively.identity.PostCardUtils')
       var scheme = m[1].toLowerCase();
       if (scheme === 'http' || scheme === 'https' || scheme === 'mailto') return s;
       return '#';
+    }
+
+    // Location tag support — Plus Codes (Open Location Code), floored to 6
+    // significant digits (~5.5km x 5.5km cell) so a location tag can never
+    // be more precise than that, even transiently in memory before it's
+    // ever sent anywhere. Requires window.OpenLocationCode
+    // (core/lib/geo/geo-runtime.js) — callers ensure it's loaded first via
+    // their own _ensureGeoRuntime. Server-side enforcement of this same
+    // floor is an INDEPENDENT copy (core/servers/identity/PlusCode.js, same
+    // rationale as this file's header note about _pmNodeToHtml) — this
+    // client-side floor is a courtesy / defense-in-depth, not the trust
+    // boundary.
+    var LOCATION_CODE_LENGTH = 6;
+
+    function encodeLocation(lat, lng) {
+      if (!window.OpenLocationCode) return null;
+      try {
+        return new window.OpenLocationCode().encode(lat, lng, LOCATION_CODE_LENGTH);
+      } catch (e) { return null; }
+    }
+
+    // Re-derives a floored Plus Code from a string of unknown/untrusted
+    // precision (e.g. re-validating a previously-saved envelope's
+    // state.location when reopening a card) — decode+re-encode, not
+    // substring slicing, since Plus Codes place the '+' at a fixed offset
+    // and support shortened forms a naive truncation would mangle. Returns
+    // null if the code isn't a valid, full (decodable) Plus Code.
+    function sanitizeLocationCode(code) {
+      if (!window.OpenLocationCode || !code) return null;
+      try {
+        var olc = new window.OpenLocationCode();
+        if (!olc.isValid(code) || !olc.isFull(code)) return null;
+        var area = olc.decode(code);
+        return olc.encode(area.latitudeCenter, area.longitudeCenter, LOCATION_CODE_LENGTH);
+      } catch (e) { return null; }
     }
 
   }); // end module('lively.identity.PostCardUtils')
