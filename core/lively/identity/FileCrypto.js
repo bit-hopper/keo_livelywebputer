@@ -182,7 +182,13 @@ module('lively.identity.FileCrypto')
                       }, envelopeExtra || {});
                       self._putFileEnvelope(user.handle, envelope, function (err) {
                         if (err) return thenDo(err);
-                        thenDo(null, { objId: gen.objId, blobCid: blobCid, dek: dek });
+                        // blobNonce is null for a public file — its blob is
+                        // plaintext, encrypted only for the private/shared
+                        // path (see withCipherBytes above). Returned (along
+                        // with dek) for callers that embed both directly
+                        // rather than going through fetchAndDecrypt — e.g.
+                        // postcard attachments (Encryption.md §6).
+                        thenDo(null, { objId: gen.objId, blobCid: blobCid, blobNonce: blob.nonce, dek: dek });
                       });
                     }
 
@@ -351,6 +357,41 @@ module('lively.identity.FileCrypto')
           var url = URL.createObjectURL(blob);
           self._urlCache[cacheKey] = url;
           thenDo(null, url);
+        });
+      },
+
+      // Postcard-attachment variant of objectUrlFor (Encryption.md §6): the
+      // attachment's dek travels inside the postcard's own decrypted payload
+      // rather than being wrapped/sealed in the attachment's own file
+      // envelope, so this skips fetchAndDecrypt's envelope fetch + KEK/
+      // sealedDek unwrap entirely and goes straight blob-fetch -> decrypt.
+      // attachment: { blobCid, blobNonce, dek, mime } — dek/blobNonce null
+      // for a public postcard's attachment (blob is already plaintext).
+      // Cached per blobCid (content-addressed, so this is safe across
+      // versions/attachments that happen to share bytes).
+      // Calls thenDo(null, objectUrl).
+      resolveAttachmentUrl: function (handle, attachment, thenDo) {
+        if (!this._urlCache) this._urlCache = {};
+        var cacheKey = 'attachment:' + attachment.blobCid;
+        if (this._urlCache[cacheKey]) return thenDo(null, this._urlCache[cacheKey]);
+
+        var self = this;
+        var c = lively.identity.crypto;
+
+        function withPlainBytes(plainBytes) {
+          var blob = new Blob([plainBytes], { type: attachment.mime || 'application/octet-stream' });
+          var url = URL.createObjectURL(blob);
+          self._urlCache[cacheKey] = url;
+          thenDo(null, url);
+        }
+
+        this._fetchBlobBytes(handle, attachment.blobCid, function (err, bytes) {
+          if (err) return thenDo(err);
+          if (!attachment.dek) return withPlainBytes(bytes); // public: already plaintext
+          c.decryptBytes(bytes, attachment.blobNonce, attachment.dek, function (err, plainBytes) {
+            if (err) return thenDo(err);
+            withPlainBytes(plainBytes);
+          });
         });
       },
 

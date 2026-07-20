@@ -47,6 +47,7 @@ module('lively.identity.PostCardEditor')
     'lively.identity.DID',
     'lively.identity.WebAuthn',
     'lively.identity.WebKey',
+    'lively.identity.FileCrypto',
   )
   .toRun(function () {
 
@@ -114,6 +115,10 @@ module('lively.identity.PostCardEditor')
         this._visibility = 'public';
         this._recipientHandles = [];
         this._visibilityBtn = null;
+        // Attachment metadata (§6): { objId, dek, blobCid, blobNonce, name,
+        // mime } entries — pass-through inside the postcard payload, hydrated
+        // from the loaded envelope in _loadExistingNow.
+        this._attachments = [];
         // Optional location tag (a floored, <=6-significant-digit Plus
         // Code — see PostCardUtils.js's encodeLocation). _locationCleared
         // distinguishes "never attached one" (both null) from "explicitly
@@ -944,9 +949,13 @@ module('lively.identity.PostCardEditor')
           var deserialize = envelope.visibility === 'public'
             ? lively.identity.postCardSerializer.deserializeFromEnvelope
             : lively.identity.postCardSerializer.deserializeEncrypted;
-          deserialize.call(lively.identity.postCardSerializer, envelope, function (err, yDoc) {
+          deserialize.call(lively.identity.postCardSerializer, envelope, function (err, yDoc, payload) {
             if (err) return self._showError('Failed to deserialize: ' + err.message);
             self.yDoc = yDoc;
+            // §6: attachments travel inside the (now-decrypted, for a
+            // private/shared card) payload — the image NodeView/link click
+            // handler resolve against this array, not a fresh fetch.
+            self._attachments = (payload && payload.attachments) || [];
             self._attachEditor();
             self._applyReadOnlyMode();
             self._connectSync();
@@ -1005,9 +1014,20 @@ module('lively.identity.PostCardEditor')
             math_inline:  function (node, view, getPos) { return self._mathNodeView(node, view, getPos); },
             math_display: function (node, view, getPos) { return self._mathNodeView(node, view, getPos); },
             embeddedPart: function (node, view, getPos) { return self._embeddedPartNodeView(node, view, getPos); },
+            image:        function (node, view, getPos) { return self._attachmentImageNodeView(node, view, getPos); },
           },
           handleDOMEvents: {
             blur: function () { self._hideLinkPreview(); return false; },
+            // Non-image attachment links (§6): a private/shared one has no
+            // real href (see the link mark's toDOM above) — intercept the
+            // click and resolve+decrypt on demand instead of navigating.
+            click: function (view, event) {
+              var a = event.target && event.target.closest && event.target.closest('a[data-attachment-obj-id]');
+              if (!a) return false;
+              event.preventDefault();
+              self._openAttachment(a.getAttribute('data-attachment-obj-id'));
+              return true;
+            },
           },
           dispatchTransaction: function (tr) {
             // ProseMirror calls this as dispatchTransaction.call(editorView, tr),
@@ -1312,6 +1332,7 @@ module('lively.identity.PostCardEditor')
           constellation: this._constellation,
           replyTo:       this._replyTo,
           visibility:    'public',
+          attachments:   this._attachments || [],
           // title omitted — PostCardSerializer extracts it from the first PM block (§10.5)
         };
         if (locationMeta) params.stateMeta = locationMeta;
@@ -1358,6 +1379,7 @@ module('lively.identity.PostCardEditor')
               recipients:    result.resolved.map(function (r) {
                 return { did: r.did, x25519PublicKey: r.x25519PublicKey };
               }),
+              attachments: self._attachments || [],
               stateMeta: Object.assign(
                 { recipientHandles: result.resolved.map(function (r) { return r.handle; }) },
                 self._locationStateMeta()
@@ -1705,7 +1727,11 @@ module('lively.identity.PostCardEditor')
               if (self._recipientHandles.indexOf(handle) === -1) {
                 return thenDo(new Error("@" + handle + " hasn't set up encryption yet — cannot share with them."));
               }
-              self._postInbox(handle, thenDo);
+              // §6: sync each attachment's own transport ACL to the new
+              // recipient too — non-fatal, see _grantAttachmentsAccess.
+              self._grantAttachmentsAccess(handle, function () {
+                self._postInbox(handle, thenDo);
+              });
             });
           });
         });
@@ -1932,6 +1958,71 @@ module('lively.identity.PostCardEditor')
         };
       },
 
+      // NodeView for the image node (Encryption.md §6). Attachments uploaded
+      // via FileCrypto never carry a real, permanently-fetchable src for a
+      // private/shared postcard (its blob is encrypted) — this resolves the
+      // node's objId to a decrypted, session-local blob: URL asynchronously
+      // and swaps it into the DOM directly, WITHOUT ever touching
+      // node.attrs/dispatching a transaction. That distinction matters: this
+      // node is synced via y-prosemirror, so a dispatched change would push
+      // a transient, per-browser blob: URL into the shared Y.Doc and even
+      // persist it on next save — a bug, not a feature. A node with a real
+      // src already (public attachment, or a pre-Phase-2 legacy one) just
+      // renders it directly, same as plain toDOM.
+      _attachmentImageNodeView: function (node, view, getPos) {
+        var self = this;
+        var destroyed = false;
+        var img = document.createElement('img');
+        img.className = 'lively-postcard-image';
+
+        function render(currentNode) {
+          img.alt = currentNode.attrs.alt || '';
+          if (currentNode.attrs.title) img.title = currentNode.attrs.title;
+          img.classList.remove('lively-attachment-loading', 'lively-attachment-error');
+
+          if (currentNode.attrs.src) {
+            img.src = currentNode.attrs.src;
+            return;
+          }
+          if (!currentNode.attrs.objId) return; // nothing to show
+
+          img.classList.add('lively-attachment-loading');
+          var entry = (self._attachments || []).find(function (a) { return a.objId === currentNode.attrs.objId; });
+          if (!entry) {
+            img.classList.remove('lively-attachment-loading');
+            img.classList.add('lively-attachment-error');
+            img.alt = 'Attachment data unavailable';
+            return;
+          }
+          lively.identity.fileCrypto.resolveAttachmentUrl(self._handle, entry, function (err, url) {
+            if (destroyed) return;
+            img.classList.remove('lively-attachment-loading');
+            if (err) {
+              img.classList.add('lively-attachment-error');
+              img.alt = 'Failed to load attachment';
+              console.error('[PostCardEditor] attachment image resolve failed:', err);
+              return;
+            }
+            img.src = url;
+          });
+        }
+
+        render(node);
+
+        return {
+          dom: img,
+          update: function (newNode) {
+            if (newNode.type !== node.type) return false;
+            var changed = newNode.attrs.objId !== node.attrs.objId || newNode.attrs.src !== node.attrs.src;
+            node = newNode;
+            if (changed) render(node);
+            return true;
+          },
+          destroy: function () { destroyed = true; },
+          ignoreMutation: function () { return true; },
+        };
+      },
+
       // Floating pinned/live toggle + remove button, shown while the embed
       // node is selected. Appended to the outer `dom` (not contentDiv) so a
       // content refetch never wipes it out from under an open overlay.
@@ -2145,8 +2236,9 @@ module('lively.identity.PostCardEditor')
         view.focus();
       },
 
-      // Upload a file via the existing /@:handle/uploads routes, then insert
-      // a link to it at the cursor (§10.1's insert-attachment).
+      // Encrypt-and-upload a file via FileCrypto, then insert a reference to
+      // it at the cursor (§10.1's insert-attachment; Encryption.md §6 for
+      // the encrypted-attachment design).
       _promptAttachment: function () {
         var self = this;
         var input = document.createElement('input');
@@ -2161,54 +2253,142 @@ module('lively.identity.PostCardEditor')
         input.click();
       },
 
+      // Attachment visibility/recipients mirror the postcard's own (§6) —
+      // resolved fresh at upload time so a just-added recipient (this
+      // session, not yet saved) still gets sealed in.
       _uploadAttachment: function (file) {
         var self = this;
         if (!this._handle) return;
-        var base = lively.identity.did.baseUrl();
-        var safeName = file.name.replace(/[^A-Za-z0-9_.\-]/g, '_');
-        var uploadPath = 'postcard-attachments/' + Date.now() + '-' + safeName;
-        var url = base + '/@' + encodeURIComponent(this._handle) + '/uploads/' + uploadPath;
-        this._setStatus('Uploading…');
-        var xhr = new XMLHttpRequest();
-        xhr.open('PUT', url, true);
-        xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
-        xhr.withCredentials = true;
-        xhr.onload = function () {
-          if (xhr.status !== 200) { self._setStatus('Upload failed'); return; }
-          var result;
-          try { result = JSON.parse(xhr.responseText); } catch (e) { self._setStatus('Upload failed'); return; }
-          if (/^image\//.test(file.type || '')) self._insertAttachmentImage(result.url, file.name);
-          else self._insertAttachmentLink(result.url, file.name);
-          self._setStatus('Uploaded');
-        };
-        xhr.onerror = function () { self._setStatus('Upload failed'); };
-        xhr.send(file);
+        var isImage = /^image\//.test(file.type || '');
+
+        function withRecipients(cb) {
+          if (self._visibility === 'public' || !self._recipientHandles || !self._recipientHandles.length) {
+            return cb([]);
+          }
+          self._resolveRecipientPubKeys(self._recipientHandles, function (_e, result) {
+            cb(result.resolved.map(function (r) { return { did: r.did, x25519PublicKey: r.x25519PublicKey }; }));
+          });
+        }
+
+        this._setStatus('Encrypting…');
+        withRecipients(function (recipients) {
+          lively.identity.fileCrypto.encryptAndUpload(file, {
+            visibility: self._visibility,
+            recipients: recipients,
+            onWaiting: function () { self._setStatus('Confirm passkey…'); },
+          }, function (err, result) {
+            if (err) {
+              self._setStatus('Upload failed');
+              console.error('[PostCardEditor] attachment upload failed:', err);
+              return;
+            }
+            var entry = {
+              objId: result.objId,
+              // dek travels inside the postcard's own encrypted payload
+              // (§6) — base64url so it round-trips through JSON like every
+              // other field there. null for a public card (blob already
+              // plaintext, see FileCrypto.encryptAndUpload).
+              dek: result.dek ? lively.identity.crypto.base64urlEncode(result.dek) : null,
+              blobCid: result.blobCid,
+              blobNonce: result.blobNonce,
+              name: file.name,
+              mime: file.type || 'application/octet-stream',
+            };
+            if (!self._attachments) self._attachments = [];
+            self._attachments.push(entry);
+            // Inserting the node/mark below dispatches a doc-changing
+            // transaction, which dispatchTransaction already routes through
+            // _markEdited/_scheduleSave — no separate save trigger needed.
+            if (isImage) self._insertAttachmentImage(entry);
+            else self._insertAttachmentLink(entry);
+            self._setStatus('Uploaded');
+          });
+        });
       },
 
       // Image attachments render inline (§10.1) rather than as a text link.
-      _insertAttachmentImage: function (url, filename) {
+      // A public attachment gets a real, permanently-fetchable src right
+      // away (its blob is plaintext); a private/shared one gets an empty
+      // src and relies on _attachmentImageNodeView to resolve+decrypt it
+      // per-session (never baked into the synced doc — see that NodeView's
+      // comment for why).
+      _insertAttachmentImage: function (entry) {
         if (!this.editorView) return;
         var view = this.editorView;
         var state = view.state;
         var imageType = state.schema.nodes.image;
         if (!imageType) return;
-        var node = imageType.create({ src: url, alt: filename, title: filename });
+        var src = entry.dek ? '' : this._publicBlobUrl(entry.blobCid);
+        var node = imageType.create({ src: src, alt: entry.name, title: entry.name, objId: entry.objId });
         view.dispatch(state.tr.replaceSelectionWith(node));
         view.focus();
       },
 
-      // Non-image files: a plain link, same as before.
-      _insertAttachmentLink: function (url, filename) {
+      // Non-image files: a plain link carrying the attachment's objId.
+      // Public gets a real href (see _insertAttachmentImage); private/shared
+      // gets no href — clicking is intercepted by the editor's
+      // handleDOMEvents.click and resolved on demand (see _openAttachment).
+      _insertAttachmentLink: function (entry) {
         if (!this.editorView) return;
         var view = this.editorView;
         var state = view.state;
         var linkType = state.schema.marks.link;
         var from = state.selection.from;
-        var text = '📎 ' + filename;
+        var text = '📎 ' + entry.name;
+        var href = entry.dek ? '' : this._publicBlobUrl(entry.blobCid);
         var tr = state.tr.insertText(text, from);
-        tr = tr.addMark(from, from + text.length, linkType.create({ href: url, title: filename }));
+        tr = tr.addMark(from, from + text.length, linkType.create({ href: href, title: entry.name, objId: entry.objId }));
         view.dispatch(tr);
         view.focus();
+      },
+
+      _publicBlobUrl: function (blobCid) {
+        return lively.identity.did.baseUrl() + '/@' + encodeURIComponent(this._handle) + '/blobs/' + blobCid;
+      },
+
+      // Click handler target for a private/shared attachment link (§6):
+      // resolve+decrypt via the dek embedded in the postcard's own payload,
+      // then open it — no envelope round trip needed.
+      _openAttachment: function (objId) {
+        var self = this;
+        var entry = (this._attachments || []).find(function (a) { return a.objId === objId; });
+        if (!entry) return;
+        this._setStatus('Decrypting…');
+        lively.identity.fileCrypto.resolveAttachmentUrl(this._handle, entry, function (err, url) {
+          if (err) {
+            self._setStatus('Failed to open attachment');
+            console.error('[PostCardEditor] attachment open failed:', err);
+            return;
+          }
+          self._setStatus('');
+          window.open(url, '_blank');
+        });
+      },
+
+      // Sync each attachment's own file-envelope ACL to a newly-added
+      // postcard recipient (§6) — non-fatal: the recipient already holds
+      // every attachment's dek via the postcard payload itself once they can
+      // decrypt the card, so a failed grant here only means a transient 403
+      // on the blob route until the next save retries it (existing
+      // grant-access route semantics; see IdentityServer.js).
+      _grantAttachmentsAccess: function (recipientHandle, thenDo) {
+        var attachments = this._attachments || [];
+        var cb = thenDo || function () {};
+        if (!attachments.length) return cb();
+        var base = lively.identity.did.baseUrl();
+        var remaining = attachments.length;
+        attachments.forEach(function (a) {
+          fetch(base + '/nodejs/IdentityServer/grant-access/' + encodeURIComponent(a.objId), {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ recipientHandle: recipientHandle }),
+          }).catch(function (e) {
+            console.warn('[PostCardEditor] grant-access failed for attachment', a.objId, '(non-fatal):', e.message);
+          }).then(function () {
+            if (--remaining === 0) cb();
+          });
+        });
       },
 
     },
@@ -2330,15 +2510,23 @@ module('lively.identity.PostCardEditor')
                             } },
             // Inline image attachments (§10.1's insert-attachment, image case —
             // non-image files fall back to a plain link, see _insertAttachmentLink).
+            // objId (Encryption.md §6): set for attachments uploaded via
+            // FileCrypto; src is empty for a private/shared one (the actual
+            // URL is resolved async, per-session, by the image NodeView —
+            // see _attachmentImageNodeView) and a real, permanently-fetchable
+            // blob URL for a public one or a pre-Phase-2 legacy attachment
+            // (both render via plain toDOM/parseDOM with no NodeView
+            // involvement needed, e.g. in postCardUtils.snapshotToHtml).
             image:        { group: 'inline', inline: true, atom: true,
-                            attrs: { src: {}, alt: { default: '' }, title: { default: null } },
+                            attrs: { src: { default: '' }, alt: { default: '' }, title: { default: null },
+                                     objId: { default: null } },
                             parseDOM: [{ tag: 'img[src]', getAttrs: function(d) {
                               return { src: d.getAttribute('src'), alt: d.getAttribute('alt') || '',
-                                       title: d.getAttribute('title') };
+                                       title: d.getAttribute('title'), objId: d.getAttribute('data-obj-id') || null };
                             }}],
                             toDOM: function(n) {
                               return ['img', { src: n.attrs.src, alt: n.attrs.alt, title: n.attrs.title,
-                                'class': 'lively-postcard-image' }];
+                                'data-obj-id': n.attrs.objId || '', 'class': 'lively-postcard-image' }];
                             } },
             text:         { group: 'inline' },
             hard_break:   { group: 'inline', inline: true, selectable: false,
@@ -2364,13 +2552,25 @@ module('lively.identity.PostCardEditor')
             fontSize:   { attrs: { size: {} },
                           parseDOM: [{ style: 'font-size', getAttrs: function(v) { return { size: v }; } }],
                           toDOM: function(m) { return ['span', { style: 'font-size:' + m.attrs.size }, 0]; } },
-            link:   { attrs: { href: {}, title: { default: null } },
-                      parseDOM: [{ tag: 'a[href]', getAttrs: function(d) { return { href: d.getAttribute('href'), title: d.getAttribute('title') }; } }],
+            // objId (Encryption.md §6): set for a non-image attachment link
+            // (uploaded via FileCrypto). A private/shared one has no usable
+            // href (its blob is encrypted) — clicking it is intercepted by
+            // the editor's handleDOMEvents.click, which resolves+decrypts on
+            // demand (see _openAttachment). A public one gets a real,
+            // permanently-fetchable href directly, same reasoning as the
+            // image node above.
+            link:   { attrs: { href: { default: '' }, title: { default: null }, objId: { default: null } },
+                      parseDOM: [{ tag: 'a[href]', getAttrs: function(d) {
+                        return { href: d.getAttribute('href'), title: d.getAttribute('title'),
+                                 objId: d.getAttribute('data-attachment-obj-id') || null };
+                      } }],
                       toDOM: function(m) {
                         var href = m.attrs.href || '';
                         var scheme = /^([a-z][a-z0-9+.\-]*):/i.exec(href);
                         var safeHref = (!scheme || scheme[1].toLowerCase() === 'http' || scheme[1].toLowerCase() === 'https' || scheme[1].toLowerCase() === 'mailto') ? href : '#';
-                        return ['a', { href: safeHref, title: m.attrs.title, rel: 'noopener noreferrer' }, 0];
+                        var attrs = { href: safeHref || '#', title: m.attrs.title, rel: 'noopener noreferrer' };
+                        if (m.attrs.objId) attrs['data-attachment-obj-id'] = m.attrs.objId;
+                        return ['a', attrs, 0];
                       } },
           },
         });

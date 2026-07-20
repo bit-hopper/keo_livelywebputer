@@ -7,10 +7,19 @@
  *
  * Envelope payload shape (§3.2):
  *   record.payload = {
- *     format:   "yjs-update-v1",
- *     update:   "<base64url(Y.encodeStateAsUpdate(doc))>",
- *     snapshot: <ProseMirror JSON from y-prosemirror>
+ *     format:      "yjs-update-v1",
+ *     update:      "<base64url(Y.encodeStateAsUpdate(doc))>",
+ *     snapshot:    <ProseMirror JSON from y-prosemirror>,
+ *     attachments: [{ objId, dek, blobCid, blobNonce, name, mime }, ...]
+ *       — Encryption.md §6: dek is null for public postcards (attachment
+ *       blobs are already plaintext there); for private/shared cards each
+ *       dek travels here in the clear (inside THIS ciphertext), so decrypting
+ *       the card also unlocks its attachments with no separate reseal.
  *   }
+ *
+ * deserializeFromEnvelope/deserializeEncrypted both call thenDo(null, doc,
+ * payload) — the third arg is how callers (PostCardEditor.js) reach
+ * `attachments` without a second decrypt round trip.
  *
  * CRITICAL: All post card Y.Docs MUST be created with gc: false (§9.3).
  *           This cannot be retrofitted. The serializer enforces this by
@@ -145,7 +154,12 @@ module('lively.identity.PostCardSerializer')
         var payload = {
           format: 'yjs-update-v1',
           update: updateB64,
-          snapshot: snapshot
+          snapshot: snapshot,
+          // Attachment metadata (§6): pass-through, same as snapshot. Public
+          // postcards' attachments carry no dek (their blobs are already
+          // plaintext) — the field only ever holds { objId, dek: null,
+          // blobCid, blobNonce: null, name, mime } entries here.
+          attachments: params.attachments || []
         };
 
         // Step 4: Compute CID over the canonical JSON payload (§3.5)
@@ -229,7 +243,11 @@ module('lively.identity.PostCardSerializer')
           try {
             var updateBytes = c.base64urlDecode(payload.update);
             Y.applyUpdate(doc, updateBytes);
-            thenDo(null, doc);
+            // Third arg (payload) lets callers reach attachments (§6) without
+            // a second round trip — the only caller today (PostCardEditor.js)
+            // reads it; anyone still using the 2-arg (err, doc) form is
+            // unaffected.
+            thenDo(null, doc, payload);
           } catch (e) {
             thenDo(new Error('deserializeFromEnvelope: failed to apply Yjs update: ' + e.message));
           }
@@ -289,7 +307,13 @@ module('lively.identity.PostCardSerializer')
         var payload = {
           format: 'yjs-update-v1',
           update: c.base64urlEncode(updateBytes),
-          snapshot: snapshot
+          snapshot: snapshot,
+          // Attachment metadata (§6), pass-through: each entry carries its
+          // own DEK (base64url) since it travels inside THIS ciphertext —
+          // anyone who can decrypt the postcard already holds the keys to
+          // its attachments, no separate resealing ceremony needed when
+          // recipients change.
+          attachments: params.attachments || []
         };
 
         // Generate a fresh DEK, wrap it with the KEK
@@ -443,7 +467,10 @@ module('lively.identity.PostCardSerializer')
               try {
                 var updateBytes = c.base64urlDecode(payload.update);
                 Y.applyUpdate(doc, updateBytes);
-                thenDo(null, doc);
+                // Third arg (payload): gives the caller the decrypted
+                // attachments array (§6) — each entry's dek travels here,
+                // already decrypted, no separate per-attachment unwrap needed.
+                thenDo(null, doc, payload);
               } catch (e) {
                 thenDo(new Error('deserializeEncrypted: Yjs apply failed: ' + e.message));
               }
