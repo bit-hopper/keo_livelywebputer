@@ -1,13 +1,21 @@
 /**
  * lively.identity.FilesBrowser
  *
- * Browser for the user's own upload space (GET/POST /@:handle/uploads,
- * GET/PUT/DELETE /@:handle/uploads/<path>, POST /@:handle/uploads/move —
- * see IdentityServer.js), backed by identity/uploads/<handle>/ on disk.
- * Supports folder navigation, uploading, moving files between folders,
- * and previewing/opening a file without leaving the world (via
- * lively.identity.FilePreview for image/text/audio/video; everything
- * else falls back to window.open()).
+ * Browser for the user's encrypted-by-default file space (Encryption.md §5).
+ * Files are "file"-type envelopes (listed via the home manifest, GET
+ * /@:handle) whose bytes live in the content-addressed BlobStore
+ * (PUT/GET/DELETE /@:handle/blobs/:cid) — see lively.identity.FileCrypto for
+ * the encrypt-before-upload / decrypt-after-fetch logic.
+ *
+ * Uploads default to private (§0 goal: encrypted unless explicitly public);
+ * an "Upload as public" checkbox opts a given upload out for cases like
+ * banners that must stay anonymously fetchable (ProfileCard.js handles
+ * avatars/banners itself, always passing visibility: 'public' explicitly —
+ * see FileCrypto.encryptAndUpload). There is deliberately no folder/move
+ * support here (§5.5 doesn't call for it, and the new model has no path
+ * concept — objects are flat, addressed by objId) — a real reduction from
+ * the legacy plaintext-uploads browser this replaces, traded for the
+ * encryption-by-default guarantee.
  *
  * Entry point:
  *   lively.identity.FilesBrowser.open()
@@ -16,6 +24,7 @@
 module('lively.identity.FilesBrowser')
   .requires(
     'lively.identity.DID',
+    'lively.identity.FileCrypto',
     'lively.identity.FilePreview',
     'lively.identity.WarpDrop',
   )
@@ -38,11 +47,9 @@ module('lively.identity.FilesBrowser')
 
       initialize: function ($super, bounds) {
         $super(bounds);
-        this._contentDiv  = null;
-        this._toolbarDiv  = null;
-        this._currentFolder = '';
-        this._files   = [];
-        this._folders = [];
+        this._contentDiv = null;
+        this._toolbarDiv = null;
+        this._files = []; // raw file-type envelopes from the home manifest
         this._buildChrome();
         this._loadFiles();
       },
@@ -84,157 +91,76 @@ module('lively.identity.FilesBrowser')
         ].join(';');
         shapeNode.appendChild(contentDiv);
         this._contentDiv = contentDiv;
+
+        this._renderToolbar();
       },
 
       // ── data fetching ─────────────────────────────────────────────────────
 
       _loadFiles: function () {
-        var self   = this;
+        var self = this;
         var handle = lively.identity.did.currentUser().handle;
-        var base   = lively.identity.did.baseUrl();
+        var base = lively.identity.did.baseUrl();
         this._contentDiv.innerHTML = '<div style="color:#999;padding:20px 0;">Loading…</div>';
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', base + '/@' + handle + '/uploads');
-        xhr.withCredentials = true;
-        xhr.onload = function () {
-          if (xhr.status !== 200) return self._showError('Could not load files (' + xhr.status + ')');
-          var result;
-          try { result = JSON.parse(xhr.responseText); } catch (e) { return self._showError('Bad response'); }
-          self._files   = result.files   || [];
-          self._folders = result.folders || [];
-          self._render();
-        };
-        xhr.onerror = function () { self._showError('Network error'); };
-        xhr.send();
+        fetch(base + '/@' + handle, { credentials: 'include' })
+          .then(function (res) {
+            if (!res.ok) throw new Error('Could not load files (' + res.status + ')');
+            return res.json();
+          })
+          .then(function (body) {
+            self._files = (body.objects || []).filter(function (e) { return e.type === 'file'; });
+            self._files.sort(function (a, b) { return (b.created || '').localeCompare(a.created || ''); });
+            self._renderContent();
+          })
+          .catch(function (e) { self._showError(e.message); });
       },
 
-      _createFolder: function (folderPath, thenDo) {
+      _uploadFile: function (file, isPublic, thenDo) {
+        var self = this;
+        lively.identity.fileCrypto.encryptAndUpload(file, {
+          visibility: isPublic ? 'public' : 'private',
+          onWaiting: function () { self._setUploadStatus('Confirm passkey…'); },
+        }, function (err) { thenDo(err); });
+      },
+
+      // Deletes the underlying blob so the ciphertext/plaintext bytes are
+      // actually reclaimed. The envelope itself is not deletable — objects.db
+      // is an append-only version log (same as worlds/postcards) — so the
+      // listing entry is hidden client-side rather than removed server-side;
+      // re-opening it after this will 404 on the (now-gone) blob.
+      _deleteFile: function (envelope, thenDo) {
         var handle = lively.identity.did.currentUser().handle;
-        var base   = lively.identity.did.baseUrl();
-        var xhr = new XMLHttpRequest();
-        xhr.open('POST', base + '/@' + handle + '/uploads');
-        xhr.setRequestHeader('Content-Type', 'application/json');
-        xhr.withCredentials = true;
-        xhr.onload = function () {
-          if (xhr.status === 200) return thenDo(null);
-          thenDo(new Error('Create folder failed: ' + xhr.status));
-        };
-        xhr.onerror = function () { thenDo(new Error('Network error')); };
-        xhr.send(JSON.stringify({ path: folderPath }));
-      },
-
-      _uploadFile: function (fileObj, destFolder, thenDo) {
-        var handle = lively.identity.did.currentUser().handle;
-        var base   = lively.identity.did.baseUrl();
-        var relPath = (destFolder ? destFolder + '/' : '') + fileObj.name;
-        var xhr = new XMLHttpRequest();
-        xhr.open('PUT', base + '/@' + handle + '/uploads/' +
-          relPath.split('/').map(encodeURIComponent).join('/'));
-        // Force a neutral content type rather than the browser's
-        // extension-guessed one (e.g. "application/json" for a .json
-        // file): the server's global body-parser middleware would
-        // otherwise intercept and consume the request stream for
-        // json/urlencoded/multipart types, leaving the upload route's
-        // raw-stream fallback (req.on('data', ...)) with nothing to
-        // read — the request would just hang.
-        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-        xhr.withCredentials = true;
-        xhr.onload = function () {
-          if (xhr.status === 200) return thenDo(null);
-          thenDo(new Error('Upload failed: ' + xhr.status));
-        };
-        xhr.onerror = function () { thenDo(new Error('Network error')); };
-        xhr.send(fileObj);
-      },
-
-      _moveFile: function (fromPath, toFolder, thenDo) {
-        var handle   = lively.identity.did.currentUser().handle;
-        var base     = lively.identity.did.baseUrl();
-        var filename = fromPath.split('/').pop();
-        var toPath   = (toFolder ? toFolder + '/' : '') + filename;
-        var xhr = new XMLHttpRequest();
-        xhr.open('POST', base + '/@' + handle + '/uploads/move');
-        xhr.setRequestHeader('Content-Type', 'application/json');
-        xhr.withCredentials = true;
-        xhr.onload = function () {
-          if (xhr.status === 200) return thenDo(null);
-          thenDo(new Error('Move failed: ' + xhr.status));
-        };
-        xhr.onerror = function () { thenDo(new Error('Network error')); };
-        xhr.send(JSON.stringify({ from: fromPath, to: toPath }));
-      },
-
-      _deleteFile: function (relPath, thenDo) {
-        var handle = lively.identity.did.currentUser().handle;
-        var base   = lively.identity.did.baseUrl();
-        var xhr = new XMLHttpRequest();
-        xhr.open('DELETE', base + '/@' + handle + '/uploads/' +
-          relPath.split('/').map(encodeURIComponent).join('/'));
-        xhr.withCredentials = true;
-        xhr.onload = function () {
-          if (xhr.status === 200) return thenDo(null);
-          thenDo(new Error('Delete failed: ' + xhr.status));
-        };
-        xhr.onerror = function () { thenDo(new Error('Network error')); };
-        xhr.send();
+        var base = lively.identity.did.baseUrl();
+        fetch(base + '/@' + handle + '/blobs/' + envelope.blobCid, {
+          method: 'DELETE',
+          credentials: 'include',
+        }).then(function (res) {
+          if (!res.ok) return res.json().then(function (b) {
+            throw new Error(b.error || ('Delete failed: ' + res.status));
+          });
+          thenDo(null);
+        }).catch(function (e) { thenDo(e); });
       },
 
       // ── rendering ─────────────────────────────────────────────────────────
 
-      _render: function () {
-        this._renderToolbar();
-        this._renderContent();
-      },
-
       _renderToolbar: function () {
         var self = this;
-        var bar  = this._toolbarDiv;
+        var bar = this._toolbarDiv;
         bar.innerHTML = '';
 
-        // breadcrumb
-        var crumbWrap = document.createElement('div');
-        crumbWrap.style.cssText = 'flex:1;overflow:hidden;white-space:nowrap;font-size:12px;';
-        var segments = this._currentFolder ? this._currentFolder.split('/') : [];
-        function addCrumb(label, folderPath, isLast) {
-          var span = document.createElement('span');
-          span.textContent = label;
-          span.style.cssText = isLast
-            ? 'color:#1c1c1e;font-weight:600;'
-            : 'color:#007aff;cursor:pointer;';
-          if (!isLast) {
-            span.addEventListener('click', function () {
-              self._currentFolder = folderPath;
-              self._render();
-            });
-          }
-          crumbWrap.appendChild(span);
-          if (!isLast) {
-            var sep = document.createElement('span');
-            sep.textContent = ' / ';
-            sep.style.color = '#8e8e93';
-            crumbWrap.appendChild(sep);
-          }
-        }
-        addCrumb('Files', '', segments.length === 0);
-        var acc = '';
-        segments.forEach(function (seg, i) {
-          acc = acc ? acc + '/' + seg : seg;
-          addCrumb(seg, acc, i === segments.length - 1);
-        });
-        bar.appendChild(crumbWrap);
+        var label = document.createElement('span');
+        label.textContent = 'Your files';
+        label.style.cssText = 'flex:1;color:#1c1c1e;font-weight:600;font-size:12px;';
+        bar.appendChild(label);
 
-        var newFolderBtn = this._makeToolbarBtn('New Folder');
-        newFolderBtn.addEventListener('click', function () {
-          self._promptText('New folder name', '', function (name) {
-            if (!name) return;
-            var folderPath = (self._currentFolder ? self._currentFolder + '/' : '') + name;
-            self._createFolder(folderPath, function (err) {
-              if (err) return self._showError(err.message);
-              self._loadFiles();
-            });
-          });
-        });
-        bar.appendChild(newFolderBtn);
+        var publicToggle = document.createElement('label');
+        publicToggle.style.cssText = 'font-size:11px;color:#636366;display:flex;align-items:center;gap:4px;cursor:pointer;';
+        var publicCheckbox = document.createElement('input');
+        publicCheckbox.type = 'checkbox';
+        publicToggle.appendChild(publicCheckbox);
+        publicToggle.appendChild(document.createTextNode('Upload as public'));
+        bar.appendChild(publicToggle);
 
         var uploadBtn = this._makeToolbarBtn('Upload');
         var fileInput = document.createElement('input');
@@ -245,8 +171,10 @@ module('lively.identity.FilesBrowser')
           fileInput.value = '';
           if (!f) return;
           uploadBtn.disabled = true;
-          self._uploadFile(f, self._currentFolder, function (err) {
+          self._setUploadStatus('Encrypting…');
+          self._uploadFile(f, publicCheckbox.checked, function (err) {
             uploadBtn.disabled = false;
+            self._setUploadStatus('');
             if (err) return self._showError(err.message);
             self._loadFiles();
           });
@@ -255,6 +183,11 @@ module('lively.identity.FilesBrowser')
         bar.appendChild(uploadBtn);
         bar.appendChild(fileInput);
 
+        var statusSpan = document.createElement('span');
+        statusSpan.style.cssText = 'font-size:11px;color:#8e8e93;';
+        bar.appendChild(statusSpan);
+        this._uploadStatusSpan = statusSpan;
+
         var dropBtn = this._makeToolbarBtn('Drop');
         dropBtn.addEventListener('click', function () {
           lively.require('lively.identity.WarpDrop').toRun(function () {
@@ -262,6 +195,10 @@ module('lively.identity.FilesBrowser')
           });
         });
         bar.appendChild(dropBtn);
+      },
+
+      _setUploadStatus: function (msg) {
+        if (this._uploadStatusSpan) this._uploadStatusSpan.textContent = msg;
       },
 
       _makeToolbarBtn: function (label) {
@@ -276,69 +213,50 @@ module('lively.identity.FilesBrowser')
       },
 
       _renderContent: function () {
-        var self    = this;
+        var self = this;
         var content = this._contentDiv;
         content.innerHTML = '';
 
-        var prefix = this._currentFolder ? this._currentFolder + '/' : '';
-        var subfolders = this._folders.filter(function (f) {
-          if (self._currentFolder) {
-            if (f === self._currentFolder || f.indexOf(prefix) !== 0) return false;
-          }
-          var rest = f.slice(prefix.length);
-          return rest.length > 0 && rest.indexOf('/') === -1;
-        });
-        var filesHere = this._files.filter(function (f) {
-          var dir = f.path.indexOf('/') === -1 ? '' : f.path.slice(0, f.path.lastIndexOf('/'));
-          return dir === self._currentFolder;
-        });
-
-        if (!subfolders.length && !filesHere.length) {
-          content.innerHTML = '<div style="color:#999;padding:20px 0;text-align:center;">Empty folder.</div>';
+        if (!this._files.length) {
+          content.innerHTML = '<div style="color:#999;padding:20px 0;text-align:center;">No files yet.</div>';
           return;
         }
 
-        subfolders.forEach(function (folderPath) {
-          var name = folderPath.slice(prefix.length);
+        this._files.forEach(function (envelope) {
           var card = self._makeCard();
-          card.style.cursor = 'pointer';
-
-          var label = document.createElement('div');
-          label.style.cssText = 'font-weight:600;color:#1c1c1e;';
-          label.textContent = '📁 ' + name;
-          card.appendChild(label);
-
-          card.addEventListener('click', function () {
-            self._currentFolder = folderPath;
-            self._render();
-          });
-          content.appendChild(card);
-        });
-
-        filesHere.forEach(function (f) {
-          var card = self._makeCard();
+          var name = (envelope.state && envelope.state.name) || envelope.objId;
+          var ext = self._extOf(name);
 
           var row = document.createElement('div');
           row.style.cssText = 'display:flex;align-items:center;gap:10px;padding-right:170px;';
 
-          var ext = self._extOf(f.path);
-          if (IMAGE_EXTS.indexOf(ext) !== -1) {
+          if (IMAGE_EXTS.indexOf(ext) !== -1 && envelope.visibility === 'public') {
             var thumb = document.createElement('img');
-            thumb.src = f.url;
+            var meta = envelope.record && envelope.record.payload;
+            var handle = lively.identity.did.currentUser().handle;
+            var base = lively.identity.did.baseUrl();
+            thumb.src = base + '/@' + handle + '/blobs/' + (meta && meta.blobCid);
             thumb.style.cssText = 'width:36px;height:36px;object-fit:cover;border-radius:4px;flex:none;';
             row.appendChild(thumb);
+          } else {
+            var icon = document.createElement('div');
+            icon.textContent = envelope.visibility === 'public' ? '🌐' : '🔒';
+            icon.style.cssText = 'width:36px;height:36px;display:flex;align-items:center;justify-content:center;font-size:18px;flex:none;';
+            row.appendChild(icon);
           }
 
           var info = document.createElement('div');
           info.style.cssText = 'min-width:0;';
-          var name = document.createElement('div');
-          name.style.cssText = 'font-weight:600;color:#1c1c1e;word-break:break-all;';
-          name.textContent = f.path.slice(prefix.length);
-          var meta = document.createElement('div');
-          meta.style.cssText = 'color:#8e8e93;font-size:11px;';
-          meta.textContent = self._formatSize(f.size) + ' · ' + self._formatDate(f.mtime);
-          info.appendChild(name);
-          info.appendChild(meta);
+          var nameDiv = document.createElement('div');
+          nameDiv.style.cssText = 'font-weight:600;color:#1c1c1e;word-break:break-all;';
+          nameDiv.textContent = name;
+          var metaDiv = document.createElement('div');
+          metaDiv.style.cssText = 'color:#8e8e93;font-size:11px;';
+          var sizeText = (envelope.record && envelope.record.payload && typeof envelope.record.payload.size === 'number')
+            ? self._formatSize(envelope.record.payload.size) : 'encrypted';
+          metaDiv.textContent = envelope.visibility + ' · ' + sizeText + ' · ' + self._formatDate(envelope.created);
+          info.appendChild(nameDiv);
+          info.appendChild(metaDiv);
           row.appendChild(info);
 
           card.appendChild(row);
@@ -346,32 +264,13 @@ module('lively.identity.FilesBrowser')
           var openBtn = document.createElement('button');
           openBtn.textContent = 'Open';
           openBtn.style.cssText = [
-            'position:absolute', 'top:10px', 'right:112px',
+            'position:absolute', 'top:10px', 'right:60px',
             'font-size:11px', 'padding:3px 8px', 'cursor:pointer',
             'border:1px solid #007aff', 'color:#007aff',
             'background:#fff', 'border-radius:4px',
           ].join(';');
-          openBtn.addEventListener('click', function () { self._openFile(f); });
+          openBtn.addEventListener('click', function () { self._openFile(envelope); });
           card.appendChild(openBtn);
-
-          var moveBtn = document.createElement('button');
-          moveBtn.textContent = 'Move';
-          moveBtn.style.cssText = [
-            'position:absolute', 'top:10px', 'right:60px',
-            'font-size:11px', 'padding:3px 8px', 'cursor:pointer',
-            'border:1px solid #636366', 'color:#636366',
-            'background:#fff', 'border-radius:4px',
-          ].join(';');
-          moveBtn.addEventListener('click', function () {
-            self._promptText('Move to folder (blank = top level)', self._currentFolder, function (dest) {
-              if (dest === null) return;
-              self._moveFile(f.path, dest, function (err) {
-                if (err) return self._showError(err.message);
-                self._loadFiles();
-              });
-            });
-          });
-          card.appendChild(moveBtn);
 
           var deleteBtn = document.createElement('button');
           deleteBtn.textContent = 'Delete';
@@ -382,10 +281,10 @@ module('lively.identity.FilesBrowser')
             'background:#fff', 'border-radius:4px',
           ].join(';');
           deleteBtn.addEventListener('click', function () {
-            $world.confirm('Delete ' + f.path + '?', function (ok) {
+            $world.confirm('Delete ' + name + '?', function (ok) {
               if (!ok) return;
               deleteBtn.disabled = true;
-              self._deleteFile(f.path, function (err) {
+              self._deleteFile(envelope, function (err) {
                 deleteBtn.disabled = false;
                 if (err) return self._showError(err.message || 'Failed to delete');
                 self._loadFiles();
@@ -398,15 +297,22 @@ module('lively.identity.FilesBrowser')
         });
       },
 
-      _openFile: function (file) {
-        var ext = this._extOf(file.path);
-        if (PREVIEWABLE_EXTS.indexOf(ext) !== -1) {
-          lively.require('lively.identity.FilePreview').toRun(function () {
-            lively.identity.FilePreview.open(file);
-          });
-        } else {
-          window.open(file.url, '_blank');
-        }
+      _openFile: function (envelope) {
+        var self = this;
+        var name = (envelope.state && envelope.state.name) || envelope.objId;
+        var ext = this._extOf(name);
+        var handle = lively.identity.did.currentUser().handle;
+
+        lively.identity.fileCrypto.objectUrlFor(handle, envelope.objId, function (err, url) {
+          if (err) return self._showError('Could not open file: ' + err.message);
+          if (PREVIEWABLE_EXTS.indexOf(ext) !== -1) {
+            lively.require('lively.identity.FilePreview').toRun(function () {
+              lively.identity.FilePreview.open({ path: name, url: url });
+            });
+          } else {
+            window.open(url, '_blank');
+          }
+        });
       },
 
       // ── helpers ───────────────────────────────────────────────────────────
@@ -418,70 +324,6 @@ module('lively.identity.FilesBrowser')
           'padding:10px 12px', 'margin-bottom:8px', 'position:relative',
         ].join(';');
         return card;
-      },
-
-      // Raw-DOM modal overlay for a single text input — matches the
-      // convention already used for the avatar crop dialog (ProfileCard.js):
-      // a position:fixed backdrop appended to document.body, since no morph
-      // dialog widgets exist to reuse for this kind of prompt.
-      _promptText: function (label, defaultValue, thenDo) {
-        var overlay = document.createElement('div');
-        overlay.style.cssText =
-          'position:fixed;top:0;left:0;width:100%;height:100%;' +
-          'background:rgba(0,0,0,0.5);z-index:99999;' +
-          'display:flex;align-items:center;justify-content:center;';
-
-        var panel = document.createElement('div');
-        panel.style.cssText =
-          'background:#fff;border-radius:8px;padding:16px;width:280px;' +
-          'font-family:sans-serif;box-shadow:0 8px 24px rgba(0,0,0,0.3);';
-
-        var labelEl = document.createElement('div');
-        labelEl.textContent = label;
-        labelEl.style.cssText = 'font-size:13px;color:#1c1c1e;margin-bottom:8px;';
-        panel.appendChild(labelEl);
-
-        var input = document.createElement('input');
-        input.type = 'text';
-        input.value = defaultValue || '';
-        input.style.cssText =
-          'width:100%;box-sizing:border-box;padding:6px 8px;font-size:13px;' +
-          'border:1px solid #d1d1d6;border-radius:4px;margin-bottom:12px;';
-        panel.appendChild(input);
-
-        var btnRow = document.createElement('div');
-        btnRow.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;';
-
-        function close(result) {
-          document.body.removeChild(overlay);
-          thenDo(result);
-        }
-
-        var cancelBtn = document.createElement('button');
-        cancelBtn.textContent = 'Cancel';
-        cancelBtn.style.cssText =
-          'font-size:12px;padding:5px 12px;cursor:pointer;border:1px solid #d1d1d6;' +
-          'background:#fff;border-radius:4px;';
-        cancelBtn.addEventListener('click', function () { close(null); });
-
-        var okBtn = document.createElement('button');
-        okBtn.textContent = 'OK';
-        okBtn.style.cssText =
-          'font-size:12px;padding:5px 12px;cursor:pointer;border:1px solid #007aff;' +
-          'background:#007aff;color:#fff;border-radius:4px;';
-        okBtn.addEventListener('click', function () { close(input.value.trim()); });
-        input.addEventListener('keydown', function (e) {
-          if (e.key === 'Enter') close(input.value.trim());
-          if (e.key === 'Escape') close(null);
-        });
-
-        btnRow.appendChild(cancelBtn);
-        btnRow.appendChild(okBtn);
-        panel.appendChild(btnRow);
-        overlay.appendChild(panel);
-        document.body.appendChild(overlay);
-        input.focus();
-        input.select();
       },
 
       _extOf: function (p) {

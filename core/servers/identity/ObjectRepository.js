@@ -24,6 +24,13 @@
  *   CREATE INDEX idx_obj_id ON objects(obj_id)
  *   CREATE INDEX idx_did ON objects(did)
  *
+ *   blob_refs table — which file envelope(s) a BlobStore cid belongs to
+ *   (Encryption.md §5.3), so the blob GET route can find the gating envelope
+ *   without being able to decrypt it:
+ *     blob_cid TEXT NOT NULL
+ *     obj_id   TEXT NOT NULL
+ *     PRIMARY KEY (blob_cid, obj_id)
+ *
  * The latest version of an object is the row with the highest id for a
  * given obj_id. No DELETE ever happens — the log is append-only.
  */
@@ -67,7 +74,16 @@ function withDB(thenDo) {
       );
       db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_obj_cid ON objects(obj_id, cid)');
       db.run('CREATE INDEX IF NOT EXISTS idx_obj_id ON objects(obj_id)');
-      db.run('CREATE INDEX IF NOT EXISTS idx_did ON objects(did)', function(err) {
+      db.run('CREATE INDEX IF NOT EXISTS idx_did ON objects(did)');
+      // blob_refs (Encryption.md §5.3): which file envelope(s) a blob's cid
+      // belongs to, so GET /@:handle/blobs/:cid can find the gating envelope
+      // to run _canReadEnvelope against without being able to decrypt it.
+      db.run(
+        'CREATE TABLE IF NOT EXISTS blob_refs (' +
+        '  blob_cid TEXT NOT NULL,' +
+        '  obj_id   TEXT NOT NULL,' +
+        '  PRIMARY KEY (blob_cid, obj_id)' +
+        ')', function(err) {
         thenDo(err, db);
       });
     });
@@ -160,9 +176,43 @@ function put(envelope, thenDo) {
             }
             return thenDo(err);
           }
-          thenDo(null, { id: this.lastID, objId: envelope.objId, cid: envelope.record.cid, changed: 'content' });
+          _addBlobRefIfFile(db, envelope, function() {
+            thenDo(null, { id: this.lastID, objId: envelope.objId, cid: envelope.record.cid, changed: 'content' });
+          }.bind(this));
         }
       );
+    });
+  });
+}
+
+// File envelopes carry a top-level (plaintext, server-consumed) `blobCid`
+// field — for private files the server can't read blobCid out of the
+// ciphertext payload, so the client duplicates it outside `record` (the
+// encrypted copy inside the payload is the one the client trusts; see
+// Encryption.md §5.3). Indexes it in blob_refs so the blob GET route can find
+// the gating envelope. Errors are logged, not fatal — worst case a blob
+// lookup 404s and the client retries the envelope PUT.
+function _addBlobRefIfFile(db, envelope, thenDo) {
+  if (envelope.type !== 'file' || !envelope.blobCid) return thenDo();
+  db.run(
+    'INSERT OR IGNORE INTO blob_refs (blob_cid, obj_id) VALUES (?, ?)',
+    [envelope.blobCid, envelope.objId],
+    function(err) {
+      if (err) console.warn('[ObjectRepository] Failed to index blob_refs for', envelope.objId, ':', err.message);
+      thenDo();
+    }
+  );
+}
+
+// Which obj_ids reference a given blob cid (a blob may be referenced by more
+// than one envelope only in edge cases like a duplicate upload — normally
+// exactly one). Calls thenDo(null, objId[]).
+function getObjIdsForBlob(blobCid, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.all('SELECT obj_id FROM blob_refs WHERE blob_cid = ?', [blobCid], function(err, rows) {
+      if (err) return thenDo(err);
+      thenDo(null, rows.map(function(r) { return r.obj_id; }));
     });
   });
 }
@@ -776,6 +826,7 @@ module.exports = {
   getSettingsForDid:             getSettingsForDid,
   listVersions:                  listVersions,
   deleteVersionsAfter:           deleteVersionsAfter,
+  getObjIdsForBlob:              getObjIdsForBlob,
   addRecipient:                  addRecipient,
   listPostcardsForUser:          listPostcardsForUser,
   listPostcardsForConstellation: listPostcardsForConstellation,

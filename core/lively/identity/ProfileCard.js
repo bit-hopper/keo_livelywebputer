@@ -15,6 +15,7 @@ module("lively.identity.ProfileCard")
   .requires(
     "lively.identity.UserSpace",
     "lively.identity.DID",
+    "lively.identity.FileCrypto",
     "lively.identity.PostCardUtils",
     "lively.persistence.BuildSpec",
     "lively.morphic.Complete",
@@ -835,22 +836,24 @@ module("lively.identity.ProfileCard")
           out.toBlob(function (blob) {
             if (!blob) { saveBtn.textContent = 'Crop & Upload'; saveBtn.disabled = false; return; }
             var filename = basename + '-' + Date.now() + '.jpg';
-            fetch('/@' + user.handle + '/uploads/' + subfolder + '/' + filename, {
-              method:      'PUT',
-              credentials: 'include',
-              headers:     { 'Content-Type': 'image/jpeg' },
-              body:        blob,
-            })
-            .then(function (r) { return r.json(); })
-            .then(function (result) {
+            // Avatars/banners must stay anonymously <img src>-fetchable, so
+            // visibility is explicitly 'public' here — never the encrypted
+            // default (Encryption.md §5.5). The resulting blob URL
+            // (/@handle/blobs/<cid>) is public-optionalAuth and served with
+            // the real image mime, same as the old uploads/<subfolder> URL.
+            lively.identity.fileCrypto.encryptAndUpload(blob, {
+              visibility: 'public',
+              name: filename,
+            }, function (err, result) {
+              if (err) {
+                saveBtn.textContent = 'Crop & Upload';
+                saveBtn.disabled    = false;
+                alert('Upload error: ' + err.message);
+                return;
+              }
               close();
-              if (result.url) { onDone(result.url); }
-              else { alert('Upload failed: ' + JSON.stringify(result)); }
-            })
-            .catch(function (e) {
-              saveBtn.textContent = 'Crop & Upload';
-              saveBtn.disabled    = false;
-              alert('Upload error: ' + e.message);
+              var base = lively.identity.did.baseUrl();
+              onDone(base + '/@' + user.handle + '/blobs/' + result.blobCid);
             });
           }, 'image/jpeg', 0.92);
         });

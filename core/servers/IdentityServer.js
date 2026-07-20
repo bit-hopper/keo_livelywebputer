@@ -17,6 +17,9 @@
  *   GET  /@:handle              — home manifest (all objects for this handle)
  *   GET  /@:handle/profile      — fetch profile envelope (public singleton)
  *   PUT  /@:handle/profile      — save/update profile (owner only)
+ *   PUT    /@:handle/blobs/:cid — store file ciphertext bytes (owner only; Encryption.md §5.2)
+ *   GET    /@:handle/blobs/:cid — fetch file bytes (gated by the referencing file envelope)
+ *   DELETE /@:handle/blobs/:cid — delete a blob (owner only; refused if still referenced)
  *   GET  /@:handle/:objId       — fetch a specific object envelope (owner or
  *                                 recipient; renders an HTML access-denied page
  *                                 with a "Request Access" button for browsers)
@@ -51,6 +54,7 @@ hljs.registerLanguage("typescript", require("highlight.js/lib/languages/typescri
 hljs.registerLanguage("xml", require("highlight.js/lib/languages/xml"));
 var handleRegistry = require("./identity/HandleRegistry");
 var objectRepo = require("./identity/ObjectRepository");
+var blobStore = require("./identity/BlobStore");
 var auth = require("./identity/AuthMiddleware");
 var constellationRegistry = require("./identity/ConstellationRegistry");
 var cryptoVerify = require("./identity/CryptoVerify");
@@ -1194,7 +1198,25 @@ module.exports = function (route, app) {
     });
   }
 
-  app.get("/@:handle/uploads/*", auth.optionalAuth, function (req, res) {
+  // Owner-only now (Encryption.md §1/§11.1) — this legacy plaintext store had
+  // no visibility concept at all, so optionalAuth meant "anyone with the URL
+  // reads any file." Exception during the migration window (§11 step 4):
+  // avatars/ and banners/ must stay anonymously fetchable (<img src>, no
+  // cookie) until UploadMigration (§11 step 2-3) has rewritten the profile
+  // envelope to point at public blob URLs instead — after that this whole
+  // route family is deleted, exception included.
+  function _legacyUploadsGetAuth(req, res, next) {
+    var raw = req.params[0] || "";
+    if (/^(avatars|banners)\//.test(raw)) return auth.optionalAuth(req, res, next);
+    return auth.requireAuth(req, res, function () {
+      if (req.identity.handle !== req.params.handle) {
+        return res.status(403).json({ error: "Forbidden: not your upload space" });
+      }
+      next();
+    });
+  }
+
+  app.get("/@:handle/uploads/*", _legacyUploadsGetAuth, function (req, res) {
     var resolved = _resolveUploadPath(req.params.handle, req.params[0]);
     if (!resolved) return res.status(400).json({ error: "Invalid file path" });
     fs.stat(resolved.full, function (err, stat) {
@@ -1202,6 +1224,11 @@ module.exports = function (route, app) {
         return res.status(404).json({ error: "File not found" });
       var mime = _uploadMimeTypes[path.extname(resolved.full).toLowerCase()] ||
         "application/octet-stream";
+      // SVG rule (Encryption.md §5.2): an <img>/direct-navigation SVG can
+      // carry <script> — force download instead of inline render (stored-XSS
+      // fix; this route previously served .svg as image/svg+xml with no
+      // mitigation at all).
+      if (mime === "image/svg+xml") res.setHeader("Content-Disposition", "attachment");
       res.setHeader("Content-Type", mime);
       res.setHeader("Content-Length", stat.size);
       fs.createReadStream(resolved.full).pipe(res);
@@ -1257,6 +1284,99 @@ module.exports = function (route, app) {
     fs.unlink(resolved.full, function (err) {
       if (err) return res.status(404).json({ error: "File not found" });
       res.json({ ok: true });
+    });
+  });
+
+  // ─── file blobs (Encryption.md §4/§5) ──────────────────────────────────────
+  // Content-addressed ciphertext (or, for public files, plaintext) bytes for
+  // the "file" envelope type. The gating file envelope itself is stored and
+  // fetched through the ordinary /@:handle/:objId routes below — only the
+  // raw bytes live here. Registered before /@:handle/:objId — "blobs" is a
+  // literal segment, same ordering rule as "uploads"/"postcards" above.
+
+  app.put("/@:handle/blobs/:cid", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    var cid = req.params.cid;
+    if (req.identity.handle !== handle) {
+      return res.status(403).json({ error: "Forbidden: not your blob space" });
+    }
+    if (!blobStore.CID_RE.test(cid)) {
+      return res.status(400).json({ error: "Invalid cid" });
+    }
+
+    function onResult(err, result) {
+      if (err) return res.status(400).json({ error: String(err.message || err) });
+      res.json({ ok: true, cid: result.cid, size: result.size });
+    }
+
+    // body-parser does not process binary content — stream raw bytes into
+    // BlobStore.put directly (same reasoning as the legacy uploads PUT route
+    // above). If some middleware already buffered it as a Buffer/string, use that.
+    if (req.body && Buffer.isBuffer(req.body)) return blobStore.put(cid, req.body, onResult);
+    if (req.body && typeof req.body === "string") return blobStore.put(cid, Buffer.from(req.body), onResult);
+    blobStore.put(cid, req, onResult);
+  });
+
+  app.get("/@:handle/blobs/:cid", auth.optionalAuth, function (req, res) {
+    var cid = req.params.cid;
+    if (!blobStore.CID_RE.test(cid)) {
+      return res.status(400).json({ error: "Invalid cid" });
+    }
+    objectRepo.getObjIdsForBlob(cid, function (err, objIds) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!objIds.length) return res.status(404).json({ error: "Blob not found" });
+
+      // Normally exactly one envelope references a given blob cid — walk the
+      // (rare) rest so one dedup-shared blob doesn't 403 just because the
+      // first referencing envelope isn't readable by this requester.
+      (function tryNext(i) {
+        if (i >= objIds.length) return res.status(403).json({ error: "Forbidden" });
+        objectRepo.get(objIds[i], function (err, envelope) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (!envelope || !_canReadEnvelope(envelope, req.identity)) {
+            return tryNext(i + 1);
+          }
+          blobStore.get(cid, function (err, stream) {
+            if (err) return res.status(500).json({ error: String(err) });
+            if (!stream) return res.status(404).json({ error: "Blob not found" });
+            if (envelope.visibility === "public") {
+              var mime = (envelope.record && envelope.record.payload &&
+                envelope.record.payload.mime) || "application/octet-stream";
+              // SVG rule (Encryption.md §5.2): never let a served SVG execute
+              // as a document — same fix as the legacy uploads route below.
+              if (mime === "image/svg+xml") res.setHeader("Content-Disposition", "attachment");
+              res.setHeader("Content-Type", mime);
+            } else {
+              // Private/shared: the server cannot read the real mime out of
+              // the encrypted metadata. Serve as ciphertext — the client
+              // decrypts and re-types it via FileCrypto.fetchAndDecrypt.
+              res.setHeader("Content-Type", "application/octet-stream");
+            }
+            stream.pipe(res);
+          });
+        });
+      })(0);
+    });
+  });
+
+  app.delete("/@:handle/blobs/:cid", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    var cid = req.params.cid;
+    if (req.identity.handle !== handle) {
+      return res.status(403).json({ error: "Forbidden: not your blob space" });
+    }
+    if (!blobStore.CID_RE.test(cid)) {
+      return res.status(400).json({ error: "Invalid cid" });
+    }
+    objectRepo.getObjIdsForBlob(cid, function (err, objIds) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (objIds.length > 1) {
+        return res.status(409).json({ error: "Blob is still referenced by another object" });
+      }
+      blobStore.delete(cid, function (err, result) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json(result);
+      });
     });
   });
 

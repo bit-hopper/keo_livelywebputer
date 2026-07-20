@@ -46,6 +46,103 @@ function sha256(bufferOrString) {
   return crypto.createHash('sha256').update(bufferOrString).digest();
 }
 
+// Direct port of Crypto.js canonicalizeJwk (RFC 7638 §3.2): only the
+// required members for the key type, lexicographically sorted, so the
+// thumbprint is stable regardless of what produced the JWK.
+function canonicalizeJwk(jwk) {
+  var required;
+  if (jwk.kty === 'EC') {
+    required = { crv: jwk.crv, kty: jwk.kty, x: jwk.x, y: jwk.y };
+  } else if (jwk.kty === 'OKP') {
+    required = { crv: jwk.crv, kty: jwk.kty, x: jwk.x };
+  } else {
+    required = { kty: jwk.kty };
+  }
+  return canonicalJson(required);
+}
+
+// ─── COSE_Key (CBOR) → did:jwk ──────────────────────────────────────────────
+// Sync port of WebAuthn.js's _decodeCborMap/_cborReadLength/coseKeyToJwk
+// (browser) combined with DID.js's didFromJwk, for server-side verification
+// that a registering client's submitted `did` actually matches the passkey
+// it just attested (Encryption.md §10). Handles only what a COSE_Key needs:
+// unsigned/negative ints, byte strings, maps — same coverage as the client
+// (EC2 P-256/ES256 and OKP Ed25519/EdDSA; RSA rejected).
+
+function _cborReadLength(bytes, offset, additionalInfo) {
+  if (additionalInfo < 24) return { value: additionalInfo, nextOffset: offset };
+  if (additionalInfo === 24) return { value: bytes[offset], nextOffset: offset + 1 };
+  if (additionalInfo === 25) {
+    return { value: (bytes[offset] << 8) | bytes[offset + 1], nextOffset: offset + 2 };
+  }
+  if (additionalInfo === 26) {
+    return {
+      value: ((bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3]) >>> 0,
+      nextOffset: offset + 4
+    };
+  }
+  throw new Error('CBOR length encoding not supported: additionalInfo=' + additionalInfo);
+}
+
+function _decodeCbor(bytes, offset) {
+  var initialByte = bytes[offset++];
+  var majorType = (initialByte >> 5) & 0x07;
+  var additionalInfo = initialByte & 0x1f;
+  var length = _cborReadLength(bytes, offset, additionalInfo);
+  offset = length.nextOffset;
+  var n = length.value;
+
+  if (majorType === 0) return { value: n, nextOffset: offset }; // unsigned int
+  if (majorType === 1) return { value: -1 - n, nextOffset: offset }; // negative int
+  if (majorType === 2) return { value: bytes.slice(offset, offset + n), nextOffset: offset + n }; // byte string
+  if (majorType === 3) return { value: bytes.slice(offset, offset + n).toString('utf8'), nextOffset: offset + n }; // text string
+  if (majorType === 4) {
+    var arr = [];
+    for (var i = 0; i < n; i++) {
+      var item = _decodeCbor(bytes, offset);
+      arr.push(item.value);
+      offset = item.nextOffset;
+    }
+    return { value: arr, nextOffset: offset };
+  }
+  if (majorType === 5) {
+    var map = {};
+    for (var i = 0; i < n; i++) {
+      var key = _decodeCbor(bytes, offset); offset = key.nextOffset;
+      var val = _decodeCbor(bytes, offset); offset = val.nextOffset;
+      map[key.value] = val.value;
+    }
+    return { value: map, nextOffset: offset };
+  }
+  throw new Error('Unsupported CBOR major type: ' + majorType);
+}
+
+// coseBytes: Buffer/Uint8Array — the COSE_Key CBOR bytes as delivered in
+// @simplewebauthn/server's registrationInfo.credential.publicKey.
+// Returns a did:jwk string. Throws on an unsupported/malformed key.
+function didFromCose(coseBytes) {
+  var bytes = coseBytes instanceof Uint8Array ? coseBytes : new Uint8Array(coseBytes);
+  var decoded = _decodeCbor(bytes, 0);
+  var map = decoded.value;
+  var kty = map[1];  // COSE key type: 2 = EC2, 1 = OKP
+  var alg = map[3];  // COSE algorithm: -7 = ES256, -8 = EdDSA
+
+  var jwk;
+  if (kty === 2 && alg === -7) {
+    jwk = { kty: 'EC', crv: 'P-256', x: base64urlEncode(map[-2]), y: base64urlEncode(map[-3]) };
+  } else if (kty === 1 && alg === -8) {
+    jwk = { kty: 'OKP', crv: 'Ed25519', x: base64urlEncode(map[-2]) };
+  } else {
+    throw new Error(
+      'didFromCose: unsupported COSE key type/algorithm: kty=' + kty + ' alg=' + alg +
+      '. Only EC P-256 (ES256/-7) and OKP Ed25519 (EdDSA/-8) are supported.'
+    );
+  }
+
+  var canonical = canonicalizeJwk(jwk);
+  return 'did:jwk:' + base64urlEncode(Buffer.from(canonical, 'utf8'));
+}
+
 // ─── did:jwk decode ─────────────────────────────────────────────────────────
 
 // Sync port of DID.js jwkFromDid — decodes a did:jwk string back to a JWK.
@@ -186,8 +283,10 @@ module.exports = {
   base64urlDecode: base64urlDecode,
   base64urlEncode: base64urlEncode,
   canonicalJson: canonicalJson,
+  canonicalizeJwk: canonicalizeJwk,
   sha256: sha256,
   jwkFromDid: jwkFromDid,
+  didFromCose: didFromCose,
   verifyJws: verifyJws,
   decodeJwsPayload: decodeJwsPayload,
   verifyDelegationCert: verifyDelegationCert,

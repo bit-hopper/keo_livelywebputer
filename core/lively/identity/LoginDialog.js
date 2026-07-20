@@ -390,6 +390,24 @@ module("lively.identity.LoginDialog")
             }
           },
         );
+
+        // KEK warm-up (Encryption.md §2): derive and cache the KEK now, one
+        // extra passkey ceremony bundled into the login flow, so opening a
+        // private world/file/postcard later doesn't feel like a surprise
+        // second sign-in. Non-blocking and non-fatal — a cache miss at use
+        // time still degrades gracefully to an on-demand prompt (the withKek
+        // pattern in PostCardEditor._saveNowPrivate / FileCrypto._withKek).
+        var user = lively.identity.did.currentUser();
+        if (user && user.credentialId) {
+          var ch = new Uint8Array(32);
+          crypto.getRandomValues(ch);
+          lively.identity.webAuthn.deriveKek(
+            { credentialId: user.credentialId, rpId: user.rpId, challenge: ch },
+            function (err) {
+              if (err) console.warn("[Identity] KEK warm-up failed (will prompt on demand instead):", err.message);
+            },
+          );
+        }
       },
 
       // ─── helpers ────────────────────────────────────────────────────────────────

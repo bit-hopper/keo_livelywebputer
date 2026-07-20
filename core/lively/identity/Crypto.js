@@ -466,6 +466,56 @@ Object.subclass('lively.identity.Crypto',
     });
   },
 
+  // Encrypt raw bytes with a 32-byte symmetric key — sibling of encryptPayload
+  // that skips the JSON-stringify step (§5.4 note in Encryption.md: don't
+  // base64 file bytes through the JSON path, memory blowup on video).
+  // bytes: Uint8Array. encKey: Uint8Array (32 bytes) or base64url string.
+  // Returns thenDo(null, { ciphertext: <Uint8Array>, nonce: <base64url> }).
+  encryptBytes: function(bytes, encKey, thenDo) {
+    this.withSodium(function(err, sodium) {
+      if (err) return thenDo(err);
+      try {
+        var nonce = sodium.randombytes_buf(sodium.crypto_secretbox_NONCEBYTES);
+        var keyBytes = encKey instanceof Uint8Array
+          ? encKey
+          : sodium.from_base64(encKey, sodium.base64_variants.URLSAFE_NO_PADDING);
+
+        var ciphertext = sodium.crypto_secretbox_easy(bytes, nonce, keyBytes);
+        thenDo(null, {
+          ciphertext: ciphertext,
+          nonce: sodium.to_base64(nonce, sodium.base64_variants.URLSAFE_NO_PADDING)
+        });
+      } catch (e) { thenDo(e); }
+    });
+  },
+
+  // Decrypt raw bytes produced by encryptBytes. Sibling of decryptPayload
+  // that returns the raw plaintext Uint8Array instead of JSON.parse'ing it.
+  // ciphertext, nonce: base64url strings or Uint8Arrays.
+  // encKey: Uint8Array (32 bytes) or base64url string.
+  // Calls thenDo(null, <Uint8Array plaintext>) on success.
+  decryptBytes: function(ciphertext, nonce, encKey, thenDo) {
+    this.withSodium(function(err, sodium) {
+      if (err) return thenDo(err);
+      try {
+        var ctBytes = ciphertext instanceof Uint8Array
+          ? ciphertext
+          : sodium.from_base64(ciphertext, sodium.base64_variants.URLSAFE_NO_PADDING);
+        var nonceBytes = nonce instanceof Uint8Array
+          ? nonce
+          : sodium.from_base64(nonce, sodium.base64_variants.URLSAFE_NO_PADDING);
+        var keyBytes = encKey instanceof Uint8Array
+          ? encKey
+          : sodium.from_base64(encKey, sodium.base64_variants.URLSAFE_NO_PADDING);
+
+        var plaintext = sodium.crypto_secretbox_open_easy(ctBytes, nonceBytes, keyBytes);
+        if (!plaintext) return thenDo(new Error('decryptBytes: authentication tag mismatch'));
+
+        thenDo(null, plaintext);
+      } catch (e) { thenDo(e); }
+    });
+  },
+
   // Decrypt a ciphertext produced by encryptPayload.
   // ciphertext, nonce: base64url strings or Uint8Arrays.
   // encKey: Uint8Array (32 bytes) or base64url string.

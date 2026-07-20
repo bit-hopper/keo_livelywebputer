@@ -44,6 +44,7 @@ function getSimpleWebAuthn() {
 }
 
 var handleRegistry = require('./HandleRegistry');
+var cryptoVerify = require('./CryptoVerify');
 
 // Configurable rpId/origin — set via env vars when running behind a tunnel or
 // reverse proxy where req.hostname / req.protocol would resolve to localhost.
@@ -121,6 +122,27 @@ function verifyRegistration(req, body, thenDo) {
     var regInfo = result.registrationInfo;
     // v9+: public key and counter are nested under registrationInfo.credential
     var cred = regInfo.credential;
+
+    // Applies only to the genesis credential (this route only ever runs for
+    // first-time registration) — the add-device flow requires a signature
+    // from an existing verification method instead (future work; Encryption.md
+    // §10). Confirms the client didn't submit a `did` that doesn't actually
+    // derive from the passkey the authenticator just attested — before this
+    // check, body.did was stored verbatim (client-forgeable handle<->DID
+    // binding).
+    var expectedDid;
+    try {
+      expectedDid = cryptoVerify.didFromCose(cred.publicKey);
+    } catch (e) {
+      return thenDo(new Error('Registration rejected: could not derive DID from attested credential: ' + e.message));
+    }
+    if (expectedDid !== body.did) {
+      return thenDo(new Error(
+        'Registration rejected: submitted did does not match the attested credential ' +
+        '(expected ' + expectedDid + ')'
+      ));
+    }
+
     handleRegistry.saveCredential(
       body.credentialId,
       body.did,
