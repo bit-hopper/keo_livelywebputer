@@ -13,6 +13,9 @@ lively.LocalStorage = {
         if (!this.isAvailable()) return null;
         var val = localStorage.getItem('lively' + propName);
         if (!val) return val;
+        // setItem() stringifies its argument, so a previously stored null/undefined
+        // reads back as the literal string "null"/"undefined" instead of absence.
+        if (val === "null" || val === "undefined") return null;
         if (val === "true") return true;
         if (val === "false") return false;
         if (val.match(/^[0-9\.]+$/)) return parseFloat(val);
@@ -21,6 +24,12 @@ lively.LocalStorage = {
 
     set: function(propName, value) {
         if (!this.isAvailable()) return null;
+        // localStorage.setItem coerces its value to a string, so passing null/undefined
+        // would store the literal string "null"/"undefined" instead of clearing the key.
+        if (value === null || value === undefined) {
+            localStorage.removeItem('lively' + propName);
+            return;
+        }
         return localStorage.setItem('lively' + propName, value);
     },
 

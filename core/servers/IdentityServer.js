@@ -77,11 +77,18 @@ function getBlankWorldJso() {
 // $world exists, via Config.onStartWorld (fires after world-load regardless
 // of snapshot vs. from-scratch loading — same mechanism buildWarpDropPage/
 // buildConstellationSpacePage use, just without manuallyCreateWorld since
-// there's no snapshot to bypass here). Cached like getBlankWorldJso below —
-// read once, not per-request.
-var _welcomeHtmlWithMap = null;
+// there's no snapshot to bypass here).
+//
+// Deliberately NOT cached (unlike getBlankWorldJso/getRestoreWorldJso
+// below): those two are fixed templates that never change at runtime, but
+// welcome.html is a live-edited world — the "Save World" command PUTs a
+// freshly regenerated welcome.html straight to disk via lively-davfs's
+// catch-all handler (see WEBDAV.md), completely independent of this route.
+// A cached-once read here previously meant every GET kept serving the
+// first-request snapshot forever, silently masking every save after the
+// first (the save itself always worked — the read just never reflected
+// it) until the server was restarted.
 function getWelcomeHtmlWithMap() {
-  if (_welcomeHtmlWithMap) return _welcomeHtmlWithMap;
   var html = fs.readFileSync(path.join(__dirname, "..", "..", "welcome.html"), "utf8");
   var bootstrapTag = '<script type="text/javascript" src="core/lively/bootstrap.js">';
   var idx = html.indexOf(bootstrapTag);
@@ -92,8 +99,7 @@ function getWelcomeHtmlWithMap() {
     'var el=document.createElement("div");el.id="lofi-social-map";' +
     "document.body.appendChild(el);lively.identity.LocalMap.open(el);" +
     "});};</script>";
-  _welcomeHtmlWithMap = html.slice(0, idx) + mountScript + html.slice(idx);
-  return _welcomeHtmlWithMap;
+  return html.slice(0, idx) + mountScript + html.slice(idx);
 }
 
 // restore.html is a stable copy of blank.html used exclusively as the seed
@@ -205,6 +211,40 @@ function createRecoveryWorld(did, thenDo) {
       return thenDo(null, null);
     }
     thenDo(null, objId);
+  });
+}
+
+// Creates the legacy users/<handle>/config.js module for a newly registered
+// user. The old (pre-identity) boot path unconditionally tries to load this
+// module at startup (see defaultconfig.js#loadUserConfigModule) as a
+// per-user customization hook; nothing in the identity system ever wrote it,
+// so every identity account 404's on it at every boot. This plugs the
+// identity registration flow into that legacy hook instead of replacing it.
+// Skips silently if the file already exists (add-device path) or if handle
+// isn't filesystem-safe. Calls thenDo(err, path|null).
+function createUserConfigFile(handle, thenDo) {
+  if (!handle || !/^[A-Za-z0-9_-]+$/.test(handle)) return thenDo(null, null);
+  var userDir = path.join(process.env.WORKSPACE_LK || process.cwd(), "users", handle);
+  var configPath = path.join(userDir, "config.js");
+  fs.mkdir(userDir, { recursive: true }, function (mkdirErr) {
+    if (mkdirErr) {
+      console.warn("[IdentityServer] Could not create user dir for config.js:", mkdirErr.message);
+      return thenDo(null, null);
+    }
+    fs.access(configPath, fs.constants.F_OK, function (existsErr) {
+      if (!existsErr) return thenDo(null, configPath);
+      var template =
+        "module('users." + handle + ".config').requires().toRun(function() {\n\n" +
+        "// Enter your code here\n\n" +
+        "}) // end of module\n";
+      fs.writeFile(configPath, template, function (writeErr) {
+        if (writeErr) {
+          console.warn("[IdentityServer] Could not write user config.js:", writeErr.message);
+          return thenDo(null, null);
+        }
+        thenDo(null, configPath);
+      });
+    });
   });
 }
 
@@ -753,9 +793,11 @@ module.exports = function (route, app) {
           createHomeWorld(result.did, function (worldErr, homeWorldObjId) {
             createDefaultProfile(result.did, result.handle, function (profileErr, profileObjId) {
               createRecoveryWorld(result.did, function () {
-                var resp = { ok: true, handle: result.handle, did: result.did };
-                if (homeWorldObjId) resp.homeWorldObjId = homeWorldObjId;
-                res.json(resp);
+                createUserConfigFile(result.handle, function () {
+                  var resp = { ok: true, handle: result.handle, did: result.did };
+                  if (homeWorldObjId) resp.homeWorldObjId = homeWorldObjId;
+                  res.json(resp);
+                });
               });
             });
           });
@@ -764,9 +806,11 @@ module.exports = function (route, app) {
         createHomeWorld(result.did, function (worldErr, homeWorldObjId) {
           createDefaultProfile(result.did, result.handle, function (profileErr, profileObjId) {
             createRecoveryWorld(result.did, function () {
-              var resp = { ok: true, handle: result.handle, did: result.did };
-              if (homeWorldObjId) resp.homeWorldObjId = homeWorldObjId;
-              res.json(resp);
+              createUserConfigFile(result.handle, function () {
+                var resp = { ok: true, handle: result.handle, did: result.did };
+                if (homeWorldObjId) resp.homeWorldObjId = homeWorldObjId;
+                res.json(resp);
+              });
             });
           });
         });
