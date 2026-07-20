@@ -393,11 +393,25 @@ module('lively.identity.PostCardSerializer')
           function _unwrapDek(callback) {
             var isOwner = user.did === envelope.did;
             if (isOwner) {
-              if (!wa || !wa._kekCache || !wa._kekCache[user.credentialId]) {
-                return callback(new Error('deserializeEncrypted: KEK not cached. Call deriveKek first.'));
+              function withKek(dekCallback) {
+                if (wa && wa._kekCache && wa._kekCache[user.credentialId]) {
+                  return dekCallback(null, wa._kekCache[user.credentialId]);
+                }
+                // Not cached (e.g. a restored session that never went
+                // through LoginDialog's post-login warm-up) — prompt on
+                // demand instead of hard-failing, same self-contained
+                // ceremony the recipient branch below already does for
+                // deriveX25519KeyPair. One extra passkey prompt is the
+                // right tradeoff over "can't ever view your own private
+                // postcard until you happen to save something first."
+                var ch = new Uint8Array(32);
+                crypto.getRandomValues(ch);
+                wa.deriveKek({ credentialId: user.credentialId, rpId: user.rpId, challenge: ch }, dekCallback);
               }
-              var kek = wa._kekCache[user.credentialId];
-              c.unwrapDek(envelope.record.wrappedDek, kek, callback);
+              withKek(function (err, kek) {
+                if (err) return callback(err);
+                c.unwrapDek(envelope.record.wrappedDek, kek, callback);
+              });
             } else {
               // Recipient: find their sealed DEK entry and open it
               var myEntry = (envelope.record.recipients || []).find(function (r) {
