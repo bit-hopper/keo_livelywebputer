@@ -1860,29 +1860,38 @@ module.exports = function (route, app) {
     var objId = req.params.objId;
     var cid   = req.params.cid;
 
-    objectRepo.getVersion(objId, cid, function (err, envelope) {
-      if (err)      return res.status(500).json({ error: String(err) });
-      if (!envelope) return res.status(404).json({ error: "Version not found: " + cid });
+    objectRepo.get(objId, function (err, latest) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!latest) return res.status(404).json({ error: "Object not found: " + objId });
 
-      if (envelope.visibility !== "public") {
-        if (!req.identity || req.identity.did !== envelope.did)
-          return res.status(403).json({ error: "Forbidden" });
+      // Gate on the CURRENT (latest) envelope's visibility/recipients, not
+      // this specific version's own — otherwise a version saved while the
+      // object was public stays permanently, anonymously fetchable even
+      // after it's later made private/shared (a real content leak; matches
+      // the pattern the /versions listing route below already uses).
+      if (!_canReadEnvelope(latest, req.identity)) {
+        return res.status(403).json({ error: "Forbidden" });
       }
 
-      if (!req.accepts("html")) return res.json(envelope);
+      objectRepo.getVersion(objId, cid, function (err, envelope) {
+        if (err)      return res.status(500).json({ error: String(err) });
+        if (!envelope) return res.status(404).json({ error: "Version not found: " + cid });
 
-      var name = (envelope.state && envelope.state.name) || objId;
-      var page = buildWorldPage(envelope);
-      // Inject a banner so it's clear this is a historical snapshot, not current.
-      var banner =
-        '<div style="position:fixed;top:0;left:0;right:0;z-index:99999;' +
-        'background:#f01a69;color:#fff;font:13px/32px sans-serif;text-align:center;' +
-        'padding:0 12px;">' +
-        '⚠ Viewing snapshot: <b>' + escapeHtml(name) + '</b> — ' +
-        new Date(envelope.created || "").toLocaleString() +
-        ' &nbsp;|&nbsp; <a href="javascript:history.back()" style="color:#fff;text-decoration:underline;">← back to current</a>' +
-        '</div>';
-      res.send(page.replace(/<body/, banner + '<body'));
+        if (!req.accepts("html")) return res.json(envelope);
+
+        var name = (envelope.state && envelope.state.name) || objId;
+        var page = buildWorldPage(envelope);
+        // Inject a banner so it's clear this is a historical snapshot, not current.
+        var banner =
+          '<div style="position:fixed;top:0;left:0;right:0;z-index:99999;' +
+          'background:#f01a69;color:#fff;font:13px/32px sans-serif;text-align:center;' +
+          'padding:0 12px;">' +
+          '⚠ Viewing snapshot: <b>' + escapeHtml(name) + '</b> — ' +
+          new Date(envelope.created || "").toLocaleString() +
+          ' &nbsp;|&nbsp; <a href="javascript:history.back()" style="color:#fff;text-decoration:underline;">← back to current</a>' +
+          '</div>';
+        res.send(page.replace(/<body/, banner + '<body'));
+      });
     });
   });
 
