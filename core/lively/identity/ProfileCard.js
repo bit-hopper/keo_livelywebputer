@@ -263,6 +263,40 @@ module("lively.identity.ProfileCard")
           encColor[0], encColor[1], encColor[2], false));
         y += 17;
 
+        // Enable-encryption button — owner only, only while missing. Prior
+        // to this there was no way to complete this after skipping
+        // RegisterDialog.js's "Enable encryption?" prompt (or having its PRF
+        // ceremony fail) — the account would be permanently unable to
+        // receive private/shared postcards or files, only ever discovering
+        // that as a "hasn't set up encryption yet" failure when someone else
+        // tried to send them one.
+        if (self._isOwner && !payload.accountX25519Pub) {
+          var encBtn = new lively.morphic.Button(lively.rect(contentX, y, 140, 24), 'Enable encryption');
+          encBtn.applyStyle({ borderRadius: 6, borderWidth: 1,
+            borderColor: Color.rgb(200, 200, 210),
+            fill: Color.rgb(249, 249, 251), fontSize: 11 });
+          encBtn.setAppearanceStylingMode(false);
+          encBtn.setBorderStylingMode(false);
+          encBtn.addScript(function doAction() {
+            var win = this.owner && this.owner.owner;
+            var btn = this;
+            btn.setLabel('Confirm passkey…');
+            btn.setActive(false);
+            lively.identity.userSpace.enableEncryption(function (err) {
+              if (err) {
+                alert('Could not enable encryption: ' + err.message);
+                btn.setLabel('Enable encryption');
+                btn.setActive(true);
+                return;
+              }
+              if (win && typeof win.loadProfile === 'function') win.loadProfile(win._handle);
+            });
+          });
+          lively.bindings.connect(encBtn, 'fire', encBtn, 'doAction');
+          pane.addMorph(encBtn);
+          y += 30;
+        }
+
         // Friends button — shown to all; behaviour is ownership-aware
         // TODO: wire to /identity/friends/:handle once that endpoint exists
         (function () {

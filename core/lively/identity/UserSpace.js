@@ -60,6 +60,161 @@ module("lively.identity.UserSpace")
         currentUser: function () {
           return lively.identity.did.currentUser();
         },
+
+        // Retroactively run the delegation-cert + KEK + X25519 ceremony for
+        // the CURRENT device, for an account that skipped "Enable encryption"
+        // at registration (RegisterDialog.js's _promptEnableEncryption) or
+        // whose PRF ceremony failed then — until this runs, `accountX25519Pub`
+        // is never published, so nobody can send them a private/shared
+        // postcard or file (PostCardEditor._resolveRecipientPubKeys and
+        // FileCrypto's recipient sealing both read it from the profile and
+        // fail closed with "hasn't set up encryption yet" when it's absent).
+        // Same combined-PRF-ceremony shape as RegisterDialog.js (one prompt
+        // for delegation sig + KEK + X25519 rather than two) — kept as a
+        // fresh implementation here rather than extracted from RegisterDialog,
+        // which is hardened against real, previously-debugged browser quirks
+        // (see its module doc comment) that a refactor risks disturbing.
+        //
+        // Publishes to: (1) the current device's verification method in the
+        // DID document — a real PUT with a propagated error, not
+        // DID.saveDocument's non-fatal-on-server-failure semantics, since a
+        // silently-failed publish here reproduces exactly the
+        // postcard_fixes_tranche3.md bug ("ceremony succeeded locally, server
+        // never learned about it"); (2) the profile envelope's
+        // `accountX25519Pub` field via saveProfile (merges, never replaces).
+        //
+        // Calls thenDo(null, { accountX25519Pub }) on success.
+        enableEncryption: function (thenDo) {
+          var self = this;
+          var c = lively.identity.crypto;
+          var wa = lively.identity.webAuthn;
+          var user = this.currentUser();
+          if (!user) return thenDo(new Error('enableEncryption: no identity session active'));
+
+          c.generateSigningKeyPair(function (err, softKeyPair) {
+            if (err) return thenDo(err);
+            c.exportPublicKeyJwk(softKeyPair.publicKey, function (err, devicePubKeyJwk) {
+              if (err) return thenDo(err);
+
+              var issuedAt = new Date().toISOString();
+              var delegationPayload = {
+                devicePubKeyJwk: devicePubKeyJwk,
+                credentialId: user.credentialId,
+                issuedAt: issuedAt,
+              };
+
+              c.sha256(c.canonicalJson(delegationPayload), function (err, digestB64) {
+                if (err) return thenDo(err);
+                var certChallenge = c.base64urlDecode(digestB64);
+                var prfKekInput = new TextEncoder().encode('lively-kek-v1');
+                var prfX25519Input = new TextEncoder().encode('lively-x25519:' + user.credentialId);
+
+                navigator.credentials.get({
+                  publicKey: {
+                    challenge: certChallenge,
+                    rpId: user.rpId,
+                    allowCredentials: [{ type: 'public-key', id: c.base64urlDecode(user.credentialId) }],
+                    userVerification: 'required',
+                    extensions: { prf: { eval: { first: prfKekInput.buffer, second: prfX25519Input.buffer } } },
+                  },
+                }).then(function (credential) {
+                  var assertion = credential.response;
+                  var ext = credential.getClientExtensionResults();
+                  var prfResults = ext && ext.prf && ext.prf.results;
+                  if (!prfResults || !prfResults.first || !prfResults.second) {
+                    return thenDo(new Error(
+                      'enableEncryption: PRF extension not available for this credential/browser — ' +
+                      're-register with a PRF-capable authenticator to enable encryption.'
+                    ));
+                  }
+
+                  var delegationCert = {
+                    devicePubKeyJwk: devicePubKeyJwk,
+                    credentialId: user.credentialId,
+                    issuedAt: issuedAt,
+                    authenticatorData: c.base64urlEncode(new Uint8Array(assertion.authenticatorData)),
+                    clientDataJSON: c.base64urlEncode(new Uint8Array(assertion.clientDataJSON)),
+                    signature: c.base64urlEncode(new Uint8Array(assertion.signature)),
+                  };
+
+                  var kek = new Uint8Array(prfResults.first);
+                  if (!wa._kekCache) wa._kekCache = {};
+                  wa._kekCache[user.credentialId] = kek;
+
+                  c.exportPrivateKeyJwk(softKeyPair.privateKey, function (err, softPrivJwk) {
+                    if (err) return thenDo(err);
+                    c.encryptPayload(softPrivJwk, kek, function (err, enc) {
+                      if (err) return thenDo(err);
+                      var softSigningKeyWrapped = JSON.stringify({ ciphertext: enc.ciphertext, nonce: enc.nonce });
+
+                      c.withSodium(function (err, sodium) {
+                        if (err) return thenDo(err);
+                        var x25519Pub;
+                        try {
+                          var privBytes = new Uint8Array(prfResults.second);
+                          // X25519 private key clamping (RFC 7748) — same as
+                          // WebAuthn.deriveX25519KeyPair/RegisterDialog.js.
+                          privBytes[0] &= 248;
+                          privBytes[31] &= 127;
+                          privBytes[31] |= 64;
+                          var pubBytes = sodium.crypto_scalarmult_base(privBytes);
+                          x25519Pub = sodium.to_base64(pubBytes, sodium.base64_variants.URLSAFE_NO_PADDING);
+                        } catch (e) { return thenDo(e); }
+
+                        self._publishDelegationFields(user, {
+                          delegationCert: delegationCert,
+                          softSigningKeyWrapped: softSigningKeyWrapped,
+                          accountX25519Pub: x25519Pub,
+                        }, function (err) {
+                          if (err) return thenDo(err);
+                          thenDo(null, { accountX25519Pub: x25519Pub });
+                        });
+                      });
+                    });
+                  });
+                }).catch(function (e) {
+                  thenDo(new Error('Encryption setup failed (' + e.name + '): ' + e.message));
+                });
+              });
+            });
+          });
+        },
+
+        // Merge delegation fields into the CURRENT device's verification
+        // method and publish: a real server PUT (errors propagate — see
+        // enableEncryption's comment on why this can't reuse
+        // DID.saveDocument's swallow-server-errors behavior here), a
+        // best-effort local IndexedDB copy, then the profile's
+        // accountX25519Pub (merged via saveProfile, not replaced).
+        _publishDelegationFields: function (user, fields, thenDo) {
+          var self = this;
+          var did = lively.identity.did;
+          fetch('/@' + user.handle + '/did-document', { credentials: 'include' })
+            .then(function (res) {
+              if (!res.ok) throw new Error('Could not fetch current DID document (HTTP ' + res.status + ')');
+              return res.json();
+            })
+            .then(function (doc) {
+              var method = did.findMethodByCredentialId(doc, user.credentialId);
+              if (!method) throw new Error('enableEncryption: current device credential not found in DID document');
+              method.lively = Object.assign({}, method.lively, fields);
+              doc.updated = new Date().toISOString();
+
+              return fetch('/@' + user.handle + '/did-document', {
+                method: 'PUT',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(doc),
+              }).then(function (res) {
+                if (!res.ok) throw new Error('Could not publish DID document update (HTTP ' + res.status + ')');
+                // Best-effort local copy — failure here doesn't block the
+                // (already-succeeded) server publish other users depend on.
+                did.saveDocument(doc, function () {});
+                self.saveProfile({ accountX25519Pub: fields.accountX25519Pub }, thenDo);
+              });
+            })
+            .catch(function (err) { thenDo(err); });
+        },
       },
 
       // ─── home manifest ────────────────────────────────────────────────────────────
