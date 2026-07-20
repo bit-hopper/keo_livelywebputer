@@ -9,9 +9,10 @@
  *   - Credential authentication: get a WebAuthn assertion for a challenge
  *     issued by the server, return the raw assertion for server-side
  *     verification (handled by core/servers/identity/AuthMiddleware.js).
- *   - PRF key derivation: use the WebAuthn PRF extension (Level 3) to derive
- *     a deterministic 32-byte symmetric key per (credential, objId) pair,
- *     for use by lively.identity.Crypto.encryptPayload / decryptPayload.
+ *   - PRF key derivation: use the WebAuthn PRF extension (Level 3), fixed
+ *     salt "lively-kek-v1", to derive one stable per-credential KEK per
+ *     session (see deriveKek) for use by the PostCardSerializer KEK/DEK
+ *     encryption plane.
  *   - X25519 key derivation: derive an X25519 key pair from PRF output so
  *     a recipient can open sealed boxes encrypted for their DID.
  *   - Credential roster management: persist the list of registered credential
@@ -479,75 +480,6 @@ module("lively.identity.WebAuthn")
 
       "prf",
       {
-        // Derive a 32-byte symmetric encryption key for a specific objId using
-        // the WebAuthn PRF extension.
-        //
-        // The PRF input is deterministic: "lively-object-encryption:<objId>"
-        // so the same key is always derived for the same (credential, objId) pair.
-        //
-        // options: {
-        //   objId:         String   — the ObjID of the object to encrypt/decrypt
-        //   challenge:     Uint8Array|ArrayBuffer  — fresh challenge from server
-        //   rpId:          String
-        //   credentialIds: String[] — which credential(s) to try
-        // }
-        //
-        // Calls thenDo(null, Uint8Array[32]) — the raw symmetric key bytes.
-        // Returns thenDo(new Error('PRF not available')) if the authenticator
-        // does not support the PRF extension.
-        deriveEncryptionKey: function (options, thenDo) {
-          if (!this.isAvailable()) {
-            return thenDo(
-              new Error("WebAuthn is not available in this browser"),
-            );
-          }
-
-          var c = lively.identity.crypto;
-          var prfInput = new TextEncoder().encode(
-            "lively-object-encryption:" + options.objId,
-          );
-
-          var allowCredentials = (options.credentialIds || []).map(
-            function (id) {
-              return { type: "public-key", id: c.base64urlDecode(id) };
-            },
-          );
-
-          var publicKeyOptions = {
-            challenge: options.challenge,
-            rpId: options.rpId || (lively.Config && lively.Config.get('identityRpId')) || window.location.hostname,
-            allowCredentials: allowCredentials,
-            userVerification: "required",
-            extensions: {
-              prf: {
-                eval: {
-                  first: prfInput.buffer,
-                },
-              },
-            },
-          };
-
-          navigator.credentials
-            .get({ publicKey: publicKeyOptions })
-            .then(function (credential) {
-              var ext = credential.getClientExtensionResults();
-              if (!ext.prf || !ext.prf.results || !ext.prf.results.first) {
-                return thenDo(
-                  new Error(
-                    "PRF extension not supported or not enabled for this credential. " +
-                      "Private world encryption is unavailable. " +
-                      "Try re-registering the credential with PRF requested.",
-                  ),
-                );
-              }
-              // PRF result is an ArrayBuffer of exactly 32 bytes
-              thenDo(null, new Uint8Array(ext.prf.results.first));
-            })
-            .catch(function (err) {
-              thenDo(err);
-            });
-        },
-
         // Derive a stable per-credential KEK using a fixed PRF salt "lively-kek-v1".
         // Called once per session; the result is cached in memory (never persisted).
         // All per-object DEK wrapping uses this KEK via Crypto.wrapDek / unwrapDek.
@@ -604,7 +536,7 @@ module("lively.identity.WebAuthn")
         // Derive a second PRF output used as the X25519 private key for ECDH
         // sealed-box key unwrapping. Input: "lively-x25519:<credentialId>"
         //
-        // options: same shape as deriveEncryptionKey, but objId is not needed.
+        // options: same shape as deriveKek (challenge, rpId, credentialId).
         // credentialId: String — base64url credential ID whose PRF to use.
         //
         // Calls thenDo(null, { publicKey: Uint8Array[32], privateKey: Uint8Array[32] })
