@@ -9,14 +9,18 @@
  *   3. WebAuthn.register() → OS passkey prompt
  *   4. POST /nodejs/IdentityServer/register  (handle, did, credentialId, attestation,
  *                                              publicKeyJwk, didDocument)
- *   5. "Enable encryption" / "Skip for now" — a second, explicitly clicked
- *      button (_promptEnableEncryption), not auto-chained from step 3's
- *      prompt. The delegation ceremony (soft signing key + KEK + X25519,
- *      via a second navigator.credentials.get()) needs its own fresh user
- *      activation — several async hops downstream of the original click
- *      was found to silently fail in some browsers (confirmed on Chrome
- *      Canary) rather than reject loudly, leaving the account permanently
- *      without encryption with no obvious cause.
+ *   5. Delegation ceremony (soft signing key + KEK + X25519, via a second
+ *      navigator.credentials.get()) runs automatically — no separate
+ *      "Enable encryption?" button (removed 2026-07-20; this second
+ *      ceremony is several async hops downstream of the original click and
+ *      was once suspected of silently failing in some browsers without a
+ *      fresh gesture, so it was gated behind an explicit click. Un-gated
+ *      now that a recovery path exists if that ever does happen:
+ *      ProfileCard.js's "Enable encryption" button (UserSpace.enableEncryption)
+ *      re-runs the identical ceremony later, so a silent failure here is no
+ *      longer a permanent, undiagnosable dead end for the account). Any
+ *      failure here — loud or silent — is non-fatal either way: registration
+ *      still completes without encryption, same as before.
  *   6. DID.completeRegistration() → local session established
  *   7. Dialog closes; MenuBarEntry updates via identityChanged signal
  *
@@ -37,6 +41,7 @@ module("lively.identity.RegisterDialog")
   .requires(
     "lively.identity.DID",
     "lively.identity.WebAuthn",
+    "lively.identity.UserSpace",
     "lively.persistence.BuildSpec",
     "lively.morphic.Complete",
   )
@@ -312,128 +317,119 @@ module("lively.identity.RegisterDialog")
                           var prfKekInput = new TextEncoder().encode('lively-kek-v1');
                           var prfX25519Input = new TextEncoder().encode('lively-x25519:' + reg.credentialId);
 
-                          self.setStatus("Passkey registered. Enable encryption for private postcards?");
+                          self.setStatus("Passkey registered. Setting up encryption…");
 
-                          // Gated behind its own button (see _promptEnableEncryption):
-                          // this ceremony is several async hops downstream of the
-                          // original Register click (two network round trips, a
-                          // WebCrypto keygen, an OS passkey prompt), and was found to
-                          // silently fail in some browsers when fired automatically
-                          // here instead of from a fresh click.
-                          self._promptEnableEncryption(function onEnableEncryption() {
-                            self.setStatus("One more tap to set up encryption…");
-
-                            // Combined ceremony: delegation sig + KEK + X25519 private key
-                            navigator.credentials.get({
-                              publicKey: {
-                                challenge: certChallenge,
-                                rpId: rpId,
-                                allowCredentials: [{
-                                  type: 'public-key',
-                                  id: crypto.base64urlDecode(reg.credentialId)
-                                }],
-                                userVerification: 'required',
-                                extensions: {
-                                  prf: {
-                                    eval: {
-                                      first:  prfKekInput.buffer,
-                                      second: prfX25519Input.buffer
-                                    }
+                          // Auto-chained (2026-07-20 — see module doc comment for
+                          // why this no longer waits for a separate "Enable
+                          // encryption?" click). Combined ceremony: delegation
+                          // sig + KEK + X25519 private key, one prompt.
+                          navigator.credentials.get({
+                            publicKey: {
+                              challenge: certChallenge,
+                              rpId: rpId,
+                              allowCredentials: [{
+                                type: 'public-key',
+                                id: crypto.base64urlDecode(reg.credentialId)
+                              }],
+                              userVerification: 'required',
+                              extensions: {
+                                prf: {
+                                  eval: {
+                                    first:  prfKekInput.buffer,
+                                    second: prfX25519Input.buffer
                                   }
                                 }
                               }
-                            }).then(function (credential) {
-                              var assertion = credential.response;
-                              var ext = credential.getClientExtensionResults();
-                              var c = crypto;
+                            }
+                          }).then(function (credential) {
+                            var assertion = credential.response;
+                            var ext = credential.getClientExtensionResults();
+                            var c = crypto;
 
-                              // Build delegation cert from assertion
-                              var delegationCert = {
-                                devicePubKeyJwk: devicePubKeyJwk,
-                                credentialId: reg.credentialId,
-                                issuedAt: issuedAt,
-                                authenticatorData: c.base64urlEncode(new Uint8Array(assertion.authenticatorData)),
-                                clientDataJSON:    c.base64urlEncode(new Uint8Array(assertion.clientDataJSON)),
-                                signature:         c.base64urlEncode(new Uint8Array(assertion.signature))
-                              };
+                            // Build delegation cert from assertion
+                            var delegationCert = {
+                              devicePubKeyJwk: devicePubKeyJwk,
+                              credentialId: reg.credentialId,
+                              issuedAt: issuedAt,
+                              authenticatorData: c.base64urlEncode(new Uint8Array(assertion.authenticatorData)),
+                              clientDataJSON:    c.base64urlEncode(new Uint8Array(assertion.clientDataJSON)),
+                              signature:         c.base64urlEncode(new Uint8Array(assertion.signature))
+                            };
 
-                              var prfResults = ext && ext.prf && ext.prf.results;
-                              if (!prfResults || !prfResults.first) {
-                                console.warn('[RegisterDialog] PRF not available — KEK and X25519 skipped');
+                            var prfResults = ext && ext.prf && ext.prf.results;
+                            if (!prfResults || !prfResults.first) {
+                              console.warn('[RegisterDialog] PRF not available — KEK and X25519 skipped');
+                              return finishRegistration(serverBody, delegationCert, null, null, softKeyPair);
+                            }
+
+                            var kek = new Uint8Array(prfResults.first);
+                            // Cache the KEK for this session
+                            if (!lively.identity.webAuthn._kekCache) lively.identity.webAuthn._kekCache = {};
+                            lively.identity.webAuthn._kekCache[reg.credentialId] = kek;
+
+                            // Wrap soft private key with KEK
+                            crypto.exportPrivateKeyJwk(softKeyPair.privateKey, function (err, softPrivJwk) {
+                              if (err) {
+                                console.warn('[RegisterDialog] Could not export soft private key:', err);
                                 return finishRegistration(serverBody, delegationCert, null, null, softKeyPair);
                               }
+                              crypto.wrapDek(kek, function (err, wrapped) {
+                                // Note: wrapDek wraps random bytes; here we need to wrap
+                                // the soft private key JWK. We encrypt it with encryptPayload instead.
+                                // The spec says "KEK-wrapped like everything else" — use encryptPayload
+                                // with the KEK as the symmetric key.
+                                crypto.encryptPayload(softPrivJwk, kek, function (err, enc) {
+                                  if (err) {
+                                    console.warn('[RegisterDialog] Could not wrap soft private key:', err);
+                                    return finishRegistration(serverBody, delegationCert, null, null, softKeyPair);
+                                  }
+                                  var softSigningKeyWrapped = JSON.stringify({ ciphertext: enc.ciphertext, nonce: enc.nonce });
 
-                              var kek = new Uint8Array(prfResults.first);
-                              // Cache the KEK for this session
-                              if (!lively.identity.webAuthn._kekCache) lively.identity.webAuthn._kekCache = {};
-                              lively.identity.webAuthn._kekCache[reg.credentialId] = kek;
-
-                              // Wrap soft private key with KEK
-                              crypto.exportPrivateKeyJwk(softKeyPair.privateKey, function (err, softPrivJwk) {
-                                if (err) {
-                                  console.warn('[RegisterDialog] Could not export soft private key:', err);
-                                  return finishRegistration(serverBody, delegationCert, null, null, softKeyPair);
-                                }
-                                crypto.wrapDek(kek, function (err, wrapped) {
-                                  // Note: wrapDek wraps random bytes; here we need to wrap
-                                  // the soft private key JWK. We encrypt it with encryptPayload instead.
-                                  // The spec says "KEK-wrapped like everything else" — use encryptPayload
-                                  // with the KEK as the symmetric key.
-                                  crypto.encryptPayload(softPrivJwk, kek, function (err, enc) {
-                                    if (err) {
-                                      console.warn('[RegisterDialog] Could not wrap soft private key:', err);
-                                      return finishRegistration(serverBody, delegationCert, null, null, softKeyPair);
-                                    }
-                                    var softSigningKeyWrapped = JSON.stringify({ ciphertext: enc.ciphertext, nonce: enc.nonce });
-
-                                    // Derive X25519 keypair from PRF second output (if available)
-                                    var x25519Pub = null;
-                                    if (prfResults.second) {
-                                      lively.identity.crypto.withSodium(function (err, sodium) {
-                                        if (err || !sodium) {
-                                          return finishRegistration(serverBody, delegationCert, softSigningKeyWrapped, null, softKeyPair);
-                                        }
-                                        try {
-                                          var privBytes = new Uint8Array(prfResults.second);
-                                          // X25519 private key clamping (RFC 7748)
-                                          privBytes[0]  &= 248;
-                                          privBytes[31] &= 127;
-                                          privBytes[31] |= 64;
-                                          var pubBytes = sodium.crypto_scalarmult_base(privBytes);
-                                          x25519Pub = sodium.to_base64(pubBytes, sodium.base64_variants.URLSAFE_NO_PADDING);
-                                          finishRegistration(serverBody, delegationCert, softSigningKeyWrapped, x25519Pub, softKeyPair);
-                                        } catch (e) {
-                                          console.warn('[RegisterDialog] X25519 derivation failed:', e);
-                                          finishRegistration(serverBody, delegationCert, softSigningKeyWrapped, null, softKeyPair);
-                                        }
-                                      });
-                                    } else {
-                                      finishRegistration(serverBody, delegationCert, softSigningKeyWrapped, null, softKeyPair);
-                                    }
-                                  });
+                                  // Derive X25519 keypair from PRF second output (if available)
+                                  var x25519Pub = null;
+                                  if (prfResults.second) {
+                                    lively.identity.crypto.withSodium(function (err, sodium) {
+                                      if (err || !sodium) {
+                                        return finishRegistration(serverBody, delegationCert, softSigningKeyWrapped, null, softKeyPair);
+                                      }
+                                      try {
+                                        var privBytes = new Uint8Array(prfResults.second);
+                                        // X25519 private key clamping (RFC 7748)
+                                        privBytes[0]  &= 248;
+                                        privBytes[31] &= 127;
+                                        privBytes[31] |= 64;
+                                        var pubBytes = sodium.crypto_scalarmult_base(privBytes);
+                                        x25519Pub = sodium.to_base64(pubBytes, sodium.base64_variants.URLSAFE_NO_PADDING);
+                                        finishRegistration(serverBody, delegationCert, softSigningKeyWrapped, x25519Pub, softKeyPair);
+                                      } catch (e) {
+                                        console.warn('[RegisterDialog] X25519 derivation failed:', e);
+                                        finishRegistration(serverBody, delegationCert, softSigningKeyWrapped, null, softKeyPair);
+                                      }
+                                    });
+                                  } else {
+                                    finishRegistration(serverBody, delegationCert, softSigningKeyWrapped, null, softKeyPair);
+                                  }
                                 });
                               });
-                            }).catch(function (e) {
-                              // e.name (e.g. NotAllowedError) matters as much as
-                              // e.message for diagnosing browser-specific failures —
-                              // logged separately since DOMException.toString()
-                              // doesn't always include it.
-                              console.warn('[RegisterDialog] Delegation ceremony failed (non-fatal):', e.name + ': ' + e.message);
-                              // Surface it in the dialog itself (not just console) —
-                              // previously this degraded to public-only registration
-                              // with zero visible indication anything had gone wrong.
-                              // Held for 3s before continuing so it's actually
-                              // readable, not just flashed before the redirect.
-                              self.setStatus(
-                                'Encryption setup failed (' + e.name + ') — continuing without it.',
-                                true,
-                              );
-                              setTimeout(function () {
-                                finishRegistration(serverBody, null, null, null, null);
-                              }, 3000);
                             });
-                          }, function onSkipEncryption() {
-                            finishRegistration(serverBody, null, null, null, null);
+                          }).catch(function (e) {
+                            // e.name (e.g. NotAllowedError) matters as much as
+                            // e.message for diagnosing browser-specific failures —
+                            // logged separately since DOMException.toString()
+                            // doesn't always include it.
+                            console.warn('[RegisterDialog] Delegation ceremony failed (non-fatal):', e.name + ': ' + e.message);
+                            // Surface it in the dialog itself (not just console) —
+                            // previously this degraded to public-only registration
+                            // with zero visible indication anything had gone wrong.
+                            // Held for 3s before continuing so it's actually
+                            // readable, not just flashed before the redirect.
+                            self.setStatus(
+                              'Encryption setup failed (' + e.name + ') — continuing without it.',
+                              true,
+                            );
+                            setTimeout(function () {
+                              finishRegistration(serverBody, null, null, null, null);
+                            }, 3000);
                           });
                         });
                       });
@@ -481,60 +477,24 @@ module("lively.identity.RegisterDialog")
                             }
                           }
 
-                          // If we have accountX25519Pub, save it to the profile.
-                          // record.cid is the hash of record.payload (SignedSerializer
-                          // hard-fails deserialize on a mismatch) — must be recomputed
-                          // after patching payload, not carried over from the GET.
-                          //
-                          // Also signs the envelope (postcard-audit F22): this is the
-                          // profile object other users' clients read accountX25519Pub
-                          // from before sealing a shared postcard's DEK to it, and
-                          // until now nothing signed profile envelopes at all. Same
-                          // opportunistic pattern as SignedSerializer/PostCardSerializer
-                          // — sign if a delegation cert + cached KEK are available,
-                          // degrade to unsigned otherwise. (Third hand-copy of this
-                          // closure; flagged for future unification same as F21/F6.)
+                          // If we have accountX25519Pub, save it to the profile —
+                          // this is the profile object other users' clients read
+                          // accountX25519Pub from before sealing a shared postcard's
+                          // DEK to it. Delegates to UserSpace.saveProfile (2026-07-20:
+                          // previously a fourth hand-rolled copy of GET → patch →
+                          // recompute cid → sign → PUT lived here, flagged in this
+                          // same comment as needing unification since at least F21/F6
+                          // — and independently confirmed to occasionally lose the
+                          // write silently, e.g. @ipod's registration, root cause
+                          // never pinned down. saveProfile is the same logic other
+                          // callers (ProfileCard.js, UserSpace.enableEncryption)
+                          // already exercise, so any future fix benefits every
+                          // caller instead of only the copy that got noticed).
                           if (accountX25519Pub) {
-                            fetch('/@' + handle + '/profile', { credentials: 'include' })
-                              .then(function(r) {
-                                if (!r.ok) throw new Error('GET /profile failed: HTTP ' + r.status);
-                                return r.json();
-                              })
-                              .then(function(env) {
-                                var payload = env.record && env.record.payload ? env.record.payload : {};
-                                payload.accountX25519Pub = accountX25519Pub;
-                                env.record.payload = payload;
-                                return new Promise(function (resolve, reject) {
-                                  lively.identity.crypto.computeCid(payload, function (err, cid) {
-                                    if (err) return reject(err);
-                                    env.record.cid = cid;
-                                    _signProfileEnvelopeIfPossible(env, function (signErr, signedEnv) {
-                                      if (signErr) console.warn('[RegisterDialog] Could not sign profile envelope (non-fatal):', signErr.message);
-                                      resolve(fetch('/@' + handle + '/profile', {
-                                        method: 'PUT',
-                                        credentials: 'include',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify(signedEnv || env)
-                                      }));
-                                    });
-                                  });
-                                });
-                              })
-                              // fetch() only rejects on a network error — an HTTP
-                              // error status resolves normally, so it must be
-                              // checked explicitly or a rejected write looks
-                              // identical to a successful one.
-                              .then(function (putRes) {
-                                if (!putRes.ok) {
-                                  return putRes.text().then(function (body) {
-                                    throw new Error('PUT /profile failed: HTTP ' + putRes.status + ' ' + body.slice(0, 300));
-                                  });
-                                }
-                              })
-                              .catch(function(e) {
-                                console.warn('[RegisterDialog] Could not save X25519 pub to profile:', e);
-                              })
-                              .then(proceed);
+                            lively.identity.userSpace.saveProfile({ accountX25519Pub: accountX25519Pub }, function (err) {
+                              if (err) console.warn('[RegisterDialog] Could not save X25519 pub to profile:', err.message);
+                              proceed();
+                            });
                           } else {
                             proceed();
                           }
@@ -557,71 +517,6 @@ module("lively.identity.RegisterDialog")
 
       // ─── helpers ────────────────────────────────────────────────────────────────
 
-      // Replaces the Register/Cancel buttons with Enable-encryption/Skip
-      // buttons, positioned where Register was. Exists because the delegation
-      // ceremony's navigator.credentials.get() call — several async hops
-      // (two network round trips, a WebCrypto keygen, an OS passkey prompt)
-      // downstream of the original Register click — was found to reject in
-      // some browsers (confirmed Chrome Canary; likely a browser tightening
-      // how long "transient user activation" survives a chained WebAuthn
-      // ceremony) with the ceremony silently completing without encryption.
-      // Gating the second ceremony behind its own real click gives it fresh
-      // activation instead of relying on the original click still counting.
-      // Plain DOM buttons rather than lively.morphic.Button + addScript:
-      // Lively re-evaluates an addScript body from its source text on every
-      // fire (see the Friends/Save buttons' this._prop workaround in
-      // ProfileCard.js), which silently drops closures over local variables
-      // like onEnable/onSkip/enableBtn/skipBtn — confirmed live
-      // ("ReferenceError: enableBtn is not defined" on click). Plain DOM
-      // elements with addEventListener use normal JS closures with no such
-      // re-evaluation step, same pattern as PostCardEditor.js/FilesBrowser.js's
-      // raw-DOM toolbars.
-      _promptEnableEncryption: function (onEnable, onSkip) {
-        var content = this.get("registerContent");
-        var oldBtn = this.get("registerBtn");
-        var oldCancel = this.get("registerCancelBtn");
-        var pos = oldBtn ? oldBtn.getPosition() : lively.pt(14, 190);
-        if (oldBtn) oldBtn.remove();
-        if (oldCancel) oldCancel.remove();
-        if (!content) return onSkip();
-
-        var shapeNode = content.renderContext().shapeNode;
-        var btnStyle = [
-          'position:absolute', 'top:' + pos.y + 'px',
-          'height:24px', 'font-size:12px', 'cursor:pointer',
-          'border:1px solid #ccc', 'border-radius:3px', 'background:#fff',
-        ];
-
-        var enableBtn = document.createElement('button');
-        enableBtn.textContent = 'Enable encryption';
-        enableBtn.style.cssText = btnStyle.concat(
-          'left:' + pos.x + 'px', 'width:150px',
-          'border-color:#5a5', 'background:#efe',
-        ).join(';');
-
-        var skipBtn = document.createElement('button');
-        skipBtn.textContent = 'Skip for now';
-        skipBtn.style.cssText = btnStyle.concat(
-          'left:' + (pos.x + 158) + 'px', 'width:100px',
-        ).join(';');
-
-        enableBtn.addEventListener('mousedown', function (e) {
-          e.preventDefault(); e.stopPropagation();
-          enableBtn.disabled = true;
-          skipBtn.disabled = true;
-          onEnable();
-        });
-        skipBtn.addEventListener('mousedown', function (e) {
-          e.preventDefault(); e.stopPropagation();
-          enableBtn.disabled = true;
-          skipBtn.disabled = true;
-          onSkip();
-        });
-
-        shapeNode.appendChild(enableBtn);
-        shapeNode.appendChild(skipBtn);
-      },
-
       setStatus: function setStatus(msg, isError) {
         var t = this.get("statusText");
         if (!t) return;
@@ -629,35 +524,4 @@ module("lively.identity.RegisterDialog")
         t.setTextColor(isError ? Color.red : Color.rgb(60, 60, 60));
       },
     });
-
-    // Mirrors SignedSerializer.js / PostCardSerializer.js's private
-    // _signEnvelopeIfPossible — signs with the device's soft signing key if
-    // a delegation cert and cached KEK are available, no-ops otherwise.
-    function _signProfileEnvelopeIfPossible(envelope, thenDo) {
-      var did = lively.identity.did;
-      var user = did.currentUser();
-      if (!user) return thenDo(null, envelope);
-      var method = did.findMethodByCredentialId(user.document, user.credentialId);
-      if (!method || !method.lively) return thenDo(null, envelope);
-      var livelyMeta = method.lively;
-      if (!livelyMeta.softSigningKeyWrapped || !livelyMeta.delegationCert) return thenDo(null, envelope);
-      var wa = lively.identity.webAuthn;
-      if (!wa._kekCache || !wa._kekCache[user.credentialId]) return thenDo(null, envelope);
-      var kek = wa._kekCache[user.credentialId];
-      var c = lively.identity.crypto;
-      var wrapped;
-      try { wrapped = JSON.parse(livelyMeta.softSigningKeyWrapped); } catch (e) { return thenDo(e); }
-      c.decryptPayload(wrapped.ciphertext, wrapped.nonce, kek, function (err, softPrivJwk) {
-        if (err) return thenDo(err);
-        c.importPrivateKeyJwk(softPrivJwk, function (err, softPrivKey) {
-          if (err) return thenDo(err);
-          var envelopeToSign = Object.assign({}, envelope);
-          delete envelopeToSign.sig;
-          c.signJws(envelopeToSign, softPrivKey, function (err, sig) {
-            if (err) return thenDo(err);
-            thenDo(null, Object.assign({}, envelope, { sig: sig }));
-          });
-        });
-      });
-    }
   }); // end module('lively.identity.RegisterDialog')
