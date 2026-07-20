@@ -391,23 +391,19 @@ module("lively.identity.LoginDialog")
           },
         );
 
-        // KEK warm-up (Encryption.md §2): derive and cache the KEK now, one
-        // extra passkey ceremony bundled into the login flow, so opening a
-        // private world/file/postcard later doesn't feel like a surprise
-        // second sign-in. Non-blocking and non-fatal — a cache miss at use
-        // time still degrades gracefully to an on-demand prompt (the withKek
-        // pattern in PostCardEditor._saveNowPrivate / FileCrypto._withKek).
-        var user = lively.identity.did.currentUser();
-        if (user && user.credentialId) {
-          var ch = new Uint8Array(32);
-          crypto.getRandomValues(ch);
-          lively.identity.webAuthn.deriveKek(
-            { credentialId: user.credentialId, rpId: user.rpId, challenge: ch },
-            function (err) {
-              if (err) console.warn("[Identity] KEK warm-up failed (will prompt on demand instead):", err.message);
-            },
-          );
-        }
+        // NOTE: a post-login KEK warm-up (a second, auto-chained
+        // navigator.credentials.get()) previously lived here and was
+        // removed — it fired with no fresh user gesture, several async
+        // hops downstream of the original sign-in click (session
+        // establishment, IndexedDB writes), which is exactly the pattern
+        // RegisterDialog.js's own delegation ceremony explicitly avoids for
+        // the same reason (see its module doc comment: silently fails in
+        // some browsers without a fresh click). It also doubled up the
+        // WebAuthn prompt on every login even when nothing private was ever
+        // opened that session. KEK derivation now happens lazily on demand
+        // wherever it's actually needed (PostCardSerializer.deserializeEncrypted's
+        // owner branch, FileCrypto._withKek, PostCardEditor._saveNowPrivate) —
+        // each of those already prompts correctly from its own fresh click.
       },
 
       // ─── helpers ────────────────────────────────────────────────────────────────
