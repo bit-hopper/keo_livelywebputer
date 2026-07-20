@@ -457,11 +457,7 @@ module("lively.identity.PostCardView")
           var user = lively.identity.did.currentUser();
           this._isOwner = !!(user && user.did === envelope.did);
 
-          this._avatarImgEl.src =
-            lively.identity.postCardUtils.identiconDataUrl(
-              this._handle || envelope.did,
-              32,
-            );
+          this._loadAvatar();
           this._titleEl.textContent =
             (envelope.state && envelope.state.title) || "(untitled)";
           if (this._editBtn)
@@ -470,6 +466,31 @@ module("lively.identity.PostCardView")
           this._renderContentArea(envelope);
           this._renderBackMeta(envelope);
           this._verify(envelope);
+        },
+
+        // Show the identicon immediately (cheap, synchronous, always
+        // correct as a fallback), then swap in the author's real avatar if
+        // their profile has one set — this previously never happened at
+        // all, so every postcard showed the blockie identicon regardless of
+        // whether the author had set a real avatar (ProfileCard.js has the
+        // same avatarUrl-else-identicon fallback; this mirrors it).
+        _loadAvatar: function () {
+          var self = this;
+          var handle = this._handle;
+          var fallbackSeed = handle || (this._envelope && this._envelope.did) || "";
+          this._avatarImgEl.src = lively.identity.postCardUtils.identiconDataUrl(fallbackSeed, 32);
+          if (!handle) return;
+
+          var base = lively.identity.did.baseUrl();
+          fetch(base + "/@" + encodeURIComponent(handle) + "/profile", { credentials: "include" })
+            .then(function (res) { return res.ok ? res.json() : null; })
+            .then(function (env) {
+              var avatarUrl = env && env.record && env.record.payload && env.record.payload.avatarUrl;
+              // Guard against a slow profile fetch resolving after the user
+              // has already navigated this same morph to a different card.
+              if (avatarUrl && self._handle === handle) self._avatarImgEl.src = avatarUrl;
+            })
+            .catch(function () {}); // network error — keep the identicon fallback
         },
 
         _renderContentArea: function (envelope) {
