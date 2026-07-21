@@ -172,9 +172,13 @@ lively.morphic.World.addMethods(
                 meta.innerHTML = '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0"/>'
                 document.head.appendChild(meta.children[0]);
                 // BertButtons work with multiple hands enabled by pointerevents
-                this.commandButton = new lively.morphic.BertButton();
-                this.commandButton.isCommandButton = true;
-                this.commandButton.open.bind(this.commandButton, this).delay(0);
+                // Disabled: cmd-click is meant to pop a morph's halo, but the
+                // halo/menu system opens morph windows that don't fit or
+                // render well on small screens — so surfacing the substitute
+                // button here just invites broken UX rather than helping.
+                // this.commandButton = new lively.morphic.BertButton();
+                // this.commandButton.isCommandButton = true;
+                // this.commandButton.open.bind(this.commandButton, this).delay(0);
             }
         }
     },
