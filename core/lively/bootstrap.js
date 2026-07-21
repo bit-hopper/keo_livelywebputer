@@ -343,8 +343,12 @@
           "background-color: rgba(100,100,100,0.7);" +
           "overflow: auto;",
       );
-      div1.style.width = this.width() + "px";
-      div1.style.height = this.height() + "px";
+      // 100% (not this.width()/height() in px) so a fixed-position overlay
+      // tracks the real viewport on its own via CSS, including resizes
+      // after this was built — a baked-in px size goes stale and leaves
+      // the overlay covering less than the full screen.
+      div1.style.width = "100%";
+      div1.style.height = "100%";
       return div1;
     },
     buildLoadingLogo: function () {
