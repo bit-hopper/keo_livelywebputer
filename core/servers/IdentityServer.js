@@ -387,6 +387,15 @@ function buildWarpDropPage() {
     "rootPath:location.protocol+'//'+location.host+'/'," +
     "manuallyCreateWorld:true," +
     "showMenuBar:false," +
+    // showMenuBar:false is also SessionTracker.js's trigger condition for
+    // showing the L2L "Connected" status widget as a fallback (see
+    // setupSessionTrackerConnection) — that widget auto-loads a
+    // notification icon (Lively2Lively.js's showNotificationIcon) that
+    // opens onto PartsBin/Collaboration's WorldsEventListener, a
+    // collaboration/activity-feed window not built for small screens.
+    // WarpDrop.js doesn't use SessionTracker/L2L for its own file transfer
+    // at all, so disabling just the indicator here is a no-op for it.
+    "lively2livelyEnableConnectionIndicator:false," +
     "onStartWorld:function(){" +
     "lively.require('lively.identity.WarpDrop').toRun(function(){" +
     "lively.identity.WarpDrop.open();" +
