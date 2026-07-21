@@ -69,7 +69,15 @@ module("lively.identity.LocalMap")
           // margin-only auto-width) — this app's body sizing isn't
           // guaranteed to behave like a plain block context, so an
           // explicit calc() is safer than relying on auto-width-minus-margin.
-          'position:relative', 'width:calc(100% - 48px)', 'margin:24px', 'height:360px',
+          //
+          // top offset uses `top` (relative positioning), not margin-top:
+          // this div is appended straight to document.body and ends up its
+          // only in-flow child (the World's wrapper is position:absolute,
+          // out of flow) — a first-in-flow-child's top margin collapses
+          // through a parent with no border/padding on that edge instead of
+          // creating space inside it, so margin-top here is a no-op on
+          // screen. `top` isn't subject to margin collapse.
+          'position:relative', 'top:100px', 'width:calc(100% - 48px)', 'margin:24px', 'height:360px',
           'border-radius:10px', 'overflow:hidden',
           'box-shadow:0 4px 14px rgba(0,0,0,0.15)',
           'background:#eef0f2', 'font-family:sans-serif', 'box-sizing:border-box',
