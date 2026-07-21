@@ -335,7 +335,7 @@
     ["verboseLogging", true, "Whether to make logging/alerting highly visible in the UI"],
     ["loadRewrittenCode", false, "Is currently running code rewritten?"],
     ["enableDebuggerStatements", false, "Whether to throw Debugger exceptions in rewritten code"],
-    ["bugReportWorld", "https://lively-web.org/issues/IssueTemplate.html?openCreateIssuePrompt=true", "Where to report bugs"]
+    ["bugReportWorld", "https://tinylil.world/c/tinylil.world/issues/IssueTemplate.html?openCreateIssuePrompt=true", "Where to report bugs"]
   ],
 
   "lively.morphic.Text": [

@@ -2156,8 +2156,8 @@ lively.morphic.World.addMethods(
     morphMenuItems: function() {
         var world = this;
         var items = [
-            ['PartsBin', this.openPartsBin.bind(this)],
-            ['Parts', this.morphMenuDefaultPartsItems()],
+            ['Inventory', this.openPartsBin.bind(this)],
+            ['Items', this.morphMenuDefaultPartsItems()],
             ['Search', [
                 ['code', function() { lively.ide.commands.byName["lively.ide.codeSearch"].exec(); }],
                 ['resources (worlds, parts, files)', function() { lively.ide.commands.byName["lively.ide.resourceSearch"].exec(); }]
@@ -2209,11 +2209,11 @@ lively.morphic.World.addMethods(
                 }],
                 ['Delete world', this.interactiveDeleteWorldOnServer.bind(this)]
             ]],
-            ['Documentation', [
+            ['Spellbook', [
                 ["On short cuts", this.openShortcutDocumentation.bind(this)],
                 ["On connect data bindings", this.openConnectDocumentation.bind(this)],
                 ["On Lively's PartsBin", this.openPartsBinDocumentation.bind(this)],
-                ["More ...", function() { window.open('http://lively-web.org/documentation/'); }]
+                ["More ...", function() { window.open('https://spell.tinylil.world'); }]
             ]],
             ['Report a bug', this.bugReport.bind(this)],
             ['Run command...', function() { lively.ide.commands.exec('lively.ide.commands.execute'); }],
