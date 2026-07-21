@@ -119,6 +119,14 @@ function getWelcomeHtmlWithMap() {
     "(function(){var e=$world.getExtent();" +
     "$world.setExtent(pt(Math.max(e.x,document.documentElement.clientWidth),Math.max(e.y,document.documentElement.clientHeight)));" +
     "})();" +
+    // The system (menu bar, halos, code tools, drag-to-resize windows...) is
+    // built for a mouse+keyboard desktop session, not a phone/tablet — the
+    // one deliberate exception is WarpDrop (/warpdrop), which is a single
+    // touch-friendly panel meant to work on mobile for quick file transfer.
+    // welcome.html itself should still render (viewport meta tag + the
+    // grow-only resize above already make that reasonable), just with a
+    // heads-up that the full experience needs a bigger screen.
+    "if(document.documentElement.clientWidth<768){$world.inform('Lively is designed for larger screens. Some things here may not work well on a small screen. WarpDrop, used for quick file transfers, works fine on mobile.');}" +
     "lively.require('lively.identity.LocalMap').toRun(function(){" +
     'var el=document.createElement("div");el.id="lofi-social-map";' +
     "document.body.appendChild(el);lively.identity.LocalMap.open(el);" +
