@@ -94,11 +94,31 @@ function getBlankWorldJso() {
 // it) until the server was restarted.
 function getWelcomeHtmlWithMap() {
   var html = fs.readFileSync(path.join(__dirname, "..", "..", "welcome.html"), "utf8");
+
+  // welcome.html has never had a viewport meta tag, so mobile browsers lay
+  // it out on a fake ~980px desktop-width canvas and zoom the whole page to
+  // fit (same problem buildWarpDropPage() below already documents and
+  // fixes for /warpdrop) — spliced in here rather than added to the raw
+  // file for the same reason the mount script is spliced in below.
+  var headTag = "<head>";
+  var headIdx = html.indexOf(headTag);
+  if (headIdx === -1) throw new Error("welcome.html: <head> tag not found");
+  var viewportTag = '<meta name="viewport" content="width=device-width, initial-scale=1">';
+  html = html.slice(0, headIdx + headTag.length) + viewportTag + html.slice(headIdx + headTag.length);
+
   var bootstrapTag = '<script type="text/javascript" src="core/lively/bootstrap.js">';
   var idx = html.indexOf(bootstrapTag);
   if (idx === -1) throw new Error("welcome.html: bootstrap.js script tag not found");
   var mountScript =
     "<script>window.Config=window.Config||{};window.Config.onStartWorld=function(){" +
+    // The saved snapshot bakes in whatever window size was open at save
+    // time — grow-only so a visitor with a bigger viewport doesn't see
+    // empty margins, but never shrink below the snapshot's own extent
+    // (nothing in this canvas reflows for a narrower screen, so shrinking
+    // clips content instead of fitting it — confirmed the hard way).
+    "(function(){var e=$world.getExtent();" +
+    "$world.setExtent(pt(Math.max(e.x,document.documentElement.clientWidth),Math.max(e.y,document.documentElement.clientHeight)));" +
+    "})();" +
     "lively.require('lively.identity.LocalMap').toRun(function(){" +
     'var el=document.createElement("div");el.id="lofi-social-map";' +
     "document.body.appendChild(el);lively.identity.LocalMap.open(el);" +
