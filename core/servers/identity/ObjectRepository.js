@@ -31,8 +31,18 @@
  *     obj_id   TEXT NOT NULL
  *     PRIMARY KEY (blob_cid, obj_id)
  *
+ *   postcard_reactions table — one reaction per (obj_id, did), replacing on
+ *   re-react (PostcardDesignSpec-v2.md §5.1). Lives outside the envelope so
+ *   it can still be written on an immutable, already-sent postcard:
+ *     obj_id     TEXT NOT NULL
+ *     did        TEXT NOT NULL
+ *     emoji      TEXT NOT NULL
+ *     created_at TEXT NOT NULL
+ *     PRIMARY KEY (obj_id, did)
+ *
  * The latest version of an object is the row with the highest id for a
- * given obj_id. No DELETE ever happens — the log is append-only.
+ * given obj_id. No DELETE ever happens on `objects` — that log is
+ * append-only (postcard_reactions rows are deleted freely on un-react).
  */
 
 'use strict';
@@ -83,6 +93,35 @@ function withDB(thenDo) {
         '  blob_cid TEXT NOT NULL,' +
         '  obj_id   TEXT NOT NULL,' +
         '  PRIMARY KEY (blob_cid, obj_id)' +
+        ')'
+      );
+      // postcard_reactions (PostcardDesignSpec-v2.md §5.1): one reaction per
+      // (obj_id, did) — PRIMARY KEY on the pair, not including emoji, is what
+      // makes reacting again a REPLACE rather than a second row, matching
+      // Misskey's "picking a new emoji replaces your old one" semantics. A
+      // side table rather than an envelope field because reactions must work
+      // on immutable, already-frozen sent cards (§2.5).
+      db.run(
+        'CREATE TABLE IF NOT EXISTS postcard_reactions (' +
+        '  obj_id     TEXT NOT NULL,' +
+        '  did        TEXT NOT NULL,' +
+        '  emoji      TEXT NOT NULL,' +
+        '  created_at TEXT NOT NULL,' +
+        '  PRIMARY KEY (obj_id, did)' +
+        ')'
+      );
+      // postcard_mailbox_hidden (PostcardDesignSpec-v2.md §6.3, "Layer 1"):
+      // a per-viewer hide, independent of the envelope entirely — used for
+      // delivered cards (inbox/deliveries), where a global tombstone would
+      // wrongly remove the card from every other party's view too. Whose
+      // mailbox a hide applies to is `did`, not necessarily the card's
+      // author or any recipient in particular.
+      db.run(
+        'CREATE TABLE IF NOT EXISTS postcard_mailbox_hidden (' +
+        '  did       TEXT NOT NULL,' +
+        '  obj_id    TEXT NOT NULL,' +
+        '  hidden_at TEXT NOT NULL,' +
+        '  PRIMARY KEY (did, obj_id)' +
         ')', function(err) {
         thenDo(err, db);
       });
@@ -683,6 +722,84 @@ function _runPostcardQuery(db, sql, params, limit, thenDo) {
   });
 }
 
+// ─── postcard reactions (PostcardDesignSpec-v2.md §5.1) ────────────────────────
+
+// Upsert (replace) the caller's own reaction on a postcard. PRIMARY KEY
+// (obj_id, did) means a second reaction from the same did overwrites the
+// first rather than stacking — REPLACE INTO, not INSERT.
+// Calls thenDo(err).
+function upsertReaction(objId, did, emoji, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.run(
+      'REPLACE INTO postcard_reactions (obj_id, did, emoji, created_at) VALUES (?, ?, ?, ?)',
+      [objId, did, emoji, new Date().toISOString()],
+      function(err) { thenDo(err || null); }
+    );
+  });
+}
+
+// Remove the caller's own reaction, if any. Idempotent.
+// Calls thenDo(err).
+function deleteReaction(objId, did, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.run(
+      'DELETE FROM postcard_reactions WHERE obj_id = ? AND did = ?',
+      [objId, did],
+      function(err) { thenDo(err || null); }
+    );
+  });
+}
+
+// All reactions on a postcard. Calls thenDo(null, [{ did, emoji }]).
+function getReactionsForObjId(objId, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.all(
+      'SELECT did, emoji FROM postcard_reactions WHERE obj_id = ?',
+      [objId],
+      function(err, rows) { thenDo(err, rows || []); }
+    );
+  });
+}
+
+// ─── postcard mailbox hide (PostcardDesignSpec-v2.md §6.3, Layer 1) ───────────
+
+// Hide an objId from `did`'s own mailbox views — idempotent (INSERT OR
+// IGNORE: a second hide of an already-hidden card is a no-op, keeping the
+// original hidden_at rather than refreshing it). Never touches the
+// envelope itself; this is what makes it safe to call for a card `did`
+// didn't author (a received card, say) — no ownership check happens here,
+// callers gate on "is this DID's own mailbox" instead (§6.3: "you can only
+// hide something from your own mailbox").
+// Calls thenDo(err).
+function hidePostcardForDid(did, objId, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.run(
+      'INSERT OR IGNORE INTO postcard_mailbox_hidden (did, obj_id, hidden_at) VALUES (?, ?, ?)',
+      [did, objId, new Date().toISOString()],
+      function(err) { thenDo(err || null); }
+    );
+  });
+}
+
+// Every objId `did` has hidden from their own mailbox. Calls thenDo(null, objId[]).
+function getHiddenObjIdsForDid(did, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.all(
+      'SELECT obj_id FROM postcard_mailbox_hidden WHERE did = ?',
+      [did],
+      function(err, rows) {
+        if (err) return thenDo(err);
+        thenDo(null, rows.map(function(r) { return r.obj_id; }));
+      }
+    );
+  });
+}
+
 // ─── settings ─────────────────────────────────────────────────────────────────
 
 // Get the settings envelope for a DID. Returns null if none exists yet.
@@ -733,24 +850,32 @@ function putInboxRecord(recipientHandle, record, thenDo) {
 }
 
 // List delivery records for a handle, newest first, paginated.
-// opts: { limit, offset }
+// opts: { limit, offset, hiddenObjIds }
+//   hiddenObjIds — objId[] to exclude (§6.3 Layer 1) — filtered before
+//   pagination (not after), same as every SQL-backed listing's WHERE
+//   clause does for state.deleted, so a page never comes back short just
+//   because some of its rows were hidden.
 // Calls thenDo(null, { records: [...], cursor: Number|null }).
 function listInboxForHandle(handle, opts, thenDo) {
   var fs = require('fs');
   var limit = (opts && opts.limit) || 20;
   var offset = (opts && opts.offset) || 0;
+  var hiddenObjIds = (opts && opts.hiddenObjIds) || null;
   var file = path.join(_getInboxDir(), handle + '.jsonl');
   if (!fs.existsSync(file)) return thenDo(null, { records: [], cursor: null });
   fs.readFile(file, 'utf8', function(err, text) {
     if (err) return thenDo(err);
     var lines = text.split('\n').filter(Boolean);
     lines.reverse(); // newest first
-    var page = lines.slice(offset, offset + limit);
-    var records = page.map(function(l) {
+    var records = lines.map(function(l) {
       try { return JSON.parse(l); } catch (e) { return null; }
     }).filter(Boolean);
-    var nextOffset = offset + limit < lines.length ? offset + limit : null;
-    thenDo(null, { records: records, cursor: nextOffset });
+    if (hiddenObjIds && hiddenObjIds.length) {
+      records = records.filter(function(r) { return hiddenObjIds.indexOf(r.objId) === -1; });
+    }
+    var page = records.slice(offset, offset + limit);
+    var nextOffset = offset + limit < records.length ? offset + limit : null;
+    thenDo(null, { records: page, cursor: nextOffset });
   });
 }
 
@@ -791,13 +916,17 @@ function putDeliveryRecord(senderHandle, record, thenDo) {
 }
 
 // List outbound delivery records for a sender, newest first, paginated.
-// opts: { limit, offset, status }  — status filters to 'delivered' or 'returned' when set.
+// opts: { limit, offset, status, hiddenObjIds }
+//   status — filters to 'delivered' or 'returned' when set.
+//   hiddenObjIds — objId[] to exclude (§6.3 Layer 1), filtered before
+//   pagination, same reasoning as listInboxForHandle above.
 // Calls thenDo(null, { records: [...], cursor: Number|null }).
 function listDeliveriesForHandle(senderHandle, opts, thenDo) {
   var fs     = require('fs');
   var limit  = (opts && opts.limit)  || 20;
   var offset = (opts && opts.offset) || 0;
   var status = (opts && opts.status) || null;
+  var hiddenObjIds = (opts && opts.hiddenObjIds) || null;
   var file   = path.join(_getDeliveriesDir(), senderHandle + '.jsonl');
   if (!fs.existsSync(file)) return thenDo(null, { records: [], cursor: null });
   fs.readFile(file, 'utf8', function (err, text) {
@@ -808,6 +937,9 @@ function listDeliveriesForHandle(senderHandle, opts, thenDo) {
       try { return JSON.parse(l); } catch (e) { return null; }
     }).filter(Boolean);
     if (status) records = records.filter(function (r) { return r.status === status; });
+    if (hiddenObjIds && hiddenObjIds.length) {
+      records = records.filter(function (r) { return hiddenObjIds.indexOf(r.objId) === -1; });
+    }
     var page       = records.slice(offset, offset + limit);
     var nextOffset = offset + limit < records.length ? offset + limit : null;
     thenDo(null, { records: page, cursor: nextOffset });
@@ -832,6 +964,11 @@ module.exports = {
   listPostcardsForConstellation: listPostcardsForConstellation,
   listPostcardsNearby:           listPostcardsNearby,
   listRepliesForPostcard:        listRepliesForPostcard,
+  upsertReaction:                upsertReaction,
+  deleteReaction:                deleteReaction,
+  getReactionsForObjId:          getReactionsForObjId,
+  hidePostcardForDid:            hidePostcardForDid,
+  getHiddenObjIdsForDid:         getHiddenObjIdsForDid,
   putInboxRecord:                putInboxRecord,
   listInboxForHandle:            listInboxForHandle,
   putDeliveryRecord:             putDeliveryRecord,

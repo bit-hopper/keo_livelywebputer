@@ -77,7 +77,7 @@ module('lively.identity.PostCardEditor')
     // ─── serialization guard ──────────────────────────────────────────────────────
 
     'serialization', {
-      doNotSerialize: ['editorView', 'yDoc', 'wsProvider', '_saveTimer', '_pmContainer'],
+      doNotSerialize: ['editorView', 'yDoc', 'wsProvider', '_saveTimer', '_pmContainer', '_contentLoadStarted'],
     },
 
     // ─── initialization ──────────────────────────────────────────────────────────
@@ -128,6 +128,15 @@ module('lively.identity.PostCardEditor')
         this._locationCode = null;
         this._locationCleared = false;
         this._locationBtn = null;
+        // Sender-controlled opt-out toggles + tip jar (PostcardDesignSpec-v2.md
+        // §5.4) — each defaults on (reactions/replies) or absent (tip jar).
+        // Seeded from the loaded envelope in _loadExistingNow, same pattern
+        // as _locationCode above. No compose UI yet (reverted — broke the
+        // editor's typability, see chat history) — these currently just
+        // carry each card's defaults through save/reload unchanged.
+        this._reactionsEnabled = true;
+        this._replyEnabled = true;
+        this._tipJarAddress = null;
         // True for a new card (you're creating it) or once _loadExistingNow
         // compares envelope.did to the session DID. Gates editing, Save,
         // Send, and the visibility toggle — a non-owner viewing a shared
@@ -145,6 +154,27 @@ module('lively.identity.PostCardEditor')
         // content viewer back into an editable instance.
         this._forceReadOnly = !!this._forceReadOnly;
         this._buildChrome();
+
+        // Guards against double-firing the async content-load dispatch
+        // below. _setup() can legitimately be entered twice for the same
+        // genesis attempt: openCard/newCard call it explicitly right after
+        // opening this morph in a window, but attaching to that window's
+        // new render context *also* triggers prepareForNewRenderContext
+        // below (Rendering.js's replaceRenderContextWith/renderAfterUsing
+        // call it on any morph acquiring a new render context) — and by
+        // then _handle is already set, so its own guard doesn't skip it.
+        // Without this, _createNewDoc() (or _loadExisting()) runs twice:
+        // two independent Y.Docs each get their own ProseMirror EditorView,
+        // both eventually mounted against whatever _pmContainer is current
+        // when their async setup resolves — two overlapping editor views,
+        // two autosaved genesis objIds, and an editor that silently stops
+        // accepting focus/typing. _contentLoadStarted is doNotSerialize'd
+        // so a genuine future restore (a real new page load reconstructing
+        // this morph from a saved world) still starts falsy and runs
+        // _loadExisting() as before — this guard is only ever meant to
+        // suppress a same-turn duplicate call, not a legitimate later one.
+        if (this._contentLoadStarted) return;
+        this._contentLoadStarted = true;
         if (this._isNew) {
           this._createNewDoc();
         } else {
@@ -160,7 +190,11 @@ module('lively.identity.PostCardEditor')
       // morph is copied — _handle/_objId/_isNew/_forceReadOnly are plain
       // fields and survive serialization fine, but the DOM _buildChrome
       // builds does not, so without this a restored editor comes back
-      // blank. Matches the identical fix in PostCardView.js.
+      // blank. Matches the identical fix in PostCardView.js. Also fires as
+      // an *immediate* same-turn duplicate of openCard/newCard's own
+      // explicit _setup() call, when attaching this morph to its new
+      // window triggers a render-context change — see _setup()'s own
+      // _contentLoadStarted guard for why that's safe.
       prepareForNewRenderContext: function ($super, renderCtx) {
         $super(renderCtx);
         if (!this._handle) return;
@@ -679,6 +713,49 @@ module('lively.identity.PostCardEditor')
         return null;
       },
 
+      // Unlike location, reactionsEnabled/replyEnabled always have a value
+      // (default true) so they're always included, not conditionally
+      // omitted — there's no "never touched this session" tri-state to
+      // preserve. tipJarAddress stays absent (not null) when unset, per
+      // §5.4's "0x... | absent" — omitting the key rather than nulling it
+      // matches how the field's own presence gates the tip-jar UI (§5.3).
+      _optionsStateMeta: function () {
+        var meta = {
+          reactionsEnabled: this._reactionsEnabled !== false,
+          replyEnabled: this._replyEnabled !== false,
+        };
+        if (this._tipJarAddress) meta.tipJarAddress = this._tipJarAddress;
+        return meta;
+      },
+
+      // Merges location + options stateMeta into one object for a save —
+      // shared by both the public and private/shared save paths.
+      //
+      // KNOWN BUG (the "save bug"): PostCardSerializer.serializeToEnvelope/
+      // serializeEncrypted build `state` fresh each save as
+      // Object.assign({}, params.stateMeta, {title}) — they do NOT merge
+      // against the previously-stored envelope.state. That's fine for
+      // fields this editor itself owns and re-seeds from the loaded
+      // envelope every time (location/reactionsEnabled/replyEnabled/
+      // tipJarAddress, all handled above) — but ANY state field set by
+      // something other than this editor, and that this editor doesn't
+      // know to carry forward, gets silently dropped on the next save.
+      // Concretely: PostCardView.js's Delete action (§6.3) sets
+      // state.deleted:true directly via PUT, bypassing this editor
+      // entirely. If that same card is then opened here and an autosave
+      // fires — even an incidental one, not a deliberate "undelete"
+      // action — this method won't include `deleted` in stateMeta, `state`
+      // gets rebuilt without it, and the tombstone is silently undone.
+      // PostCardView.js mitigates the obvious path (hides its own Edit
+      // button once a card shows as deleted), but a direct
+      // PostCardEditor.openCard() call still hits this. Not fixed here —
+      // the real fix is either merging against prevEnvelope.state in the
+      // serializer, or this editor explicitly seeding/carrying forward
+      // `state.deleted` the same way it does for every other field above.
+      _composeStateMeta: function (extra) {
+        return Object.assign({}, this._locationStateMeta(), this._optionsStateMeta(), extra || {});
+      },
+
       // A small floating chip shown under the cursor when it's inside a link
       // (Google Docs-style) — plain click inside a contenteditable region
       // only places the cursor (browser convention; Ctrl/Cmd-click still
@@ -943,6 +1020,9 @@ module('lively.identity.PostCardEditor')
           self._locationCode = (envelope.state && envelope.state.location) || null;
           self._locationCleared = false;
           self._updateLocationBtn();
+          self._reactionsEnabled = !(envelope.state && envelope.state.reactionsEnabled === false);
+          self._replyEnabled = !(envelope.state && envelope.state.replyEnabled === false);
+          self._tipJarAddress = (envelope.state && envelope.state.tipJarAddress) || null;
           var user = lively.identity.did.currentUser();
           self._isOwner = !!(user && user.did === envelope.did);
           self._updateVisibilityBtn();
@@ -1325,7 +1405,6 @@ module('lively.identity.PostCardEditor')
       _saveNowPublic: function (user, callback) {
         var self = this;
         var cb = callback || function () {};
-        var locationMeta = this._locationStateMeta();
         var params = {
           yDoc:          this.yDoc,
           prevEnvelope:  this._envelope || null,
@@ -1333,9 +1412,9 @@ module('lively.identity.PostCardEditor')
           replyTo:       this._replyTo,
           visibility:    'public',
           attachments:   this._attachments || [],
+          stateMeta:     this._composeStateMeta(),
           // title omitted — PostCardSerializer extracts it from the first PM block (§10.5)
         };
-        if (locationMeta) params.stateMeta = locationMeta;
         this._setStatus('Saving…');
         lively.identity.postCardSerializer.serializeToEnvelope(params, function (err, envelope) {
           self._finishSave(err, envelope, cb);
@@ -1380,10 +1459,9 @@ module('lively.identity.PostCardEditor')
                 return { did: r.did, x25519PublicKey: r.x25519PublicKey };
               }),
               attachments: self._attachments || [],
-              stateMeta: Object.assign(
-                { recipientHandles: result.resolved.map(function (r) { return r.handle; }) },
-                self._locationStateMeta()
-              ),
+              stateMeta: self._composeStateMeta({
+                recipientHandles: result.resolved.map(function (r) { return r.handle; }),
+              }),
             };
             lively.identity.postCardSerializer.serializeEncrypted(params, function (err, envelope) {
               self._finishSave(err, envelope, cb);
@@ -1485,6 +1563,9 @@ module('lively.identity.PostCardEditor')
           self._locationCode = (envelope.state && envelope.state.location) || null;
           self._locationCleared = false;
           self._updateLocationBtn();
+          self._reactionsEnabled = !(envelope.state && envelope.state.reactionsEnabled === false);
+          self._replyEnabled = !(envelope.state && envelope.state.replyEnabled === false);
+          self._tipJarAddress = (envelope.state && envelope.state.tipJarAddress) || null;
           self._updateVisibilityBtn();
           // If this was a new card, wire up sync now that we have an objId
           if (self._isNew) {

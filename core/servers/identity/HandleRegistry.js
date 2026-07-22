@@ -5,10 +5,18 @@
  *
  * Schema:
  *   handles table:
- *     handle     TEXT PRIMARY KEY  — e.g. "alice"
- *     did        TEXT NOT NULL     — e.g. "did:jwk:eyJ..."
- *     created_at TEXT NOT NULL     — ISO 8601
- *     updated_at TEXT NOT NULL     — ISO 8601
+ *     handle         TEXT PRIMARY KEY  — e.g. "alice", or an alias like "k3f8m2pq"
+ *     did            TEXT NOT NULL     — e.g. "did:jwk:eyJ..."
+ *     created_at     TEXT NOT NULL     — ISO 8601
+ *     updated_at     TEXT NOT NULL     — ISO 8601
+ *     is_alias       INTEGER NOT NULL DEFAULT 0  — 1 for a forwarding alias (§3.2)
+ *     primary_handle TEXT DEFAULT NULL           — set iff is_alias=1; the
+ *                                                   handle inbox delivery
+ *                                                   files under
+ *     revoked_at     TEXT DEFAULT NULL           — set on alias revocation;
+ *                                                   a revoked row resolves
+ *                                                   to nothing everywhere
+ *                                                   (§3.2's postal invariant)
  *
  *   domains table:
  *     domain     TEXT PRIMARY KEY  — e.g. "alice.com"
@@ -16,7 +24,12 @@
  *     verified_at TEXT NOT NULL    — ISO 8601 of last successful verification
  *
  * The DB file is stored at <WORKSPACE_LK>/identity/handles.db.
- * Created automatically on first use.
+ * Created automatically on first use. is_alias/primary_handle/revoked_at
+ * are added via idempotent ALTER TABLE on top of a pre-existing handles
+ * table (checked against PRAGMA table_info rather than assuming SQLite's
+ * ADD COLUMN IF NOT EXISTS is available, since that's a relatively recent
+ * SQLite addition) — existing rows get is_alias=0, primary_handle=NULL,
+ * revoked_at=NULL, which is exactly "an ordinary primary handle."
  */
 
 'use strict';
@@ -50,8 +63,49 @@ function withDB(thenDo) {
         '  did        TEXT NOT NULL,' +
         '  created_at TEXT NOT NULL,' +
         '  updated_at TEXT NOT NULL' +
-        ')'
+        ')',
+        function(err) {
+          if (err) return thenDo(err);
+          _ensureAliasColumns(db, function(err) {
+            if (err) return thenDo(err);
+            _createRemainingTables(db, thenDo);
+          });
+        }
       );
+    });
+  });
+}
+
+// Idempotent migration: adds §3.2's three alias columns to a handles table
+// that may predate them. Checked via PRAGMA table_info rather than
+// `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` (SQLite 3.35+ only) for wider
+// compatibility with whatever sqlite3 build this runs against.
+function _ensureAliasColumns(db, thenDo) {
+  db.all('PRAGMA table_info(handles)', function(err, cols) {
+    if (err) return thenDo(err);
+    var names = (cols || []).map(function(c) { return c.name; });
+    var toAdd = [];
+    if (names.indexOf('is_alias') === -1) {
+      toAdd.push('ALTER TABLE handles ADD COLUMN is_alias INTEGER NOT NULL DEFAULT 0');
+    }
+    if (names.indexOf('primary_handle') === -1) {
+      toAdd.push('ALTER TABLE handles ADD COLUMN primary_handle TEXT DEFAULT NULL');
+    }
+    if (names.indexOf('revoked_at') === -1) {
+      toAdd.push('ALTER TABLE handles ADD COLUMN revoked_at TEXT DEFAULT NULL');
+    }
+    (function next(i) {
+      if (i >= toAdd.length) return thenDo(null);
+      db.run(toAdd[i], function(err) {
+        if (err) return thenDo(err);
+        next(i + 1);
+      });
+    })(0);
+  });
+}
+
+function _createRemainingTables(db, thenDo) {
+  db.serialize(function() {
       db.run(
         'CREATE TABLE IF NOT EXISTS domains (' +
         '  domain      TEXT PRIMARY KEY,' +
@@ -82,7 +136,6 @@ function withDB(thenDo) {
         ')',
         function(err) { thenDo(err, db); }
       );
-    });
   });
 }
 
@@ -103,29 +156,148 @@ function register(handle, did, thenDo) {
 
 // Resolve a handle to its DID.
 // Calls thenDo(null, did) or thenDo(null, null) if not found.
+//
+// Excludes revoked rows (§3.2): a revoked alias must resolve to nothing
+// everywhere, not just at the inbox — that's what makes revocation actually
+// cut the alias off, rather than merely hiding it from the owner's own
+// alias-management panel while every other route keeps honoring it.
+// Primary handles are never revoked through this feature, so their
+// revoked_at stays NULL forever and this filter is a no-op for them.
 function resolve(handle, thenDo) {
   withDB(function(err, db) {
     if (err) return thenDo(err);
     db.get(
-      'SELECT did FROM handles WHERE handle = ?',
+      'SELECT did FROM handles WHERE handle = ? AND revoked_at IS NULL',
       [handle],
       function(err, row) { thenDo(err || null, row ? row.did : null); }
     );
   });
 }
 
-// Reverse of resolve(): look up the handle registered for a DID.
-// Calls thenDo(null, handle) or thenDo(null, null) if not found. Handles
-// are unique-per-DID by registration (register() upserts one row per
-// handle, and a DID only ever gets one handle in this system), so a single
-// row (if any) is always the right answer.
+// Reverse of resolve(): look up the *primary* handle registered for a DID
+// — deliberately excludes alias rows (is_alias = 0), even though a DID
+// with active aliases now has multiple handles rows. Without this filter,
+// which row `db.get`'s unordered SELECT happens to return first is
+// unspecified, so a caller could non-deterministically get back an alias —
+// exactly the "never returned by any route the recipient's contacts would
+// see" leak §3.2 rules out. The one existing caller (IdentityServer.js's
+// reactions byEmoji handle resolution) needs this guarantee.
+// Calls thenDo(null, handle) or thenDo(null, null) if not found.
 function resolveHandleForDid(did, thenDo) {
   withDB(function(err, db) {
     if (err) return thenDo(err);
     db.get(
-      'SELECT handle FROM handles WHERE did = ?',
+      'SELECT handle FROM handles WHERE did = ? AND is_alias = 0',
       [did],
       function(err, row) { thenDo(err || null, row ? row.handle : null); }
+    );
+  });
+}
+
+// Resolve a handle (primary or active, non-revoked alias) to both its DID
+// and the primary handle inbox delivery should file under (§3.2, closing
+// gap #1 — "mail sent to any of a user's aliases, or their real handle,
+// all lands in the same inbox file"). A revoked or nonexistent handle
+// resolves to null, deliberately indistinguishable at this layer — the
+// caller (POST /inbox) is what turns that into the shared postal-rejection
+// response (gap #2 — a spammer can't tell "revoked" from "never existed").
+// Calls thenDo(null, { did, primaryHandle } | null).
+function resolveForDelivery(handle, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.get(
+      'SELECT did, is_alias, primary_handle FROM handles WHERE handle = ? AND revoked_at IS NULL',
+      [handle],
+      function(err, row) {
+        if (err) return thenDo(err);
+        if (!row) return thenDo(null, null);
+        thenDo(null, { did: row.did, primaryHandle: row.is_alias ? row.primary_handle : handle });
+      }
+    );
+  });
+}
+
+// ─── forwarding aliases (§3.2) ──────────────────────────────────────────────
+
+var ALIAS_LENGTH = 8;
+// Lowercase RFC4648 base32 alphabet (26 letters + digits 2-7 = 32 symbols,
+// so a random byte % 32 has no modulo bias). Not user-chosen, per the
+// owner's resolution — always generated server-side.
+var ALIAS_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
+var ALIAS_MAX_ATTEMPTS = 8; // generation retries on a random collision
+
+function _randomAliasCandidate() {
+  var bytes = require('crypto').randomBytes(ALIAS_LENGTH);
+  var s = '';
+  for (var i = 0; i < ALIAS_LENGTH; i++) s += ALIAS_ALPHABET[bytes[i] % ALIAS_ALPHABET.length];
+  return s;
+}
+
+// Generate and register a new active alias for `primaryHandle`/`did`. Uses
+// a plain INSERT (not register()'s upsert) specifically so a random
+// collision with an existing handle — alias or primary — fails loudly and
+// gets retried with a fresh candidate, rather than silently overwriting
+// whatever that handle already pointed to.
+// Calls thenDo(err, alias).
+function createAlias(primaryHandle, did, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+
+    (function attempt(triesLeft) {
+      if (triesLeft <= 0) {
+        return thenDo(new Error('createAlias: could not generate a unique alias after ' + ALIAS_MAX_ATTEMPTS + ' attempts'));
+      }
+      var candidate = _randomAliasCandidate();
+      var now = new Date().toISOString();
+      db.run(
+        'INSERT INTO handles (handle, did, created_at, updated_at, is_alias, primary_handle, revoked_at)' +
+        ' VALUES (?, ?, ?, ?, 1, ?, NULL)',
+        [candidate, did, now, now, primaryHandle],
+        function(err) {
+          if (err) {
+            if (err.message && err.message.indexOf('UNIQUE constraint') !== -1) {
+              return attempt(triesLeft - 1);
+            }
+            return thenDo(err);
+          }
+          thenDo(null, candidate);
+        }
+      );
+    })(ALIAS_MAX_ATTEMPTS);
+  });
+}
+
+// Active (non-revoked) aliases for a primary handle, newest first.
+// Calls thenDo(null, [{ handle, created_at }]).
+function listAliasesForHandle(primaryHandle, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.all(
+      'SELECT handle, created_at FROM handles' +
+      ' WHERE is_alias = 1 AND primary_handle = ? AND revoked_at IS NULL' +
+      ' ORDER BY created_at DESC',
+      [primaryHandle],
+      function(err, rows) { thenDo(err || null, rows || []); }
+    );
+  });
+}
+
+// Revoke an alias — scoped to `primaryHandle` so one user can't revoke
+// another's alias by guessing/enumerating the random string. Idempotent
+// only in the sense that revoking an already-revoked alias reports "not
+// found" (the WHERE clause excludes it) rather than erroring.
+// Calls thenDo(err, changed) where changed is true iff a row was updated.
+function revokeAlias(alias, primaryHandle, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.run(
+      'UPDATE handles SET revoked_at = ?' +
+      ' WHERE handle = ? AND is_alias = 1 AND primary_handle = ? AND revoked_at IS NULL',
+      [new Date().toISOString(), alias, primaryHandle],
+      function(err) {
+        if (err) return thenDo(err);
+        thenDo(null, this.changes > 0);
+      }
     );
   });
 }
@@ -273,6 +445,10 @@ module.exports = {
   register:         register,
   resolve:          resolve,
   resolveHandleForDid: resolveHandleForDid,
+  resolveForDelivery: resolveForDelivery,
+  createAlias:      createAlias,
+  listAliasesForHandle: listAliasesForHandle,
+  revokeAlias:      revokeAlias,
   listAll:          listAll,
   remove:           remove,
   registerDomain:   registerDomain,

@@ -69,6 +69,12 @@ module("lively.identity.PostCardView")
           "_visibilityEl",
           "_verifyBadgeEl",
           "_editBtn",
+          "_footerEl",
+          "_tipJarChipEl",
+          "_pillsWrapEl",
+          "_reactionPickerEl",
+          "_pickerCloseHandler",
+          "_contentLoadStarted",
         ],
       },
 
@@ -93,6 +99,19 @@ module("lively.identity.PostCardView")
           this._isOwner = false;
           this._verifyResult = null;
           this._buildChrome();
+
+          // Guards against double-firing the content-load dispatch below —
+          // same race as PostCardEditor.js's identical guard: open() calls
+          // _setup() explicitly right after opening this morph in a window,
+          // but attaching to that window's new render context *also*
+          // triggers prepareForNewRenderContext below, which (by the time
+          // _handle is set) calls _setup() again in the same turn. Without
+          // this, _loadEnvelope() could fire twice (two redundant GETs,
+          // each re-running _verify()/_loadReactions() on completion).
+          // doNotSerialize'd so a genuine future restore still starts
+          // falsy and loads normally.
+          if (this._contentLoadStarted) return;
+          this._contentLoadStarted = true;
           if (this._envelope) this._renderEnvelope(this._envelope);
           else this._loadEnvelope();
         },
@@ -108,6 +127,17 @@ module("lively.identity.PostCardView")
         // etc. does not, hence rebuilding chrome here. _envelope is cleared
         // first so a restore always re-fetches current content and a fresh
         // verification result, rather than showing a save-time snapshot.
+        //
+        // Also fires as an *immediate* same-turn duplicate of open()'s own
+        // explicit _setup() call, when attaching this morph to its new
+        // window triggers a render-context change — see _setup()'s own
+        // _contentLoadStarted guard, which is what makes that safe. One
+        // residual wrinkle in that race specifically: this._envelope = null
+        // below still runs before the (now-guarded) _setup(), so an
+        // options.envelope skip-the-fetch open() can still lose its
+        // pre-supplied envelope and fall through to _loadEnvelope() instead
+        // — a redundant fetch, not a correctness bug (the fetched envelope
+        // is equivalent), and not addressed here.
         prepareForNewRenderContext: function ($super, renderCtx) {
           $super(renderCtx);
           if (!this._handle) return;
@@ -251,7 +281,7 @@ module("lively.identity.PostCardView")
             "top:76px",
             "left:0",
             "right:0",
-            "bottom:0",
+            "bottom:26px", // leave room for the reactions footer below
             "padding:8px 14px 14px",
             "overflow-y:auto",
             "font-size:13px",
@@ -261,6 +291,8 @@ module("lively.identity.PostCardView")
           ].join(";");
           front.appendChild(content);
           this._contentEl = content;
+
+          this._buildReactionsFooter(front);
 
           var flipBtn = this._buildIconButton(
             "front",
@@ -409,6 +441,49 @@ module("lively.identity.PostCardView")
           });
           return btn;
         },
+
+        // Reactions footer (PostcardDesignSpec-v2.md §5.1) — a thin strip
+        // along the bottom of the front face, below the content area. Built
+        // empty here; populated/shown or hidden per-envelope in
+        // _renderReactionsFooter, since state.reactionsEnabled isn't known
+        // until the envelope loads.
+        _buildReactionsFooter: function (front) {
+          var footer = document.createElement("div");
+          footer.className = "lively-postcard-view-reactions-footer";
+          footer.style.cssText = [
+            "position:absolute",
+            "left:0",
+            "right:0",
+            "bottom:0",
+            "height:26px",
+            "display:none",
+            "align-items:center",
+            "gap:4px",
+            "padding:0 10px",
+            "border-top:1px solid #eee",
+            "overflow-x:auto",
+            "white-space:nowrap",
+            "box-sizing:border-box",
+          ].join(";");
+          front.appendChild(footer);
+          this._footerEl = footer;
+
+          // Two independent sub-areas so a tip-jar-only card (reactions off)
+          // and a reactions-only card (no tip jar) both render correctly —
+          // the tip chip is rebuilt once per envelope load, the pills wrap
+          // is rebuilt on every reactions poll, and neither clear should
+          // wipe out the other (§5.4: reactionsEnabled/tipJarAddress are
+          // independent toggles).
+          var tipJarChip = document.createElement("span");
+          tipJarChip.style.cssText = "flex:none;display:flex;align-items:center;gap:4px;";
+          footer.appendChild(tipJarChip);
+          this._tipJarChipEl = tipJarChip;
+
+          var pillsWrap = document.createElement("span");
+          pillsWrap.style.cssText = "flex:none;display:flex;align-items:center;gap:4px;";
+          footer.appendChild(pillsWrap);
+          this._pillsWrapEl = pillsWrap;
+        },
       },
 
       "data loading",
@@ -465,6 +540,7 @@ module("lively.identity.PostCardView")
 
           this._renderContentArea(envelope);
           this._renderBackMeta(envelope);
+          this._renderReactionsFooter(envelope);
           this._verify(envelope);
         },
 
@@ -576,6 +652,257 @@ module("lively.identity.PostCardView")
           this._cardEl.style.transform = this._flipped
             ? "rotateY(180deg)"
             : "rotateY(0deg)";
+        },
+      },
+
+      "reactions",
+      {
+        // Shows/hides and (re)populates the reactions footer for the given
+        // envelope. reactionsEnabled and the tip jar are independent
+        // opt-outs (§5.4) — the footer shows if either has something to
+        // display, not only when reactions are on. reactionsEnabled
+        // defaults to true ("each defaulting on"), so only an explicit
+        // `false` turns reactions off; the tip jar's presence is gated
+        // purely by whether tipJarAddress is set at all (§5.3). Delete
+        // (§6.3) lives in PostCardMailbox's "My Postcards" tab instead of
+        // here — this is a read-only reader, and the only place that
+        // actually lists a user's own authored cards is that mailbox tab.
+        _renderReactionsFooter: function (envelope) {
+          var reactionsOn = !(envelope.state && envelope.state.reactionsEnabled === false);
+          var tipJarAddress = (envelope.state && envelope.state.tipJarAddress) || null;
+
+          if (!reactionsOn && !tipJarAddress) {
+            this._footerEl.style.display = "none";
+            this._tipJarChipEl.innerHTML = "";
+            this._pillsWrapEl.innerHTML = "";
+            this._closeReactionPicker();
+            return;
+          }
+
+          this._footerEl.style.display = "flex";
+
+          this._tipJarChipEl.innerHTML = "";
+          if (tipJarAddress) this._renderTipJarChip(tipJarAddress);
+
+          if (reactionsOn) {
+            this._pillsWrapEl.style.display = "";
+            this._loadReactions();
+          } else {
+            this._pillsWrapEl.style.display = "none";
+            this._pillsWrapEl.innerHTML = "";
+          }
+        },
+
+        // Tip jar (§5.3) — display-and-copy only, no wallet integration.
+        _renderTipJarChip: function (address) {
+          var chip = document.createElement("button");
+          chip.textContent = "💰 Tip";
+          chip.title = address;
+          chip.style.cssText = [
+            "flex:none",
+            "font-size:12px",
+            "padding:1px 7px",
+            "border-radius:11px",
+            "cursor:pointer",
+            "border:1px solid #ddd",
+            "background:#fffaf0",
+            "color:#333",
+          ].join(";");
+          ["mousedown", "click"].forEach(function (t) {
+            chip.addEventListener(t, function (e) {
+              e.preventDefault();
+              e.stopPropagation();
+              if (t !== "click") return;
+              var restore = chip.textContent;
+              function copied() {
+                chip.textContent = "Copied!";
+                setTimeout(function () { chip.textContent = restore; }, 1200);
+              }
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(address).then(copied).catch(function () {});
+              } else {
+                // Fallback for contexts without the async Clipboard API.
+                var ta = document.createElement("textarea");
+                ta.value = address;
+                ta.style.cssText = "position:fixed;opacity:0;";
+                document.body.appendChild(ta);
+                ta.select();
+                try { document.execCommand("copy"); copied(); } catch (e2) {}
+                document.body.removeChild(ta);
+              }
+            });
+          });
+          this._tipJarChipEl.appendChild(chip);
+        },
+
+        _loadReactions: function () {
+          var self = this;
+          var base = lively.identity.did.baseUrl();
+          var url =
+            base + "/@" + encodeURIComponent(this._handle) + "/" +
+            encodeURIComponent(this._objId) + "/reactions";
+          fetch(url, { credentials: "include" })
+            .then(function (res) { return res.ok ? res.json() : null; })
+            .then(function (data) { if (data) self._renderReactionPills(data); })
+            .catch(function () {}); // network error — leave the footer as-is
+        },
+
+        _renderReactionPills: function (data) {
+          var self = this;
+          this._pillsWrapEl.innerHTML = "";
+          var counts = data.counts || {};
+          var mine = data.mine || null;
+          var currentUser = lively.identity.did.currentUser();
+
+          Object.keys(counts).forEach(function (emoji) {
+            var isMine = emoji === mine;
+            var pill = document.createElement("button");
+            pill.textContent = emoji + " " + counts[emoji];
+            pill.title = (data.byEmoji && data.byEmoji[emoji] || []).join(", ");
+            pill.style.cssText = [
+              "flex:none",
+              "font-size:12px",
+              "padding:1px 7px",
+              "border-radius:11px",
+              "cursor:pointer",
+              "border:1px solid " + (isMine ? "#5566cc" : "#ddd"),
+              "background:" + (isMine ? "#eef0fd" : "#fafafa"),
+              "color:#333",
+            ].join(";");
+            ["mousedown", "click"].forEach(function (t) {
+              pill.addEventListener(t, function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (t !== "click" || !currentUser) return;
+                if (isMine) self._deleteMyReaction();
+                else self._putReaction(emoji);
+              });
+            });
+            self._pillsWrapEl.appendChild(pill);
+          });
+
+          if (currentUser) {
+            var addBtn = document.createElement("button");
+            addBtn.textContent = "+";
+            addBtn.title = "Add a reaction";
+            addBtn.style.cssText = [
+              "flex:none",
+              "width:18px",
+              "height:18px",
+              "line-height:1",
+              "padding:0",
+              "font-size:12px",
+              "border-radius:50%",
+              "cursor:pointer",
+              "border:1px solid #ddd",
+              "background:#fafafa",
+              "color:#777",
+            ].join(";");
+            ["mousedown", "click"].forEach(function (t) {
+              addBtn.addEventListener(t, function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (t === "click") self._openReactionPicker(mine);
+              });
+            });
+            this._pillsWrapEl.appendChild(addBtn);
+          }
+        },
+
+        _openReactionPicker: function (mine) {
+          var self = this;
+          this._closeReactionPicker();
+
+          var picker = document.createElement("div");
+          picker.className = "lively-postcard-view-reaction-picker";
+          picker.style.cssText = [
+            "position:absolute",
+            "left:6px",
+            "right:6px",
+            "bottom:30px",
+            "background:#fff",
+            "border:1px solid #ccc",
+            "border-radius:8px",
+            "box-shadow:0 2px 8px rgba(0,0,0,0.15)",
+            "padding:4px",
+            "display:flex",
+            "flex-wrap:wrap",
+            "gap:2px",
+            "z-index:10",
+          ].join(";");
+
+          ["👍", "❤️", "😂", "🎉", "😮", "🤔"].forEach(function (emoji) {
+            var opt = document.createElement("button");
+            opt.textContent = emoji;
+            opt.style.cssText = [
+              "font-size:16px",
+              "padding:3px 6px",
+              "border:none",
+              "background:none",
+              "cursor:pointer",
+              "border-radius:4px",
+            ].join(";");
+            ["mousedown", "click"].forEach(function (t) {
+              opt.addEventListener(t, function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (t !== "click") return;
+                self._closeReactionPicker();
+                if (emoji === mine) self._deleteMyReaction();
+                else self._putReaction(emoji);
+              });
+            });
+            picker.appendChild(opt);
+          });
+
+          this._frontEl.appendChild(picker);
+          this._reactionPickerEl = picker;
+
+          // Close on any click elsewhere — deferred to the next tick so the
+          // same click that opened the picker (the "+" button's own click)
+          // doesn't immediately close it via bubbling to document.
+          setTimeout(function () {
+            self._pickerCloseHandler = function () { self._closeReactionPicker(); };
+            document.addEventListener("mousedown", self._pickerCloseHandler);
+          }, 0);
+        },
+
+        _closeReactionPicker: function () {
+          if (this._reactionPickerEl && this._reactionPickerEl.parentNode) {
+            this._reactionPickerEl.parentNode.removeChild(this._reactionPickerEl);
+          }
+          this._reactionPickerEl = null;
+          if (this._pickerCloseHandler) {
+            document.removeEventListener("mousedown", this._pickerCloseHandler);
+            this._pickerCloseHandler = null;
+          }
+        },
+
+        _putReaction: function (emoji) {
+          var self = this;
+          var base = lively.identity.did.baseUrl();
+          var url =
+            base + "/@" + encodeURIComponent(this._handle) + "/" +
+            encodeURIComponent(this._objId) + "/reactions";
+          fetch(url, {
+            method: "PUT",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ emoji: emoji }),
+          })
+            .then(function () { self._loadReactions(); })
+            .catch(function () {});
+        },
+
+        _deleteMyReaction: function () {
+          var self = this;
+          var base = lively.identity.did.baseUrl();
+          var url =
+            base + "/@" + encodeURIComponent(this._handle) + "/" +
+            encodeURIComponent(this._objId) + "/reactions/self";
+          fetch(url, { method: "DELETE", credentials: "include" })
+            .then(function () { self._loadReactions(); })
+            .catch(function () {});
         },
       },
 

@@ -26,6 +26,13 @@
  *   PUT  /@:handle/:objId       — store a new envelope version (owner only)
  *   GET  /@:handle/:objId/versions        — version history
  *   GET  /@:handle/:objId/since/:prevCid  — sync delta
+ *   PUT    /@:handle/:objId/reactions       — upsert (replace) caller's own reaction
+ *   DELETE /@:handle/:objId/reactions/self  — remove caller's own reaction
+ *   GET    /@:handle/:objId/reactions       — { counts, byEmoji, mine } (PostcardDesignSpec-v2.md §5.1)
+ *
+ *   GET    /@:handle/aliases          — list this user's active forwarding aliases (owner-only)
+ *   POST   /@:handle/aliases          — generate a new alias (owner-only)
+ *   DELETE /@:handle/aliases/:alias   — revoke an alias (owner-only) (PostcardDesignSpec-v2.md §3.2)
  *
  *   POST /nodejs/IdentityServer/access-request/:objId  — request read access
  *   POST /nodejs/IdentityServer/grant-access/:objId    — owner grants access
@@ -1449,9 +1456,30 @@ module.exports = function (route, app) {
       return res.status(403).json({ error: "Forbidden: not your inbox" });
     var limit  = Math.min(parseInt(req.query.limit,  10) || 20, 100);
     var offset = parseInt(req.query.offset, 10) || 0;
-    objectRepo.listInboxForHandle(handle, { limit: limit, offset: offset }, function (err, result) {
+    objectRepo.getHiddenObjIdsForDid(req.identity.did, function (err, hiddenObjIds) {
       if (err) return res.status(500).json({ error: String(err) });
-      res.json(result);
+      objectRepo.listInboxForHandle(handle, { limit: limit, offset: offset, hiddenObjIds: hiddenObjIds }, function (err, result) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json(result);
+      });
+    });
+  });
+
+  // ─── mailbox hide (§6.3, Layer 1) ───────────────────────────────────────────
+  // Per-viewer hide for any delivered card (sent to yourself, to someone
+  // else, or both) — never touches the shared envelope, so it can't affect
+  // any other party's view. :handle must resolve to the caller's own DID;
+  // there's no author/recipient distinction here, since hiding is about
+  // "your own mailbox," not who wrote the card. Idempotent.
+
+  app.delete("/@:handle/mailbox/:objId", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    var objId  = req.params.objId;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your mailbox" });
+    objectRepo.hidePostcardForDid(req.identity.did, objId, function (err) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json({ ok: true });
     });
   });
 
@@ -1492,8 +1520,15 @@ module.exports = function (route, app) {
       });
     }
 
-    handleRegistry.resolve(handle, function (err, recipientDid) {
-      var unknownHandle = !!(err || !recipientDid);
+    // resolveForDelivery (§3.2), not a plain resolve(): a revoked or
+    // nonexistent alias must be indistinguishable from an unknown handle
+    // (the same POSTAL_REJECTION below), and an active alias's mail must
+    // file under its owner's primary-handle inbox, not a separate
+    // per-alias one.
+    handleRegistry.resolveForDelivery(handle, function (err, resolved) {
+      var unknownHandle = !!(err || !resolved);
+      var recipientDid   = resolved ? resolved.did : null;
+      var inboxHandle     = resolved ? resolved.primaryHandle : null;
 
       // Load settings unconditionally — even for an unknown handle — so the
       // response timing is the same shape regardless of outcome.
@@ -1531,7 +1566,7 @@ module.exports = function (route, app) {
           }
 
           var record = { objId: body.objId, senderDid: senderDid, senderHandle: senderHandle, sentAt: new Date().toISOString() };
-          objectRepo.putInboxRecord(handle, record, function (err3) {
+          objectRepo.putInboxRecord(inboxHandle, record, function (err3) {
             if (err3) return res.status(500).json({ error: String(err3) });
             _recordDelivery('delivered', function () {
               res.json({ ok: true, delivered: true });
@@ -1552,9 +1587,57 @@ module.exports = function (route, app) {
     var limit  = Math.min(parseInt(req.query.limit,  10) || 20, 100);
     var offset = parseInt(req.query.offset, 10) || 0;
     var status = req.query.status || null; // 'delivered' | 'returned' | null (all)
-    objectRepo.listDeliveriesForHandle(handle, { limit: limit, offset: offset, status: status }, function (err, result) {
+    objectRepo.getHiddenObjIdsForDid(req.identity.did, function (err, hiddenObjIds) {
       if (err) return res.status(500).json({ error: String(err) });
-      res.json(result);
+      objectRepo.listDeliveriesForHandle(handle, { limit: limit, offset: offset, status: status, hiddenObjIds: hiddenObjIds }, function (err, result) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json(result);
+      });
+    });
+  });
+
+  // ─── forwarding aliases (§3.2) ──────────────────────────────────────────────
+  // Must be registered before /@:handle/:objId. Owner-only on every route —
+  // aliases are never surfaced publicly (not on the profile, not in the DID
+  // document, not returned by any route a recipient's contacts would see).
+
+  var ALIAS_LIMIT_PER_HANDLE = 10; // small cap to prevent abuse, per §3.2
+
+  app.get("/@:handle/aliases", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your aliases" });
+    handleRegistry.listAliasesForHandle(handle, function (err, aliases) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json({ aliases: aliases });
+    });
+  });
+
+  app.post("/@:handle/aliases", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your aliases" });
+    handleRegistry.listAliasesForHandle(handle, function (err, aliases) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (aliases.length >= ALIAS_LIMIT_PER_HANDLE) {
+        return res.status(400).json({ error: "Alias limit reached (" + ALIAS_LIMIT_PER_HANDLE + ")" });
+      }
+      handleRegistry.createAlias(handle, req.identity.did, function (err, alias) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({ alias: alias });
+      });
+    });
+  });
+
+  app.delete("/@:handle/aliases/:alias", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    var alias  = req.params.alias;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your aliases" });
+    handleRegistry.revokeAlias(alias, handle, function (err, changed) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!changed) return res.status(404).json({ error: "Alias not found: " + alias });
+      res.json({ ok: true });
     });
   });
 
@@ -1646,6 +1729,83 @@ module.exports = function (route, app) {
           .filter(function (m) { return _canSeePostcardMeta(m, viewerDid); })
           .map(function (m) { delete m.recipients; return m; });
         res.json(result);
+      });
+    });
+  });
+
+  // ─── reactions (PostcardDesignSpec-v2.md §5.1) ─────────────────────────────
+  // Sub-route under /:objId, same ordering rationale as /replies above.
+  // Misskey semantics: one reaction per user per card, replacing rather than
+  // stacking (enforced by postcard_reactions' PRIMARY KEY (obj_id, did)).
+
+  app.put("/@:handle/:objId/reactions", auth.requireAuth, function (req, res) {
+    var objId = req.params.objId;
+    var emoji = req.body && req.body.emoji;
+    if (typeof emoji !== "string" || !emoji.trim() || emoji.length > 16) {
+      return res.status(400).json({ error: "Invalid emoji" });
+    }
+    emoji = emoji.trim();
+
+    objectRepo.get(objId, function (err, envelope) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!envelope) return res.status(404).json({ error: "Object not found: " + objId });
+      if (!_canReadEnvelope(envelope, req.identity)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+      // Server-side enforcement of the sender's opt-out toggle (§5.4) — not
+      // just a UI affordance, so a client that skips rendering the footer
+      // can't be bypassed by hand-crafting the request.
+      if (envelope.state && envelope.state.reactionsEnabled === false) {
+        return res.status(403).json({ error: "Reactions are disabled for this post card" });
+      }
+      objectRepo.upsertReaction(objId, req.identity.did, emoji, function (err) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({ ok: true });
+      });
+    });
+  });
+
+  app.delete("/@:handle/:objId/reactions/self", auth.requireAuth, function (req, res) {
+    var objId = req.params.objId;
+    objectRepo.deleteReaction(objId, req.identity.did, function (err) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json({ ok: true });
+    });
+  });
+
+  app.get("/@:handle/:objId/reactions", auth.optionalAuth, function (req, res) {
+    var objId = req.params.objId;
+    objectRepo.get(objId, function (err, envelope) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!envelope) return res.status(404).json({ error: "Object not found: " + objId });
+      if (!_canReadEnvelope(envelope, req.identity)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+      objectRepo.getReactionsForObjId(objId, function (err, rows) {
+        if (err) return res.status(500).json({ error: String(err) });
+
+        var counts = {};
+        var byEmojiDids = {};
+        var mine = null;
+        rows.forEach(function (r) {
+          counts[r.emoji] = (counts[r.emoji] || 0) + 1;
+          (byEmojiDids[r.emoji] = byEmojiDids[r.emoji] || []).push(r.did);
+          if (req.identity && r.did === req.identity.did) mine = r.emoji;
+        });
+
+        // Resolve dids -> handles server-side so the hover-to-see-who-reacted
+        // UI doesn't need N follow-up requests (same helper the nearby-feed
+        // route already uses).
+        var allDids = rows.map(function (r) { return r.did; });
+        _resolveHandlesForDids(allDids, function (resolveErr, didToHandle) {
+          var byEmoji = {};
+          Object.keys(byEmojiDids).forEach(function (e) {
+            byEmoji[e] = byEmojiDids[e].map(function (d) {
+              return didToHandle[d] ? "@" + didToHandle[d] : d;
+            });
+          });
+          res.json({ counts: counts, byEmoji: byEmoji, mine: mine });
+        });
       });
     });
   });
@@ -1770,6 +1930,17 @@ module.exports = function (route, app) {
         envelope = Object.assign({}, envelope, {
           state: Object.assign({}, envelope.state, { location: flooredLocation }),
         });
+      }
+
+      // Tip jar address (state.tipJarAddress, §5.3) — a plain Ethereum
+      // address, display-and-copy only. Unlike location's coerce-not-reject
+      // posture, this is a hard 400 on malformation: there's no sensible way
+      // to "floor" a bad address the way a too-precise Plus Code can be
+      // truncated, so an invalid value is rejected outright rather than
+      // silently dropped or mangled.
+      if (envelope.state && envelope.state.tipJarAddress != null &&
+          !/^0x[a-fA-F0-9]{40}$/.test(envelope.state.tipJarAddress)) {
+        return res.status(400).json({ error: "Invalid tip jar address" });
       }
 
       objectRepo.put(envelope, function (err, result) {
