@@ -487,12 +487,17 @@ function deleteVersionsAfter(objId, cid, thenDo) {
 
 // List the latest postcard envelope per objId for a given DID, newest first.
 // Excludes deleted cards (state.deleted = true) from the listing.
-// opts: { limit: Number, cursor: String|null }
+// opts: { limit: Number, cursor: String|null, q: String|null }
 //   cursor is the obj_id of the last item from the previous page (opaque to callers).
+//   q — optional title substring filter (§8.1); metadata search only, never
+//   record.payload (private/shared payload is ciphertext the server can't
+//   search anyway; public payload content-indexing is a standing non-goal).
 // Calls thenDo(null, { postcards: [envelope...], cursor: String|null }).
 function listPostcardsForUser(did, opts, thenDo) {
   var limit = (opts && opts.limit) || 20;
   var cursor = (opts && opts.cursor) || null;
+  var q = (opts && opts.q) || null;
+  var qLike = q ? '%' + _escapeLikePrefix(q) + '%' : null;
 
   withDB(function(err, db) {
     if (err) return thenDo(err);
@@ -506,7 +511,8 @@ function listPostcardsForUser(did, opts, thenDo) {
       '   GROUP BY obj_id' +
       ' ) latest ON o.id = latest.max_id' +
       ' WHERE (json_extract(o.envelope, \'$.state.deleted\') IS NULL' +
-      '        OR json_extract(o.envelope, \'$.state.deleted\') != 1)';
+      '        OR json_extract(o.envelope, \'$.state.deleted\') != 1)' +
+      (qLike ? ' AND json_extract(o.envelope, \'$.state.title\') LIKE ? ESCAPE \'\\\'' : '');
 
     var params, sql;
     if (cursor) {
@@ -517,19 +523,20 @@ function listPostcardsForUser(did, opts, thenDo) {
         function(err, pivotRow) {
           if (err) return thenDo(err);
           var pivotId = pivotRow ? pivotRow.pivot : null;
+          var qParams = qLike ? [qLike] : [];
           if (pivotId) {
             sql = baseSql + ' AND o.id < ? ORDER BY o.id DESC LIMIT ?';
-            params = [did, pivotId, limit + 1];
+            params = [did].concat(qParams, [pivotId, limit + 1]);
           } else {
             sql = baseSql + ' ORDER BY o.id DESC LIMIT ?';
-            params = [did, limit + 1];
+            params = [did].concat(qParams, [limit + 1]);
           }
           _runPostcardQuery(db, sql, params, limit, thenDo);
         }
       );
     } else {
       sql = baseSql + ' ORDER BY o.id DESC LIMIT ?';
-      params = [did, limit + 1];
+      params = qLike ? [did, qLike, limit + 1] : [did, limit + 1];
       _runPostcardQuery(db, sql, params, limit, thenDo);
     }
   });
@@ -651,10 +658,25 @@ function listPostcardsNearby(codePrefix, opts, thenDo) {
 // List reply envelopes for a parent objId (postcards whose replyTo.objId matches).
 // Returns metadata-only (no payload) for the listing; caller fetches full envelope on open.
 // Visibility filtering is the caller's responsibility (done in the route handler).
-// Calls thenDo(null, { replies: [envelopeMetadata...], cursor: String|null }).
+// opts: { limit, cursor, q, sort }
+//   q — optional title substring filter (§8.1), same LIKE approach as
+//   listPostcardsForUser.
+//   sort — 'new' (default, unchanged: newest first, cursor-paginated) or
+//   'top' (§8.2: ordered by reaction count via a LEFT JOIN against
+//   postcard_reactions). 'top' deliberately doesn't support cursor
+//   pagination — reply threads aren't expected to be long enough to need
+//   it yet, and a stable cursor over a COUNT-ordered result would need a
+//   compound (count, id) cursor instead of the simple id-based one every
+//   other listing here uses; always returns cursor: null.
+// Calls thenDo(null, { postcards: [envelopeMetadata...], cursor: String|null })
+// — same shape key as every other listing here (despite the function name);
+// the /replies route reads result.postcards, not result.replies.
 function listRepliesForPostcard(parentObjId, opts, thenDo) {
   var limit = (opts && opts.limit) || 20;
   var cursor = (opts && opts.cursor) || null;
+  var q = (opts && opts.q) || null;
+  var qLike = q ? '%' + _escapeLikePrefix(q) + '%' : null;
+  var sort = (opts && opts.sort) === 'top' ? 'top' : 'new';
 
   withDB(function(err, db) {
     if (err) return thenDo(err);
@@ -668,7 +690,36 @@ function listRepliesForPostcard(parentObjId, opts, thenDo) {
       '   GROUP BY obj_id' +
       ' ) latest ON o.id = latest.max_id' +
       ' WHERE (json_extract(o.envelope, \'$.state.deleted\') IS NULL' +
-      '        OR json_extract(o.envelope, \'$.state.deleted\') != 1)';
+      '        OR json_extract(o.envelope, \'$.state.deleted\') != 1)' +
+      (qLike ? ' AND json_extract(o.envelope, \'$.state.title\') LIKE ? ESCAPE \'\\\'' : '');
+
+    if (sort === 'top') {
+      var topParams = qLike ? [parentObjId, qLike] : [parentObjId];
+      var topSql =
+        'SELECT o.envelope, o.obj_id, o.id, COUNT(pr.obj_id) AS reaction_count' +
+        ' FROM objects o' +
+        ' INNER JOIN (' +
+        '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
+        '   WHERE type = \'postcard\'' +
+        '         AND json_extract(envelope, \'$.replyTo.objId\') = ?' +
+        '   GROUP BY obj_id' +
+        ' ) latest ON o.id = latest.max_id' +
+        ' LEFT JOIN postcard_reactions pr ON pr.obj_id = o.obj_id' +
+        ' WHERE (json_extract(o.envelope, \'$.state.deleted\') IS NULL' +
+        '        OR json_extract(o.envelope, \'$.state.deleted\') != 1)' +
+        (qLike ? ' AND json_extract(o.envelope, \'$.state.title\') LIKE ? ESCAPE \'\\\'' : '') +
+        ' GROUP BY o.obj_id' +
+        ' ORDER BY reaction_count DESC, o.id DESC' +
+        ' LIMIT ?';
+      // Fetches exactly `limit` rows (not the limit+1 every other branch
+      // here uses) — _runPostcardQuery's hasMore check (rows.length >
+      // limit) is then always false, so cursor naturally comes out null,
+      // matching this branch's "no pagination" contract without needing a
+      // different result shape. Passes thenDo straight through, same as
+      // every other branch — the caller (IdentityServer.js's /replies
+      // route) reads result.postcards regardless of sort.
+      return _runPostcardQuery(db, topSql, topParams.concat([limit]), limit, thenDo);
+    }
 
     var params = [parentObjId, limit + 1];
     if (cursor) {
@@ -678,17 +729,20 @@ function listRepliesForPostcard(parentObjId, opts, thenDo) {
         function(err, pivotRow) {
           if (err) return thenDo(err);
           var pivotId = pivotRow ? pivotRow.pivot : null;
+          var qParams = qLike ? [qLike] : [];
           if (pivotId) {
             _runPostcardQuery(db,
               baseSql + ' AND o.id < ? ORDER BY o.id DESC LIMIT ?',
-              [parentObjId, pivotId, limit + 1], limit, thenDo);
+              [parentObjId].concat(qParams, [pivotId, limit + 1]), limit, thenDo);
           } else {
-            _runPostcardQuery(db, baseSql + ' ORDER BY o.id DESC LIMIT ?', params, limit, thenDo);
+            _runPostcardQuery(db, baseSql + ' ORDER BY o.id DESC LIMIT ?',
+              [parentObjId].concat(qParams, [limit + 1]), limit, thenDo);
           }
         }
       );
     } else {
-      _runPostcardQuery(db, baseSql + ' ORDER BY o.id DESC LIMIT ?', params, limit, thenDo);
+      var noCursorParams = qLike ? [parentObjId, qLike, limit + 1] : params;
+      _runPostcardQuery(db, baseSql + ' ORDER BY o.id DESC LIMIT ?', noCursorParams, limit, thenDo);
     }
   });
 }
@@ -821,6 +875,37 @@ function getSettingsForDid(did, thenDo) {
   });
 }
 
+// §8.1 title search for inbox/deliveries records — unlike the SQL-backed
+// listings above, a JSONL delivery record ({objId, senderDid, sentAt, ...})
+// doesn't carry the postcard's title itself, so there's no LIKE clause to
+// add to a query that doesn't exist. Instead, for each candidate record,
+// look up its objId's current title from objects.db and keep only the
+// matches — one get() per record, run in parallel. Called with the full
+// (already hidden/status-filtered) record list, before pagination, so a
+// page never comes back short just because some of its rows didn't match.
+// Only invoked when q is actually set — no extra DB round trips on the
+// unfiltered path.
+// Calls thenDo(null, records) in the same order as the input.
+function _filterRecordsByTitle(records, q, thenDo) {
+  if (!q) return thenDo(null, records);
+  if (!records.length) return thenDo(null, []);
+  var qLower = q.toLowerCase();
+  var remaining = records.length;
+  var firstErr = null;
+  var matched = new Array(records.length);
+  records.forEach(function (rec, i) {
+    get(rec.objId, function (err, envelope) {
+      if (err) firstErr = firstErr || err;
+      var title = (envelope && envelope.state && envelope.state.title) || '';
+      matched[i] = title.toLowerCase().indexOf(qLower) !== -1 ? rec : undefined;
+      if (--remaining === 0) {
+        if (firstErr) return thenDo(firstErr);
+        thenDo(null, matched.filter(function (r) { return r !== undefined; }));
+      }
+    });
+  });
+}
+
 // ─── inbox ────────────────────────────────────────────────────────────────────
 
 // Inbox records are stored as a per-handle newline-delimited JSON log
@@ -850,17 +935,19 @@ function putInboxRecord(recipientHandle, record, thenDo) {
 }
 
 // List delivery records for a handle, newest first, paginated.
-// opts: { limit, offset, hiddenObjIds }
+// opts: { limit, offset, hiddenObjIds, q }
 //   hiddenObjIds — objId[] to exclude (§6.3 Layer 1) — filtered before
 //   pagination (not after), same as every SQL-backed listing's WHERE
 //   clause does for state.deleted, so a page never comes back short just
 //   because some of its rows were hidden.
+//   q — optional title substring filter (§8.1) — see _filterRecordsByTitle.
 // Calls thenDo(null, { records: [...], cursor: Number|null }).
 function listInboxForHandle(handle, opts, thenDo) {
   var fs = require('fs');
   var limit = (opts && opts.limit) || 20;
   var offset = (opts && opts.offset) || 0;
   var hiddenObjIds = (opts && opts.hiddenObjIds) || null;
+  var q = (opts && opts.q) || null;
   var file = path.join(_getInboxDir(), handle + '.jsonl');
   if (!fs.existsSync(file)) return thenDo(null, { records: [], cursor: null });
   fs.readFile(file, 'utf8', function(err, text) {
@@ -873,9 +960,12 @@ function listInboxForHandle(handle, opts, thenDo) {
     if (hiddenObjIds && hiddenObjIds.length) {
       records = records.filter(function(r) { return hiddenObjIds.indexOf(r.objId) === -1; });
     }
-    var page = records.slice(offset, offset + limit);
-    var nextOffset = offset + limit < records.length ? offset + limit : null;
-    thenDo(null, { records: page, cursor: nextOffset });
+    _filterRecordsByTitle(records, q, function (err, filtered) {
+      if (err) return thenDo(err);
+      var page = filtered.slice(offset, offset + limit);
+      var nextOffset = offset + limit < filtered.length ? offset + limit : null;
+      thenDo(null, { records: page, cursor: nextOffset });
+    });
   });
 }
 
@@ -927,6 +1017,7 @@ function listDeliveriesForHandle(senderHandle, opts, thenDo) {
   var offset = (opts && opts.offset) || 0;
   var status = (opts && opts.status) || null;
   var hiddenObjIds = (opts && opts.hiddenObjIds) || null;
+  var q      = (opts && opts.q) || null;
   var file   = path.join(_getDeliveriesDir(), senderHandle + '.jsonl');
   if (!fs.existsSync(file)) return thenDo(null, { records: [], cursor: null });
   fs.readFile(file, 'utf8', function (err, text) {
@@ -940,9 +1031,12 @@ function listDeliveriesForHandle(senderHandle, opts, thenDo) {
     if (hiddenObjIds && hiddenObjIds.length) {
       records = records.filter(function (r) { return hiddenObjIds.indexOf(r.objId) === -1; });
     }
-    var page       = records.slice(offset, offset + limit);
-    var nextOffset = offset + limit < records.length ? offset + limit : null;
-    thenDo(null, { records: page, cursor: nextOffset });
+    _filterRecordsByTitle(records, q, function (err, filtered) {
+      if (err) return thenDo(err);
+      var page       = filtered.slice(offset, offset + limit);
+      var nextOffset = offset + limit < filtered.length ? offset + limit : null;
+      thenDo(null, { records: page, cursor: nextOffset });
+    });
   });
 }
 

@@ -33,7 +33,10 @@ module('lively.identity.PostCardMailbox')
     var MailboxClass = lively.morphic.Box.subclass('lively.identity.PostCardMailbox',
 
     'serialization', {
-      doNotSerialize: ['_contentDiv', '_tabBtns', '_openMenuEl', '_openMenuAnchor', '_menuCloseHandler'],
+      doNotSerialize: [
+        '_contentDiv', '_tabBtns', '_openMenuEl', '_openMenuAnchor', '_menuCloseHandler',
+        '_searchBar', '_searchInput', '_contentLoadStarted',
+      ],
     },
 
     'initialization', {
@@ -46,7 +49,13 @@ module('lively.identity.PostCardMailbox')
         this._openMenuEl = null;
         this._openMenuAnchor = null;
         this._menuCloseHandler = null;
+        this._searchQuery = '';
         this._buildChrome();
+        // Guards prepareForNewRenderContext below against redundantly
+        // re-running _switchTab once this constructor returns and
+        // open() attaches the new instance to the world — see that
+        // method's own comment for the mechanism.
+        this._contentLoadStarted = true;
         this._switchTab('received');
       },
 
@@ -57,6 +66,20 @@ module('lively.identity.PostCardMailbox')
       // construction. On a world-reload restore, _activeTab already has its
       // serialized value (survives fine, it's a plain string) but none of
       // the DOM _buildChrome built does, so it re-runs here instead.
+      //
+      // It ALSO fires as an *immediate* same-turn duplicate of the
+      // constructor's own explicit _buildChrome()/_switchTab() call above:
+      // PostCardMailbox.open() attaches this freshly-constructed morph to
+      // the world right after construction (openInWorldCenter ->
+      // openInWorld -> world.addMorph -> Core.js's addMorph ->
+      // renderAfterUsing/replaceRenderContextWith -> this method), and by
+      // then _activeTab is already set, so the guard above doesn't skip
+      // it — same mechanism as the identical fix in PostCardEditor.js/
+      // PostCardView.js. _buildChrome() still runs every time (cheap,
+      // idempotent, and needed for the genuine restore case); only the
+      // _switchTab (network fetch + render) is guarded, via
+      // _contentLoadStarted — doNotSerialize'd so a genuine future
+      // restore still starts falsy and loads normally.
       prepareForNewRenderContext: function ($super, renderCtx) {
         $super(renderCtx);
         if (!this._activeTab) return;
@@ -66,6 +89,8 @@ module('lively.identity.PostCardMailbox')
         this._openMenuAnchor = null;
         this._menuCloseHandler = null;
         this._buildChrome();
+        if (this._contentLoadStarted) return;
+        this._contentLoadStarted = true;
         this._switchTab(tab);
       },
 
@@ -122,10 +147,40 @@ module('lively.identity.PostCardMailbox')
         });
         shapeNode.appendChild(tabBar);
 
+        // ── search bar (§8.1) — title-only metadata search, shown only for
+        // tabs whose rows are actual postcards (Received/Delivered/
+        // Returned/My Postcards); hidden for Blocked/Aliases, which have
+        // no title to search. Lives outside _contentDiv deliberately —
+        // every render function clears _contentDiv wholesale, which would
+        // otherwise wipe this input (and drop focus/keystrokes) on every
+        // reload a search itself triggers.
+        var searchBar = document.createElement('div');
+        searchBar.style.cssText = [
+          'position:absolute', 'top:72px', 'left:0', 'right:0', 'height:32px',
+          'background:#fff', 'border-bottom:1px solid #e5e5ea',
+          'display:none', 'align-items:center', 'padding:0 12px', 'box-sizing:border-box',
+        ].join(';');
+        var searchInput = document.createElement('input');
+        searchInput.type = 'text';
+        searchInput.placeholder = 'Search by title…';
+        searchInput.style.cssText = 'flex:1;font-size:12px;padding:5px 8px;border:1px solid #d1d1d6;border-radius:4px;box-sizing:border-box;';
+        var searchDebounce = null;
+        searchInput.addEventListener('input', function () {
+          clearTimeout(searchDebounce);
+          searchDebounce = setTimeout(function () {
+            self._searchQuery = searchInput.value.trim();
+            self._reloadCurrentTab();
+          }, 300);
+        });
+        searchBar.appendChild(searchInput);
+        shapeNode.appendChild(searchBar);
+        this._searchBar = searchBar;
+        this._searchInput = searchInput;
+
         // ── content area ──
         var contentDiv = document.createElement('div');
         contentDiv.style.cssText = [
-          'position:absolute', 'top:72px', 'left:0', 'right:0', 'bottom:0',
+          'position:absolute', 'top:104px', 'left:0', 'right:0', 'bottom:0',
           'overflow-y:auto', 'padding:12px 16px', 'box-sizing:border-box',
           'font-family:sans-serif', 'font-size:13px',
         ].join(';');
@@ -148,6 +203,14 @@ module('lively.identity.PostCardMailbox')
           btn.style.background      = active ? '#fff' : 'transparent';
         });
 
+        // Each tab starts with a fresh (empty) search — a query typed into
+        // one tab carrying silently into an unrelated one would be more
+        // confusing than having to retype it.
+        this._searchQuery = '';
+        if (this._searchInput) this._searchInput.value = '';
+        var searchable = tab === 'received' || tab === 'delivered' || tab === 'returned' || tab === 'own';
+        if (this._searchBar) this._searchBar.style.display = searchable ? 'flex' : 'none';
+
         this._contentDiv.innerHTML = '<div style="color:#999;padding:20px 0;">Loading…</div>';
 
         if (tab === 'received')  this._loadReceived();
@@ -158,14 +221,30 @@ module('lively.identity.PostCardMailbox')
         if (tab === 'aliases')   this._loadAliases();
       },
 
+      // Re-runs whichever load function backs the active tab — used by the
+      // search box (§8.1) after this._searchQuery changes, so it doesn't
+      // need its own copy of the tab -> loader mapping.
+      _reloadCurrentTab: function () {
+        if (this._activeTab === 'received')  this._loadReceived();
+        if (this._activeTab === 'delivered') this._loadDeliveries('delivered');
+        if (this._activeTab === 'returned')  this._loadDeliveries('returned');
+        if (this._activeTab === 'own')       this._loadOwn();
+      },
+
       // ── data fetching ─────────────────────────────────────────────────────
+
+      // '' when unset, else '&q=<encoded>' — appended to every searchable
+      // tab's list URL (§8.1).
+      _qParam: function () {
+        return this._searchQuery ? '&q=' + encodeURIComponent(this._searchQuery) : '';
+      },
 
       _loadReceived: function () {
         var self   = this;
         var handle = lively.identity.did.currentUser().handle;
         var base   = lively.identity.did.baseUrl();
         var xhr    = new XMLHttpRequest();
-        xhr.open('GET', base + '/@' + handle + '/inbox?limit=30');
+        xhr.open('GET', base + '/@' + handle + '/inbox?limit=30' + this._qParam());
         xhr.withCredentials = true;
         xhr.onload = function () {
           if (xhr.status !== 200) return self._showError('Could not load inbox (' + xhr.status + ')');
@@ -182,7 +261,7 @@ module('lively.identity.PostCardMailbox')
         var handle = lively.identity.did.currentUser().handle;
         var base   = lively.identity.did.baseUrl();
         var xhr    = new XMLHttpRequest();
-        xhr.open('GET', base + '/@' + handle + '/deliveries?status=' + status + '&limit=30');
+        xhr.open('GET', base + '/@' + handle + '/deliveries?status=' + status + '&limit=30' + this._qParam());
         xhr.withCredentials = true;
         xhr.onload = function () {
           if (xhr.status !== 200) return self._showError('Could not load deliveries (' + xhr.status + ')');
@@ -203,7 +282,7 @@ module('lively.identity.PostCardMailbox')
         var handle = lively.identity.did.currentUser().handle;
         var base   = lively.identity.did.baseUrl();
         var xhr    = new XMLHttpRequest();
-        xhr.open('GET', base + '/@' + handle + '/postcards?limit=30');
+        xhr.open('GET', base + '/@' + handle + '/postcards?limit=30' + this._qParam());
         xhr.withCredentials = true;
         xhr.onload = function () {
           if (xhr.status !== 200) return self._showError('Could not load your postcards (' + xhr.status + ')');

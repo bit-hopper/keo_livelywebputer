@@ -1432,11 +1432,12 @@ module.exports = function (route, app) {
     var handle = req.params.handle;
     var limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
     var cursor = req.query.cursor || null;
+    var q = req.query.q || null;
 
     handleRegistry.resolve(handle, function (err, did) {
       if (err)  return res.status(500).json({ error: String(err) });
       if (!did) return res.status(404).json({ error: "Handle not found: @" + handle });
-      objectRepo.listPostcardsForUser(did, { limit: limit, cursor: cursor }, function (err, result) {
+      objectRepo.listPostcardsForUser(did, { limit: limit, cursor: cursor, q: q }, function (err, result) {
         if (err) return res.status(500).json({ error: String(err) });
         var viewerDid = req.identity ? req.identity.did : null;
         result.postcards = result.postcards
@@ -1456,9 +1457,10 @@ module.exports = function (route, app) {
       return res.status(403).json({ error: "Forbidden: not your inbox" });
     var limit  = Math.min(parseInt(req.query.limit,  10) || 20, 100);
     var offset = parseInt(req.query.offset, 10) || 0;
+    var q      = req.query.q || null;
     objectRepo.getHiddenObjIdsForDid(req.identity.did, function (err, hiddenObjIds) {
       if (err) return res.status(500).json({ error: String(err) });
-      objectRepo.listInboxForHandle(handle, { limit: limit, offset: offset, hiddenObjIds: hiddenObjIds }, function (err, result) {
+      objectRepo.listInboxForHandle(handle, { limit: limit, offset: offset, hiddenObjIds: hiddenObjIds, q: q }, function (err, result) {
         if (err) return res.status(500).json({ error: String(err) });
         res.json(result);
       });
@@ -1587,9 +1589,10 @@ module.exports = function (route, app) {
     var limit  = Math.min(parseInt(req.query.limit,  10) || 20, 100);
     var offset = parseInt(req.query.offset, 10) || 0;
     var status = req.query.status || null; // 'delivered' | 'returned' | null (all)
+    var q      = req.query.q || null;
     objectRepo.getHiddenObjIdsForDid(req.identity.did, function (err, hiddenObjIds) {
       if (err) return res.status(500).json({ error: String(err) });
-      objectRepo.listDeliveriesForHandle(handle, { limit: limit, offset: offset, status: status, hiddenObjIds: hiddenObjIds }, function (err, result) {
+      objectRepo.listDeliveriesForHandle(handle, { limit: limit, offset: offset, status: status, hiddenObjIds: hiddenObjIds, q: q }, function (err, result) {
         if (err) return res.status(500).json({ error: String(err) });
         res.json(result);
       });
@@ -1716,12 +1719,14 @@ module.exports = function (route, app) {
     var objId  = req.params.objId;
     var limit  = Math.min(parseInt(req.query.limit,  10) || 20, 100);
     var cursor = req.query.cursor || null;
+    var q      = req.query.q || null;
+    var sort   = req.query.sort === 'top' ? 'top' : 'new';
 
     objectRepo.get(objId, function (err, parentEnv) {
       if (err)         return res.status(500).json({ error: String(err) });
       if (!parentEnv)  return res.status(404).json({ error: "Object not found: " + objId });
 
-      objectRepo.listRepliesForPostcard(objId, { limit: limit, cursor: cursor }, function (err, result) {
+      objectRepo.listRepliesForPostcard(objId, { limit: limit, cursor: cursor, q: q, sort: sort }, function (err, result) {
         if (err) return res.status(500).json({ error: String(err) });
         // Visibility filter: omit envelopes the requester cannot read (§10.4)
         var viewerDid = req.identity ? req.identity.did : null;
