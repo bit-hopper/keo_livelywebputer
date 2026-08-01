@@ -1,9 +1,19 @@
 /**
  * lively.identity.WalletVault
  *
- * WalletSpec.md step 2 (§15): holds the wallet's mnemonic in memory while
- * unlocked, implements generate/import/encrypt/store/unlock/lock/reveal,
- * and runs the §5.1 HKDF synthetic-pool-mnemonic derivation.
+ * WalletSpec.md step 2 (§15): implements generate/import/encrypt/store/
+ * unlock/lock/reveal and runs the §5.1 HKDF synthetic-pool-mnemonic
+ * derivation. Step 3 additions: getAddress (the "trivial method"
+ * WalletBridge.js's postMessage plumbing is proven against), the vault-side
+ * postMessage RPC responder, and the reduced-isolation dev-mode banner
+ * (§3.2).
+ *
+ * §8.3's memory model, implemented as of step 3: an unlocked vault holds
+ * the derived DEK at rest (this._unlockedDek), not the decrypted mnemonic.
+ * _withUnlockedMnemonic decrypts the stored record on demand — a cheap
+ * local symmetric decrypt against the already-cached DEK, no new WebAuthn/
+ * password ceremony — for whatever single operation needs the mnemonic,
+ * rather than keeping a long-lived plaintext copy in memory.
  *
  * Deliberately PLAIN JS — no module()/Object.subclass(). This file is
  * served standalone by GET /wallet-vault (core/servers/IdentityServer.js),
@@ -53,7 +63,10 @@
   var RECORD_KEY = 'wallet-blob';
 
   function WalletVault() {
-    this._unlockedMnemonic = null; // in-memory only, never persisted
+    // §8.3: holds the derived DEK while unlocked, NOT the decrypted
+    // mnemonic — see _withUnlockedMnemonic below. In-memory only, never
+    // persisted, cleared on lock()/reload either way.
+    this._unlockedDek = null;
   }
 
   // ─── vault-deps lazy loading (mirrors WalletCrypto.js's withWalletCryptoLibs) ──
@@ -455,7 +468,10 @@
                 }
                 self._putRecord(record, function (err6) {
                   if (err6) return thenDo(err6);
-                  self._unlockedMnemonic = mnemonic;
+                  // §8.3: cache the DEK, not the mnemonic — see
+                  // _withUnlockedMnemonic. dekInfo.dek is already the
+                  // unwrapped 32-byte key from wrapDek above.
+                  self._unlockedDek = dekInfo.dek;
                   thenDo(null, { mnemonic: mnemonic });
                 });
               } catch (e) { thenDo(e); }
@@ -497,12 +513,16 @@
           self.withSodium(function (err4, sodium) {
             if (err4) return thenDo(err4);
             try {
+              // Decrypt here only to VERIFY the derived DEK is actually
+              // correct (a wrong password/credential must surface as an
+              // error, same as before) — the decrypted plaintext itself
+              // goes out of scope right after this check. §8.3: cache the
+              // DEK, not the mnemonic bytes.
               var nonce = sodium.from_base64(record.nonce, sodium.base64_variants.URLSAFE_NO_PADDING);
               var ct = sodium.from_base64(record.ciphertext, sodium.base64_variants.URLSAFE_NO_PADDING);
               var plaintext = sodium.crypto_secretbox_open_easy(ct, nonce, dek);
               if (!plaintext) return thenDo(new Error('unlock: authentication tag mismatch — wrong password/credential or corrupted data'));
-              var payload = JSON.parse(sodium.to_string(plaintext));
-              self._unlockedMnemonic = payload.mnemonic;
+              self._unlockedDek = dek;
               thenDo(null, { ok: true });
             } catch (e) { thenDo(e); }
           });
@@ -512,35 +532,167 @@
   };
 
   WalletVault.prototype.lock = function (thenDo) {
-    this._unlockedMnemonic = null;
+    this._unlockedDek = null;
     if (thenDo) thenDo(null, 'ok');
   };
 
   WalletVault.prototype.isUnlocked = function () {
-    return !!this._unlockedMnemonic;
+    return !!this._unlockedDek;
+  };
+
+  // §8.3: the vault holds the DEK at rest while unlocked, not the
+  // plaintext mnemonic. This decrypts the stored record on demand using
+  // the cached DEK — a cheap local symmetric decrypt, no new WebAuthn/
+  // password ceremony — for whatever single operation needs the mnemonic
+  // right now, rather than keeping a long-lived decrypted copy in memory.
+  // Note on limits: this narrows the window a live reference to the
+  // plaintext exists; it doesn't (and can't, from JS) guarantee the bytes
+  // are scrubbed from the engine's heap — GC timing isn't under our
+  // control. Real hardening, not a promise of erasure.
+  WalletVault.prototype._withUnlockedMnemonic = function (thenDo) {
+    var self = this;
+    if (!self._unlockedDek) return thenDo(new Error('vault is locked'));
+    self._getRecord(function (err, record) {
+      if (err) return thenDo(err);
+      if (!record) return thenDo(new Error('vault is locked'));
+      self.withSodium(function (err2, sodium) {
+        if (err2) return thenDo(err2);
+        try {
+          var nonce = sodium.from_base64(record.nonce, sodium.base64_variants.URLSAFE_NO_PADDING);
+          var ct = sodium.from_base64(record.ciphertext, sodium.base64_variants.URLSAFE_NO_PADDING);
+          var plaintext = sodium.crypto_secretbox_open_easy(ct, nonce, self._unlockedDek);
+          if (!plaintext) {
+            return thenDo(new Error('_withUnlockedMnemonic: authentication tag mismatch — cached DEK no longer matches the stored record'));
+          }
+          var payload = JSON.parse(sodium.to_string(plaintext));
+          thenDo(null, payload.mnemonic);
+        } catch (e) { thenDo(e); }
+      });
+    });
   };
 
   // Re-derives the KEK fresh (a real ceremony/password prompt) before
   // revealing, regardless of whether the vault is already unlocked in
   // memory — matches WalletSpec.md §3.4's revealMnemonic contract ("re-runs
   // a fresh WebAuthn/password ceremony first"). Rendered by the vault
-  // page's own UI; per §3.4 this never crosses a postMessage boundary
-  // (there's no boundary yet in step 2 — this page has no embedder).
+  // page's own UI; per §3.4 this never crosses the postMessage boundary in
+  // either direction, in any step — not exposed in the RPC responder below.
   WalletVault.prototype.revealMnemonic = function (options, thenDo) {
     var self = this;
     this.unlock(options, function (err) {
       if (err) return thenDo(err);
-      thenDo(null, self._unlockedMnemonic);
+      self._withUnlockedMnemonic(thenDo);
     });
   };
 
   // Requires an unlocked vault. Re-derives the synthetic pool mnemonic and
-  // master keys fresh from the in-memory real mnemonic every call — never
-  // cached, never persisted (§5.1, §5.3).
+  // master keys fresh from the on-demand-decrypted real mnemonic every
+  // call — never cached, never persisted (§5.1, §5.3).
   WalletVault.prototype.getPoolMasterKeys = function (thenDo) {
-    if (!this._unlockedMnemonic) return thenDo(new Error('getPoolMasterKeys: vault is locked'));
-    this.derivePoolMasterKeys(this._unlockedMnemonic, thenDo);
+    var self = this;
+    this._withUnlockedMnemonic(function (err, mnemonic) {
+      if (err) return thenDo(new Error('getPoolMasterKeys: ' + err.message));
+      self.derivePoolMasterKeys(mnemonic, thenDo);
+    });
   };
+
+  // §15 step 3: the "trivial method" WalletBridge's postMessage plumbing
+  // is proven against. §5.1: derived from the REAL mnemonic's account
+  // index 0 directly — the ordinary Ethereum spending key, never routed
+  // through the synthetic pool mnemonic. Requires an already-unlocked
+  // vault — deliberately simple; auto-prompting an unlock here is a later
+  // UI-flow concern (§8.3), not this method's job.
+  WalletVault.prototype.getAddress = function (thenDo) {
+    var self = this;
+    this._withUnlockedMnemonic(function (err, mnemonic) {
+      if (err) return thenDo(new Error('getAddress: ' + err.message));
+      self.withVaultLibs(function (err2, libs) {
+        if (err2) return thenDo(err2);
+        try {
+          thenDo(null, libs.mnemonicToAccount(mnemonic, { accountIndex: 0 }).address);
+        } catch (e) { thenDo(e); }
+      });
+    });
+  };
+
+  // ─── same-origin dev-fallback detection (§3.2) ──────────────────────────
+  // Self-contained — no coordination needed from whatever embeds this page.
+  // Succeeds only when genuinely same-origin (dev fallback, no real cross-
+  // origin infra exists in this codebase yet); a real cross-origin embed
+  // makes window.top.location inaccessible, so this throws and both the
+  // banner and the RPC responder's origin check below naturally stop
+  // trusting it — exactly the behavior wanted once a real second origin
+  // exists in a later step, with no code change required here.
+  function sameOriginParentOrigin() {
+    if (window.self === window.top) return null; // not embedded at all
+    try {
+      var origin = window.top.location.origin;
+      return origin === window.location.origin ? origin : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // ─── reduced-isolation dev-mode banner (§3.2's checklist item: "actually
+  //     renders and is unmissable when identityWalletOrigin is unset") ────
+
+  function renderReducedIsolationBannerIfNeeded() {
+    if (!sameOriginParentOrigin()) return;
+    var banner = document.createElement('div');
+    banner.textContent =
+      'Running in reduced-isolation dev mode — the wallet vault is NOT ' +
+      'cross-origin isolated. Never use this configuration in production.';
+    banner.style.cssText =
+      'position:fixed;top:0;left:0;right:0;z-index:2147483647;' +
+      'background:#b00020;color:#fff;font:bold 13px/1.4 sans-serif;' +
+      'padding:6px 10px;text-align:center;';
+    document.body.appendChild(banner);
+  }
+
+  // ─── postMessage RPC responder (vault side, §3.4) ───────────────────────
+  // Only registered when embedded — direct navigation to /wallet-vault (as
+  // in step 2's own testing) never sets this up, matching §3.3's shape:
+  // the vault's RPC surface only exists once something has actually
+  // embedded it.
+  //
+  // Method allowlist is deliberately narrow — only what's reachable as of
+  // WalletSpec.md §15 step 3: setup/unlock/lock/getAddress. revealMnemonic
+  // is NEVER exposed here — see its own comment above; it renders inside
+  // the vault's own UI and never crosses this boundary, in any step.
+
+  var RPC_METHODS = {
+    setup:      function (params, cb) { window.lively.identity.walletVault.setup(params, cb); },
+    unlock:     function (params, cb) { window.lively.identity.walletVault.unlock(params, cb); },
+    lock:       function (params, cb) { window.lively.identity.walletVault.lock(cb); },
+    getAddress: function (params, cb) { window.lively.identity.walletVault.getAddress(cb); }
+  };
+
+  function startRpcResponder() {
+    if (window.self === window.top) return; // not embedded, nothing to serve
+
+    window.addEventListener('message', function (event) {
+      var expectedOrigin = sameOriginParentOrigin();
+      if (!expectedOrigin || event.origin !== expectedOrigin) return;
+      if (event.source !== window.top) return;
+
+      var msg = event.data;
+      if (!msg || typeof msg.id === 'undefined' || !msg.method) return;
+
+      var handler = RPC_METHODS[msg.method];
+      if (!handler) {
+        return event.source.postMessage(
+          { id: msg.id, error: { message: 'Unknown method: ' + msg.method }, result: null },
+          expectedOrigin
+        );
+      }
+      handler(msg.params, function (err, result) {
+        event.source.postMessage(
+          { id: msg.id, error: err ? { message: err.message } : null, result: result === undefined ? null : result },
+          expectedOrigin
+        );
+      });
+    });
+  }
 
   // ─── singleton, namespaced to match WalletSpec.md §11's module map ─────────
 
@@ -551,5 +703,10 @@
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = WalletVault;
+  }
+
+  if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+    renderReducedIsolationBannerIfNeeded();
+    startRpcResponder();
   }
 })();

@@ -8,8 +8,9 @@
  * Run from the project root: node scripts/build-wallet-vault-libs.js
  * (also runs automatically via the postinstall npm script)
  *
- * Scoped lean to what step 2 (mnemonic generate/import/encrypt/store/unlock
- * + the §5.1 HKDF synthetic-pool-mnemonic derivation) actually needs:
+ * Scoped lean to what's needed through WalletSpec.md §15 step 3 (mnemonic
+ * generate/import/encrypt/store/unlock, the §5.1 HKDF synthetic-pool-
+ * mnemonic derivation, and getAddress):
  *   - @scure/bip39 (+ its English wordlist) for mnemonic generate/validate/
  *     entropy<->mnemonic conversion and BIP-39 seed derivation.
  *   - @noble/hashes for HKDF-SHA256 (the §5.1 derivation step).
@@ -17,11 +18,15 @@
  *     the vault needs from the SDK at this step; every Poseidon-based
  *     function it wraps takes secret material and is vault-only per §5.7,
  *     called directly here, never reimplemented.
- * NOT included yet (step 4's job, once Ethereum signing is being built):
- * @scure/bip32, @noble/curves, viem's HD/signing surface. Argon2id comes
- * from libsodium instead of a separate package (already required for
- * crypto_secretbox; the vault page loads /core/lib/libsodium/sodium.js
- * directly via its own <script> tag rather than re-bundling it here).
+ *   - viem/accounts' mnemonicToAccount — step 3 needs only the address
+ *     derivation slice of this (getAddress, account index 0 of the real
+ *     mnemonic per §5.1). Full HD/signing surface for actual transaction
+ *     building is still step 4's addition, not pulled forward here.
+ * NOT included yet (step 4's job): @scure/bip32, @noble/curves, viem's
+ * tx-signing surface. Argon2id comes from libsodium instead of a separate
+ * package (already required for crypto_secretbox; the vault page loads
+ * /core/lib/wallet/vault-sodium.js directly via its own <script> tag rather
+ * than re-bundling it here).
  *
  * Globals exposed on window after the script loads:
  *   window.walletVaultLibs.generateMnemonic(strength)
@@ -31,6 +36,7 @@
  *   window.walletVaultLibs.mnemonicToSeedSync(mnemonic)
  *   window.walletVaultLibs.hkdfSha256(ikm, salt, info, length)
  *   window.walletVaultLibs.generateMasterKeys(mnemonic)
+ *   window.walletVaultLibs.mnemonicToAccount(mnemonic, { accountIndex })
  */
 
 'use strict';
@@ -49,6 +55,7 @@ var entryContents = [
   "import { hkdf } from '@noble/hashes/hkdf.js';",
   "import { sha256 } from '@noble/hashes/sha2.js';",
   "import { generateMasterKeys } from '@0xbow/privacy-pools-core-sdk';",
+  "import { mnemonicToAccount } from 'viem/accounts';",
   "window.walletVaultLibs = {",
   "  generateMnemonic: function (strength) { return generateMnemonic(englishWordlist, strength || 128); },",
   "  validateMnemonic: function (mnemonic) { return validateMnemonic(mnemonic, englishWordlist); },",
@@ -57,6 +64,7 @@ var entryContents = [
   "  mnemonicToSeedSync: mnemonicToSeedSync,",
   "  hkdfSha256: function (ikm, salt, info, length) { return hkdf(sha256, ikm, salt, info, length); },",
   "  generateMasterKeys: generateMasterKeys,",
+  "  mnemonicToAccount: mnemonicToAccount,",
   "};",
 ].join('\n');
 

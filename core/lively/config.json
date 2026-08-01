@@ -66,6 +66,10 @@
     ["identityOrigin", "https://dev.tinylil.world", "WebAuthn expected origin — the full HTTPS origin where the Lively world is served."]
   ],
 
+  "wallet": [
+    ["identityWalletOrigin", null, "Origin the Wallet Vault iframe is served from (e.g. https://vault.tinylil.world). Must share a registrable domain with identityRpId (WalletSpec.md §3.2). Unset = reduced-isolation same-origin dev fallback — never leave unset in production."]
+  ],
+
   "auth": [
     ["userAuthEnabled", false, "Is user authentication enabled?"],
     ["cookieField", "lvUserData_2013-10-12", "Cookie used for user data"],
