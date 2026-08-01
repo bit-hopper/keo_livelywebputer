@@ -32,6 +32,7 @@
     "shelljs": "^0.8.5",
     "source-map-concat": "^1.0.1",
     "sqlite3": "^5.0.2",
+    "viem": "^2.22.14",
     "watch": "^0.17.1",
     "websocket": "^1.0.31",
     "ws": "^8.18.0",
@@ -57,6 +58,6 @@
     "test": "$npm_node_execpath bin/lk-test.js",
     "start": "$npm_node_execpath bin/lk-server.js",
     "build:postcard": "esbuild build/postcard-deps-entry.js --bundle --outfile=core/lib/postcard/postcard-deps.js --format=iife --platform=browser",
-    "postinstall": "node scripts/build-postcard-libs.js && node scripts/build-libsodium.js && node scripts/build-geo-libs.js"
+    "postinstall": "node scripts/build-postcard-libs.js && node scripts/build-libsodium.js && node scripts/build-geo-libs.js && node scripts/build-wallet-crypto-libs.js"
   }
 }
