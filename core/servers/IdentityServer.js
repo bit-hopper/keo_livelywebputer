@@ -415,6 +415,34 @@ function buildWarpDropPage() {
   );
 }
 
+// Serve the Wallet Vault page (WalletSpec.md §3.3, §11): a minimal,
+// genuinely standalone HTML shell — NOT a Lively world. No bootstrap.js, no
+// morphic stack, no PartsBin, no doit console, nothing capable of
+// evaluating arbitrary content. Just the page shell plus WalletVault.js
+// (itself plain JS, no module()/Object.subclass() — that machinery doesn't
+// exist without bootstrap.js). vault-deps.js and libsodium are NOT loaded
+// eagerly here — WalletVault.js lazy-injects both on first use, same
+// pattern lively.identity.Crypto/WalletCrypto already use for their own
+// dependency bundles.
+//
+// Local-dev-only note: today this route is registered on the same single
+// Express app as everything else (no vhost/subdomain split exists in this
+// codebase yet — see WalletSpec.md §3.2's cross-origin requirement, which
+// is step 3's concern, not this page's). Embedding this page cross-origin
+// inside the main world is not implemented yet; for now it's reached by
+// navigating to it directly.
+function buildWalletVaultPage() {
+  return (
+    "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" +
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
+    "<link rel=\"shortcut icon\" href=\"/core/media/lively.ico\">" +
+    "<title>Lively Wallet Vault</title>" +
+    "</head><body>" +
+    "<script src=\"/core/lively/identity/WalletVault.js\"></script>" +
+    "</body></html>"
+  );
+}
+
 // Serve a post card envelope as a standalone HTML page (§4.3).
 // Static mode: renders record.payload.snapshot as server-side HTML for fast
 // first paint, crawlers, and link previews — no Lively runtime required.
@@ -956,6 +984,22 @@ module.exports = function (route, app) {
 
   app.get("/warpdrop", function (req, res) {
     res.send(buildWarpDropPage());
+  });
+
+  // ─── Wallet Vault standalone entry point ───────────────────────────────────
+  // WalletSpec.md §3.3/§11 — no FilesBrowser, no saved world, no @handle
+  // required, and (unlike every other route in this file) no bootstrap.js
+  // either. CSP set as defense in depth even though the page's own content
+  // is static and trusted (§11).
+
+  app.get("/wallet-vault", function (req, res) {
+    // 'wasm-unsafe-eval' is required for libsodium's WASM build (Argon2id,
+    // §7.1) to instantiate — it's a narrow allowance for WebAssembly
+    // compilation specifically, distinct from 'unsafe-inline'/'unsafe-eval',
+    // and doesn't reopen the "no inline scripts" protection this header
+    // exists for (§11).
+    res.set("Content-Security-Policy", "script-src 'self' 'wasm-unsafe-eval'");
+    res.send(buildWalletVaultPage());
   });
 
   // ─── home manifest ─────────────────────────────────────────────────────────
