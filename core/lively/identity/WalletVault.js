@@ -6,7 +6,15 @@
  * derivation. Step 3 additions: getAddress (the "trivial method"
  * WalletBridge.js's postMessage plumbing is proven against), the vault-side
  * postMessage RPC responder, and the reduced-isolation dev-mode banner
- * (§3.2).
+ * (§3.2). Step 4 additions: signTransaction (§6.6 — never broadcasts,
+ * only signs), real setup UI (§8.1/§8.2 — mnemonic display + write-down
+ * ack + confirmation quiz for create, a plain textarea for import, all
+ * rendered inside this page, never returned to a caller), and a fix to a
+ * real gap step 3 introduced: setup()'s RPC-facing result used to include
+ * the plaintext mnemonic, which crossed the postMessage boundary the
+ * moment WalletBridge.setup() was called — undermining §3's whole premise.
+ * The RPC responder now strips it; setup's own return value to direct/
+ * local callers is unchanged.
  *
  * §8.3's memory model, implemented as of step 3: an unlocked vault holds
  * the derived DEK at rest (this._unlockedDek), not the decrypted mnemonic.
@@ -405,21 +413,48 @@
 
   // ─── setup / import / unlock / lock / reveal ────────────────────────────
 
-  // options: { mnemonic (import) | wordCount (fresh generate, default 12),
-  //            kdf: 'webauthn-prf' | 'argon2id', password (required for argon2id) }
-  // Calls thenDo(null, { mnemonic }) — the caller is expected to have shown
-  // the mnemonic to the user for confirmation before calling this (§8.1's
-  // verification-step UI is the vault page's own inline UI, not this method).
+  // options: { mode: 'create' | 'import' (default 'create'),
+  //            wordCount (create, default 12),
+  //            kdf: 'webauthn-prf' | 'argon2id', password (required for argon2id),
+  //            skipConfirmation, mnemonic — TEST-ONLY, see below }
+  //
+  // §8.1/§8.2: for a real caller, this always renders real UI *inside this
+  // page* and waits for it — mnemonic display + write-down ack + a
+  // confirmation quiz (create), or a plain textarea (import, mnemonic typed
+  // directly into this page, never passed in as a param) — before deriving
+  // any key material. Calls thenDo(null, { mnemonic, address }): this
+  // method's own return value still includes the mnemonic, for the vault
+  // page's own callers (e.g. its own UI code, or direct/local testing) —
+  // it's the RPC responder below, not this method, that enforces §3.4's
+  // rule that the mnemonic never crosses the postMessage boundary.
+  //
+  // skipConfirmation/mnemonic (import) are TEST-ONLY escape hatches for
+  // scripted/local calls (see scripts/wallet-vault-key-separation-test.js
+  // and this project's own browser-console testing) so automated checks
+  // don't need a human clicking through a quiz. The RPC responder actively
+  // strips both before calling this method — a real postMessage caller
+  // cannot set them, by construction, not just by convention.
   WalletVault.prototype.setup = function (options, thenDo) {
     var self = this;
     options = options || {};
+    var mode = options.mode === 'import' ? 'import' : 'create';
 
-    function withMnemonic(cb) {
-      if (options.mnemonic) return cb(null, options.mnemonic);
-      self.generateMnemonic(options.wordCount || 12, cb);
+    function obtainMnemonic(cb) {
+      if (mode === 'import') {
+        if (options.skipConfirmation && options.mnemonic) return cb(null, options.mnemonic);
+        return self._showImportForm(cb);
+      }
+      self.generateMnemonic(options.wordCount || 12, function (err, mnemonic) {
+        if (err) return cb(err);
+        if (options.skipConfirmation) return cb(null, mnemonic);
+        self._showMnemonicConfirmation(mnemonic, function (err2) {
+          if (err2) return cb(err2);
+          cb(null, mnemonic);
+        });
+      });
     }
 
-    withMnemonic(function (err, mnemonic) {
+    obtainMnemonic(function (err, mnemonic) {
       if (err) return thenDo(err);
       self.validateMnemonic(mnemonic, function (err2, valid) {
         if (err2) return thenDo(err2);
@@ -472,12 +507,237 @@
                   // _withUnlockedMnemonic. dekInfo.dek is already the
                   // unwrapped 32-byte key from wrapDek above.
                   self._unlockedDek = dekInfo.dek;
-                  thenDo(null, { mnemonic: mnemonic });
+                  self.withVaultLibs(function (err7, libs) {
+                    if (err7) return thenDo(err7);
+                    try {
+                      var address = libs.mnemonicToAccount(mnemonic, { accountIndex: 0 }).address;
+                      thenDo(null, { mnemonic: mnemonic, address: address });
+                    } catch (e) { thenDo(e); }
+                  });
                 });
               } catch (e) { thenDo(e); }
             });
           });
         });
+      });
+    });
+  };
+
+  // ─── setup UI: mnemonic display + confirmation quiz, import textarea ───
+  // §8.1/§8.2: this is the "renders inside the vault iframe, never as a
+  // postMessage payload" UI the setup() flow above waits on. Plain DOM,
+  // matching this file's existing no-framework style. The overlay uses a
+  // z-index just under the reduced-isolation banner's max value so the
+  // banner (when present) stays visible above it, with top padding so the
+  // banner strip never covers this content.
+
+  WalletVault.prototype._overlayContainer = function () {
+    var el = document.createElement('div');
+    el.style.cssText =
+      'position:fixed;inset:0;z-index:2147483646;overflow:auto;' +
+      'background:#141414;color:#eee;font:14px/1.5 -apple-system,sans-serif;' +
+      'box-sizing:border-box;padding:40px 24px 24px 24px;';
+    document.body.appendChild(el);
+    return el;
+  };
+
+  // mnemonic: string (already generated). onDone: thenDo(err) — no result,
+  // just "confirmed, proceed" or "failed/cancelled."
+  WalletVault.prototype._showMnemonicConfirmation = function (mnemonic, onDone) {
+    var words = mnemonic.trim().split(/\s+/);
+    var container = this._overlayContainer();
+
+    function renderWriteDownScreen() {
+      container.innerHTML = '';
+
+      var heading = document.createElement('h2');
+      heading.textContent = 'Write down your recovery phrase';
+      container.appendChild(heading);
+
+      var warn = document.createElement('p');
+      warn.textContent =
+        'This is the ONLY way to recover your wallet. Write it down and ' +
+        'store it somewhere safe — it will not be shown again unless ' +
+        'you unlock and reveal it later.';
+      container.appendChild(warn);
+
+      var grid = document.createElement('div');
+      grid.style.cssText = 'display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:16px 0;max-width:480px;';
+      words.forEach(function (w, i) {
+        var cell = document.createElement('div');
+        cell.style.cssText = 'background:#262626;padding:8px;border-radius:4px;font-family:monospace;';
+        cell.textContent = (i + 1) + '. ' + w;
+        grid.appendChild(cell);
+      });
+      container.appendChild(grid);
+
+      var ackLabel = document.createElement('label');
+      ackLabel.style.cssText = 'display:block;margin:16px 0;';
+      var ackBox = document.createElement('input');
+      ackBox.type = 'checkbox';
+      ackLabel.appendChild(ackBox);
+      ackLabel.appendChild(document.createTextNode(' I have written this phrase down and stored it safely'));
+      container.appendChild(ackLabel);
+
+      var continueBtn = document.createElement('button');
+      continueBtn.textContent = 'Continue';
+      continueBtn.disabled = true;
+      ackBox.addEventListener('change', function () { continueBtn.disabled = !ackBox.checked; });
+      continueBtn.addEventListener('click', renderQuizScreen);
+      container.appendChild(continueBtn);
+
+      var cancelBtn = document.createElement('button');
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.style.marginLeft = '8px';
+      cancelBtn.addEventListener('click', function () {
+        document.body.removeChild(container);
+        onDone(new Error('Setup cancelled'));
+      });
+      container.appendChild(cancelBtn);
+    }
+
+    function renderQuizScreen() {
+      container.innerHTML = '';
+
+      var heading = document.createElement('h2');
+      heading.textContent = 'Confirm your recovery phrase';
+      container.appendChild(heading);
+
+      var positions = [];
+      while (positions.length < Math.min(3, words.length)) {
+        var idx = Math.floor(Math.random() * words.length);
+        if (positions.indexOf(idx) === -1) positions.push(idx);
+      }
+      positions.sort(function (a, b) { return a - b; });
+
+      var inputs = positions.map(function (idx) {
+        var label = document.createElement('label');
+        label.style.cssText = 'display:block;margin:8px 0;max-width:240px;';
+        label.textContent = 'Word #' + (idx + 1) + ':';
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.autocomplete = 'off';
+        input.spellcheck = false;
+        input.style.cssText = 'display:block;margin-top:4px;width:100%;box-sizing:border-box;';
+        label.appendChild(input);
+        container.appendChild(label);
+        return { idx: idx, input: input };
+      });
+
+      var errorMsg = document.createElement('p');
+      errorMsg.style.cssText = 'color:#f66;display:none;';
+      errorMsg.textContent = "Those don't match — check your written-down copy and try again.";
+      container.appendChild(errorMsg);
+
+      var confirmBtn = document.createElement('button');
+      confirmBtn.textContent = 'Confirm';
+      confirmBtn.addEventListener('click', function () {
+        var allCorrect = inputs.every(function (pair) {
+          return pair.input.value.trim().toLowerCase() === words[pair.idx].toLowerCase();
+        });
+        if (!allCorrect) {
+          errorMsg.style.display = 'block';
+          return;
+        }
+        document.body.removeChild(container);
+        onDone(null);
+      });
+      container.appendChild(confirmBtn);
+
+      var backBtn = document.createElement('button');
+      backBtn.textContent = 'Back';
+      backBtn.style.marginLeft = '8px';
+      backBtn.addEventListener('click', renderWriteDownScreen);
+      container.appendChild(backBtn);
+
+      var cancelBtn = document.createElement('button');
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.style.marginLeft = '8px';
+      cancelBtn.addEventListener('click', function () {
+        document.body.removeChild(container);
+        onDone(new Error('Setup cancelled'));
+      });
+      container.appendChild(cancelBtn);
+    }
+
+    renderWriteDownScreen();
+  };
+
+  // onDone: thenDo(err, mnemonic) — the vault reads the phrase directly
+  // from its own <textarea>, never a param passed in from the caller
+  // (§8.2: "never typed into a main-world DOM node").
+  WalletVault.prototype._showImportForm = function (onDone) {
+    var self = this;
+    var container = this._overlayContainer();
+
+    var heading = document.createElement('h2');
+    heading.textContent = 'Import your recovery phrase';
+    container.appendChild(heading);
+
+    var info = document.createElement('p');
+    info.textContent = 'Enter your 12 or 24-word recovery phrase, separated by spaces.';
+    container.appendChild(info);
+
+    var textarea = document.createElement('textarea');
+    textarea.rows = 4;
+    textarea.autocomplete = 'off';
+    textarea.spellcheck = false;
+    textarea.style.cssText = 'width:100%;max-width:480px;box-sizing:border-box;font:14px monospace;display:block;';
+    container.appendChild(textarea);
+
+    var errorMsg = document.createElement('p');
+    errorMsg.style.cssText = 'color:#f66;display:none;';
+    container.appendChild(errorMsg);
+
+    var continueBtn = document.createElement('button');
+    continueBtn.textContent = 'Continue';
+    continueBtn.style.marginTop = '12px';
+    continueBtn.addEventListener('click', function () {
+      var mnemonic = textarea.value.trim().replace(/\s+/g, ' ');
+      self.validateMnemonic(mnemonic, function (err, valid) {
+        if (err || !valid) {
+          errorMsg.textContent = "That doesn't look like a valid recovery phrase — check the words and try again.";
+          errorMsg.style.display = 'block';
+          return;
+        }
+        document.body.removeChild(container);
+        onDone(null, mnemonic);
+      });
+    });
+    container.appendChild(continueBtn);
+
+    var cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.style.cssText = 'margin-top:12px;margin-left:8px;';
+    cancelBtn.addEventListener('click', function () {
+      document.body.removeChild(container);
+      onDone(new Error('Import cancelled'));
+    });
+    container.appendChild(cancelBtn);
+  };
+
+  // ─── signing (§3.4, §6.6) ────────────────────────────────────────────────
+
+  // unsignedTx: viem-shaped tx params (to, value, nonce, gas, maxFeePerGas,
+  // maxPriorityFeePerGas, chainId, ...) — built by the caller (main world;
+  // no secrets in an unsigned tx). Requires an already-unlocked vault, same
+  // "deliberately simple" reasoning as getAddress. Returns thenDo(null,
+  // signedRawTxHex) — a fully serialized, ready-to-broadcast raw
+  // transaction. This method never broadcasts anything itself; per
+  // WalletSpec.md §15 step 4's own scope, nothing in this codebase calls
+  // eth_sendRawTransaction yet at all.
+  WalletVault.prototype.signTransaction = function (unsignedTx, thenDo) {
+    var self = this;
+    this._withUnlockedMnemonic(function (err, mnemonic) {
+      if (err) return thenDo(new Error('signTransaction: ' + err.message));
+      self.withVaultLibs(function (err2, libs) {
+        if (err2) return thenDo(err2);
+        try {
+          var account = libs.mnemonicToAccount(mnemonic, { accountIndex: 0 });
+          account.signTransaction(unsignedTx)
+            .then(function (signed) { thenDo(null, signed); })
+            .catch(function (e) { thenDo(e); });
+        } catch (e) { thenDo(e); }
       });
     });
   };
@@ -656,15 +916,36 @@
   // embedded it.
   //
   // Method allowlist is deliberately narrow — only what's reachable as of
-  // WalletSpec.md §15 step 3: setup/unlock/lock/getAddress. revealMnemonic
-  // is NEVER exposed here — see its own comment above; it renders inside
-  // the vault's own UI and never crosses this boundary, in any step.
+  // WalletSpec.md §15 step 4: setup/unlock/lock/getAddress/isSetUp/
+  // signTransaction. revealMnemonic is NEVER exposed here — see its own
+  // comment above; it renders inside the vault's own UI and never crosses
+  // this boundary, in any step.
+  //
+  // setup's wrapper is not a passthrough: it strips skipConfirmation and
+  // (for import) mnemonic from the incoming params before calling through —
+  // those are TEST-ONLY escape hatches for direct/local calls (see
+  // setup()'s own comment), and a real postMessage caller must not be able
+  // to set them just by including them in the message it sends. It also
+  // strips mnemonic from the OUTGOING result — §3.4: the mnemonic must
+  // never cross this boundary in either direction, in any flow, including
+  // setup (confirmation already happened inside this page's own UI before
+  // setup() even resolves).
 
   var RPC_METHODS = {
-    setup:      function (params, cb) { window.lively.identity.walletVault.setup(params, cb); },
-    unlock:     function (params, cb) { window.lively.identity.walletVault.unlock(params, cb); },
-    lock:       function (params, cb) { window.lively.identity.walletVault.lock(cb); },
-    getAddress: function (params, cb) { window.lively.identity.walletVault.getAddress(cb); }
+    setup: function (params, cb) {
+      var safeParams = {};
+      for (var k in (params || {})) {
+        if (k !== 'skipConfirmation' && k !== 'mnemonic') safeParams[k] = params[k];
+      }
+      window.lively.identity.walletVault.setup(safeParams, function (err, result) {
+        cb(err, result ? { address: result.address } : result);
+      });
+    },
+    unlock:          function (params, cb) { window.lively.identity.walletVault.unlock(params, cb); },
+    lock:            function (params, cb) { window.lively.identity.walletVault.lock(cb); },
+    getAddress:      function (params, cb) { window.lively.identity.walletVault.getAddress(cb); },
+    isSetUp:         function (params, cb) { window.lively.identity.walletVault.isSetUp(cb); },
+    signTransaction: function (params, cb) { window.lively.identity.walletVault.signTransaction(params, cb); }
   };
 
   function startRpcResponder() {

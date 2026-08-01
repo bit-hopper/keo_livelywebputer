@@ -154,7 +154,9 @@ module("lively.identity.MenuBarEntry")
         },
 
         openWallet: function openWallet() {
-          $world.alert("Wallet — coming soon");
+          lively.require("lively.identity.Wallet").toRun(function () {
+            lively.identity.Wallet.open();
+          });
         },
 
         openMyProfile: function openMyProfile() {

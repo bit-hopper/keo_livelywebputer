@@ -9,11 +9,13 @@
  *
  * Holds no secrets itself (§3.3's table) — every method here is a thin
  * postMessage round trip; whatever crosses the boundary in each direction
- * is exactly what §3.4's table allows. This step only wires four methods —
- * setup/unlock/lock/getAddress — matching what WalletVault.js's RPC
- * responder actually implements as of step 3. revealMnemonic is
- * deliberately never wired here at all: per §3.4 it never crosses the
- * postMessage boundary in either direction, in any step.
+ * is exactly what §3.4's table allows. As of step 4: setup/unlock/lock/
+ * getAddress/isSetUp/signTransaction, matching WalletVault.js's RPC
+ * responder. revealMnemonic is deliberately never wired here at all: per
+ * §3.4 it never crosses the postMessage boundary in either direction, in
+ * any step. setup()'s result here is {address} only — WalletVault.js's RPC
+ * responder strips the mnemonic before it ever reaches this file (a step-4
+ * fix; see that file's own header for what the gap was).
  *
  * _vaultOrigin resolution: lively.Config.get('identityWalletOrigin') if
  * configured, else window.location.origin — the unconfigured case IS §3.2's
@@ -86,6 +88,39 @@ Object.subclass('lively.identity.WalletBridge',
 
 },
 
+// ─── vault iframe visibility (§8.1/§8.2) ────────────────────────────────
+// Position-only — the iframe is NEVER reparented. Moving an iframe to a
+// new DOM parent reloads it in most browsers, which would wipe
+// WalletVault's in-memory _unlockedDek mid-flow (found while planning
+// WalletSetupDialog.js, step 4). "Showing it inside a dialog" just means
+// positioning this permanently-body-attached iframe with fixed CSS
+// coordinates matching the dialog's on-screen rect — the iframe's DOM
+// parent (document.body) never changes.
+
+'visibility', {
+
+  // rect: { top, left, width, height } in viewport pixels — e.g. from
+  // dialog.renderContext().shapeNode.getBoundingClientRect(). Creates the
+  // iframe first if this is the very first call() (setup/unlock/etc) a
+  // caller has made.
+  showVaultFrame: function(rect, thenDo) {
+    this._withVaultFrame(function(err, iframe) {
+      if (err) { if (thenDo) thenDo(err); return; }
+      iframe.style.cssText =
+        'position:fixed;z-index:9000;border:none;' +
+        'top:' + rect.top + 'px;left:' + rect.left + 'px;' +
+        'width:' + rect.width + 'px;height:' + rect.height + 'px;' +
+        'display:block;';
+      if (thenDo) thenDo(null);
+    });
+  },
+
+  hideVaultFrame: function() {
+    if (this._vaultFrame) this._vaultFrame.style.display = 'none';
+  }
+
+},
+
 // ─── postMessage RPC (§3.4, exact protocol shape) ───────────────────────
 
 'rpc', {
@@ -124,14 +159,16 @@ Object.subclass('lively.identity.WalletBridge',
 
 },
 
-// ─── convenience wrappers (§15 step 3's subset) ─────────────────────────
+// ─── convenience wrappers (§15 step 4's subset) ─────────────────────────
 
 'methods', {
 
   setup: function(options, thenDo) { this.call('setup', options, thenDo); },
   unlock: function(options, thenDo) { this.call('unlock', options, thenDo); },
   lock: function(thenDo) { this.call('lock', null, thenDo); },
-  getAddress: function(thenDo) { this.call('getAddress', null, thenDo); }
+  getAddress: function(thenDo) { this.call('getAddress', null, thenDo); },
+  isSetUp: function(thenDo) { this.call('isSetUp', null, thenDo); },
+  signTransaction: function(unsignedTx, thenDo) { this.call('signTransaction', unsignedTx, thenDo); }
 
 });
 

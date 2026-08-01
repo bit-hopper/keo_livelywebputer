@@ -67,7 +67,8 @@
   ],
 
   "wallet": [
-    ["identityWalletOrigin", null, "Origin the Wallet Vault iframe is served from (e.g. https://vault.tinylil.world). Must share a registrable domain with identityRpId (WalletSpec.md §3.2). Unset = reduced-isolation same-origin dev fallback — never leave unset in production."]
+    ["identityWalletOrigin", null, "Origin the Wallet Vault iframe is served from (e.g. https://vault.tinylil.world). Must share a registrable domain with identityRpId (WalletSpec.md §3.2). Unset = reduced-isolation same-origin dev fallback — never leave unset in production."],
+    ["ethereumRpcUrl", null, "Ethereum mainnet JSON-RPC endpoint. REQUIRED for balance/send — no default shipped (WalletSpec.md §12, §14 item 1). Set a real value in localconfig.js, not here."]
   ],
 
   "auth": [
