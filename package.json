@@ -64,6 +64,6 @@
     "test": "$npm_node_execpath bin/lk-test.js",
     "start": "$npm_node_execpath bin/lk-server.js",
     "build:postcard": "esbuild build/postcard-deps-entry.js --bundle --outfile=core/lib/postcard/postcard-deps.js --format=iife --platform=browser",
-    "postinstall": "node scripts/build-postcard-libs.js && node scripts/build-libsodium.js && node scripts/build-geo-libs.js && node scripts/build-wallet-crypto-libs.js && node scripts/build-wallet-vault-libs.js && node scripts/build-wallet-vault-sodium.js"
+    "postinstall": "node scripts/build-postcard-libs.js && node scripts/build-libsodium.js && node scripts/build-geo-libs.js && node scripts/build-wallet-crypto-libs.js && node scripts/build-wallet-vault-libs.js && node scripts/build-wallet-vault-sodium.js && node scripts/build-privacy-pool-client-libs.js"
   }
 }
