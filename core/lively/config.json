@@ -68,7 +68,9 @@
 
   "wallet": [
     ["identityWalletOrigin", null, "Origin the Wallet Vault iframe is served from (e.g. https://vault.tinylil.world). Must share a registrable domain with identityRpId (WalletSpec.md §3.2). Unset = reduced-isolation same-origin dev fallback — never leave unset in production."],
-    ["ethereumRpcUrl", null, "Ethereum mainnet JSON-RPC endpoint. REQUIRED for balance/send — no default shipped (WalletSpec.md §12, §14 item 1). Set a real value in localconfig.js, not here."]
+    ["ethereumRpcUrl", null, "Ethereum mainnet JSON-RPC endpoint. REQUIRED for balance/send — no default shipped (WalletSpec.md §12, §14 item 1). Set a real value in localconfig.js, not here."],
+    ["privacyPoolAspEndpoint", "https://api.0xbow.io", "Association Set Provider HTTP API base URL (WalletSpec.md §6.3, §12, §15 step 5). Real production host — live-verified from a browser at this app's own origin, including CORS preflight for the custom X-Pool-Scope header every call needs. No auth required. core/servers/ASPStubServer.js (/nodejs/ASPStubServer) remains available as an offline/no-network fallback — point this at it instead if working without internet access; that stub always reports an empty association set, never a real one."],
+    ["privacyPoolRelayerEndpoint", null, "Relayer HTTP API base URL, implementing WalletSpec.md §6.5's confirmed /relayer/quote, /relayer/request, /relayer/details contract. Set to the local RelayerStubServer.js (/nodejs/RelayerStubServer) for development; that stub errors on /relayer/request rather than broadcasting anything. Direct-submission withdrawal needs no relayer at all."]
   ],
 
   "auth": [
