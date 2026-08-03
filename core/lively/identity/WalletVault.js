@@ -14,7 +14,12 @@
  * the plaintext mnemonic, which crossed the postMessage boundary the
  * moment WalletBridge.setup() was called — undermining §3's whole premise.
  * The RPC responder now strips it; setup's own return value to direct/
- * local callers is unchanged.
+ * local callers is unchanged. Step 6 additions: a same-origin ZK proving
+ * Worker (§5.6, WalletVaultProver.worker.js) and _proveCommitmentForTest/
+ * _proveWithdrawalForTest — test-only entry points proving the Worker
+ * plumbing works, deliberately not RPC-exposed; real proveCommitment/
+ * proveWithdrawal (deriving secrets from unlocked wallet state) is step
+ * 7's job.
  *
  * §8.3's memory model, implemented as of step 3: an unlocked vault holds
  * the derived DEK at rest (this._unlockedDek), not the decrypted mnemonic.
@@ -740,6 +745,73 @@
         } catch (e) { thenDo(e); }
       });
     });
+  };
+
+  // ─── ZK proving Worker (§5.6, §15 step 6) ───────────────────────────────
+  // Same-origin Worker, spawned once and reused. postMessage to/from this
+  // Worker never crosses §3's cross-origin boundary — the Worker and this
+  // page are the same trusted realm (§5.6's own note).
+  //
+  // Scope boundary, matching the spec's own step 6/7 split: this only
+  // proves the Worker plumbing itself works — _proveCommitmentForTest below
+  // is deliberately NOT exposed through the postMessage RPC responder, and
+  // takes already-computed witness values rather than deriving them from
+  // unlocked wallet state. Wiring real proveCommitment/proveWithdrawal RPC
+  // methods (deriving secrets from the unlocked mnemonic, tied into
+  // setup/unlock state) is step 7's job.
+
+  WalletVault.prototype._withProverWorker = function (thenDo) {
+    if (this._proverWorker) return thenDo(null, this._proverWorker);
+    if (typeof Worker === 'undefined') {
+      return thenDo(new Error('_withProverWorker: Worker is not available in this context'));
+    }
+    try {
+      var worker = new Worker('/core/lively/identity/WalletVaultProver.worker.js');
+      this._proverWorker = worker;
+      this._proverPending = {};
+      this._proverNextId = 1;
+      var self = this;
+      worker.addEventListener('message', function (event) {
+        var msg = event.data;
+        if (!msg || typeof msg.id === 'undefined') return;
+        var pending = self._proverPending[msg.id];
+        if (!pending) return;
+        if (msg.type === 'progress') {
+          if (pending.onProgress) pending.onProgress(msg.phase);
+          return;
+        }
+        if (msg.type === 'result') {
+          delete self._proverPending[msg.id];
+          if (msg.error) return pending.thenDo(new Error(msg.error.message));
+          pending.thenDo(null, { proof: msg.proof, publicSignals: msg.publicSignals });
+        }
+      });
+      thenDo(null, worker);
+    } catch (e) { thenDo(e); }
+  };
+
+  WalletVault.prototype._proverCall = function (method, params, onProgress, thenDo) {
+    var self = this;
+    this._withProverWorker(function (err, worker) {
+      if (err) return thenDo(err);
+      var id = self._proverNextId++;
+      self._proverPending[id] = { thenDo: thenDo, onProgress: onProgress };
+      worker.postMessage({ id: id, method: method, params: params });
+    });
+  };
+
+  // Test-only entry point for §15 step 6's own required check ("provable
+  // in isolation... check the proof verifies") — drives the real Worker
+  // end-to-end from inside the vault page, the same way
+  // scripts/wallet-vault-prover-isolation-test.js drives the same
+  // underlying SDK classes directly from Node. Both should produce a
+  // proof that verifies true for the same inputs.
+  WalletVault.prototype._proveCommitmentForTest = function (value, label, nullifier, secret, onProgress, thenDo) {
+    this._proverCall('proveCommitment', { value: value, label: label, nullifier: nullifier, secret: secret }, onProgress, thenDo);
+  };
+
+  WalletVault.prototype._proveWithdrawalForTest = function (commitment, input, onProgress, thenDo) {
+    this._proverCall('proveWithdrawal', { commitment: commitment, input: input }, onProgress, thenDo);
   };
 
   // options: { password } for the argon2id path; {} to trigger a WebAuthn
