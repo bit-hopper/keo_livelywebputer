@@ -15,6 +15,8 @@
  * method that reports progress mid-flight (loading_circuits/
  * generating_proof/verifying_proof, §5.6) rather than a single response —
  * see call()'s own comment for how that extends the postMessage protocol.
+ * Step 9 adds proveCommitment (§6.6, ragequit's proof) — same progress
+ * shape as proveWithdrawal, reused as-is.
  * revealMnemonic is deliberately never wired here at all: per
  * §3.4 it never crosses the postMessage boundary in either direction, in
  * any step. setup()'s result here is {address} only — WalletVault.js's RPC
@@ -202,6 +204,14 @@ Object.subclass('lively.identity.WalletBridge',
   // call. Returns { proof, publicSignals } — both public (§3.4's table).
   proveWithdrawal: function(params, onProgress, thenDo) {
     this.call('proveWithdrawal', params, thenDo, onProgress);
+  },
+
+  // §6.6, §15 step 9: params { scope, index, label, value }, all public —
+  // same shape as deriveDepositSecrets' inputs, since a ragequit proof
+  // spends the original deposit's own nullifier/secret rather than deriving
+  // a new pair. Same progress/result shape as proveWithdrawal.
+  proveCommitment: function(params, onProgress, thenDo) {
+    this.call('proveCommitment', params, thenDo, onProgress);
   }
 
 });

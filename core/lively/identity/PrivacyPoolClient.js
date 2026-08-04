@@ -20,10 +20,15 @@
  * adds the real deposit flow (§6.2, §6.6) — see the 'deposit' section
  * below. Step 8 adds the real withdrawal flow, direct-submit only (§6.4,
  * §6.4.1, §6.6) — see the 'withdrawal' section: Merkle proof building
- * against the ASP's own leaf data, formatWithdrawalProof's pB-swap, and
+ * against the ASP's own leaf data, formatProof's pB-swap, and
  * the simulate→sign→broadcast call against PrivacyPool.withdraw()
- * directly (not the Entrypoint — that's deposit-only). Ragequit and full
- * chain-event scan for spendable commitments (§10) are still later steps'
+ * directly (not the Entrypoint — that's deposit-only). Step 9 adds the real
+ * ragequit flow (§6.6, §9.5) — see the 'ragequit' section below: reuses
+ * formatProof (renamed from formatWithdrawalProof, since it's the exact
+ * same transform for both proof types) and the same simulate→sign-via-
+ * vault→broadcast shape, called against PrivacyPool.ragequit(proof)'s
+ * single-argument form instead of withdraw()'s two-argument one. Full
+ * chain-event scan for spendable commitments (§10) is still a later step's
  * addition to this same file.
  *
  * buildAndSignTransfer deliberately never broadcasts (no
@@ -733,8 +738,11 @@ Object.subclass('lively.identity.PrivacyPoolClient',
   // [pi_b[0][0], pi_b[0][1]] — confirmed against both contracts.service.ts
   // and useExit.ts's independent reimplementation of the same swap, which
   // agree exactly. proof: { proof: {pi_a, pi_b, pi_c}, publicSignals }, the
-  // exact shape the vault's proveWithdrawal RPC call resolves with.
-  formatWithdrawalProof: function(proof) {
+  // exact shape both the vault's proveWithdrawal AND proveCommitment RPC
+  // calls resolve with — contracts.service.ts uses this one transform for
+  // both WithdrawalProof and CommitmentProof (§15 step 9's own 'ragequit'
+  // section below reuses it directly rather than duplicating it).
+  formatProof: function(proof) {
     var toHex = lively.identity.walletCrypto.bigintToHex;
     return {
       pA: [toHex(proof.proof.pi_a[0]), toHex(proof.proof.pi_a[1])],
@@ -798,7 +806,7 @@ Object.subclass('lively.identity.PrivacyPoolClient',
               };
               lively.identity.walletBridge.proveWithdrawal(proveParams, onProgress, function(err5, proofResult) {
                 if (err5) return thenDo(err5);
-                var formattedProof = self.formatWithdrawalProof(proofResult);
+                var formattedProof = self.formatProof(proofResult);
                 var withdrawal = { processooor: options.recipient, data: '0x' };
                 var data = libs.encodeFunctionData({
                   abi: libs.IPrivacyPoolABI,
@@ -900,6 +908,160 @@ Object.subclass('lively.identity.PrivacyPoolClient',
         } catch (e) { /* not this log's event — keep scanning */ }
       }
       thenDo(new Error('parseWithdrawnEvent: no Withdrawn event found in this receipt'));
+    });
+  }
+
+},
+
+// ─── ragequit / "Exit" (§6.6, §9.5, §15 step 9) ──────────────────────────
+// §6.6's corrected finding, from reading PrivacyPool.sol's actual source
+// directly (both current main and the v1.2.0 tag matching this project's
+// installed SDK): ragequit() has NO on-chain timing gate — only an
+// OnlyOriginalDepositor check (always satisfied here, since this wallet
+// only ever calls from its own address) and an unspent-commitment check.
+// The vendored ABI's NotYetRagequitteable error is never actually thrown by
+// deployed contract code — dead/vestigial, not something this client needs
+// to handle or work around. Reuses the SAME nullifier/secret the deposit
+// itself used (generateDepositSecrets(scope, index) again inside the
+// vault's proveCommitment, §6.1) — no change output, no Merkle proofs,
+// since ragequit bypasses the ASP root check entirely by design.
+// ragequit()'s on-chain call shape takes a SINGLE RagequitProof argument,
+// unlike withdraw()'s (withdrawal, proof) pair.
+
+'ragequit', {
+
+  // Full end-to-end: runs the vault's proveCommitment (real ZK proving,
+  // §5.6 — onProgress fires the same three phases as proveWithdrawal),
+  // formats the result (formatProof, shared with withdrawal, §6.6), then
+  // validates (simulateContract) and signs (via the vault) the real
+  // PrivacyPool.ragequit(proof) call. Never broadcasts by itself — see
+  // broadcastRagequit, matching the deposit/withdrawal shape.
+  //
+  // options: { commitment: { label, value, index } (same shape
+  // getLocalDeposits/getDepositsByLabel already produce) }. Calls
+  // thenDo(null, { signedRawTx, unsignedTx, proof, publicSignals }).
+  buildAndSignRagequit: function(options, onProgress, thenDo) {
+    var self = this;
+    var poolAddress = this._ethPoolAddress();
+    if (!poolAddress) return thenDo(new Error('PrivacyPoolClient: privacyPoolEthPoolAddress is not configured'));
+    this._withPublicClient(function(err, client) {
+      if (err) return thenDo(err);
+      self.withClientLibs(function(err2, libs) {
+        if (err2) return thenDo(err2);
+        self.getEthPoolScope(function(err3, scope) {
+          if (err3) return thenDo(err3);
+          lively.identity.walletBridge.getAddress(function(err4, fromAddress) {
+            if (err4) return thenDo(err4);
+            client.getChainId().then(function(chainId) {
+              var proveParams = {
+                scope: scope,
+                index: BigInt(options.commitment.index),
+                label: BigInt(options.commitment.label),
+                value: BigInt(options.commitment.value)
+              };
+              lively.identity.walletBridge.proveCommitment(proveParams, onProgress, function(err5, proofResult) {
+                if (err5) return thenDo(err5);
+                var formattedProof = self.formatProof(proofResult);
+                var data = libs.encodeFunctionData({
+                  abi: libs.IPrivacyPoolABI,
+                  functionName: 'ragequit',
+                  args: [formattedProof]
+                });
+                client.simulateContract({
+                  address: poolAddress,
+                  abi: libs.IPrivacyPoolABI,
+                  functionName: 'ragequit',
+                  args: [formattedProof],
+                  account: fromAddress
+                }).then(function() {
+                  return client.estimateContractGas({
+                    address: poolAddress,
+                    abi: libs.IPrivacyPoolABI,
+                    functionName: 'ragequit',
+                    args: [formattedProof],
+                    account: fromAddress
+                  });
+                }).then(function(gas) {
+                  Promise.all([
+                    client.getTransactionCount({ address: fromAddress }),
+                    client.getGasPrice()
+                  ]).then(function(results) {
+                    var nonce = results[0], gasPrice = results[1];
+                    var unsignedTx = {
+                      to: poolAddress,
+                      value: 0n,
+                      data: data,
+                      nonce: nonce,
+                      gas: gas,
+                      maxFeePerGas: gasPrice * 2n,
+                      maxPriorityFeePerGas: gasPrice,
+                      chainId: chainId
+                    };
+                    lively.identity.walletBridge.signTransaction(unsignedTx, function(err6, signedRawTx) {
+                      if (err6) return thenDo(err6);
+                      thenDo(null, {
+                        signedRawTx: signedRawTx,
+                        unsignedTx: unsignedTx,
+                        proof: formattedProof,
+                        publicSignals: proofResult.publicSignals
+                      });
+                    });
+                  }).catch(function(e) { thenDo(e); });
+                }).catch(function(e) { thenDo(e); });
+              });
+            }).catch(function(e) { thenDo(e); });
+          });
+        });
+      });
+    });
+  },
+
+  // Same "separate explicit action" shape as broadcastDeposit/broadcastWithdrawal.
+  broadcastRagequit: function(signedRawTx, thenDo) {
+    this._withPublicClient(function(err, client) {
+      if (err) return thenDo(err);
+      client.sendRawTransaction({ serializedTransaction: signedRawTx })
+        .then(function(txHash) { thenDo(null, txHash); })
+        .catch(function(e) { thenDo(e); });
+    });
+  },
+
+  waitForRagequitReceipt: function(txHash, thenDo) {
+    this._withPublicClient(function(err, client) {
+      if (err) return thenDo(err);
+      client.waitForTransactionReceipt({ hash: txHash })
+        .then(function(receipt) { thenDo(null, receipt); })
+        .catch(function(e) { thenDo(e); });
+    });
+  },
+
+  // Decodes the Ragequit event for the success screen (§9.5). Confirmed
+  // exact signature from source: Ragequit(address indexed _ragequitter,
+  // uint256 _commitment, uint256 _label, uint256 _value).
+  parseRagequitEvent: function(receipt, thenDo) {
+    var self = this;
+    this.withClientLibs(function(err, libs) {
+      if (err) return thenDo(err);
+      var poolAddress = (self._ethPoolAddress() || '').toLowerCase();
+      for (var i = 0; i < receipt.logs.length; i++) {
+        var log = receipt.logs[i];
+        if (log.address.toLowerCase() !== poolAddress) continue;
+        try {
+          var decoded = libs.decodeEventLog({
+            abi: libs.IPrivacyPoolABI,
+            eventName: 'Ragequit',
+            data: log.data,
+            topics: log.topics
+          });
+          return thenDo(null, {
+            ragequitter: decoded.args._ragequitter,
+            commitment: decoded.args._commitment,
+            label: decoded.args._label,
+            value: decoded.args._value
+          });
+        } catch (e) { /* not this log's event — keep scanning */ }
+      }
+      thenDo(new Error('parseRagequitEvent: no Ragequit event found in this receipt'));
     });
   }
 

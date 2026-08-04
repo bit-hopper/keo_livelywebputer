@@ -9,11 +9,11 @@
  * lively.identity.walletBridge.
  *
  * Balance/Public tab content (§9.2: address, balance, send/receive) plus
- * deposit (step 7) and withdrawal (step 8) flows, all on the one dashboard
- * screen — Settings and Exit/ragequit are later steps' work, and the
- * Shielded content hasn't been split into its own actual tab yet (no tab
- * affordance is built at all since deposit/withdraw are just buttons off
- * the one screen for now — see each flow's own section below).
+ * deposit (step 7), withdrawal (step 8), and ragequit/Exit (step 9) flows,
+ * all on the one dashboard screen — Settings is a later step's work, and
+ * the Shielded content hasn't been split into its own actual tab yet (no
+ * tab affordance is built at all since deposit/withdraw/exit are just
+ * buttons off the one screen for now — see each flow's own section below).
  *
  * "Send" builds and signs a transaction (§6.6's simulate-then-sign
  * pattern, via lively.identity.privacyPoolClient) and displays the result
@@ -21,14 +21,16 @@
  * PrivacyPoolClient.js's own header for why that's a hard absence, not a
  * UI-level restriction.
  *
- * "Deposit into pool" (§9.3, §15 step 7) and "Withdraw from pool" (§9.4,
- * §15 step 8) are the two flows in this dashboard that can actually
- * broadcast — both follow the same shape: build -> Review -> Sign ->
- * (real, user-triggered) Broadcast -> Processing -> Success. Everything up
+ * "Deposit into pool" (§9.3, §15 step 7), "Withdraw from pool" (§9.4,
+ * §15 step 8), and each spendable deposit's "Exit" action (§9.5, §15
+ * step 9) are the flows in this dashboard that can actually broadcast —
+ * all follow the same shape: build -> Review/Confirm -> Sign -> (real,
+ * user-triggered) Broadcast -> Processing -> Success. Everything up
  * through Sign only builds/signs; broadcasting is a separate, explicit
- * button click, never automatic. Withdrawal additionally has a real
- * Generating-proof screen with phase-by-phase progress (§5.6) between
- * Review and Sign, since proveWithdrawal is genuinely slow.
+ * button click, never automatic. Withdrawal and Exit additionally have a
+ * real Generating-proof screen with phase-by-phase progress (§5.6) between
+ * Confirm and Sign, since proveWithdrawal/proveCommitment are genuinely
+ * slow.
  *
  * No QR code — confirmed no QR library exists anywhere in this codebase
  * (checked while planning this file); deferred rather than adding a new
@@ -603,8 +605,20 @@ module('lively.identity.Wallet')
 
               var withdrawBtn = document.createElement('button');
               withdrawBtn.textContent = 'Withdraw';
+              withdrawBtn.style.cssText = 'margin-right:8px;';
               withdrawBtn.addEventListener('click', function () { self._renderWithdrawRecipient(entry); });
               row.appendChild(withdrawBtn);
+
+              // §6.6/§9.5: Exit has no eligibility gate to check (the
+              // contract imposes no timing window — only an
+              // original-depositor check, always true here), so it's shown
+              // unconditionally alongside Withdraw, same as Withdraw itself
+              // isn't gated on the unconfirmed ASP status text above.
+              var exitBtn = document.createElement('button');
+              exitBtn.textContent = 'Exit';
+              exitBtn.style.cssText = 'color:#b00020;border-color:#b00020;';
+              exitBtn.addEventListener('click', function () { self._renderExitConfirm(entry); });
+              row.appendChild(exitBtn);
 
               list.appendChild(row);
 
@@ -835,6 +849,189 @@ module('lively.identity.Wallet')
 
         var heading = document.createElement('div');
         heading.textContent = 'Withdrawal failed';
+        heading.style.cssText = 'font-weight:600;margin-bottom:12px;color:#ff3b30;';
+        content.appendChild(heading);
+
+        var detail = document.createElement('div');
+        detail.textContent = message;
+        detail.style.cssText = 'margin-bottom:12px;font-size:12px;';
+        content.appendChild(detail);
+
+        var backBtn = document.createElement('button');
+        backBtn.textContent = 'Back';
+        backBtn.addEventListener('click', function () { backFn(); });
+        content.appendChild(backBtn);
+      },
+
+      // ── ragequit / "Exit" flow (§6.6, §9.5, §15 step 9) ──
+      // Its own distinct, separately-confirmed action (§9.5 — never folded
+      // into the withdraw button, since Exit is a public, unshielded
+      // reclaim the user should knowingly opt into). No recipient input,
+      // unlike withdrawal: ragequit's on-chain effect
+      // (PrivacyPool.sol's _push(msg.sender, value)) always returns funds
+      // to the depositor's own address, msg.sender, which is this wallet's
+      // one address — nothing to ask the user for. §6.6's corrected
+      // finding also means no eligibility check/countdown belongs here:
+      // Confirm -> Generating proof (same real phase-by-phase progress as
+      // withdrawal, §5.6) -> Sign -> (real, user-triggered) Broadcast ->
+      // Processing -> Success, same discipline as deposit/withdrawal.
+
+      _renderExitConfirm: function (commitment) {
+        var self = this;
+        var content = this._contentDiv;
+        content.innerHTML = '';
+
+        var heading = document.createElement('div');
+        heading.textContent = 'Exit ' + (Number(commitment.value) / 1e18) + ' ETH from the pool';
+        heading.style.cssText = 'font-weight:600;margin-bottom:12px;';
+        content.appendChild(heading);
+
+        var warning = document.createElement('div');
+        warning.style.cssText = 'color:#b00020;font-size:12px;margin-bottom:12px;max-width:360px;';
+        warning.textContent =
+          'Exit is a PUBLIC, unshielded reclaim — it publicly links this ' +
+          'deposit to your wallet address on-chain, unlike a normal ' +
+          'withdrawal from the pool. Only use it if this deposit is not ' +
+          'going to become associated with the pool’s privacy set; ' +
+          'otherwise a normal withdrawal is strictly better. Funds return ' +
+          'to your own wallet address (' + self._address + ').';
+        content.appendChild(warning);
+
+        var confirmBtn = document.createElement('button');
+        confirmBtn.textContent = 'Exit (reclaim publicly)';
+        confirmBtn.style.cssText = 'margin-right:8px;color:#b00020;border-color:#b00020;';
+        content.appendChild(confirmBtn);
+
+        var cancelBtn = document.createElement('button');
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.addEventListener('click', function () { self._renderWithdrawList(); });
+        content.appendChild(cancelBtn);
+
+        confirmBtn.addEventListener('click', function () {
+          self._renderExitProving(commitment);
+        });
+      },
+
+      // Real phase-by-phase progress (§5.6, §9.5) — loading_circuits ->
+      // generating_proof -> verifying_proof — same as withdrawal's
+      // proveWithdrawal screen; proveCommitment is the same class of
+      // genuinely-slow ZK proving work.
+      _renderExitProving: function (commitment) {
+        var self = this;
+        var content = this._contentDiv;
+        content.innerHTML = '';
+
+        var heading = document.createElement('div');
+        heading.textContent = 'Generating proof…';
+        heading.style.cssText = 'font-weight:600;margin-bottom:12px;';
+        content.appendChild(heading);
+
+        var phaseText = document.createElement('div');
+        phaseText.textContent = 'Starting…';
+        phaseText.style.cssText = 'color:#8e8e93;font-size:12px;';
+        content.appendChild(phaseText);
+
+        var PHASE_LABELS = {
+          loading_circuits: 'Loading circuit artifacts…',
+          generating_proof: 'Generating zero-knowledge proof… (this can take a while)',
+          verifying_proof: 'Verifying proof…'
+        };
+
+        lively.identity.privacyPoolClient.buildAndSignRagequit(
+          { commitment: commitment },
+          function (phase) { phaseText.textContent = PHASE_LABELS[phase] || phase; },
+          function (err, result) {
+            if (err) return self._renderExitError(err.message, function () { self._renderExitConfirm(commitment); });
+            self._renderExitSign(commitment, result);
+          }
+        );
+      },
+
+      _renderExitSign: function (commitment, result) {
+        var self = this;
+        var content = this._contentDiv;
+        content.innerHTML = '';
+
+        var heading = document.createElement('div');
+        heading.textContent = 'Signed — ready to broadcast';
+        heading.style.cssText = 'font-weight:600;margin-bottom:12px;';
+        content.appendChild(heading);
+
+        var detail = document.createElement('div');
+        detail.style.cssText = 'font-family:monospace;font-size:11px;word-break:break-all;margin-bottom:12px;';
+        detail.innerHTML =
+          '<div>gas: ' + result.unsignedTx.gas.toString() + '</div>' +
+          '<div>signed raw tx: ' + result.signedRawTx + '</div>';
+        content.appendChild(detail);
+
+        var warning = document.createElement('div');
+        warning.textContent = 'Broadcasting submits a REAL mainnet transaction, publicly reclaiming this deposit back to your own address.';
+        warning.style.cssText = 'color:#b00020;font-weight:600;margin-bottom:12px;';
+        content.appendChild(warning);
+
+        var broadcastBtn = document.createElement('button');
+        broadcastBtn.textContent = 'Broadcast';
+        broadcastBtn.style.cssText = 'margin-right:8px;';
+        content.appendChild(broadcastBtn);
+
+        var cancelBtn = document.createElement('button');
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.addEventListener('click', function () { self._refresh(); });
+        content.appendChild(cancelBtn);
+
+        broadcastBtn.addEventListener('click', function () {
+          broadcastBtn.disabled = true;
+          cancelBtn.disabled = true;
+          self._renderExitProcessing();
+          var client = lively.identity.privacyPoolClient;
+          client.broadcastRagequit(result.signedRawTx, function (errBroadcast, txHash) {
+            if (errBroadcast) return self._renderExitError(errBroadcast.message, function () { self._refresh(); });
+            client.waitForRagequitReceipt(txHash, function (errReceipt, receipt) {
+              if (errReceipt) return self._renderExitError(errReceipt.message, function () { self._refresh(); });
+              client.parseRagequitEvent(receipt, function (errParse, ragequit) {
+                if (errParse) return self._renderExitError(errParse.message, function () { self._refresh(); });
+                self._renderExitSuccess(ragequit, txHash);
+              });
+            });
+          });
+        });
+      },
+
+      _renderExitProcessing: function () {
+        this._contentDiv.innerHTML = '<div style="color:#999;padding:20px 0;">Broadcasting and waiting for confirmation…</div>';
+      },
+
+      _renderExitSuccess: function (ragequit, txHash) {
+        var self = this;
+        var content = this._contentDiv;
+        content.innerHTML = '';
+
+        var heading = document.createElement('div');
+        heading.textContent = 'Exit confirmed';
+        heading.style.cssText = 'font-weight:600;margin-bottom:12px;color:#34c759;';
+        content.appendChild(heading);
+
+        var detail = document.createElement('div');
+        detail.style.cssText = 'font-family:monospace;font-size:11px;word-break:break-all;margin-bottom:12px;';
+        detail.innerHTML =
+          '<div>tx: ' + txHash + '</div>' +
+          '<div>ragequitter: ' + ragequit.ragequitter + '</div>' +
+          '<div>value: ' + ragequit.value.toString() + ' wei</div>';
+        content.appendChild(detail);
+
+        var doneBtn = document.createElement('button');
+        doneBtn.textContent = 'Done';
+        doneBtn.addEventListener('click', function () { self._refresh(); });
+        content.appendChild(doneBtn);
+      },
+
+      _renderExitError: function (message, backFn) {
+        var self = this;
+        var content = this._contentDiv;
+        content.innerHTML = '';
+
+        var heading = document.createElement('div');
+        heading.textContent = 'Exit failed';
         heading.style.cssText = 'font-weight:600;margin-bottom:12px;color:#ff3b30;';
         content.appendChild(heading);
 

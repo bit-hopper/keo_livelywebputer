@@ -18,19 +18,24 @@
  * Worker (§5.6, WalletVaultProver.worker.js) and _proveCommitmentForTest/
  * _proveWithdrawalForTest — test-only entry points proving the Worker
  * plumbing works, deliberately not RPC-exposed; real proveCommitment/
- * proveWithdrawal (deriving secrets from unlocked wallet state) is step
- * 9's job (ragequit) — deposit turned out not to need either: §6.2/§3.4
- * confirm deposit only ever calls deriveDepositSecrets, a plain Poseidon
- * hash with no ZK proof involved, correcting §15's own step-7 summary
- * phrase ("vault-side proveCommitment/deposit flow"), which doesn't match
- * its own cited §6.2 text on closer reading. Step 7 addition:
- * deriveDepositSecrets — real, RPC-exposed, derives from unlocked wallet
- * state. Step 8 addition: proveWithdrawal — real, RPC-exposed (§3.4's
- * corrected table), re-derives a spendable commitment's existing
- * nullifier/secret plus a fresh change-output nullifier/secret from
- * unlocked wallet state, then runs the same step-6 prover Worker
- * _proveWithdrawalForTest already proved works — the difference is where
- * the witness values come from, not the proving path itself.
+ * proveWithdrawal (deriving secrets from unlocked wallet state) is later
+ * steps' job — deposit turned out not to need either: §6.2/§3.4 confirm
+ * deposit only ever calls deriveDepositSecrets, a plain Poseidon hash with
+ * no ZK proof involved, correcting §15's own step-7 summary phrase
+ * ("vault-side proveCommitment/deposit flow"), which doesn't match its own
+ * cited §6.2 text on closer reading. Step 7 addition: deriveDepositSecrets
+ * — real, RPC-exposed, derives from unlocked wallet state. Step 8 addition:
+ * proveWithdrawal — real, RPC-exposed (§3.4's corrected table), re-derives
+ * a spendable commitment's existing nullifier/secret plus a fresh
+ * change-output nullifier/secret from unlocked wallet state, then runs the
+ * same step-6 prover Worker _proveWithdrawalForTest already proved works —
+ * the difference is where the witness values come from, not the proving
+ * path itself. Step 9 addition: proveCommitment — real, RPC-exposed,
+ * ragequit's proof (§6.6). Simpler than step 8's: a ragequit spends the
+ * SAME nullifier/secret the original deposit used (generateDepositSecrets
+ * (scope, index) again, no change output, no Merkle proofs — §6.6's
+ * corrected finding that ragequit has no on-chain timing gate means there's
+ * no eligibility check to perform here either, just re-derive and prove.
  *
  * §8.3's memory model, implemented as of step 3: an unlocked vault holds
  * the derived DEK at rest (this._unlockedDek), not the decrypted mnemonic.
@@ -887,6 +892,46 @@
     });
   };
 
+  // Real, RPC-exposed proveCommitment (§6.6, §15 step 9) — the ragequit
+  // proof. Re-derives the SAME nullifier/secret the original deposit used
+  // (generateDepositSecrets(scope, index) — identical call proveWithdrawal
+  // makes for its existingSecrets), since a ragequit spends the original
+  // commitment outright rather than producing a change output; no
+  // withdrawalIndex, no Merkle proofs, no second secret pair. §6.6's
+  // corrected finding (no on-chain timing gate) means there's no
+  // eligibility check to run here either — proveWithdrawal's own
+  // Merkle-proof-driven "is this even associated" question doesn't apply to
+  // ragequit at all, since ragequit bypasses the ASP root check by design.
+  //
+  // params: { scope, index, label, value } — all public (§3.4's table:
+  // deriveDepositSecrets already crosses scope/index the same way). Only
+  // the finished proof crosses back out via onProgress/thenDo.
+  WalletVault.prototype.proveCommitment = function (params, onProgress, thenDo) {
+    var self = this;
+    params = params || {};
+    this.getPoolMasterKeys(function (err, keys) {
+      if (err) return thenDo(new Error('proveCommitment: ' + err.message));
+      self.withVaultLibs(function (err2, libs) {
+        if (err2) return thenDo(err2);
+        try {
+          var scope = BigInt(params.scope);
+          var index = BigInt(params.index);
+          var label = BigInt(params.label);
+          var value = BigInt(params.value);
+
+          var secrets = libs.generateDepositSecrets(keys, scope, index);
+
+          self._proverCall('proveCommitment', {
+            value: value,
+            label: label,
+            nullifier: secrets.nullifier,
+            secret: secrets.secret
+          }, onProgress, thenDo);
+        } catch (e) { thenDo(e); }
+      });
+    });
+  };
+
   // options: { password } for the argon2id path; {} to trigger a WebAuthn
   // ceremony against the stored credentialId/rpId.
   WalletVault.prototype.unlock = function (options, thenDo) {
@@ -1094,9 +1139,10 @@
   // first RPC method that reports progress (loading_circuits/
   // generating_proof/verifying_proof, §5.6) rather than a single response,
   // so handlers now optionally receive a sendProgress callback alongside
-  // the usual cb. revealMnemonic is NEVER exposed here — see its own
-  // comment above; it renders inside the vault's own UI and never crosses
-  // this boundary, in any step.
+  // the usual cb. Step 9 adds proveCommitment (§6.6) — same progress-
+  // reporting shape, the ragequit proof. revealMnemonic is NEVER exposed
+  // here — see its own comment above; it renders inside the vault's own UI
+  // and never crosses this boundary, in any step.
   //
   // setup's wrapper is not a passthrough: it strips skipConfirmation and
   // (for import) mnemonic from the incoming params before calling through —
@@ -1128,6 +1174,9 @@
     },
     proveWithdrawal: function (params, cb, sendProgress) {
       window.lively.identity.walletVault.proveWithdrawal(params, sendProgress, cb);
+    },
+    proveCommitment: function (params, cb, sendProgress) {
+      window.lively.identity.walletVault.proveCommitment(params, sendProgress, cb);
     }
   };
 
