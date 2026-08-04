@@ -47,12 +47,23 @@
  * once actually embedded (step 2's testing never hit this, since that
  * tested /wallet-vault by direct navigation, never inside an iframe).
  *
+ * BUG FIX: call() now requires an active identity session and injects the
+ * current identity's did/credentialId/rpId into EVERY call's params —
+ * previously every wallet method sent bare params with no identity
+ * information at all, so WalletVault.js (which never had any either) fell
+ * back to a single, hardcoded global record shared by every Lively
+ * identity using the same browser/device. See WalletVault.js's own header
+ * for the full fix (per-DID storage keying and DEK caching). This
+ * injection point is deliberately centralized here rather than pushed onto
+ * every individual wrapper method below, so no caller of walletBridge.*
+ * anywhere else in this codebase needed to change.
+ *
  * Async pattern: thenDo(err, result), matching the rest of
  * lively.identity.*.
  */
 
 module('lively.identity.WalletBridge')
-  .requires()
+  .requires('lively.identity.DID')
   .toRun(function() {
 
 Object.subclass('lively.identity.WalletBridge',
@@ -166,15 +177,38 @@ Object.subclass('lively.identity.WalletBridge',
   // convention so callers don't know the vault exists (§3.4). onProgress
   // is optional — most methods never receive a progress message at all,
   // so passing it for e.g. getAddress is simply inert.
+  //
+  // BUG FIX (this file's own header): always resolves the current identity
+  // and injects { did, credentialId, rpId } into whatever params the
+  // caller passed — merged as siblings of the caller's own fields, never
+  // overwriting them (a caller-supplied params object never legitimately
+  // has these names already). The vault uses did to look up the RIGHT
+  // identity's own record/session instead of a single global one, and
+  // credentialId/rpId to target the RIGHT passkey at setup time. Requires
+  // an active identity session for every single call, including read-only
+  // ones like isSetUp — correct, since "is this device's wallet set up" is
+  // meaningless without knowing which identity is asking.
   call: function(method, params, thenDo, onProgress) {
     var self = this;
+    var identity = lively.identity.did.currentUser();
+    if (!identity) {
+      return thenDo(new Error(
+        'WalletBridge: no identity session active — the wallet is scoped ' +
+        'per Lively identity (WalletSpec.md §0), not per device'
+      ));
+    }
+    var fullParams = Object.assign({}, params || {}, {
+      did: identity.did,
+      credentialId: identity.credentialId,
+      rpId: identity.rpId
+    });
     this._withVaultFrame(function(err, iframe) {
       if (err) return thenDo(err);
       self._installResponseListener();
       var id = self._nextId++;
       self._pending[id] = { thenDo: thenDo, onProgress: onProgress };
       iframe.contentWindow.postMessage(
-        { id: id, method: method, params: params },
+        { id: id, method: method, params: fullParams },
         self._vaultOriginResolved // never '*' — always the resolved vault origin
       );
     });
@@ -191,7 +225,13 @@ Object.subclass('lively.identity.WalletBridge',
   lock: function(thenDo) { this.call('lock', null, thenDo); },
   getAddress: function(thenDo) { this.call('getAddress', null, thenDo); },
   isSetUp: function(thenDo) { this.call('isSetUp', null, thenDo); },
-  signTransaction: function(unsignedTx, thenDo) { this.call('signTransaction', unsignedTx, thenDo); },
+  // Wrapped in { unsignedTx } rather than sent bare — call() merges
+  // did/credentialId/rpId as SIBLINGS of whatever params object it's
+  // given, so a bare unsignedTx would otherwise get those fields mixed
+  // directly into the tx shape viem's own signTransaction expects.
+  signTransaction: function(unsignedTx, thenDo) {
+    this.call('signTransaction', { unsignedTx: unsignedTx }, thenDo);
+  },
 
   // §6.2, §15 step 7: scope/index are public (BigInts — postMessage's
   // structured clone carries them natively). Returns { precommitment }.

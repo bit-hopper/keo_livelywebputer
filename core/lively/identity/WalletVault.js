@@ -37,12 +37,32 @@
  * corrected finding that ragequit has no on-chain timing gate means there's
  * no eligibility check to perform here either, just re-derive and prove.
  *
+ * BUG FIX, found live post-step-10: every wallet-touching method here used
+ * to key its IndexedDB record off a single fixed constant ('wallet-blob')
+ * and cache one single in-memory DEK — meaning every Lively identity using
+ * the same browser/device shared the exact same wallet, directly
+ * contradicting §0's own stated scope ("a single Ethereum keypair per
+ * Lively identity"). The vault had no concept of "which identity is
+ * asking" anywhere in its storage or session-cache layer at all. Fixed:
+ * every record is now keyed by the calling identity's DID (_recordKey),
+ * _unlockedDeks is a per-DID map instead of a single value, and every
+ * method that touches either one (setup/unlock/lock/isSetUp/getAddress/
+ * signTransaction/deriveDepositSecrets/proveWithdrawal/proveCommitment/
+ * exportBackupBlob/revealMnemonic/getPoolMasterKeys/_withUnlockedMnemonic)
+ * now takes a did — sourced from WalletBridge.js's call(), which injects
+ * the current lively.identity.did.currentUser().did into every RPC call's
+ * params, so no caller above WalletBridge needed to change at all. setup()
+ * also now targets the calling identity's own known passkey credential
+ * (options.credentialId/rpId, when known) rather than letting the platform
+ * offer any discoverable credential for the rpId — a related, smaller
+ * correctness fix riding along with the same root cause.
+ *
  * §8.3's memory model, implemented as of step 3: an unlocked vault holds
- * the derived DEK at rest (this._unlockedDek), not the decrypted mnemonic.
- * _withUnlockedMnemonic decrypts the stored record on demand — a cheap
- * local symmetric decrypt against the already-cached DEK, no new WebAuthn/
- * password ceremony — for whatever single operation needs the mnemonic,
- * rather than keeping a long-lived plaintext copy in memory.
+ * the derived DEK at rest (per-DID, see above), not the decrypted
+ * mnemonic. _withUnlockedMnemonic decrypts the stored record on demand — a
+ * cheap local symmetric decrypt against the already-cached DEK, no new
+ * WebAuthn/password ceremony — for whatever single operation needs the
+ * mnemonic, rather than keeping a long-lived plaintext copy in memory.
  *
  * Deliberately PLAIN JS — no module()/Object.subclass(). This file is
  * served standalone by GET /wallet-vault (core/servers/IdentityServer.js),
@@ -89,14 +109,34 @@
   var DB_NAME = 'lively-wallet-vault';
   var DB_VERSION = 1;
   var STORE_NAME = 'wallet';
-  var RECORD_KEY = 'wallet-blob';
+  // Bug fix (found live: every Lively identity using the same browser saw
+  // the SAME wallet): this used to be a single fixed key, 'wallet-blob',
+  // shared by every caller regardless of who was asking — the vault had no
+  // concept of "which identity" anywhere in its storage layer at all,
+  // directly contradicting §0's own stated scope ("a single Ethereum
+  // keypair per Lively identity"). Every record is now keyed by the
+  // calling identity's DID (_recordKey below), so different identities
+  // sharing one device/browser each get their own independent wallet-blob,
+  // matching how every other per-identity store in this codebase already
+  // partitions by DID/credential (per this file's own header note on
+  // lively.IndexedDB's "identity" store).
+  var RECORD_KEY_PREFIX = 'wallet-blob:';
 
   function WalletVault() {
     // §8.3: holds the derived DEK while unlocked, NOT the decrypted
     // mnemonic — see _withUnlockedMnemonic below. In-memory only, never
-    // persisted, cleared on lock()/reload either way.
-    this._unlockedDek = null;
+    // persisted, cleared on lock()/reload either way. Keyed by DID (see
+    // RECORD_KEY_PREFIX's own comment) — a map, not a single value, since
+    // one vault iframe instance now serves every identity that logs in on
+    // this device without being reloaded between them (§8.2's own "never
+    // reparent the iframe" constraint means this instance's lifetime can
+    // span an identity switch).
+    this._unlockedDeks = {};
   }
+
+  WalletVault.prototype._recordKey = function (did) {
+    return RECORD_KEY_PREFIX + did;
+  };
 
   // ─── vault-deps lazy loading (mirrors WalletCrypto.js's withWalletCryptoLibs) ──
 
@@ -405,28 +445,30 @@
     req.onerror = function () { thenDo(req.error || new Error('WalletVault: failed to open IndexedDB')); };
   };
 
-  WalletVault.prototype._putRecord = function (record, thenDo) {
+  WalletVault.prototype._putRecord = function (did, record, thenDo) {
+    var self = this;
     this._withDb(function (err, db) {
       if (err) return thenDo(err);
       var tx = db.transaction(STORE_NAME, 'readwrite');
-      tx.objectStore(STORE_NAME).put(record, RECORD_KEY);
+      tx.objectStore(STORE_NAME).put(record, self._recordKey(did));
       tx.oncomplete = function () { thenDo(null); };
       tx.onerror = function () { thenDo(tx.error || new Error('WalletVault: failed to store record')); };
     });
   };
 
-  WalletVault.prototype._getRecord = function (thenDo) {
+  WalletVault.prototype._getRecord = function (did, thenDo) {
+    var self = this;
     this._withDb(function (err, db) {
       if (err) return thenDo(err);
       var tx = db.transaction(STORE_NAME, 'readonly');
-      var req = tx.objectStore(STORE_NAME).get(RECORD_KEY);
+      var req = tx.objectStore(STORE_NAME).get(self._recordKey(did));
       req.onsuccess = function () { thenDo(null, req.result || null); };
       req.onerror = function () { thenDo(req.error || new Error('WalletVault: failed to read record')); };
     });
   };
 
-  WalletVault.prototype.isSetUp = function (thenDo) {
-    this._getRecord(function (err, record) {
+  WalletVault.prototype.isSetUp = function (did, thenDo) {
+    this._getRecord(did, function (err, record) {
       if (err) return thenDo(err);
       thenDo(null, !!record);
     });
@@ -440,10 +482,10 @@
   // plain local-storage read, safe to call even while locked, and matches
   // §3.4's table exactly ("No — ciphertext only, same guarantee as any
   // other encrypted-at-rest export").
-  WalletVault.prototype.exportBackupBlob = function (thenDo) {
-    this._getRecord(function (err, record) {
+  WalletVault.prototype.exportBackupBlob = function (did, thenDo) {
+    this._getRecord(did, function (err, record) {
       if (err) return thenDo(err);
-      if (!record) return thenDo(new Error('exportBackupBlob: no wallet set up on this device'));
+      if (!record) return thenDo(new Error('exportBackupBlob: no wallet set up on this device for this identity'));
       thenDo(null, record);
     });
   };
@@ -474,6 +516,8 @@
   WalletVault.prototype.setup = function (options, thenDo) {
     var self = this;
     options = options || {};
+    var did = options.did;
+    if (!did) return thenDo(new Error('setup: no identity (did) provided — the wallet is scoped per Lively identity, not per device'));
     var mode = options.mode === 'import' ? 'import' : 'create';
 
     function obtainMnemonic(cb) {
@@ -505,7 +549,16 @@
               cb(null, { kek: res.kek, kdf: 'argon2id', argon2Salt: res.salt });
             });
           } else {
-            self.deriveKekViaWebAuthn({}, function (err3, res) {
+            // Multi-identity fix: target THIS identity's own passkey
+            // credential when known (the same one its Lively login already
+            // uses) rather than letting the platform offer any discoverable
+            // credential for this rpId — avoids a confusing "which passkey
+            // is this even for" picker on a device with more than one
+            // Lively identity's passkey registered. Falls back to the
+            // broader picker when credentialId is unknown (deriveKekViaWebAuthn
+            // only sets allowCredentials when one is actually provided),
+            // same behavior as before this fix.
+            self.deriveKekViaWebAuthn({ credentialId: options.credentialId, rpId: options.rpId }, function (err3, res) {
               if (err3) return cb(err3);
               cb(null, { kek: res.kek, kdf: 'webauthn-prf', credentialId: res.credentialId, rpId: res.rpId });
             });
@@ -526,6 +579,7 @@
                 );
                 var record = {
                   version: 1,
+                  did: did,
                   kdf: kekInfo.kdf,
                   wrappedDek: dekInfo.wrappedDek,
                   nonce: sodium.to_base64(nonce, sodium.base64_variants.URLSAFE_NO_PADDING),
@@ -538,12 +592,12 @@
                   record.credentialId = kekInfo.credentialId;
                   record.rpId = kekInfo.rpId;
                 }
-                self._putRecord(record, function (err6) {
+                self._putRecord(did, record, function (err6) {
                   if (err6) return thenDo(err6);
                   // §8.3: cache the DEK, not the mnemonic — see
                   // _withUnlockedMnemonic. dekInfo.dek is already the
                   // unwrapped 32-byte key from wrapDek above.
-                  self._unlockedDek = dekInfo.dek;
+                  self._unlockedDeks[did] = dekInfo.dek;
                   self.withVaultLibs(function (err7, libs) {
                     if (err7) return thenDo(err7);
                     try {
@@ -763,9 +817,9 @@
   // transaction. This method never broadcasts anything itself; per
   // WalletSpec.md §15 step 4's own scope, nothing in this codebase calls
   // eth_sendRawTransaction yet at all.
-  WalletVault.prototype.signTransaction = function (unsignedTx, thenDo) {
+  WalletVault.prototype.signTransaction = function (did, unsignedTx, thenDo) {
     var self = this;
-    this._withUnlockedMnemonic(function (err, mnemonic) {
+    this._withUnlockedMnemonic(did, function (err, mnemonic) {
       if (err) return thenDo(new Error('signTransaction: ' + err.message));
       self.withVaultLibs(function (err2, libs) {
         if (err2) return thenDo(err2);
@@ -869,7 +923,7 @@
   WalletVault.prototype.proveWithdrawal = function (params, onProgress, thenDo) {
     var self = this;
     params = params || {};
-    this.getPoolMasterKeys(function (err, keys) {
+    this.getPoolMasterKeys(params.did, function (err, keys) {
       if (err) return thenDo(new Error('proveWithdrawal: ' + err.message));
       self.withVaultLibs(function (err2, libs) {
         if (err2) return thenDo(err2);
@@ -925,7 +979,7 @@
   WalletVault.prototype.proveCommitment = function (params, onProgress, thenDo) {
     var self = this;
     params = params || {};
-    this.getPoolMasterKeys(function (err, keys) {
+    this.getPoolMasterKeys(params.did, function (err, keys) {
       if (err) return thenDo(new Error('proveCommitment: ' + err.message));
       self.withVaultLibs(function (err2, libs) {
         if (err2) return thenDo(err2);
@@ -948,14 +1002,16 @@
     });
   };
 
-  // options: { password } for the argon2id path; {} to trigger a WebAuthn
-  // ceremony against the stored credentialId/rpId.
+  // options: { did, password } for the argon2id path; { did } to trigger a
+  // WebAuthn ceremony against the stored credentialId/rpId.
   WalletVault.prototype.unlock = function (options, thenDo) {
     var self = this;
     options = options || {};
-    this._getRecord(function (err, record) {
+    var did = options.did;
+    if (!did) return thenDo(new Error('unlock: no identity (did) provided'));
+    this._getRecord(did, function (err, record) {
       if (err) return thenDo(err);
-      if (!record) return thenDo(new Error('unlock: no wallet set up on this device'));
+      if (!record) return thenDo(new Error('unlock: no wallet set up on this device for this identity'));
 
       function withKek(cb) {
         if (record.kdf === 'argon2id') {
@@ -988,7 +1044,7 @@
               var ct = sodium.from_base64(record.ciphertext, sodium.base64_variants.URLSAFE_NO_PADDING);
               var plaintext = sodium.crypto_secretbox_open_easy(ct, nonce, dek);
               if (!plaintext) return thenDo(new Error('unlock: authentication tag mismatch — wrong password/credential or corrupted data'));
-              self._unlockedDek = dek;
+              self._unlockedDeks[did] = dek;
               thenDo(null, { ok: true });
             } catch (e) { thenDo(e); }
           });
@@ -997,13 +1053,16 @@
     });
   };
 
-  WalletVault.prototype.lock = function (thenDo) {
-    this._unlockedDek = null;
+  // did: which identity's cached DEK to drop. A falsy did is a no-op
+  // (never clears every identity's session as a side effect of a caller
+  // bug) rather than defaulting to "lock everything."
+  WalletVault.prototype.lock = function (did, thenDo) {
+    if (did) delete this._unlockedDeks[did];
     if (thenDo) thenDo(null, 'ok');
   };
 
-  WalletVault.prototype.isUnlocked = function () {
-    return !!this._unlockedDek;
+  WalletVault.prototype.isUnlocked = function (did) {
+    return !!(did && this._unlockedDeks[did]);
   };
 
   // §8.3: the vault holds the DEK at rest while unlocked, not the
@@ -1015,10 +1074,11 @@
   // plaintext exists; it doesn't (and can't, from JS) guarantee the bytes
   // are scrubbed from the engine's heap — GC timing isn't under our
   // control. Real hardening, not a promise of erasure.
-  WalletVault.prototype._withUnlockedMnemonic = function (thenDo) {
+  WalletVault.prototype._withUnlockedMnemonic = function (did, thenDo) {
     var self = this;
-    if (!self._unlockedDek) return thenDo(new Error('vault is locked'));
-    self._getRecord(function (err, record) {
+    var dek = did && self._unlockedDeks[did];
+    if (!dek) return thenDo(new Error('vault is locked'));
+    self._getRecord(did, function (err, record) {
       if (err) return thenDo(err);
       if (!record) return thenDo(new Error('vault is locked'));
       self.withSodium(function (err2, sodium) {
@@ -1026,7 +1086,7 @@
         try {
           var nonce = sodium.from_base64(record.nonce, sodium.base64_variants.URLSAFE_NO_PADDING);
           var ct = sodium.from_base64(record.ciphertext, sodium.base64_variants.URLSAFE_NO_PADDING);
-          var plaintext = sodium.crypto_secretbox_open_easy(ct, nonce, self._unlockedDek);
+          var plaintext = sodium.crypto_secretbox_open_easy(ct, nonce, dek);
           if (!plaintext) {
             return thenDo(new Error('_withUnlockedMnemonic: authentication tag mismatch — cached DEK no longer matches the stored record'));
           }
@@ -1045,18 +1105,19 @@
   // either direction, in any step — not exposed in the RPC responder below.
   WalletVault.prototype.revealMnemonic = function (options, thenDo) {
     var self = this;
+    options = options || {};
     this.unlock(options, function (err) {
       if (err) return thenDo(err);
-      self._withUnlockedMnemonic(thenDo);
+      self._withUnlockedMnemonic(options.did, thenDo);
     });
   };
 
   // Requires an unlocked vault. Re-derives the synthetic pool mnemonic and
   // master keys fresh from the on-demand-decrypted real mnemonic every
   // call — never cached, never persisted (§5.1, §5.3).
-  WalletVault.prototype.getPoolMasterKeys = function (thenDo) {
+  WalletVault.prototype.getPoolMasterKeys = function (did, thenDo) {
     var self = this;
-    this._withUnlockedMnemonic(function (err, mnemonic) {
+    this._withUnlockedMnemonic(did, function (err, mnemonic) {
       if (err) return thenDo(new Error('getPoolMasterKeys: ' + err.message));
       self.derivePoolMasterKeys(mnemonic, thenDo);
     });
@@ -1073,9 +1134,9 @@
   // given scope is the main world's job (PrivacyPoolClient.js), not
   // tracked here. Only the precommitment hash crosses back out —
   // nullifier/secret are discarded the instant this function returns.
-  WalletVault.prototype.deriveDepositSecrets = function (scope, index, thenDo) {
+  WalletVault.prototype.deriveDepositSecrets = function (did, scope, index, thenDo) {
     var self = this;
-    this.getPoolMasterKeys(function (err, keys) {
+    this.getPoolMasterKeys(did, function (err, keys) {
       if (err) return thenDo(new Error('deriveDepositSecrets: ' + err.message));
       self.withVaultLibs(function (err2, libs) {
         if (err2) return thenDo(err2);
@@ -1094,9 +1155,9 @@
   // through the synthetic pool mnemonic. Requires an already-unlocked
   // vault — deliberately simple; auto-prompting an unlock here is a later
   // UI-flow concern (§8.3), not this method's job.
-  WalletVault.prototype.getAddress = function (thenDo) {
+  WalletVault.prototype.getAddress = function (did, thenDo) {
     var self = this;
-    this._withUnlockedMnemonic(function (err, mnemonic) {
+    this._withUnlockedMnemonic(did, function (err, mnemonic) {
       if (err) return thenDo(new Error('getAddress: ' + err.message));
       self.withVaultLibs(function (err2, libs) {
         if (err2) return thenDo(err2);
@@ -1162,6 +1223,12 @@
   // above; it renders inside the vault's own UI and never crosses this
   // boundary, in any step.
   //
+  // Multi-identity bug fix (see this file's own header): every handler
+  // below now reads params.did — injected transparently by WalletBridge.
+  // js's call() for every RPC round trip — and passes it through to the
+  // corresponding WalletVault method, which uses it to look up the RIGHT
+  // identity's own record/session rather than a single global one.
+  //
   // setup's wrapper is not a passthrough: it strips skipConfirmation and
   // (for import) mnemonic from the incoming params before calling through —
   // those are TEST-ONLY escape hatches for direct/local calls (see
@@ -1183,12 +1250,19 @@
       });
     },
     unlock:          function (params, cb) { window.lively.identity.walletVault.unlock(params, cb); },
-    lock:            function (params, cb) { window.lively.identity.walletVault.lock(cb); },
-    getAddress:      function (params, cb) { window.lively.identity.walletVault.getAddress(cb); },
-    isSetUp:         function (params, cb) { window.lively.identity.walletVault.isSetUp(cb); },
-    signTransaction: function (params, cb) { window.lively.identity.walletVault.signTransaction(params, cb); },
+    lock:            function (params, cb) { window.lively.identity.walletVault.lock((params || {}).did, cb); },
+    getAddress:      function (params, cb) { window.lively.identity.walletVault.getAddress((params || {}).did, cb); },
+    isSetUp:         function (params, cb) { window.lively.identity.walletVault.isSetUp((params || {}).did, cb); },
+    // WalletBridge.signTransaction now sends { unsignedTx, did, ... } rather
+    // than the bare unsignedTx object directly as params — multi-identity
+    // fix: did/credentialId/rpId are injected as SIBLINGS of unsignedTx,
+    // never merged into it, so viem's signTransaction never sees stray
+    // extra fields mixed into the tx shape it expects.
+    signTransaction: function (params, cb) {
+      window.lively.identity.walletVault.signTransaction((params || {}).did, (params || {}).unsignedTx, cb);
+    },
     deriveDepositSecrets: function (params, cb) {
-      window.lively.identity.walletVault.deriveDepositSecrets((params || {}).scope, (params || {}).index, cb);
+      window.lively.identity.walletVault.deriveDepositSecrets((params || {}).did, (params || {}).scope, (params || {}).index, cb);
     },
     proveWithdrawal: function (params, cb, sendProgress) {
       window.lively.identity.walletVault.proveWithdrawal(params, sendProgress, cb);
@@ -1197,7 +1271,7 @@
       window.lively.identity.walletVault.proveCommitment(params, sendProgress, cb);
     },
     exportBackupBlob: function (params, cb) {
-      window.lively.identity.walletVault.exportBackupBlob(cb);
+      window.lively.identity.walletVault.exportBackupBlob((params || {}).did, cb);
     }
   };
 
