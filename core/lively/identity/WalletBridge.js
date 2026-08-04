@@ -16,7 +16,10 @@
  * generating_proof/verifying_proof, §5.6) rather than a single response —
  * see call()'s own comment for how that extends the postMessage protocol.
  * Step 9 adds proveCommitment (§6.6, ragequit's proof) — same progress
- * shape as proveWithdrawal, reused as-is.
+ * shape as proveWithdrawal, reused as-is. Step 10 adds exportBackupBlob
+ * (§7.2) — a plain single-response call, no progress, returning the
+ * vault's own opaque encrypted record for lively.identity.WalletBackup to
+ * re-encrypt and upload.
  * revealMnemonic is deliberately never wired here at all: per
  * §3.4 it never crosses the postMessage boundary in either direction, in
  * any step. setup()'s result here is {address} only — WalletVault.js's RPC
@@ -212,6 +215,15 @@ Object.subclass('lively.identity.WalletBridge',
   // a new pair. Same progress/result shape as proveWithdrawal.
   proveCommitment: function(params, onProgress, thenDo) {
     this.call('proveCommitment', params, thenDo, onProgress);
+  },
+
+  // §7.2, §15 step 10: no params — returns the vault's own opaque encrypted
+  // wallet-blob record (§7.1) unmodified, for the main world
+  // (lively.identity.WalletBackup) to re-encrypt under the identity's OWN
+  // Files-encryption-plane KEK/DEK before uploading. Ciphertext only, never
+  // triggers unlock (§3.4's table).
+  exportBackupBlob: function(thenDo) {
+    this.call('exportBackupBlob', null, thenDo);
   }
 
 });

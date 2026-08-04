@@ -432,6 +432,22 @@
     });
   };
 
+  // §7.2, §15 step 10: returns the SAME opaque encrypted record already
+  // sitting in this vault's own IndexedDB (§7.1) — ciphertext, wrappedDek,
+  // kdf metadata — for the main world to re-encrypt under the identity's
+  // OWN Files-encryption-plane KEK/DEK (lively.identity.WalletBackup)
+  // before uploading. No KEK/DEK operation happens here at all: this is a
+  // plain local-storage read, safe to call even while locked, and matches
+  // §3.4's table exactly ("No — ciphertext only, same guarantee as any
+  // other encrypted-at-rest export").
+  WalletVault.prototype.exportBackupBlob = function (thenDo) {
+    this._getRecord(function (err, record) {
+      if (err) return thenDo(err);
+      if (!record) return thenDo(new Error('exportBackupBlob: no wallet set up on this device'));
+      thenDo(null, record);
+    });
+  };
+
   // ─── setup / import / unlock / lock / reveal ────────────────────────────
 
   // options: { mode: 'create' | 'import' (default 'create'),
@@ -1140,9 +1156,11 @@
   // generating_proof/verifying_proof, §5.6) rather than a single response,
   // so handlers now optionally receive a sendProgress callback alongside
   // the usual cb. Step 9 adds proveCommitment (§6.6) — same progress-
-  // reporting shape, the ragequit proof. revealMnemonic is NEVER exposed
-  // here — see its own comment above; it renders inside the vault's own UI
-  // and never crosses this boundary, in any step.
+  // reporting shape, the ragequit proof. Step 10 adds exportBackupBlob
+  // (§7.2) — a plain single-response read, no progress, no unlock
+  // required. revealMnemonic is NEVER exposed here — see its own comment
+  // above; it renders inside the vault's own UI and never crosses this
+  // boundary, in any step.
   //
   // setup's wrapper is not a passthrough: it strips skipConfirmation and
   // (for import) mnemonic from the incoming params before calling through —
@@ -1177,6 +1195,9 @@
     },
     proveCommitment: function (params, cb, sendProgress) {
       window.lively.identity.walletVault.proveCommitment(params, sendProgress, cb);
+    },
+    exportBackupBlob: function (params, cb) {
+      window.lively.identity.walletVault.exportBackupBlob(cb);
     }
   };
 

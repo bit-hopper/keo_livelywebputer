@@ -9,11 +9,13 @@
  * lively.identity.walletBridge.
  *
  * Balance/Public tab content (§9.2: address, balance, send/receive) plus
- * deposit (step 7), withdrawal (step 8), and ragequit/Exit (step 9) flows,
- * all on the one dashboard screen — Settings is a later step's work, and
- * the Shielded content hasn't been split into its own actual tab yet (no
- * tab affordance is built at all since deposit/withdraw/exit are just
- * buttons off the one screen for now — see each flow's own section below).
+ * deposit (step 7), withdrawal (step 8), ragequit/Exit (step 9), and the
+ * optional Files backup (step 10) flows, all on the one dashboard screen —
+ * the rest of Settings (unlock-method management, reveal recovery phrase,
+ * RPC endpoint display) is still a later step's work, and the Shielded
+ * content hasn't been split into its own actual tab yet (no tab affordance
+ * is built at all since deposit/withdraw/exit/backup are just buttons off
+ * the one screen for now — see each flow's own section below).
  *
  * "Send" builds and signs a transaction (§6.6's simulate-then-sign
  * pattern, via lively.identity.privacyPoolClient) and displays the result
@@ -48,6 +50,7 @@ module('lively.identity.Wallet')
     'lively.identity.WalletBridge',
     'lively.identity.PrivacyPoolClient',
     'lively.identity.WalletSetupDialog',
+    'lively.identity.WalletBackup',
   )
   .toRun(function () {
 
@@ -307,6 +310,125 @@ module('lively.identity.Wallet')
             },
           );
         });
+
+        content.appendChild(document.createElement('br'));
+        self._renderFilesBackupSection(content);
+      },
+
+      // ── Files backup (§7.2, §15 step 10) ──
+      // Off-the-dashboard buttons for now, same reasoning as deposit/
+      // withdraw/exit above — the Settings tab itself (unlock-method
+      // management, reveal recovery phrase, RPC endpoint display) is a
+      // separate, later step; this only wires up the create/refresh/delete
+      // actions §9.2 describes for it. status() is a local, synchronous
+      // read (no network call) so this can re-render freely after every
+      // action without adding a fetch each time.
+      _renderFilesBackupSection: function (content) {
+        var heading = document.createElement('div');
+        heading.textContent = 'Encrypted Files backup (optional)';
+        heading.style.cssText = 'font-weight:600;margin-bottom:8px;';
+        content.appendChild(heading);
+
+        var statusLine = document.createElement('div');
+        statusLine.style.cssText = 'color:#8e8e93;font-size:12px;margin-bottom:8px;';
+        content.appendChild(statusLine);
+
+        var errorMsg = document.createElement('div');
+        errorMsg.style.cssText = 'color:#ff3b30;font-size:12px;margin-bottom:8px;display:none;';
+        content.appendChild(errorMsg);
+
+        var btnRow = document.createElement('div');
+        content.appendChild(btnRow);
+
+        function showError(message) {
+          errorMsg.textContent = message;
+          errorMsg.style.display = 'block';
+        }
+
+        function refresh() {
+          lively.identity.walletBackup.status(function (err, status) {
+            btnRow.innerHTML = '';
+
+            if (err) {
+              statusLine.textContent = '';
+              showError(err.message);
+              return;
+            }
+            errorMsg.style.display = 'none';
+
+            if (!status.exists) {
+              statusLine.textContent =
+                'Not backed up to your private Files. Your recovery phrase on ' +
+                'paper is still the real backup either way (§7.3) — this is a ' +
+                'cross-device convenience, never the only copy.';
+
+              var createBtn = document.createElement('button');
+              createBtn.textContent = 'Back up to Files';
+              createBtn.style.cssText = 'margin-right:8px;';
+              createBtn.addEventListener('click', function () {
+                createBtn.disabled = true;
+                createBtn.textContent = 'Backing up…';
+                lively.identity.walletBackup.createBackup(
+                  function () { createBtn.textContent = 'Confirm passkey…'; },
+                  function (err2) {
+                    createBtn.disabled = false;
+                    createBtn.textContent = 'Back up to Files';
+                    if (err2) return showError(err2.message);
+                    refresh();
+                  }
+                );
+              });
+              btnRow.appendChild(createBtn);
+              return;
+            }
+
+            statusLine.textContent =
+              'Backed up to your private Files — invisible in your Files ' +
+              'listing, by design.';
+
+            var refreshBtn = document.createElement('button');
+            refreshBtn.textContent = 'Refresh backup';
+            refreshBtn.style.cssText = 'margin-right:8px;';
+            refreshBtn.addEventListener('click', function () {
+              refreshBtn.disabled = true;
+              refreshBtn.textContent = 'Refreshing…';
+              lively.identity.walletBackup.refreshBackup(
+                function () { refreshBtn.textContent = 'Confirm passkey…'; },
+                function (err2) {
+                  refreshBtn.disabled = false;
+                  refreshBtn.textContent = 'Refresh backup';
+                  if (err2) return showError(err2.message);
+                  refresh();
+                }
+              );
+            });
+            btnRow.appendChild(refreshBtn);
+
+            var deleteBtn = document.createElement('button');
+            deleteBtn.textContent = 'Delete backup';
+            deleteBtn.style.cssText = 'color:#b00020;border-color:#b00020;';
+            deleteBtn.addEventListener('click', function () {
+              $world.confirm(
+                'Delete the Files backup? This only stops this device from ' +
+                'treating it as active — like everything else in this storage, ' +
+                'it is not guaranteed erased server-side. Your recovery phrase ' +
+                'on paper remains the real backup (§7.3).',
+                function (ok) {
+                  if (!ok) return;
+                  deleteBtn.disabled = true;
+                  lively.identity.walletBackup.deleteBackup(function (err2) {
+                    deleteBtn.disabled = false;
+                    if (err2) return showError(err2.message);
+                    refresh();
+                  });
+                }
+              );
+            });
+            btnRow.appendChild(deleteBtn);
+          });
+        }
+
+        refresh();
       },
 
       // ── deposit flow (§9.3, §15 step 7) ──
