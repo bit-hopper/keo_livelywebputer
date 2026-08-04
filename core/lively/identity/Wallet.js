@@ -145,6 +145,34 @@ module('lively.identity.Wallet')
 
     },
 
+    // ─── morph-level event overrides ────────────────────────────────────
+    // lively.morphic.Morph's default onKeyDown (Events.js) intercepts
+    // Ctrl/Cmd-V globally and redirects it to Lively's own morph-clipboard
+    // (KeyboardDispatcher.handleGlobalKeyEvent explicitly exempts Ctrl/Cmd-C
+    // and -X from this — "don't capture COPY or CUT" — but NOT -V;
+    // createClipboardCapture then steals DOM focus to a hidden 1x1 proxy
+    // <input> to read the system clipboard for "paste a morph") rather than
+    // letting native browser paste happen. A plain <input> embedded in this
+    // dashboard's raw-DOM content never received a real paste event as a
+    // result — confirmed bug report: pasting a recipient address into any
+    // of this dashboard's inputs silently did nothing. Bypass $super
+    // whenever a real text input inside this morph's own content already
+    // has DOM focus — same fix shape PostCardEditor.js's own onKeyDown
+    // override already establishes for the identical class of bug.
+
+    'morph events', {
+
+      onKeyDown: function ($super, evt) {
+        var active = document.activeElement;
+        if (active && this._contentDiv && this._contentDiv.contains(active) &&
+            (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
+          return false;
+        }
+        return $super(evt);
+      },
+
+    },
+
     'data', {
 
       // Decides locked vs unlocked by trying getAddress — no separate
