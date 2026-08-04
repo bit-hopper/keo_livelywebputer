@@ -254,6 +254,50 @@ Object.subclass('lively.identity.WalletBackup',
     });
   },
 
+  // Recovery: reverse of createBackup/refreshBackup. Fetches the
+  // previously-created wallet-backup envelope via this device's own local
+  // pointer, decrypts it (this module's own Files-encryption-plane
+  // KEK/DEK — the SAME crypto create/refresh already use, reversed), and
+  // reinstalls the resulting opaque vault blob directly into this
+  // identity's vault record via WalletBridge.importBackupBlob. Never
+  // touches the decrypted mnemonic itself: what this decrypts is still the
+  // vault's own opaque, separately-encrypted blob (§7.2's whole point —
+  // the vault's own encryption is a second, independent layer this module
+  // never has the keys to open). Only usable on the SAME device/browser
+  // that created the backup, since the local pointer is the only way this
+  // device knows the backup's objId at all (§7.2's own design: hidden from
+  // every listing, on purpose) — not a substitute for a genuinely new
+  // device, where §7.3's recovery-phrase-on-paper is still the real path.
+  // WalletVault's own importBackupBlob refuses to overwrite an
+  // already-set-up wallet, so this is safe to offer even if the caller
+  // isn't sure whether one already exists.
+  recoverBackup: function (onWaiting, thenDo) {
+    var self = this;
+    var c = lively.identity.crypto;
+    var user = lively.identity.did.currentUser();
+    if (!user) return thenDo(new Error('WalletBackup: no identity session active'));
+    var objId = self._getLocalObjId(user.did);
+    if (!objId) return thenDo(new Error('recoverBackup: no backup known on this device for this identity'));
+
+    self._getEnvelope(user.handle, objId, function (err, envelope) {
+      if (err) return thenDo(err);
+      if (!envelope) {
+        self._clearLocalObjId(user.did);
+        return thenDo(new Error('recoverBackup: the previously-created backup is gone — forgot the stale local pointer'));
+      }
+      self._withKek(user, onWaiting, function (err2, kek) {
+        if (err2) return thenDo(err2);
+        c.unwrapDek(envelope.record.wrappedDek, kek, function (err3, dek) {
+          if (err3) return thenDo(err3);
+          c.decryptPayload(envelope.record.payload, envelope.record.nonce, dek, function (err4, blob) {
+            if (err4) return thenDo(err4);
+            lively.identity.walletBridge.importBackupBlob(blob, thenDo);
+          });
+        });
+      });
+    });
+  },
+
   // Per this module's own header: "delete" can only ever mean "overwrite
   // the current version with inert content and forget the local pointer,"
   // never true server-side erasure — objects.db is an append-only version

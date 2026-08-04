@@ -18,13 +18,30 @@
  * only the final {address} result (§3.4: the mnemonic never crosses the
  * postMessage boundary, in any flow) -> success screen with the address.
  *
+ * Third choice screen option: "Recover from Files Backup" (WalletSpec.md
+ * §7.2/§7.3) — requested directly by the project owner after using the
+ * Files-backup feature and noticing there was no way to actually USE a
+ * backup once created. Skips the vault iframe entirely: recovery decrypts
+ * the identity's own Files-encryption-plane layer in the MAIN world
+ * (lively.identity.WalletBackup.recoverBackup) and hands the still-opaque,
+ * still-vault-encrypted blob to WalletBridge.importBackupBlob — a plain,
+ * fast RPC call with no vault-side UI to show, unlike create/import's
+ * mnemonic-display/confirmation-quiz flow. Only works on the SAME
+ * device/browser that created the backup (WalletBackup.js's own header:
+ * the backup's objId is tracked locally, by design, since it's
+ * deliberately excluded from every listing) — not a substitute for
+ * recovering on a genuinely new device, where the recovery phrase on
+ * paper (§7.3) is still the real path.
+ *
  * Dependencies:
  *   lively.identity.WalletBridge — setup, showVaultFrame, hideVaultFrame
+ *   lively.identity.WalletBackup — recoverBackup
  */
 
 module("lively.identity.WalletSetupDialog")
   .requires(
     "lively.identity.WalletBridge",
+    "lively.identity.WalletBackup",
     "lively.persistence.BuildSpec",
     "lively.morphic.Complete",
   )
@@ -101,6 +118,11 @@ module("lively.identity.WalletSetupDialog")
         var importBtn = new lively.morphic.Button(lively.rect(14, y, 220, 28), "Import Existing Wallet");
         lively.bindings.connect(importBtn, "fire", self, "startImport");
         content.addMorph(importBtn);
+        y += 36;
+
+        var recoverBtn = new lively.morphic.Button(lively.rect(14, y, 220, 28), "Recover from Files Backup");
+        lively.bindings.connect(recoverBtn, "fire", self, "startRecover");
+        content.addMorph(recoverBtn);
         y += 44;
 
         var cancelBtn = new lively.morphic.Button(lively.rect(14, y, 80, 24), "Cancel");
@@ -110,6 +132,7 @@ module("lively.identity.WalletSetupDialog")
 
       startCreate: function startCreate() { this.buildOptionsScreen("create"); },
       startImport: function startImport() { this.buildOptionsScreen("import"); },
+      startRecover: function startRecover() { this.buildRecoverScreen(); },
 
       // ─── options screen (word count for create; unlock method + password) ──
 
@@ -243,6 +266,78 @@ module("lively.identity.WalletSetupDialog")
           if (err) return self.buildErrorScreen(err);
           self.buildSuccessScreen(result.address);
         });
+      },
+
+      // ─── recover-from-Files-backup screen ───────────────────────────────────
+      // No vault iframe involved at all — recoverBackup does its work
+      // entirely in the main world (this identity's own Files-encryption
+      // KEK/DEK) plus one plain, fast RPC call (importBackupBlob), not the
+      // mnemonic-display/confirmation-quiz flow create/import need.
+
+      buildRecoverScreen: function buildRecoverScreen() {
+        var self = this;
+        var content = this._clearContent();
+        var y = this._addHeading(content, "Recover from Files Backup", 14);
+        y = this._addText(
+          content,
+          "If this wallet was previously backed up to your private Files " +
+            "from THIS device/browser, this restores it without re-entering " +
+            "your recovery phrase. It only works here — it can't search your " +
+            "account for a backup made elsewhere.",
+          y,
+          { fontSize: 11 },
+        );
+
+        var statusText = new lively.morphic.Text(lively.rect(14, y, content.getExtent().x - 28, 22), "");
+        statusText.applyStyle({ allowInput: false, fontSize: 11, fill: null, fontColor: Color.rgb(180, 40, 40) });
+        content.addMorph(statusText);
+        this._recoverStatusText = statusText;
+        y += 30;
+
+        var recoverBtn = new lively.morphic.Button(lively.rect(14, y, 140, 24), "Recover Wallet");
+        lively.bindings.connect(recoverBtn, "fire", self, "_onRecoverConfirm");
+        content.addMorph(recoverBtn);
+        this._recoverBtn = recoverBtn;
+
+        var backBtn = new lively.morphic.Button(lively.rect(162, y, 80, 24), "Back");
+        lively.bindings.connect(backBtn, "fire", self, "buildChoiceScreen");
+        content.addMorph(backBtn);
+      },
+
+      _onRecoverConfirm: function _onRecoverConfirm() {
+        var self = this;
+        this._recoverBtn.setEnabled(false);
+        this._recoverStatusText.applyStyle({ fontColor: Color.rgb(100, 100, 100) });
+        this._recoverStatusText.setTextString("Recovering…");
+        lively.identity.walletBackup.recoverBackup(
+          function () { self._recoverStatusText.setTextString("Confirm passkey…"); },
+          function (err) {
+            if (err) {
+              self._recoverBtn.setEnabled(true);
+              self._recoverStatusText.applyStyle({ fontColor: Color.rgb(180, 40, 40) });
+              self._recoverStatusText.setTextString(err.message);
+              return;
+            }
+            self.buildRecoverSuccessScreen();
+          },
+        );
+      },
+
+      buildRecoverSuccessScreen: function buildRecoverSuccessScreen() {
+        var self = this;
+        var content = this._clearContent();
+        var y = this._addHeading(content, "Wallet recovered", 14);
+        y = this._addText(
+          content,
+          "Restored from its Files backup. Open your wallet and unlock it " +
+            "the same way you did before (passkey or password) to continue.",
+          y,
+          { fontSize: 12 },
+        );
+
+        var openBtn = new lively.morphic.Button(lively.rect(14, y, 100, 24), "Open Wallet");
+        lively.bindings.connect(openBtn, "fire", self, "_onOpenWallet");
+        content.addMorph(openBtn);
       },
 
       // ─── success / error screens ────────────────────────────────────────────

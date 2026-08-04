@@ -264,6 +264,16 @@ Object.subclass('lively.identity.WalletBridge',
   // triggers unlock (§3.4's table).
   exportBackupBlob: function(thenDo) {
     this.call('exportBackupBlob', null, thenDo);
+  },
+
+  // Reverse of exportBackupBlob, for recovery (lively.identity.WalletBackup
+  // .recoverBackup): blob is an already-encrypted wallet-blob record
+  // (recovered from a Files backup and decrypted down one layer — the
+  // Files-encryption-plane layer only, never the vault's own inner
+  // encryption). The vault stores it as-is and refuses if a wallet is
+  // already set up for this identity — never overwrites silently.
+  importBackupBlob: function(blob, thenDo) {
+    this.call('importBackupBlob', { blob: blob }, thenDo);
   }
 
 });

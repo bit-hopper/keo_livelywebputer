@@ -490,6 +490,37 @@
     });
   };
 
+  // Reverse of exportBackupBlob — reinstalls an already-encrypted blob
+  // (as previously produced by exportBackupBlob, round-tripped through a
+  // Files backup and decrypted back down a layer by
+  // lively.identity.WalletBackup's own recoverBackup) directly into this
+  // identity's IndexedDB record. Never decrypts anything here: the blob is
+  // already correctly shaped and already encrypted under whatever
+  // KDF/credential it was originally set up with — importing it just
+  // reinstalls it, exactly where a normal setup() would have put it, so
+  // the ordinary unlock() flow works unchanged afterward. Refuses to
+  // silently clobber an already-set-up wallet for this identity —
+  // recovery is for a MISSING wallet, never a way to overwrite an
+  // existing, possibly-different one; the caller must lock/clear it first
+  // if that's genuinely intended (not offered as a one-step action).
+  WalletVault.prototype.importBackupBlob = function (did, blob, thenDo) {
+    var self = this;
+    if (!did) return thenDo(new Error('importBackupBlob: no identity (did) provided'));
+    if (!blob || !blob.ciphertext || !blob.wrappedDek || !blob.nonce || !blob.kdf) {
+      return thenDo(new Error('importBackupBlob: blob does not look like a real wallet-blob record'));
+    }
+    this._getRecord(did, function (err, existing) {
+      if (err) return thenDo(err);
+      if (existing) {
+        return thenDo(new Error('importBackupBlob: a wallet is already set up on this device for this identity — recovery refuses to overwrite it'));
+      }
+      self._putRecord(did, blob, function (err2) {
+        if (err2) return thenDo(err2);
+        thenDo(null, { ok: true });
+      });
+    });
+  };
+
   // ─── setup / import / unlock / lock / reveal ────────────────────────────
 
   // options: { mode: 'create' | 'import' (default 'create'),
@@ -1272,6 +1303,9 @@
     },
     exportBackupBlob: function (params, cb) {
       window.lively.identity.walletVault.exportBackupBlob((params || {}).did, cb);
+    },
+    importBackupBlob: function (params, cb) {
+      window.lively.identity.walletVault.importBackupBlob((params || {}).did, (params || {}).blob, cb);
     }
   };
 
