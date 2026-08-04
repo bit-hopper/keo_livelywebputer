@@ -1006,7 +1006,7 @@ module.exports = function (route, app) {
   // Route is app-level (not under /nodejs/IdentityServer/) so clients reach it
   // at the canonical /@handle URL.
 
-  app.get("/@:handle", function (req, res) {
+  app.get("/@:handle", auth.optionalAuth, function (req, res) {
     var handle = req.params.handle;
 
     handleRegistry.resolve(handle, function (err, did) {
@@ -1016,7 +1016,22 @@ module.exports = function (route, app) {
 
       objectRepo.listForUser(did, function (err, envelopes) {
         if (err) return res.status(500).json({ error: String(err) });
-        res.json({ handle: handle, did: did, objects: envelopes });
+        // Phase 1 (Roadmap.md §2) enforces visibility/recipients on the
+        // single-object GET route (_canReadEnvelope, shared with every other
+        // full-envelope GET route below) but this listing route was never
+        // covered by that work and, until now, returned every envelope
+        // (private ones included, full ciphertext and all) to any caller —
+        // found while scoping the wallet's own §7.2 Files-backup feature,
+        // whose entire privacy design assumes this route already excludes
+        // objects the caller isn't allowed to read. Fixed here rather than
+        // worked around in the wallet code, since it's a pre-existing gap in
+        // shared listing infrastructure affecting every private object type
+        // (files, private postcards, settings, etc.), not something specific
+        // to wallet-backup envelopes.
+        var visible = envelopes
+          .filter(function (e) { return _canReadEnvelope(e, req.identity); })
+          .map(function (e) { return _trimRecipientsForNonOwner(e, req.identity); });
+        res.json({ handle: handle, did: did, objects: visible });
       });
     });
   });
