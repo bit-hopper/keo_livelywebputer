@@ -36,6 +36,14 @@
  * different bundle, not a shared import, matching this project's existing
  * one-bundle-per-consumer convention).
  *
+ * Step 8 addition: generateWithdrawalSecrets (§6.1) — the vault's real
+ * proveWithdrawal re-derives a spendable commitment's existing
+ * nullifier/secret via the already-bundled generateDepositSecrets, and
+ * this step's own new nullifier/secret (the change-output commitment) via
+ * generateWithdrawalSecrets, keyed by label+index rather than scope+index
+ * (§6.1's own distinct formula) — both stay 100% vault-only per §5.7,
+ * called directly against the SDK here, never reimplemented.
+ *
  * Globals exposed on window after the script loads:
  *   window.walletVaultLibs.generateMnemonic(strength)
  *   window.walletVaultLibs.validateMnemonic(mnemonic)
@@ -46,6 +54,7 @@
  *   window.walletVaultLibs.generateMasterKeys(mnemonic)
  *   window.walletVaultLibs.mnemonicToAccount(mnemonic, { accountIndex })
  *   window.walletVaultLibs.generateDepositSecrets(keys, scope, index)
+ *   window.walletVaultLibs.generateWithdrawalSecrets(keys, label, index)
  *   window.walletVaultLibs.hashPrecommitment(nullifier, secret)
  */
 
@@ -64,7 +73,7 @@ var entryContents = [
   "import { wordlist as englishWordlist } from '@scure/bip39/wordlists/english.js';",
   "import { hkdf } from '@noble/hashes/hkdf.js';",
   "import { sha256 } from '@noble/hashes/sha2.js';",
-  "import { generateMasterKeys, generateDepositSecrets, hashPrecommitment } from '@0xbow/privacy-pools-core-sdk';",
+  "import { generateMasterKeys, generateDepositSecrets, generateWithdrawalSecrets, hashPrecommitment } from '@0xbow/privacy-pools-core-sdk';",
   "import { mnemonicToAccount } from 'viem/accounts';",
   "window.walletVaultLibs = {",
   "  generateMnemonic: function (strength) { return generateMnemonic(englishWordlist, strength || 128); },",
@@ -76,6 +85,7 @@ var entryContents = [
   "  generateMasterKeys: generateMasterKeys,",
   "  mnemonicToAccount: mnemonicToAccount,",
   "  generateDepositSecrets: generateDepositSecrets,",
+  "  generateWithdrawalSecrets: generateWithdrawalSecrets,",
   "  hashPrecommitment: hashPrecommitment,",
   "};",
 ].join('\n');

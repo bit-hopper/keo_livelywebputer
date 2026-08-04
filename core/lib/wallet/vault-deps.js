@@ -53779,6 +53779,11 @@
     const secret = hashingExports.poseidon([keys.masterSecret, scope, index]);
     return { nullifier, secret };
   }
+  function generateWithdrawalSecrets(keys, label, index) {
+    const nullifier = hashingExports.poseidon([keys.masterNullifier, label, index]);
+    const secret = hashingExports.poseidon([keys.masterSecret, label, index]);
+    return { nullifier, secret };
+  }
   function hashPrecommitment(nullifier, secret) {
     return hashingExports.poseidon([nullifier, secret]);
   }
@@ -66814,6 +66819,7 @@ zoo`.split("\n"));
     generateMasterKeys,
     mnemonicToAccount: mnemonicToAccount2,
     generateDepositSecrets,
+    generateWithdrawalSecrets,
     hashPrecommitment
   };
 })();

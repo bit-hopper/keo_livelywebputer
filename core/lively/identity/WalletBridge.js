@@ -11,7 +11,11 @@
  * postMessage round trip; whatever crosses the boundary in each direction
  * is exactly what §3.4's table allows. As of step 7: setup/unlock/lock/
  * getAddress/isSetUp/signTransaction/deriveDepositSecrets, matching
- * WalletVault.js's RPC responder. revealMnemonic is deliberately never wired here at all: per
+ * WalletVault.js's RPC responder. Step 8 adds proveWithdrawal, the first
+ * method that reports progress mid-flight (loading_circuits/
+ * generating_proof/verifying_proof, §5.6) rather than a single response —
+ * see call()'s own comment for how that extends the postMessage protocol.
+ * revealMnemonic is deliberately never wired here at all: per
  * §3.4 it never crosses the postMessage boundary in either direction, in
  * any step. setup()'s result here is {address} only — WalletVault.js's RPC
  * responder strips the mnemonic before it ever reaches this file (a step-4
@@ -125,6 +129,14 @@ Object.subclass('lively.identity.WalletBridge',
 
 'rpc', {
 
+  // §15 step 8: _pending[id] now holds { thenDo, onProgress } rather than a
+  // bare function — a small, backward-compatible protocol extension for
+  // proveWithdrawal's progress reporting (§5.6/§9.4). Progress messages are
+  // tagged type:'progress' by WalletVault.js's responder specifically so
+  // they can be told apart from the one final {id, error, result} message
+  // (which never sets type) — dispatched to onProgress and never delete
+  // the pending entry, since more messages (progress or final) still
+  // follow.
   _installResponseListener: function() {
     if (this._listenerInstalled) return;
     this._listenerInstalled = true;
@@ -134,22 +146,28 @@ Object.subclass('lively.identity.WalletBridge',
       if (!self._vaultFrame || ev.source !== self._vaultFrame.contentWindow) return;
       var msg = ev.data;
       if (!msg || typeof msg.id === 'undefined') return;
-      var thenDo = self._pending[msg.id];
-      if (!thenDo) return;
+      var pending = self._pending[msg.id];
+      if (!pending) return;
+      if (msg.type === 'progress') {
+        if (pending.onProgress) pending.onProgress(msg.phase);
+        return;
+      }
       delete self._pending[msg.id];
-      thenDo(msg.error ? new Error(msg.error.message) : null, msg.result);
+      pending.thenDo(msg.error ? new Error(msg.error.message) : null, msg.result);
     });
   },
 
   // Every call wraps a postMessage round trip in the existing thenDo
-  // convention so callers don't know the vault exists (§3.4).
-  call: function(method, params, thenDo) {
+  // convention so callers don't know the vault exists (§3.4). onProgress
+  // is optional — most methods never receive a progress message at all,
+  // so passing it for e.g. getAddress is simply inert.
+  call: function(method, params, thenDo, onProgress) {
     var self = this;
     this._withVaultFrame(function(err, iframe) {
       if (err) return thenDo(err);
       self._installResponseListener();
       var id = self._nextId++;
-      self._pending[id] = thenDo;
+      self._pending[id] = { thenDo: thenDo, onProgress: onProgress };
       iframe.contentWindow.postMessage(
         { id: id, method: method, params: params },
         self._vaultOriginResolved // never '*' — always the resolved vault origin
@@ -174,6 +192,16 @@ Object.subclass('lively.identity.WalletBridge',
   // structured clone carries them natively). Returns { precommitment }.
   deriveDepositSecrets: function(scope, index, thenDo) {
     this.call('deriveDepositSecrets', { scope: scope, index: index }, thenDo);
+  },
+
+  // §6.4.1, §15 step 8: params per §3.4's corrected table — { scope, index,
+  // label, value, withdrawalIndex, input: {...} }, all public (BigInts and
+  // plain numbers only — structured clone carries both natively).
+  // onProgress(phase) fires zero or more times with 'loading_circuits' /
+  // 'generating_proof' / 'verifying_proof' (§5.6) before thenDo's one final
+  // call. Returns { proof, publicSignals } — both public (§3.4's table).
+  proveWithdrawal: function(params, onProgress, thenDo) {
+    this.call('proveWithdrawal', params, thenDo, onProgress);
   }
 
 });

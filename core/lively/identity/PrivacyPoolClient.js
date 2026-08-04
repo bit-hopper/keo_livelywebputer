@@ -18,8 +18,13 @@
  * CORS-blocked from arbitrary origins; self-hosting remains the real path
  * for production relaying, exactly as §6.5 already recommended). Step 7
  * adds the real deposit flow (§6.2, §6.6) — see the 'deposit' section
- * below; withdraw/ragequit and full chain-event scan for spendable
- * commitments (§10) are still later steps' addition to this same file.
+ * below. Step 8 adds the real withdrawal flow, direct-submit only (§6.4,
+ * §6.4.1, §6.6) — see the 'withdrawal' section: Merkle proof building
+ * against the ASP's own leaf data, formatWithdrawalProof's pB-swap, and
+ * the simulate→sign→broadcast call against PrivacyPool.withdraw()
+ * directly (not the Entrypoint — that's deposit-only). Ragequit and full
+ * chain-event scan for spendable commitments (§10) are still later steps'
+ * addition to this same file.
  *
  * buildAndSignTransfer deliberately never broadcasts (no
  * eth_sendRawTransaction call exists anywhere in this file or its
@@ -34,14 +39,18 @@
  * lively.identity.WalletCrypto loads wallet-crypto-libs.js — its own
  * bundle, not folded into WalletCrypto's, since that file's own scope is
  * specifically "what WalletCrypto needs" (public-input-only helpers, no
- * RPC client).
+ * RPC client). Step 8 addition: this module now also declares a real
+ * .requires('lively.identity.WalletCrypto') — the withdrawal section below
+ * calls lively.identity.walletCrypto.calculateContext/bigintToHex
+ * directly, and nothing before step 8 needed WalletCrypto loaded at all
+ * (deposit's simulate→sign→broadcast path never touched it).
  *
  * Async pattern: thenDo(err, result), matching the rest of
  * lively.identity.*.
  */
 
 module('lively.identity.PrivacyPoolClient')
-  .requires()
+  .requires('lively.identity.WalletCrypto')
   .toRun(function() {
 
 Object.subclass('lively.identity.PrivacyPoolClient',
@@ -123,6 +132,15 @@ Object.subclass('lively.identity.PrivacyPoolClient',
 // ─── public data ─────────────────────────────────────────────────────────
 
 'balance', {
+
+  // Returns thenDo(null, chainId).
+  getChainId: function(thenDo) {
+    this._withPublicClient(function(err, client) {
+      if (err) return thenDo(err);
+      client.getChainId().then(function(chainId) { thenDo(null, chainId); })
+        .catch(function(e) { thenDo(e); });
+    });
+  },
 
   // Returns thenDo(null, { wei: bigint, eth: string }).
   getBalance: function(address, thenDo) {
@@ -606,6 +624,283 @@ Object.subclass('lively.identity.PrivacyPoolClient',
       .then(function(res) { return res.json(); })
       .then(function(body) { thenDo(null, body); })
       .catch(function(e) { thenDo(e); });
+  }
+
+},
+
+// ─── withdrawal (§6.4, §6.4.1, §6.6, §15 step 8) ─────────────────────────
+// Direct-submit only, per this step's own scope — the recipient submits
+// their own withdrawal transaction and pays their own gas, so
+// _withdrawal.processooor IS the recipient (confirmed directly from
+// PrivacyPool.sol's source: withdraw() pushes the full withdrawnValue to
+// _withdrawal.processooor and never reads _withdrawal.data at all — data
+// only feeds calculateContext's hash, it isn't decoded on-chain). Relayed
+// submission (processooor = a relayer's address, data carrying whatever
+// that relayer's own off-chain logic needs to route the recipient/fee
+// split) is a later addition, once a real relayer deployment exists (§14
+// item 4) — RelayerStubServer.js's /relayer/request errors by design, so
+// there's nothing to route through yet.
+//
+// V1 scope is full-value withdrawal only (no partial-withdrawal chains):
+// a spendable commitment is always withdrawn in one shot, so
+// generateWithdrawalSecrets' own index (§6.1) is always 0 for a given
+// label — unlike deposit's index, which genuinely needs a persistent
+// per-scope counter (one scope, many deposits), a label is only ever
+// spent once in this scope, so there's nothing to collide with and no
+// counter to maintain here.
+
+'withdrawal', {
+
+  // Wraps the real SDK's generateMerkleProof (Poseidon-based — never
+  // reimplemented, §5.7/§6.4.1) plus the confirmed NaN workaround
+  // (useWithdraw.ts's own fix, ported verbatim): an ASP-tree proof's index
+  // can come back NaN from the underlying LeanIMT implementation in some
+  // cases. Applied to both trees defensively — harmless when the bug
+  // doesn't fire, since Object.is(realIndex, NaN) is always false.
+  // leaves/leaf: bigint[] / bigint. Returns thenDo(null, {root, leaf, index, siblings}).
+  getMerkleProof: function(leaves, leaf, thenDo) {
+    this.withClientLibs(function(err, libs) {
+      if (err) return thenDo(err);
+      try {
+        var proof = libs.generateMerkleProof(leaves, leaf);
+        if (Object.is(proof.index, NaN)) proof.index = 0;
+        thenDo(null, proof);
+      } catch (e) { thenDo(e); }
+    });
+  },
+
+  // §6.4.1: the ASP's own /mt-leaves response is the single source for
+  // BOTH trees' full leaf sets — there's no separate per-leaf inclusion-
+  // proof endpoint for either one. Builds both Merkle proofs and both tree
+  // depths entirely client-side from that one fetch; the roots that
+  // actually matter are the LOCALLY recomputed proof.root values, not the
+  // /mt-roots response's mtRoot field (§6.4.1's own explicit distinction).
+  // Tree depth is read as siblings.length, NOT computed from leaf count —
+  // generateMerkleProof always pads siblings to 32 (matching the circuit's
+  // fixed maxTreeDepth), so this is always 32n regardless of the real leaf
+  // count; confirmed against this project's own already-verified
+  // scripts/wallet-vault-prover-isolation-test.js (§15 step 6), which uses
+  // exactly this same siblings.length pattern for a proof that really
+  // verifies — matched here rather than independently deriving a "real"
+  // tree depth from leaf count, which turned out to not be what the
+  // circuit actually wants.
+  //
+  // options: { chainId, scope, commitment: { commitment, label, value },
+  // recipient }. Returns thenDo(null, { stateMerkleProof, aspMerkleProof,
+  // stateRoot, stateTreeDepth, aspRoot, aspTreeDepth, context,
+  // withdrawalAmount }) — everything §3.4's corrected proveWithdrawal
+  // params table needs, still all public data.
+  buildWithdrawalProofInputs: function(options, thenDo) {
+    var self = this;
+    this.getAspLeaves(options.chainId, options.scope, function(err, leaves) {
+      if (err) return thenDo(err);
+      try {
+        var stateLeaves = leaves.stateTreeLeaves.map(BigInt);
+        var aspLeaves = leaves.aspLeaves.map(BigInt);
+        var commitmentHash = BigInt(options.commitment.commitment);
+        var label = BigInt(options.commitment.label);
+
+        self.getMerkleProof(stateLeaves, commitmentHash, function(errS, stateMerkleProof) {
+          if (errS) return thenDo(new Error('buildWithdrawalProofInputs: commitment not found in state tree — ' + errS.message));
+          self.getMerkleProof(aspLeaves, label, function(errA, aspMerkleProof) {
+            if (errA) return thenDo(new Error('buildWithdrawalProofInputs: label not found in ASP tree (not yet associated?) — ' + errA.message));
+            var withdrawal = { processooor: options.recipient, data: '0x' };
+            lively.identity.walletCrypto.calculateContext(withdrawal, options.scope, function(errC, contextHex) {
+              if (errC) return thenDo(errC);
+              thenDo(null, {
+                stateMerkleProof: stateMerkleProof,
+                aspMerkleProof: aspMerkleProof,
+                stateRoot: stateMerkleProof.root,
+                stateTreeDepth: BigInt(stateMerkleProof.siblings.length),
+                aspRoot: aspMerkleProof.root,
+                aspTreeDepth: BigInt(aspMerkleProof.siblings.length),
+                context: BigInt(contextHex),
+                withdrawalAmount: BigInt(options.commitment.value)
+              });
+            });
+          });
+        });
+      } catch (e) { thenDo(e); }
+    });
+  },
+
+  // §6.6: ported verbatim from contracts.service.ts's private formatProof —
+  // a pure transform over PUBLIC proof bytes (a ZK proof reveals nothing
+  // about its private witness by construction, §3.4's table), so it's safe
+  // to run here in the main world rather than the vault. The pB inner-pair
+  // swap is the easy-to-get-silently-wrong detail §6.6 flags:
+  // [pi_b[0][1], pi_b[0][0]], NOT the natural-looking
+  // [pi_b[0][0], pi_b[0][1]] — confirmed against both contracts.service.ts
+  // and useExit.ts's independent reimplementation of the same swap, which
+  // agree exactly. proof: { proof: {pi_a, pi_b, pi_c}, publicSignals }, the
+  // exact shape the vault's proveWithdrawal RPC call resolves with.
+  formatWithdrawalProof: function(proof) {
+    var toHex = lively.identity.walletCrypto.bigintToHex;
+    return {
+      pA: [toHex(proof.proof.pi_a[0]), toHex(proof.proof.pi_a[1])],
+      pB: [
+        [toHex(proof.proof.pi_b[0][1]), toHex(proof.proof.pi_b[0][0])],
+        [toHex(proof.proof.pi_b[1][1]), toHex(proof.proof.pi_b[1][0])]
+      ],
+      pC: [toHex(proof.proof.pi_c[0]), toHex(proof.proof.pi_c[1])],
+      pubSignals: proof.publicSignals.map(toHex)
+    };
+  },
+
+  // Full end-to-end: builds proof inputs, runs the vault's proveWithdrawal
+  // (real ZK proving, §5.6 — onProgress fires 'loading_circuits' /
+  // 'generating_proof' / 'verifying_proof'), formats the result, then
+  // validates (simulateContract) and signs (via the vault) the real
+  // PrivacyPool.withdraw(...) call. Direct submission goes straight to the
+  // pool contract itself, NOT the Entrypoint (confirmed from source:
+  // deposits route through the Entrypoint for vetting-fee collection;
+  // withdraw() is called directly on the PrivacyPool). Never broadcasts by
+  // itself — see broadcastWithdrawal, matching buildAndSignDeposit's own
+  // "build+sign here, broadcast is a separate explicit call" shape.
+  //
+  // options: { commitment: { commitment, label, value, index } (from
+  // getLocalDeposits/getDepositsByLabel), recipient }. Calls
+  // thenDo(null, { signedRawTx, unsignedTx, proof, publicSignals }).
+  buildAndSignWithdrawal: function(options, onProgress, thenDo) {
+    var self = this;
+    var poolAddress = this._ethPoolAddress();
+    if (!poolAddress) return thenDo(new Error('PrivacyPoolClient: privacyPoolEthPoolAddress is not configured'));
+    this._withPublicClient(function(err, client) {
+      if (err) return thenDo(err);
+      self.withClientLibs(function(err2, libs) {
+        if (err2) return thenDo(err2);
+        self.getEthPoolScope(function(err3, scope) {
+          if (err3) return thenDo(err3);
+          client.getChainId().then(function(chainId) {
+            self.buildWithdrawalProofInputs({
+              chainId: chainId,
+              scope: scope,
+              commitment: options.commitment,
+              recipient: options.recipient
+            }, function(err4, inputs) {
+              if (err4) return thenDo(err4);
+              var proveParams = {
+                scope: scope,
+                index: BigInt(options.commitment.index),
+                label: BigInt(options.commitment.label),
+                value: BigInt(options.commitment.value),
+                withdrawalIndex: 0n,
+                input: {
+                  context: inputs.context,
+                  withdrawalAmount: inputs.withdrawalAmount,
+                  stateMerkleProof: inputs.stateMerkleProof,
+                  aspMerkleProof: inputs.aspMerkleProof,
+                  stateRoot: inputs.stateRoot,
+                  stateTreeDepth: inputs.stateTreeDepth,
+                  aspRoot: inputs.aspRoot,
+                  aspTreeDepth: inputs.aspTreeDepth
+                }
+              };
+              lively.identity.walletBridge.proveWithdrawal(proveParams, onProgress, function(err5, proofResult) {
+                if (err5) return thenDo(err5);
+                var formattedProof = self.formatWithdrawalProof(proofResult);
+                var withdrawal = { processooor: options.recipient, data: '0x' };
+                var data = libs.encodeFunctionData({
+                  abi: libs.IPrivacyPoolABI,
+                  functionName: 'withdraw',
+                  args: [withdrawal, formattedProof]
+                });
+                client.simulateContract({
+                  address: poolAddress,
+                  abi: libs.IPrivacyPoolABI,
+                  functionName: 'withdraw',
+                  args: [withdrawal, formattedProof],
+                  account: options.recipient
+                }).then(function() {
+                  return client.estimateContractGas({
+                    address: poolAddress,
+                    abi: libs.IPrivacyPoolABI,
+                    functionName: 'withdraw',
+                    args: [withdrawal, formattedProof],
+                    account: options.recipient
+                  });
+                }).then(function(gas) {
+                  Promise.all([
+                    client.getTransactionCount({ address: options.recipient }),
+                    client.getGasPrice()
+                  ]).then(function(results) {
+                    var nonce = results[0], gasPrice = results[1];
+                    var unsignedTx = {
+                      to: poolAddress,
+                      value: 0n,
+                      data: data,
+                      nonce: nonce,
+                      gas: gas,
+                      maxFeePerGas: gasPrice * 2n,
+                      maxPriorityFeePerGas: gasPrice,
+                      chainId: chainId
+                    };
+                    lively.identity.walletBridge.signTransaction(unsignedTx, function(err6, signedRawTx) {
+                      if (err6) return thenDo(err6);
+                      thenDo(null, {
+                        signedRawTx: signedRawTx,
+                        unsignedTx: unsignedTx,
+                        proof: formattedProof,
+                        publicSignals: proofResult.publicSignals
+                      });
+                    });
+                  }).catch(function(e) { thenDo(e); });
+                }).catch(function(e) { thenDo(e); });
+              });
+            });
+          }).catch(function(e) { thenDo(e); });
+        });
+      });
+    });
+  },
+
+  // Same "separate explicit action" shape as broadcastDeposit.
+  broadcastWithdrawal: function(signedRawTx, thenDo) {
+    this._withPublicClient(function(err, client) {
+      if (err) return thenDo(err);
+      client.sendRawTransaction({ serializedTransaction: signedRawTx })
+        .then(function(txHash) { thenDo(null, txHash); })
+        .catch(function(e) { thenDo(e); });
+    });
+  },
+
+  waitForWithdrawalReceipt: function(txHash, thenDo) {
+    this._withPublicClient(function(err, client) {
+      if (err) return thenDo(err);
+      client.waitForTransactionReceipt({ hash: txHash })
+        .then(function(receipt) { thenDo(null, receipt); })
+        .catch(function(e) { thenDo(e); });
+    });
+  },
+
+  // Decodes the Withdrawn event for the success screen (§9.4). Confirmed
+  // exact signature from source: Withdrawn(address indexed _processooor,
+  // uint256 _value, uint256 _spentNullifier, uint256 _newCommitment).
+  parseWithdrawnEvent: function(receipt, thenDo) {
+    var self = this;
+    this.withClientLibs(function(err, libs) {
+      if (err) return thenDo(err);
+      var poolAddress = (self._ethPoolAddress() || '').toLowerCase();
+      for (var i = 0; i < receipt.logs.length; i++) {
+        var log = receipt.logs[i];
+        if (log.address.toLowerCase() !== poolAddress) continue;
+        try {
+          var decoded = libs.decodeEventLog({
+            abi: libs.IPrivacyPoolABI,
+            eventName: 'Withdrawn',
+            data: log.data,
+            topics: log.topics
+          });
+          return thenDo(null, {
+            processooor: decoded.args._processooor,
+            value: decoded.args._value,
+            spentNullifier: decoded.args._spentNullifier,
+            newCommitment: decoded.args._newCommitment
+          });
+        } catch (e) { /* not this log's event — keep scanning */ }
+      }
+      thenDo(new Error('parseWithdrawnEvent: no Withdrawn event found in this receipt'));
+    });
   }
 
 });

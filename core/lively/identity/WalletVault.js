@@ -25,7 +25,12 @@
  * phrase ("vault-side proveCommitment/deposit flow"), which doesn't match
  * its own cited §6.2 text on closer reading. Step 7 addition:
  * deriveDepositSecrets — real, RPC-exposed, derives from unlocked wallet
- * state.
+ * state. Step 8 addition: proveWithdrawal — real, RPC-exposed (§3.4's
+ * corrected table), re-derives a spendable commitment's existing
+ * nullifier/secret plus a fresh change-output nullifier/secret from
+ * unlocked wallet state, then runs the same step-6 prover Worker
+ * _proveWithdrawalForTest already proved works — the difference is where
+ * the witness values come from, not the proving path itself.
  *
  * §8.3's memory model, implemented as of step 3: an unlocked vault holds
  * the derived DEK at rest (this._unlockedDek), not the decrypted mnemonic.
@@ -820,6 +825,68 @@
     this._proverCall('proveWithdrawal', { commitment: commitment, input: input }, onProgress, thenDo);
   };
 
+  // Real, RPC-exposed proveWithdrawal (§3.4's corrected table, §15 step 8) —
+  // deriving secrets from unlocked wallet state, unlike the test-only
+  // method above which takes already-computed witness values directly.
+  // Re-derives the spendable commitment's existing nullifier/secret via
+  // generateDepositSecrets(scope, index) — the SAME formula that created
+  // this commitment at deposit time (§6.1) — and a fresh newNullifier/
+  // newSecret for the change output via generateWithdrawalSecrets(keys,
+  // label, withdrawalIndex), §6.1's own distinct index space, keyed by
+  // label rather than scope. Only the finished proof crosses back out via
+  // onProgress/thenDo — every nullifier/secret preimage here stays local
+  // to this function call.
+  //
+  // params: { scope, index, label, value, withdrawalIndex,
+  // input: { context, withdrawalAmount, stateMerkleProof, aspMerkleProof,
+  // stateRoot, stateTreeDepth, aspRoot, aspTreeDepth } } — everything
+  // except newSecret/newNullifier from §3.4's table; those two are
+  // deliberately NOT accepted as params (the vault derives them itself,
+  // same "never accept secret input from outside" shape as
+  // deriveDepositSecrets). onProgress(phase) mirrors the Worker's own
+  // 'loading_circuits'/'generating_proof'/'verifying_proof' phases (§5.6).
+  WalletVault.prototype.proveWithdrawal = function (params, onProgress, thenDo) {
+    var self = this;
+    params = params || {};
+    this.getPoolMasterKeys(function (err, keys) {
+      if (err) return thenDo(new Error('proveWithdrawal: ' + err.message));
+      self.withVaultLibs(function (err2, libs) {
+        if (err2) return thenDo(err2);
+        try {
+          var scope = BigInt(params.scope);
+          var index = BigInt(params.index);
+          var label = BigInt(params.label);
+          var value = BigInt(params.value);
+          var withdrawalIndex = BigInt(params.withdrawalIndex || 0);
+          var input = params.input || {};
+
+          var existingSecrets = libs.generateDepositSecrets(keys, scope, index);
+          var newSecrets = libs.generateWithdrawalSecrets(keys, label, withdrawalIndex);
+
+          var commitment = {
+            value: value,
+            label: label,
+            nullifier: existingSecrets.nullifier,
+            secret: existingSecrets.secret
+          };
+          var proverInput = {
+            context: BigInt(input.context),
+            withdrawalAmount: BigInt(input.withdrawalAmount),
+            stateMerkleProof: input.stateMerkleProof,
+            aspMerkleProof: input.aspMerkleProof,
+            stateRoot: BigInt(input.stateRoot),
+            stateTreeDepth: BigInt(input.stateTreeDepth),
+            aspRoot: BigInt(input.aspRoot),
+            aspTreeDepth: BigInt(input.aspTreeDepth),
+            newSecret: newSecrets.secret,
+            newNullifier: newSecrets.nullifier
+          };
+          self._proverCall('proveWithdrawal', { commitment: commitment, input: proverInput }, onProgress, thenDo);
+        } catch (e) { thenDo(e); }
+      });
+    });
+  };
+
   // options: { password } for the argon2id path; {} to trigger a WebAuthn
   // ceremony against the stored credentialId/rpId.
   WalletVault.prototype.unlock = function (options, thenDo) {
@@ -1023,7 +1090,11 @@
   // WalletSpec.md §15 step 4: setup/unlock/lock/getAddress/isSetUp/
   // signTransaction; step 7 adds deriveDepositSecrets (§3.4's table —
   // scope/index in, precommitment hash out, never the nullifier/secret
-  // preimage). revealMnemonic is NEVER exposed here — see its own
+  // preimage). Step 8 adds proveWithdrawal (§3.4's corrected table) — the
+  // first RPC method that reports progress (loading_circuits/
+  // generating_proof/verifying_proof, §5.6) rather than a single response,
+  // so handlers now optionally receive a sendProgress callback alongside
+  // the usual cb. revealMnemonic is NEVER exposed here — see its own
   // comment above; it renders inside the vault's own UI and never crosses
   // this boundary, in any step.
   //
@@ -1054,6 +1125,9 @@
     signTransaction: function (params, cb) { window.lively.identity.walletVault.signTransaction(params, cb); },
     deriveDepositSecrets: function (params, cb) {
       window.lively.identity.walletVault.deriveDepositSecrets((params || {}).scope, (params || {}).index, cb);
+    },
+    proveWithdrawal: function (params, cb, sendProgress) {
+      window.lively.identity.walletVault.proveWithdrawal(params, sendProgress, cb);
     }
   };
 
@@ -1075,12 +1149,21 @@
           expectedOrigin
         );
       }
+      // §5.6/§9.4: a small, backward-compatible protocol extension —
+      // existing handlers ignore this third arg entirely (their final
+      // response still looks exactly like before), so this doesn't change
+      // any single-response method's wire shape. Progress messages are
+      // tagged type:'progress' precisely so WalletBridge.js's listener can
+      // tell them apart from the one final {id, error, result} message.
+      function sendProgress(phase) {
+        event.source.postMessage({ id: msg.id, type: 'progress', phase: phase }, expectedOrigin);
+      }
       handler(msg.params, function (err, result) {
         event.source.postMessage(
           { id: msg.id, error: err ? { message: err.message } : null, result: result === undefined ? null : result },
           expectedOrigin
         );
-      });
+      }, sendProgress);
     });
   }
 
