@@ -19,7 +19,13 @@
  * _proveWithdrawalForTest — test-only entry points proving the Worker
  * plumbing works, deliberately not RPC-exposed; real proveCommitment/
  * proveWithdrawal (deriving secrets from unlocked wallet state) is step
- * 7's job.
+ * 9's job (ragequit) — deposit turned out not to need either: §6.2/§3.4
+ * confirm deposit only ever calls deriveDepositSecrets, a plain Poseidon
+ * hash with no ZK proof involved, correcting §15's own step-7 summary
+ * phrase ("vault-side proveCommitment/deposit flow"), which doesn't match
+ * its own cited §6.2 text on closer reading. Step 7 addition:
+ * deriveDepositSecrets — real, RPC-exposed, derives from unlocked wallet
+ * state.
  *
  * §8.3's memory model, implemented as of step 3: an unlocked vault holds
  * the derived DEK at rest (this._unlockedDek), not the decrypted mnemonic.
@@ -928,6 +934,32 @@
     });
   };
 
+  // §6.1/§6.2, §15 step 7: precommitment = Poseidon(nullifier, secret),
+  // where nullifier/secret are themselves derived deterministically from
+  // the pool master keys + scope + index (generateDepositSecrets, §6.1's
+  // exact formula). No ZK proof here — deposit only ever needs this hash;
+  // see this file's own header for why that corrects §15's step-7 summary
+  // text. scope/index are public (§3.4's table lists them as the caller-
+  // supplied params) — the vault stays stateless per call, same as
+  // signTransaction/getPoolMasterKeys; picking which index is "next" for a
+  // given scope is the main world's job (PrivacyPoolClient.js), not
+  // tracked here. Only the precommitment hash crosses back out —
+  // nullifier/secret are discarded the instant this function returns.
+  WalletVault.prototype.deriveDepositSecrets = function (scope, index, thenDo) {
+    var self = this;
+    this.getPoolMasterKeys(function (err, keys) {
+      if (err) return thenDo(new Error('deriveDepositSecrets: ' + err.message));
+      self.withVaultLibs(function (err2, libs) {
+        if (err2) return thenDo(err2);
+        try {
+          var secrets = libs.generateDepositSecrets(keys, BigInt(scope), BigInt(index));
+          var precommitment = libs.hashPrecommitment(secrets.nullifier, secrets.secret);
+          thenDo(null, { precommitment: precommitment });
+        } catch (e) { thenDo(e); }
+      });
+    });
+  };
+
   // §15 step 3: the "trivial method" WalletBridge's postMessage plumbing
   // is proven against. §5.1: derived from the REAL mnemonic's account
   // index 0 directly — the ordinary Ethereum spending key, never routed
@@ -989,7 +1021,9 @@
   //
   // Method allowlist is deliberately narrow — only what's reachable as of
   // WalletSpec.md §15 step 4: setup/unlock/lock/getAddress/isSetUp/
-  // signTransaction. revealMnemonic is NEVER exposed here — see its own
+  // signTransaction; step 7 adds deriveDepositSecrets (§3.4's table —
+  // scope/index in, precommitment hash out, never the nullifier/secret
+  // preimage). revealMnemonic is NEVER exposed here — see its own
   // comment above; it renders inside the vault's own UI and never crosses
   // this boundary, in any step.
   //
@@ -1017,7 +1051,10 @@
     lock:            function (params, cb) { window.lively.identity.walletVault.lock(cb); },
     getAddress:      function (params, cb) { window.lively.identity.walletVault.getAddress(cb); },
     isSetUp:         function (params, cb) { window.lively.identity.walletVault.isSetUp(cb); },
-    signTransaction: function (params, cb) { window.lively.identity.walletVault.signTransaction(params, cb); }
+    signTransaction: function (params, cb) { window.lively.identity.walletVault.signTransaction(params, cb); },
+    deriveDepositSecrets: function (params, cb) {
+      window.lively.identity.walletVault.deriveDepositSecrets((params || {}).scope, (params || {}).index, cb);
+    }
   };
 
   function startRpcResponder() {

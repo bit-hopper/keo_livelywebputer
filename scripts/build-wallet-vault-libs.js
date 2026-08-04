@@ -28,6 +28,14 @@
  * /core/lib/wallet/vault-sodium.js directly via its own <script> tag rather
  * than re-bundling it here).
  *
+ * Step 7 addition: generateDepositSecrets + hashPrecommitment (§6.1/§6.2) —
+ * deposit needs only a Poseidon hash, no ZK proof, so these run directly on
+ * the vault page's own thread rather than inside the step-6 prover Worker
+ * (which already bundles generateDepositSecrets separately, for its own
+ * Worker-scope isolation test — this is a second, deliberate copy in a
+ * different bundle, not a shared import, matching this project's existing
+ * one-bundle-per-consumer convention).
+ *
  * Globals exposed on window after the script loads:
  *   window.walletVaultLibs.generateMnemonic(strength)
  *   window.walletVaultLibs.validateMnemonic(mnemonic)
@@ -37,6 +45,8 @@
  *   window.walletVaultLibs.hkdfSha256(ikm, salt, info, length)
  *   window.walletVaultLibs.generateMasterKeys(mnemonic)
  *   window.walletVaultLibs.mnemonicToAccount(mnemonic, { accountIndex })
+ *   window.walletVaultLibs.generateDepositSecrets(keys, scope, index)
+ *   window.walletVaultLibs.hashPrecommitment(nullifier, secret)
  */
 
 'use strict';
@@ -54,7 +64,7 @@ var entryContents = [
   "import { wordlist as englishWordlist } from '@scure/bip39/wordlists/english.js';",
   "import { hkdf } from '@noble/hashes/hkdf.js';",
   "import { sha256 } from '@noble/hashes/sha2.js';",
-  "import { generateMasterKeys } from '@0xbow/privacy-pools-core-sdk';",
+  "import { generateMasterKeys, generateDepositSecrets, hashPrecommitment } from '@0xbow/privacy-pools-core-sdk';",
   "import { mnemonicToAccount } from 'viem/accounts';",
   "window.walletVaultLibs = {",
   "  generateMnemonic: function (strength) { return generateMnemonic(englishWordlist, strength || 128); },",
@@ -65,6 +75,8 @@ var entryContents = [
   "  hkdfSha256: function (ikm, salt, info, length) { return hkdf(sha256, ikm, salt, info, length); },",
   "  generateMasterKeys: generateMasterKeys,",
   "  mnemonicToAccount: mnemonicToAccount,",
+  "  generateDepositSecrets: generateDepositSecrets,",
+  "  hashPrecommitment: hashPrecommitment,",
   "};",
 ].join('\n');
 

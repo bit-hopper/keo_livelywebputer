@@ -53774,6 +53774,14 @@
     const masterSecret = hashingExports.poseidon([key2]);
     return { masterNullifier, masterSecret };
   }
+  function generateDepositSecrets(keys, scope, index) {
+    const nullifier = hashingExports.poseidon([keys.masterNullifier, scope, index]);
+    const secret = hashingExports.poseidon([keys.masterSecret, scope, index]);
+    return { nullifier, secret };
+  }
+  function hashPrecommitment(nullifier, secret) {
+    return hashingExports.poseidon([nullifier, secret]);
+  }
   function fromString(s, radix4) {
     if (!radix4 || radix4 == 10) {
       return BigInt(s);
@@ -66804,7 +66812,9 @@ zoo`.split("\n"));
       return hkdf(sha256, ikm, salt, info, length);
     },
     generateMasterKeys,
-    mnemonicToAccount: mnemonicToAccount2
+    mnemonicToAccount: mnemonicToAccount2,
+    generateDepositSecrets,
+    hashPrecommitment
   };
 })();
 /*! Bundled license information:

@@ -8,17 +8,23 @@
  * secret-touching code here at all — everything routes through
  * lively.identity.walletBridge.
  *
- * Only the Balance/Public tab from §9.2 as of step 4 (address, balance,
- * send/receive) — the Shielded and Settings tabs are later steps' work
- * (shielded pool isn't built yet; Settings is more setup-flow-adjacent).
- * No tab affordance is built at all yet since there's only one real tab to
- * show — added once a second one exists.
+ * Only the Balance/Public tab from §9.2 (address, balance, send/receive,
+ * plus deposit as of step 7) — the Shielded (balance/withdraw/exit) and
+ * Settings tabs are later steps' work. No tab affordance is built at all
+ * yet since there's only one real tab to show — added once a second one
+ * exists.
  *
  * "Send" builds and signs a transaction (§6.6's simulate-then-sign
  * pattern, via lively.identity.privacyPoolClient) and displays the result
  * as a read-only signed raw tx — it never broadcasts anything. See
  * PrivacyPoolClient.js's own header for why that's a hard absence, not a
  * UI-level restriction.
+ *
+ * "Deposit into pool" (§9.3, §15 step 7) is the first flow in this
+ * dashboard that can actually broadcast — Amount -> Review -> Sign ->
+ * (real, user-triggered) Broadcast -> Processing -> Success. Everything up
+ * through Sign only builds/signs; broadcasting is a separate, explicit
+ * button click, never automatic.
  *
  * No QR code — confirmed no QR library exists anywhere in this codebase
  * (checked while planning this file); deferred rather than adding a new
@@ -236,12 +242,11 @@ module('lively.identity.Wallet')
         content.appendChild(balText);
         this._balanceTextEl = balText;
 
-        // ── deposit CTA (disabled — shielded pool isn't built yet) ──
+        // ── deposit CTA (§9.3, §15 step 7 — real flow) ──
         var depositBtn = document.createElement('button');
         depositBtn.textContent = 'Deposit into pool';
-        depositBtn.disabled = true;
-        depositBtn.title = 'Shielded pool support is not built yet';
-        depositBtn.style.cssText = 'margin-bottom:20px;opacity:0.5;';
+        depositBtn.style.cssText = 'margin-bottom:20px;';
+        depositBtn.addEventListener('click', function () { self._renderDepositAmount(); });
         content.appendChild(depositBtn);
 
         // ── send ──
@@ -286,6 +291,230 @@ module('lively.identity.Wallet')
             },
           );
         });
+      },
+
+      // ── deposit flow (§9.3, §15 step 7) ──
+      // Same single-content-div-swap navigation already used for
+      // locked/unlocked/dashboard — Amount -> Review -> Sign -> (real,
+      // user-triggered) Broadcast -> Processing -> Success. Everything up
+      // through Sign only ever builds and signs; nothing here calls
+      // broadcastDeposit except the explicit Broadcast click on the Sign
+      // screen — per WalletSpec.md §15 step 7, that's the one action this
+      // codebase deliberately never takes automatically or during
+      // automated verification.
+
+      _renderDepositAmount: function () {
+        var self = this;
+        var content = this._contentDiv;
+        content.innerHTML = '';
+
+        var heading = document.createElement('div');
+        heading.textContent = 'Deposit into the shielded pool';
+        heading.style.cssText = 'font-weight:600;margin-bottom:12px;';
+        content.appendChild(heading);
+
+        var amountInput = document.createElement('input');
+        amountInput.type = 'text';
+        amountInput.placeholder = 'Amount (ETH), e.g. 0.01';
+        amountInput.style.cssText = 'display:block;width:100%;max-width:200px;box-sizing:border-box;padding:6px 8px;margin-bottom:8px;';
+        content.appendChild(amountInput);
+
+        var errorMsg = document.createElement('div');
+        errorMsg.style.cssText = 'color:#ff3b30;margin-bottom:8px;display:none;';
+        content.appendChild(errorMsg);
+
+        var reviewBtn = document.createElement('button');
+        reviewBtn.textContent = 'Review';
+        reviewBtn.style.cssText = 'margin-right:8px;';
+        content.appendChild(reviewBtn);
+
+        var cancelBtn = document.createElement('button');
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.addEventListener('click', function () { self._refresh(); });
+        content.appendChild(cancelBtn);
+
+        reviewBtn.addEventListener('click', function () {
+          var amountEth = amountInput.value.trim();
+          if (!amountEth || isNaN(Number(amountEth)) || Number(amountEth) <= 0) {
+            errorMsg.textContent = 'Enter a valid amount.';
+            errorMsg.style.display = 'block';
+            return;
+          }
+          self._renderDepositReview(amountEth);
+        });
+      },
+
+      _renderDepositReview: function (amountEth) {
+        var self = this;
+        var content = this._contentDiv;
+        content.innerHTML = '<div style="color:#999;padding:20px 0;">Loading pool config…</div>';
+
+        var client = lively.identity.privacyPoolClient;
+        client.parseEthAmount(amountEth, function (errAmt, amountWei) {
+          if (errAmt) return self._renderDepositError(errAmt.message, function () { self._renderDepositAmount(); });
+          client.getAssetConfig(client.ETH_ASSET_PLACEHOLDER, function (err, assetConfig) {
+            if (err) return self._renderDepositError(err.message, function () { self._renderDepositAmount(); });
+
+            content.innerHTML = '';
+            var heading = document.createElement('div');
+            heading.textContent = 'Review deposit';
+            heading.style.cssText = 'font-weight:600;margin-bottom:12px;';
+            content.appendChild(heading);
+
+            function row(label, value) {
+              var r = document.createElement('div');
+              r.style.cssText = 'margin-bottom:6px;font-size:12px;';
+              r.innerHTML = '<span style="color:#8e8e93;">' + label + ':</span> ' + value;
+              content.appendChild(r);
+            }
+
+            row('Amount', amountEth + ' ETH');
+            var vettingFeeEth = (Number(assetConfig.vettingFeeBPS) / 10000) * Number(amountEth);
+            row('Vetting fee', (Number(assetConfig.vettingFeeBPS) / 100) + '% (~' + vettingFeeEth + ' ETH)');
+            row('Minimum deposit', (Number(assetConfig.minimumDepositAmount) / 1e18) + ' ETH');
+            row('Gas', 'shown on the next screen, after signing');
+
+            var errorMsg = document.createElement('div');
+            errorMsg.style.cssText = 'color:#ff3b30;margin:8px 0;display:none;';
+            content.appendChild(errorMsg);
+
+            if (amountWei < assetConfig.minimumDepositAmount) {
+              errorMsg.textContent = 'Amount is below the minimum deposit for this pool.';
+              errorMsg.style.display = 'block';
+            }
+
+            var confirmBtn = document.createElement('button');
+            confirmBtn.textContent = 'Confirm & Sign';
+            confirmBtn.style.cssText = 'margin-right:8px;margin-top:8px;';
+            confirmBtn.disabled = amountWei < assetConfig.minimumDepositAmount;
+            content.appendChild(confirmBtn);
+
+            var backBtn = document.createElement('button');
+            backBtn.textContent = 'Back';
+            backBtn.style.cssText = 'margin-top:8px;';
+            backBtn.addEventListener('click', function () { self._renderDepositAmount(); });
+            content.appendChild(backBtn);
+
+            confirmBtn.addEventListener('click', function () {
+              confirmBtn.disabled = true;
+              confirmBtn.textContent = 'Building and signing…';
+              client.buildAndSignDeposit({ amountEth: amountEth }, function (errBuild, result) {
+                if (errBuild) return self._renderDepositError(errBuild.message, function () { self._renderDepositAmount(); });
+                self._renderDepositSign(result);
+              });
+            });
+          });
+        });
+      },
+
+      _renderDepositSign: function (result) {
+        var self = this;
+        var content = this._contentDiv;
+        content.innerHTML = '';
+
+        var heading = document.createElement('div');
+        heading.textContent = 'Signed — ready to broadcast';
+        heading.style.cssText = 'font-weight:600;margin-bottom:12px;';
+        content.appendChild(heading);
+
+        var detail = document.createElement('div');
+        detail.style.cssText = 'font-family:monospace;font-size:11px;word-break:break-all;margin-bottom:12px;';
+        detail.innerHTML =
+          '<div>precommitment: ' + result.precommitment.toString() + '</div>' +
+          '<div>scope: ' + result.scope.toString() + '</div>' +
+          '<div>index: ' + result.index.toString() + '</div>' +
+          '<div>gas: ' + result.unsignedTx.gas.toString() + '</div>' +
+          '<div>signed raw tx: ' + result.signedRawTx + '</div>';
+        content.appendChild(detail);
+
+        var warning = document.createElement('div');
+        warning.textContent = 'Broadcasting submits a REAL mainnet transaction and moves real ETH.';
+        warning.style.cssText = 'color:#b00020;font-weight:600;margin-bottom:12px;';
+        content.appendChild(warning);
+
+        var broadcastBtn = document.createElement('button');
+        broadcastBtn.textContent = 'Broadcast';
+        broadcastBtn.style.cssText = 'margin-right:8px;';
+        content.appendChild(broadcastBtn);
+
+        var cancelBtn = document.createElement('button');
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.addEventListener('click', function () { self._refresh(); });
+        content.appendChild(cancelBtn);
+
+        broadcastBtn.addEventListener('click', function () {
+          broadcastBtn.disabled = true;
+          cancelBtn.disabled = true;
+          self._renderDepositProcessing();
+          var client = lively.identity.privacyPoolClient;
+          client.broadcastDeposit(result.signedRawTx, function (errBroadcast, txHash) {
+            if (errBroadcast) return self._renderDepositError(errBroadcast.message, function () { self._refresh(); });
+            client.waitForDepositReceipt(txHash, function (errReceipt, receipt) {
+              if (errReceipt) return self._renderDepositError(errReceipt.message, function () { self._refresh(); });
+              client.parseDepositedEvent(receipt, function (errParse, deposited) {
+                if (errParse) return self._renderDepositError(errParse.message, function () { self._refresh(); });
+                client.recordLocalDeposit(result.unsignedTx.chainId, result.scope, self._address, {
+                  index: result.index,
+                  commitment: deposited.commitment,
+                  label: deposited.label,
+                  value: deposited.value,
+                  txHash: txHash
+                });
+                self._renderDepositSuccess(deposited, txHash);
+              });
+            });
+          });
+        });
+      },
+
+      _renderDepositProcessing: function () {
+        this._contentDiv.innerHTML = '<div style="color:#999;padding:20px 0;">Broadcasting and waiting for confirmation…</div>';
+      },
+
+      _renderDepositSuccess: function (deposited, txHash) {
+        var self = this;
+        var content = this._contentDiv;
+        content.innerHTML = '';
+
+        var heading = document.createElement('div');
+        heading.textContent = 'Deposit confirmed';
+        heading.style.cssText = 'font-weight:600;margin-bottom:12px;color:#34c759;';
+        content.appendChild(heading);
+
+        var detail = document.createElement('div');
+        detail.style.cssText = 'font-family:monospace;font-size:11px;word-break:break-all;margin-bottom:12px;';
+        detail.innerHTML =
+          '<div>tx: ' + txHash + '</div>' +
+          '<div>commitment: ' + deposited.commitment.toString() + '</div>' +
+          '<div>label: ' + deposited.label.toString() + '</div>' +
+          '<div>value: ' + deposited.value.toString() + ' wei</div>';
+        content.appendChild(detail);
+
+        var doneBtn = document.createElement('button');
+        doneBtn.textContent = 'Done';
+        doneBtn.addEventListener('click', function () { self._refresh(); });
+        content.appendChild(doneBtn);
+      },
+
+      _renderDepositError: function (message, backFn) {
+        var self = this;
+        var content = this._contentDiv;
+        content.innerHTML = '';
+
+        var heading = document.createElement('div');
+        heading.textContent = 'Deposit failed';
+        heading.style.cssText = 'font-weight:600;margin-bottom:12px;color:#ff3b30;';
+        content.appendChild(heading);
+
+        var detail = document.createElement('div');
+        detail.textContent = message;
+        detail.style.cssText = 'margin-bottom:12px;font-size:12px;';
+        content.appendChild(detail);
+
+        var backBtn = document.createElement('button');
+        backBtn.textContent = 'Back';
+        backBtn.addEventListener('click', function () { backFn(); });
+        content.appendChild(backBtn);
       },
 
       _setBalanceText: function (text) {

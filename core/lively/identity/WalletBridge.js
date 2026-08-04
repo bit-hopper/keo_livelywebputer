@@ -9,9 +9,9 @@
  *
  * Holds no secrets itself (§3.3's table) — every method here is a thin
  * postMessage round trip; whatever crosses the boundary in each direction
- * is exactly what §3.4's table allows. As of step 4: setup/unlock/lock/
- * getAddress/isSetUp/signTransaction, matching WalletVault.js's RPC
- * responder. revealMnemonic is deliberately never wired here at all: per
+ * is exactly what §3.4's table allows. As of step 7: setup/unlock/lock/
+ * getAddress/isSetUp/signTransaction/deriveDepositSecrets, matching
+ * WalletVault.js's RPC responder. revealMnemonic is deliberately never wired here at all: per
  * §3.4 it never crosses the postMessage boundary in either direction, in
  * any step. setup()'s result here is {address} only — WalletVault.js's RPC
  * responder strips the mnemonic before it ever reaches this file (a step-4
@@ -159,7 +159,7 @@ Object.subclass('lively.identity.WalletBridge',
 
 },
 
-// ─── convenience wrappers (§15 step 4's subset) ─────────────────────────
+// ─── convenience wrappers ────────────────────────────────────────────────
 
 'methods', {
 
@@ -168,7 +168,13 @@ Object.subclass('lively.identity.WalletBridge',
   lock: function(thenDo) { this.call('lock', null, thenDo); },
   getAddress: function(thenDo) { this.call('getAddress', null, thenDo); },
   isSetUp: function(thenDo) { this.call('isSetUp', null, thenDo); },
-  signTransaction: function(unsignedTx, thenDo) { this.call('signTransaction', unsignedTx, thenDo); }
+  signTransaction: function(unsignedTx, thenDo) { this.call('signTransaction', unsignedTx, thenDo); },
+
+  // §6.2, §15 step 7: scope/index are public (BigInts — postMessage's
+  // structured clone carries them natively). Returns { precommitment }.
+  deriveDepositSecrets: function(scope, index, thenDo) {
+    this.call('deriveDepositSecrets', { scope: scope, index: index }, thenDo);
+  }
 
 });
 
