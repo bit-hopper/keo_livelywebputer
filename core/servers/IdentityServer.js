@@ -448,7 +448,7 @@ function buildWalletVaultPage() {
 // first paint, crawlers, and link previews — no Lively runtime required.
 // Live mode: the same page then boots a minimal Lively runtime that replaces
 // the static render with the live PostCardEditor / PostCardFeed morph.
-function buildPostCardPage(envelope) {
+function buildPostCardPage(envelope, handle) {
   var meta = envelope.state || {};
   var title = escapeHtml(meta.title || envelope.objId);
   var payload = envelope.record && envelope.record.payload;
@@ -486,19 +486,28 @@ function buildPostCardPage(envelope) {
     '<script type="application/json" id="postcard-envelope">' + dataEnv + '</script>' +
     '<script>window.Config={' +
     'codeBase:location.protocol+"//"+location.host+"/core/",' +
-    'rootPath:location.protocol+"//"+location.host+"/"' +
+    'rootPath:location.protocol+"//"+location.host+"/",' +
+    // Without this, bootstrap.js's default Loader#getWorldData routes
+    // through WorldDataAccessor.forHTMLDoc, which looks for a
+    // <script type="text/x-lively-world"> tag this page never has and
+    // crashes on JSON.parse("") — see buildConstellationSpacePage's
+    // identical fix above for the full explanation.
+    'manuallyCreateWorld:true,' +
+    // removeDOMContentBeforeWorldLoad (default true) wipes #postcard-static/
+    // #postcard-loader once the (blank, unused) World is built, same as
+    // buildConstellationSpacePage's #constellation-static/#constellation-loader
+    // — onStartWorld is what replaces that wiped content with the actual
+    // live view, using the envelope this page already fetched server-side
+    // (PostCardView.open's opts.envelope skips a redundant re-fetch).
+    'onStartWorld:function(){' +
+    'lively.require("lively.identity.PostCardView").toRun(function(){' +
+    'lively.identity.PostCardView.open(' + JSON.stringify(handle || null) + ',' +
+    JSON.stringify(envelope.objId) + ',{envelope:' + dataEnv + '});' +
+    '});' +
+    '}' +
     '}</script>' +
     '<script src="/core/lib/postcard/postcard-runtime.js"></script>' +
     '<script src="/core/lively/bootstrap.js"></script>' +
-    '<script>' +
-    '(function waitForLively(){' +
-    'if(typeof lively==="undefined"||!lively.require)return setTimeout(waitForLively,200);' +
-    'document.getElementById("postcard-loader").textContent="Live mode ready";' +
-    'lively.require("lively.identity.PostCardFeed").toRun(function(){' +
-    'document.getElementById("postcard-static").style.display="none";' +
-    'document.getElementById("postcard-loader").style.display="none";' +
-    '});})();' +
-    '</script>' +
     '</body></html>'
   );
 }
@@ -1930,7 +1939,7 @@ module.exports = function (route, app) {
         return res.send(buildWorldPage(envelope, welcomeHandle));
       }
       if (envelope.type === "postcard" && req.accepts(["html", "json"]) === "html") {
-        return res.send(buildPostCardPage(envelope));
+        return res.send(buildPostCardPage(envelope, handle));
       }
       res.json(envelope);
     });
@@ -2686,7 +2695,9 @@ module.exports = function (route, app) {
           envelope = _trimRecipientsForNonOwner(envelope, req.identity);
 
           if (req.accepts(["html", "json"]) === "html") {
-            return res.send(buildPostCardPage(envelope));
+            return handleRegistry.resolveHandleForDid(envelope.did, function (resolveErr, handle) {
+              res.send(buildPostCardPage(envelope, handle));
+            });
           }
           res.json(envelope);
         });
@@ -2722,7 +2733,9 @@ module.exports = function (route, app) {
         envelope = _trimRecipientsForNonOwner(envelope, req.identity);
 
         if (req.accepts(["html", "json"]) === "html") {
-          return res.send(buildPostCardPage(envelope));
+          return handleRegistry.resolveHandleForDid(envelope.did, function (resolveErr, handle) {
+            res.send(buildPostCardPage(envelope, handle));
+          });
         }
         res.json(envelope);
       });
