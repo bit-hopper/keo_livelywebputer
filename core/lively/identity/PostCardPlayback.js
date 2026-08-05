@@ -312,7 +312,12 @@ module('lively.identity.PostCardPlayback')
             return;
           }
           var envelope = data.envelope || data;
-          var snapshot = envelope.record && envelope.record.payload && envelope.record.payload.snapshot;
+          var payload = envelope.record && envelope.record.payload;
+          // Plain postcards (§1.1/§2.3): `doc` IS the snapshot, same
+          // ProseMirror JSON shape `snapshotToHtml` renders either way —
+          // see PostCardView.js's identical branch.
+          var snapshot = payload &&
+            (payload.format === 'prosemirror-doc-v1' ? payload.doc : payload.snapshot);
           if (!snapshot) {
             self._setSnapHtml('<p style="color:gray">(No snapshot available for this version)</p>');
             return;

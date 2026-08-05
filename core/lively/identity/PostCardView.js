@@ -572,10 +572,14 @@ module("lively.identity.PostCardView")
         _renderContentArea: function (envelope) {
           var self = this;
           if (envelope.visibility === "public") {
-            var snapshot =
-              envelope.record &&
-              envelope.record.payload &&
-              envelope.record.payload.snapshot;
+            var payload = envelope.record && envelope.record.payload;
+            // Plain postcards (§1.1/§2.3, PostcardDesignSpec-v2.md): `doc` IS
+            // the snapshot — no separate extraction step, same ProseMirror
+            // JSON shape `snapshotToHtml` already renders. Wiki-mode cards
+            // (§1.2, format: "yjs-update-v1", or any pre-split legacy card
+            // saved before this format existed) keep using `snapshot`.
+            var snapshot = payload &&
+              (payload.format === "prosemirror-doc-v1" ? payload.doc : payload.snapshot);
             this._contentEl.innerHTML = snapshot
               ? lively.identity.postCardUtils.snapshotToHtml(snapshot)
               : "";

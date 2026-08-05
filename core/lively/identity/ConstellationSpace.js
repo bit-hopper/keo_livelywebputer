@@ -47,6 +47,7 @@ module("lively.identity.ConstellationSpace")
         this.wsProvider         = null;
         this._placementMorphs  = {};
         this._presenceMorphs   = {};
+        this._toolbarBtn       = null;
       },
     },
 
@@ -75,6 +76,7 @@ module("lively.identity.ConstellationSpace")
           catch (e) { return self._showError("Bad space-token response"); }
           self._genesisObjId = data.genesisObjId;
           self._canWrite      = !!data.canWrite;
+          self._buildToolbar();
           self._connect(data.token);
         };
         xhr.onerror = function () { self._showError("Network error loading space"); };
@@ -304,6 +306,66 @@ module("lively.identity.ConstellationSpace")
           set: function (key, value) { stateMap.set(key, value); },
           observe: function (fn) { stateMap.observe(fn); return function () { stateMap.unobserve(fn); }; },
         };
+      },
+
+    },
+
+    // ─── wiki page creation ─────────────────────────────────────────────────
+    // Wiki pages (PostcardDesignSpec-v2.md §1.2) have no creation UI
+    // anywhere in this codebase yet (§1's own status note — every card
+    // today goes through the plain path regardless of what later sections
+    // assume). This is that entry point: a page name here sets
+    // state.wikiName + constellation at creation time, which is what
+    // PostCardEditor.js's isWikiMode (§1.3) reads to decide a card gets the
+    // full Yjs/live-sync/multi-writer treatment instead of the plain one —
+    // nothing else about PostCardEditor needs to know this is happening.
+    // A raw DOM button (not a morph) matches this codebase's existing
+    // raw-DOM-toolbar convention (PostCardEditor.js/FilesBrowser.js) rather
+    // than adding a lively.morphic.Button to $world's own morph tree.
+
+    'wiki', {
+
+      _buildToolbar: function () {
+        if (!this._canWrite || this._toolbarBtn) return;
+        var self = this;
+        var btn = document.createElement("button");
+        btn.textContent = "+ New wiki page";
+        btn.style.cssText = [
+          "position:fixed", "top:12px", "right:12px", "z-index:1000",
+          "font-size:12px", "padding:6px 12px", "cursor:pointer",
+          "border:1px solid #ccc", "border-radius:14px", "background:#fff",
+          "box-shadow:0 2px 6px rgba(0,0,0,0.15)",
+        ].join(";");
+        btn.addEventListener("click", function () { self._promptNewWikiPage(); });
+        document.body.appendChild(btn);
+        this._toolbarBtn = btn;
+      },
+
+      // Prompts for a page name, then opens a brand-new PostCardEditor card
+      // with wikiName + constellation set from the start — mode-switching
+      // isn't supported (§1.3), so this is the only moment a card's mode is
+      // decided. Page-name charset mirrors hashtags' normalization posture
+      // (§4.2) without reusing its exact pattern, since a wiki page name
+      // isn't a hashtag; uniqueness within a constellation isn't enforced
+      // here (a second page with the same name would simply be a distinct,
+      // separately-addressed objId that getWikiPageObjId's "latest by id"
+      // resolution would shadow) — acceptable for this minimal first pass.
+      _promptNewWikiPage: function () {
+        var pageName = window.prompt("New wiki page name (letters, numbers, hyphens):");
+        if (!pageName) return;
+        pageName = pageName.trim();
+        if (!/^[a-zA-Z0-9-]{1,64}$/.test(pageName)) {
+          return this._showError("Wiki page names may only contain letters, numbers, and hyphens (max 64 chars).");
+        }
+        var user = lively.identity.did.currentUser();
+        if (!user) return this._showError("Not signed in.");
+        var constellationName = this._name;
+        lively.require("lively.identity.PostCardEditor").toRun(function () {
+          lively.identity.PostCardEditor.newCard(user.handle, {
+            constellation: constellationName,
+            wikiName: pageName,
+          });
+        });
       },
 
     },

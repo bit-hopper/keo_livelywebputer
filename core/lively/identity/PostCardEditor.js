@@ -72,6 +72,18 @@ module('lively.identity.PostCardEditor')
       return style ? { style: style } : {};
     }
 
+    // The mode discriminator (PostcardDesignSpec-v2.md §1.3): a wiki-mode
+    // postcard is a constellation-attached envelope with wikiName set in
+    // state. No stored flag — computed from fields that already exist for
+    // other reasons (constellation attachment, wiki creation), so there's no
+    // second source of truth that could drift from what actually governs
+    // routing/feed inclusion. Everything else (standalone posts,
+    // constellation-feed posts, every sent/DM/self post card) is "plain."
+    function isWikiMode(envelope) {
+      return !!(envelope && envelope.constellation != null &&
+                envelope.state && envelope.state.wikiName);
+    }
+
     var PostCardEditorClass = lively.morphic.Box.subclass('lively.identity.PostCardEditor',
 
     // ─── serialization guard ──────────────────────────────────────────────────────
@@ -119,6 +131,15 @@ module('lively.identity.PostCardEditor')
         // mime } entries — pass-through inside the postcard payload, hydrated
         // from the loaded envelope in _loadExistingNow.
         this._attachments = [];
+        // Plain-mode-only (§1.1/§2.3): { embedId: {...plain JSON...} },
+        // this card's counterpart to a wiki-mode card's yDoc.getMap('partState').
+        // Set fresh in _createNewDoc for a new plain card, hydrated from
+        // payload.partState in _loadExistingNow for an existing one. Unused
+        // in wiki mode. _plainDoc briefly holds a loaded card's ProseMirror
+        // JSON between deserialization and _attachEditor seeding the actual
+        // editor state from it — nulled out once consumed.
+        this._partState = null;
+        this._plainDoc = null;
         // Optional location tag (a floored, <=6-significant-digit Plus
         // Code — see PostCardUtils.js's encodeLocation). _locationCleared
         // distinguishes "never attached one" (both null) from "explicitly
@@ -138,10 +159,23 @@ module('lively.identity.PostCardEditor')
         this._replyEnabled = true;
         this._tipJarAddress = null;
         // True for a new card (you're creating it) or once _loadExistingNow
-        // compares envelope.did to the session DID. Gates editing, Save,
-        // Send, and the visibility toggle — a non-owner viewing a shared
-        // card is read-only (PUT is owner-only server-side regardless).
+        // compares envelope.did to the session DID. Gates Send and the
+        // visibility toggle specifically (those stay owner-only even for a
+        // wiki page a non-owner member can edit — see _canEdit below for
+        // the check that actually gates editing/Save).
         this._isOwner = true;
+        // Whether THIS session may edit/save this card at all. Equals
+        // _isOwner for every plain card (owner-only, unconditionally,
+        // §1.1) and for a new/not-yet-loaded card. For a loaded wiki-mode
+        // card (§1.2/§16.6) a non-owner may still have write access via
+        // constellation membership — _loadExistingNow resolves that
+        // asynchronously (one extra GET .../space-token round trip, only
+        // for this one case) before finalizing this flag. Read by
+        // _applyReadOnlyMode and _markEdited; _isOwner alone would
+        // otherwise force every non-owner into read-only, even one the
+        // server-side PUT route (IdentityServer.js) would actually accept
+        // a write from.
+        this._canEdit = true;
         // Set by PostCardEditor.openCard's forceReadOnly option — used only
         // by PostCardView, which embeds a target-mode editor purely to
         // decrypt+render private-card content (no plaintext snapshot exists
@@ -153,6 +187,17 @@ module('lively.identity.PostCardEditor')
         // run, and a world reload must not silently turn a forced-read-only
         // content viewer back into an editable instance.
         this._forceReadOnly = !!this._forceReadOnly;
+        // Mode split (PostcardDesignSpec-v2.md §1): _wikiName is set by
+        // newCard's opts (preserved here, same pattern as _forceReadOnly
+        // above) for a card created as a wiki page from the start — mode-
+        // switching isn't supported, so this is only ever meaningful at
+        // creation time. _isWikiMode is this session's resolved mode; for a
+        // new card it's known immediately from _constellation/_wikiName, for
+        // an existing one it's provisional here and gets recomputed for
+        // real in _loadExistingNow once the actual envelope (and therefore
+        // its real constellation/wikiName) is known.
+        this._wikiName = this._wikiName || null;
+        this._isWikiMode = !!(this._constellation && this._wikiName);
         this._buildChrome();
 
         // Guards against double-firing the async content-load dispatch
@@ -725,6 +770,14 @@ module('lively.identity.PostCardEditor')
           replyEnabled: this._replyEnabled !== false,
         };
         if (this._tipJarAddress) meta.tipJarAddress = this._tipJarAddress;
+        // Wiki pages (§1.2): wikiName is fixed at creation and never
+        // switched (§1.3), so once set it's carried on every save exactly
+        // like reactionsEnabled/replyEnabled above — never conditionally
+        // dropped the way location's tri-state is. _loadExistingNow re-seeds
+        // this._wikiName from the loaded envelope for the same reason it
+        // re-seeds every other field here: without that, a wiki page closed
+        // and reopened would silently lose wikiName on its very next save.
+        if (this._wikiName) meta.wikiName = this._wikiName;
         return meta;
       },
 
@@ -983,19 +1036,28 @@ module('lively.identity.PostCardEditor')
         document.head.appendChild(s);
       },
 
-      // Create a fresh Y.Doc (gc: false) and attach a ProseMirror editor.
+      // Create a fresh document and attach a ProseMirror editor. Wiki mode
+      // (§1.2, not buildable yet — nothing sets _wikiName today) gets a
+      // fresh Y.Doc; plain mode (§1.1, every card created today) gets no
+      // Yjs doc at all — _attachEditor seeds an empty ProseMirror state
+      // directly from local JS, and _connectSync (below) is a no-op for it.
       _createNewDoc: function () {
         var self = this;
         this._ensureRuntime(function () {
-          var Y = self._Y();
-          if (!Y) return self._showError('Yjs not loaded — cannot create editor');
-          self.yDoc = new Y.Doc({ gc: false });
+          if (self._isWikiMode) {
+            var Y = self._Y();
+            if (!Y) return self._showError('Yjs not loaded — cannot create editor');
+            self.yDoc = new Y.Doc({ gc: false });
+          } else {
+            self._partState = {};
+          }
           self._attachEditor();
           self._connectSync();
         });
       },
 
-      // Load the existing envelope from the server, reconstruct the Y.Doc, then attach.
+      // Load the existing envelope from the server, reconstruct its
+      // document, then attach.
       _loadExisting: function () {
         var self = this;
         this._ensureRuntime(function () { self._loadExistingNow(); });
@@ -1023,23 +1085,100 @@ module('lively.identity.PostCardEditor')
           self._reactionsEnabled = !(envelope.state && envelope.state.reactionsEnabled === false);
           self._replyEnabled = !(envelope.state && envelope.state.replyEnabled === false);
           self._tipJarAddress = (envelope.state && envelope.state.tipJarAddress) || null;
+          // Re-seed constellation/wikiName from the loaded envelope, same
+          // reasoning as every other field re-seeded here: _composeStateMeta
+          // only carries forward what this editor knows to re-include on the
+          // next save (see its own doc comment on the "save bug"), and
+          // wikiName in particular is load-bearing for isWikiMode (§1.3) —
+          // never seeding it back would silently demote a reopened wiki page
+          // to a plain card on its very next autosave. (_constellation had
+          // the identical gap for plain cards attached to a constellation,
+          // pre-existing and unrelated to wiki mode — fixed here too since
+          // it's the same statement, not a separate change.)
+          self._constellation = envelope.constellation || null;
+          self._wikiName = (envelope.state && envelope.state.wikiName) || null;
           var user = lively.identity.did.currentUser();
           self._isOwner = !!(user && user.did === envelope.did);
+          self._canEdit = self._isOwner;
           self._updateVisibilityBtn();
-          var deserialize = envelope.visibility === 'public'
-            ? lively.identity.postCardSerializer.deserializeFromEnvelope
-            : lively.identity.postCardSerializer.deserializeEncrypted;
-          deserialize.call(lively.identity.postCardSerializer, envelope, function (err, yDoc, payload) {
+
+          // mode is what THIS stored version's payload.format actually is,
+          // not the envelope-level isWikiMode(envelope) computation — they
+          // agree for every card saved after this split, but a card saved
+          // under the old universal-Yjs regime has payload.format:
+          // "yjs-update-v1" regardless of envelope.constellation/wikiName
+          // (both absent, since wiki mode was never buildable before now).
+          // There's no backfill for that; it keeps behaving as the Yjs-
+          // backed card it already was until deliberately resaved/migrated —
+          // same "no migration/backfill concern" posture §4.1 already takes
+          // toward other pre-existing data.
+          function _onDeserialized(err, mode, content, payload) {
             if (err) return self._showError('Failed to deserialize: ' + err.message);
-            self.yDoc = yDoc;
+            self._isWikiMode = (mode === 'wiki');
+            if (mode === 'wiki') {
+              self.yDoc = content;
+            } else {
+              self.yDoc = null;
+              self._plainDoc = content;
+              self._partState = (payload && payload.partState) || {};
+            }
             // §6: attachments travel inside the (now-decrypted, for a
             // private/shared card) payload — the image NodeView/link click
             // handler resolve against this array, not a fresh fetch.
             self._attachments = (payload && payload.attachments) || [];
-            self._attachEditor();
-            self._applyReadOnlyMode();
-            self._connectSync();
-          });
+
+            function finishLoad() {
+              self._attachEditor();
+              self._applyReadOnlyMode();
+              self._connectSync();
+            }
+
+            // Wiki mode, non-owner (§1.2/§16.6): resolve constellation
+            // write access before attaching the editor, so a legitimate
+            // member doesn't get stuck read-only. Skipped for every other
+            // combination (owner, or any plain card, where _canEdit already
+            // equals _isOwner) to avoid an unnecessary round trip.
+            if (self._isWikiMode && !self._isOwner && envelope.constellation) {
+              var spaceTokenUrl = base + '/c/' + encodeURIComponent(envelope.constellation) + '/space-token';
+              var swxhr = new XMLHttpRequest();
+              swxhr.open('GET', spaceTokenUrl, true);
+              swxhr.setRequestHeader('Accept', 'application/json');
+              swxhr.withCredentials = true;
+              swxhr.onload = function () {
+                if (swxhr.status === 200) {
+                  try {
+                    self._canEdit = !!JSON.parse(swxhr.responseText).canWrite;
+                  } catch (e) { /* leave _canEdit at its not-owner default (false) */ }
+                }
+                finishLoad();
+              };
+              swxhr.onerror = function () { finishLoad(); }; // leave _canEdit at its default (false)
+              swxhr.send();
+              return;
+            }
+
+            finishLoad();
+          }
+
+          if (envelope.visibility === 'public') {
+            // Public payload is plaintext JSON — format is directly
+            // readable, no decrypt needed to pick the right deserializer.
+            var format = envelope.record && envelope.record.payload && envelope.record.payload.format;
+            if (format === 'prosemirror-doc-v1') {
+              lively.identity.postCardSerializer.deserializePlainFromEnvelope(envelope, function (err, doc, payload) {
+                _onDeserialized(err, 'plain', doc, payload);
+              });
+            } else {
+              lively.identity.postCardSerializer.deserializeFromEnvelope(envelope, function (err, yDoc, payload) {
+                _onDeserialized(err, 'wiki', yDoc, payload);
+              });
+            }
+          } else {
+            // Private/shared payload is ciphertext — format is unknown
+            // until decrypted, so this picks the deserializer AFTER
+            // decrypting (see deserializeEncryptedAuto's own doc comment).
+            lively.identity.postCardSerializer.deserializeEncryptedAuto(envelope, _onDeserialized);
+          }
         };
         xhr.onerror = function () { self._showError('Network error loading postcard'); };
         xhr.send();
@@ -1051,12 +1190,9 @@ module('lively.identity.PostCardEditor')
         if (!this._pmContainer) return;
 
         var prosemirror = this._ProseMirror();
-        var yPM = this._yProsemirror();
         if (!prosemirror) return this._showError('ProseMirror not loaded');
-        if (!yPM) return this._showError('y-prosemirror not loaded');
 
         var schema = this._buildSchema(prosemirror.model);
-        var yXmlFragment = this.yDoc.getXmlFragment('prosemirror');
 
         var hardBreakCmd = function (state, dispatch) {
           var hb = state.schema.nodes.hard_break;
@@ -1065,17 +1201,60 @@ module('lively.identity.PostCardEditor')
           return true;
         };
 
-        var plugins = [
-          yPM.ySyncPlugin(yXmlFragment),
-          yPM.yUndoPlugin(), // sole undo/redo — do NOT add prosemirror history() alongside this
-          this._buildHighlightPlugin(prosemirror),
-          // yUndoPlugin only exposes undo/redo commands, it does not bind any
-          // keys itself (confirmed against y-prosemirror's own source/README) —
-          // this keymap is required, not optional, or Mod-z/Mod-y do nothing.
-          prosemirror.keymap.keymap({ 'Mod-z': yPM.undo, 'Mod-y': yPM.redo, 'Mod-Shift-z': yPM.redo }),
-          prosemirror.keymap.keymap({ 'Shift-Enter': hardBreakCmd }),
-          prosemirror.keymap.keymap(prosemirror.commands.baseKeymap),
-        ];
+        var plugins;
+        var initialDoc = null;
+
+        if (this._isWikiMode) {
+          // Wiki mode (§1.2): live multi-writer collaboration over the
+          // shared Y.Doc — undo/redo must go through yUndoPlugin (it
+          // tracks the CRDT's own undo stack), NOT prosemirror-history,
+          // which would fight over document state with no shared doc to
+          // reconcile against.
+          var yPM = this._yProsemirror();
+          if (!yPM) return this._showError('y-prosemirror not loaded');
+          var yXmlFragment = this.yDoc.getXmlFragment('prosemirror');
+          plugins = [
+            yPM.ySyncPlugin(yXmlFragment),
+            yPM.yUndoPlugin(), // sole undo/redo — do NOT add prosemirror history() alongside this
+            this._buildHighlightPlugin(prosemirror),
+            // yUndoPlugin only exposes undo/redo commands, it does not bind any
+            // keys itself (confirmed against y-prosemirror's own source/README) —
+            // this keymap is required, not optional, or Mod-z/Mod-y do nothing.
+            prosemirror.keymap.keymap({ 'Mod-z': yPM.undo, 'Mod-y': yPM.redo, 'Mod-Shift-z': yPM.redo }),
+            prosemirror.keymap.keymap({ 'Shift-Enter': hardBreakCmd }),
+            prosemirror.keymap.keymap(prosemirror.commands.baseKeymap),
+          ];
+        } else {
+          // Plain mode (§1.1 — every card today): no Yjs doc, so undo/redo
+          // uses ProseMirror's own history() plugin instead of yUndoPlugin.
+          // _plainDoc (set in _loadExistingNow) seeds the initial state for
+          // an existing card; a brand-new card starts from an empty doc
+          // (EditorState.create's default when no `doc` option is given).
+          if (!prosemirror.history || !prosemirror.history.history) {
+            return this._showError('prosemirror-history not loaded');
+          }
+          if (this._plainDoc) {
+            try {
+              initialDoc = schema.nodeFromJSON(this._plainDoc);
+            } catch (e) {
+              return this._showError('Failed to parse saved document: ' + e.message);
+            }
+            // Consumed — editorView.state.doc is the live source of truth
+            // from here on, no need to keep a redundant stale copy around.
+            this._plainDoc = null;
+          }
+          plugins = [
+            prosemirror.history.history(),
+            this._buildHighlightPlugin(prosemirror),
+            prosemirror.keymap.keymap({
+              'Mod-z': prosemirror.history.undo,
+              'Mod-y': prosemirror.history.redo,
+              'Mod-Shift-z': prosemirror.history.redo,
+            }),
+            prosemirror.keymap.keymap({ 'Shift-Enter': hardBreakCmd }),
+            prosemirror.keymap.keymap(prosemirror.commands.baseKeymap),
+          ];
+        }
 
         // List-aware keymaps: Enter splits list items, Tab sinks/lifts them.
         // Must be inserted before baseKeymap so Enter is handled by splitListItem first.
@@ -1088,8 +1267,11 @@ module('lively.identity.PostCardEditor')
           }));
         }
 
+        var stateOpts = { schema: schema, plugins: plugins };
+        if (initialDoc) stateOpts.doc = initialDoc;
+
         this.editorView = new prosemirror.view.EditorView(this._pmContainer, {
-          state: prosemirror.state.EditorState.create({ schema: schema, plugins: plugins }),
+          state: prosemirror.state.EditorState.create(stateOpts),
           nodeViews: {
             math_inline:  function (node, view, getPos) { return self._mathNodeView(node, view, getPos); },
             math_display: function (node, view, getPos) { return self._mathNodeView(node, view, getPos); },
@@ -1312,7 +1494,7 @@ module('lively.identity.PostCardEditor')
       // rather than leaving Save/Send/visibility controls that would just
       // 403 or make no sense for someone who isn't the owner.
       _applyReadOnlyMode: function () {
-        if (this._isOwner && !this._forceReadOnly) return;
+        if (this._canEdit && !this._forceReadOnly) return;
         if (this.editorView) {
           this.editorView.setProps({ editable: function () { return false; } });
         }
@@ -1336,10 +1518,17 @@ module('lively.identity.PostCardEditor')
         }
       },
 
-      // Connects to PostCardSyncServer via WebsocketProvider for live collaboration.
+      // Connects to PostCardSyncServer via WebsocketProvider for live
+      // collaboration. Wiki mode only (§1.2) — a plain card (§1.1, every
+      // card today) never has a Yjs doc to sync in the first place, and
+      // never opening this connection for it is also what closes the
+      // plaintext-in-relay gap Encryption.md §8 flagged, as a side effect
+      // rather than a targeted fix (PostcardDesignSpec-v2.md §1.1/§11).
       // Gracefully degrades if y-websocket is unavailable.
       _connectSync: function () {
+        if (!this._isWikiMode) return;
         if (!this._objId) return; // no sync until first save establishes objId
+        if (!this.yDoc) return; // defensive — WebsocketProvider requires one
 
         var WebsocketProvider = this._WebsocketProvider();
         if (!WebsocketProvider) {
@@ -1380,10 +1569,14 @@ module('lively.identity.PostCardEditor')
 
       _markEdited: function () {
         // Belt-and-suspenders: _applyReadOnlyMode already makes the
-        // ProseMirror view non-editable for non-owners, so this shouldn't
-        // fire from real user input, but PUT is owner-only server-side
-        // regardless — no reason to ever schedule a save that can only 403.
-        if (!this._isOwner || this._forceReadOnly) return;
+        // ProseMirror view non-editable when !_canEdit, so this shouldn't
+        // fire from real user input in that case — but unlike a plain card
+        // (owner-only server-side, no exceptions), a wiki-mode PUT can
+        // legitimately succeed for a non-owner constellation member
+        // (§16.6), so this check has to mirror _canEdit's fuller condition,
+        // not just ownership, or it would block a save the server would
+        // actually accept.
+        if (!this._canEdit || this._forceReadOnly) return;
         this._userHasEdited = true;
         this._scheduleSave();
       },
@@ -1396,7 +1589,9 @@ module('lively.identity.PostCardEditor')
         var cb = callback || function () {};
         var user = lively.identity.did.currentUser();
         if (!user) { this._setStatus('Not signed in'); return cb(new Error('Not signed in')); }
-        if (!this.yDoc) { this._setStatus('No document'); return cb(new Error('No document')); }
+        // Plain mode (§1.1) has no yDoc at all — the editorView existing is
+        // the actual "is there a document to save" signal for either mode.
+        if (!this.editorView) { this._setStatus('No document'); return cb(new Error('No document')); }
 
         if (this._visibility === 'public') return this._saveNowPublic(user, cb);
         this._saveNowPrivate(user, cb);
@@ -1406,7 +1601,6 @@ module('lively.identity.PostCardEditor')
         var self = this;
         var cb = callback || function () {};
         var params = {
-          yDoc:          this.yDoc,
           prevEnvelope:  this._envelope || null,
           constellation: this._constellation,
           replyTo:       this._replyTo,
@@ -1415,8 +1609,17 @@ module('lively.identity.PostCardEditor')
           stateMeta:     this._composeStateMeta(),
           // title omitted — PostCardSerializer extracts it from the first PM block (§10.5)
         };
+        var serialize;
+        if (this._isWikiMode) {
+          params.yDoc = this.yDoc;
+          serialize = lively.identity.postCardSerializer.serializeToEnvelope;
+        } else {
+          params.doc = this.editorView.state.doc.toJSON();
+          params.partState = this._partState || {};
+          serialize = lively.identity.postCardSerializer.serializePlainToEnvelope;
+        }
         this._setStatus('Saving…');
-        lively.identity.postCardSerializer.serializeToEnvelope(params, function (err, envelope) {
+        serialize.call(lively.identity.postCardSerializer, params, function (err, envelope) {
           self._finishSave(err, envelope, cb);
         });
       },
@@ -1451,7 +1654,6 @@ module('lively.identity.PostCardEditor')
               console.warn('[PostCardEditor] Dropping recipient(s) with no published key from this save:', result.failed.join(', '));
             }
             var params = {
-              yDoc:          self.yDoc,
               prevEnvelope:  self._envelope || null,
               constellation: self._constellation,
               replyTo:       self._replyTo,
@@ -1463,7 +1665,16 @@ module('lively.identity.PostCardEditor')
                 recipientHandles: result.resolved.map(function (r) { return r.handle; }),
               }),
             };
-            lively.identity.postCardSerializer.serializeEncrypted(params, function (err, envelope) {
+            var serialize;
+            if (self._isWikiMode) {
+              params.yDoc = self.yDoc;
+              serialize = lively.identity.postCardSerializer.serializeEncrypted;
+            } else {
+              params.doc = self.editorView.state.doc.toJSON();
+              params.partState = self._partState || {};
+              serialize = lively.identity.postCardSerializer.serializePlainEncrypted;
+            }
+            serialize.call(lively.identity.postCardSerializer, params, function (err, envelope) {
               self._finishSave(err, envelope, cb);
             });
           });
@@ -2170,25 +2381,69 @@ module('lively.identity.PostCardEditor')
         xhr.send();
       },
 
-      // Wraps a nested Y.Map at yDoc.getMap('partState').get(embedId) — the
-      // per-embed shared state store (§10.8). Created lazily on first embed
-      // render; playback replays it for free since it's part of the same
-      // Yjs update blob as the rest of the document.
+      // Per-embed shared state store, backed by one of two mechanisms
+      // depending on mode (§1/§2.3, §10.8):
+      //
+      // Wiki mode (§1.2): a nested Y.Map at yDoc.getMap('partState').get(embedId).
+      // Created lazily on first embed render; playback replays it for free
+      // since it's part of the same Yjs update blob as the rest of the
+      // document. Multiple writers can observe each other's changes live.
+      //
+      // Plain mode (§1.1/§2.3 — every card today): this._partState[embedId],
+      // a plain JS object serialized as payload.partState on save (§2.3).
+      // There is no cross-client push here — a plain card is single-author,
+      // or entirely frozen once sent (§2.5) — so .observe is a same-tab,
+      // synchronous notify only: it fires immediately after a local .set()
+      // on this exact editor instance, never from any external source. A
+      // .set() also schedules the normal debounced autosave (_markEdited)
+      // since, unlike the wiki path, nothing else would persist this store —
+      // it isn't part of any ProseMirror transaction Yjs or dispatchTransaction
+      // would otherwise pick up.
+      //
+      // Both branches return the same { get, set, observe } shape so a part's
+      // onPostCardEmbed(api) doesn't need to know which mode it's in.
       _embedStateApi: function (embedId) {
-        var Y = this._Y();
-        if (!Y || !this.yDoc || !embedId) return null;
-        var partStateMap = this.yDoc.getMap('partState');
-        var embedMap = partStateMap.get(embedId);
-        if (!(embedMap instanceof Y.Map)) {
-          embedMap = new Y.Map();
-          partStateMap.set(embedId, embedMap);
+        if (!embedId) return null;
+
+        if (this._isWikiMode) {
+          var Y = this._Y();
+          if (!Y || !this.yDoc) return null;
+          var partStateMap = this.yDoc.getMap('partState');
+          var embedMap = partStateMap.get(embedId);
+          if (!(embedMap instanceof Y.Map)) {
+            embedMap = new Y.Map();
+            partStateMap.set(embedId, embedMap);
+          }
+          return {
+            get: function (key) { return embedMap.get(key); },
+            set: function (key, value) { embedMap.set(key, value); },
+            observe: function (fn) {
+              embedMap.observe(fn);
+              return function () { embedMap.unobserve(fn); };
+            },
+          };
         }
+
+        var self = this;
+        if (!this._partState) this._partState = {};
+        if (!this._partState[embedId]) this._partState[embedId] = {};
+        var store = this._partState[embedId];
+        var observers = [];
         return {
-          get: function (key) { return embedMap.get(key); },
-          set: function (key, value) { embedMap.set(key, value); },
+          get: function (key) { return store[key]; },
+          set: function (key, value) {
+            store[key] = value;
+            self._markEdited();
+            observers.forEach(function (fn) {
+              try { fn({ key: key, value: value }); } catch (e) {}
+            });
+          },
           observe: function (fn) {
-            embedMap.observe(fn);
-            return function () { embedMap.unobserve(fn); };
+            observers.push(fn);
+            return function () {
+              var idx = observers.indexOf(fn);
+              if (idx !== -1) observers.splice(idx, 1);
+            };
           },
         };
       },
@@ -2677,6 +2932,11 @@ module('lively.identity.PostCardEditor')
 
     Object.extend(PostCardEditorClass, {
 
+      // The mode discriminator (§1.3), exposed for other modules that need
+      // to know a loaded envelope's mode without duplicating the formula
+      // (e.g. PostCardView.js's read path).
+      isWikiMode: isWikiMode,
+
       // Wraps a freshly-created, freestanding editor in a lively.morphic.Window
       // (title bar drag handle, close (X) and minimize (–) controls) and
       // centers it — the standard Lively pattern for windowed content morphs
@@ -2723,6 +2983,11 @@ module('lively.identity.PostCardEditor')
         editor._isNew = true;
         editor._constellation = opts.constellation || null;
         editor._replyTo = opts.replyTo || null;
+        // Wiki mode (§1.2) — not creatable through any UI yet (§1's own
+        // status note: no wiki-creation entry point exists in this codebase
+        // today), but opts.wikiName is accepted here so that future entry
+        // point only has to pass it through, not touch this factory.
+        editor._wikiName = opts.wikiName || null;
         if (opts.target) {
           opts.target.addMorph(editor);
           editor._setup();

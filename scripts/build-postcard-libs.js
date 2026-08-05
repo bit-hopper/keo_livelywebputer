@@ -14,7 +14,10 @@
  *   window.Y               — Yjs (Y.Doc, Y.Text, Y.Map, Y.encodeStateAsUpdate, …)
  *   window.WebsocketProvider — y-websocket WebsocketProvider
  *   window.yProsemirror    — y-prosemirror (ySyncPlugin, yUndoPlugin, yDocToProsemirrorJSON, …)
- *   window.PM              — { model, state, view, commands, keymap, schemaList }
+ *   window.PM              — { model, state, view, commands, keymap, history, schemaList }
+ *                             (history = prosemirror-history — plain-mode
+ *                             postcards use its history()/undo/redo since
+ *                             they have no Yjs doc for yUndoPlugin to bind to)
  *   window.katex           — KaTeX (katex.render, katex.renderToString)
  *   window.hljs            — highlight.js core + a curated language set
  *                             (bash, c, cpp, css, java, javascript, json,
@@ -45,6 +48,7 @@ var entryContents = [
   "import * as ProsemirrorView from 'prosemirror-view';",
   "import * as ProsemirrorCommands from 'prosemirror-commands';",
   "import * as ProsemirrorKeymap from 'prosemirror-keymap';",
+  "import * as ProsemirrorHistory from 'prosemirror-history';",
   "import * as ProsemirrorSchemaList from 'prosemirror-schema-list';",
   "import katex from 'katex';",
   "import hljs from 'highlight.js/lib/core';",
@@ -71,6 +75,7 @@ var entryContents = [
   "  view:       ProsemirrorView,",
   "  commands:   ProsemirrorCommands,",
   "  keymap:     ProsemirrorKeymap,",
+  "  history:    ProsemirrorHistory,",
   "  schemaList: ProsemirrorSchemaList,",
   "};",
   "window.katex = katex;",

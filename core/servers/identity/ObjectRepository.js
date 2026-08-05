@@ -590,6 +590,41 @@ function listPostcardsForConstellation(constellation, opts, thenDo) {
   });
 }
 
+// Looks up a wiki page's objId by name within a constellation
+// (PostcardDesignSpec-v2.md §1.2 — a wiki page is a type: 'postcard'
+// envelope with constellation + state.wikiName both set). Used by
+// GET /c/:name/wiki/:pageName to resolve a human-friendly page name to the
+// objId every other read/write route already operates on — wiki pages
+// remain addressable both ways (by name here, or directly via
+// /@handle/objId or /c/:name/objId), per the original ontology. Callers
+// still need a follow-up get(objId, ...) for the full envelope — this only
+// resolves the name, same division of labor as every other lookup-then-get
+// pattern in this module.
+// Calls thenDo(null, objId | null).
+function getWikiPageObjId(constellation, wikiName, thenDo) {
+  withDB(function (err, db) {
+    if (err) return thenDo(err);
+    db.get(
+      'SELECT o.obj_id FROM objects o' +
+      ' INNER JOIN (' +
+      '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
+      '   WHERE type = \'postcard\'' +
+      '         AND json_extract(envelope, \'$.constellation\') = ?' +
+      '         AND json_extract(envelope, \'$.state.wikiName\') = ?' +
+      '   GROUP BY obj_id' +
+      ' ) latest ON o.id = latest.max_id' +
+      ' WHERE (json_extract(o.envelope, \'$.state.deleted\') IS NULL' +
+      '        OR json_extract(o.envelope, \'$.state.deleted\') != 1)' +
+      ' ORDER BY o.id DESC LIMIT 1',
+      [constellation, wikiName],
+      function (err, row) {
+        if (err) return thenDo(err);
+        thenDo(null, row ? row.obj_id : null);
+      }
+    );
+  });
+}
+
 // Escapes SQL LIKE wildcards (% and _) in a string that's about to be used
 // as a LIKE prefix — Plus Codes' own alphabet ('23456789CFGHJMPQRVWX' plus
 // '+'/'0') never contains either character, but a caller-supplied query
@@ -1056,6 +1091,7 @@ module.exports = {
   addRecipient:                  addRecipient,
   listPostcardsForUser:          listPostcardsForUser,
   listPostcardsForConstellation: listPostcardsForConstellation,
+  getWikiPageObjId:              getWikiPageObjId,
   listPostcardsNearby:           listPostcardsNearby,
   listRepliesForPostcard:        listRepliesForPostcard,
   upsertReaction:                upsertReaction,

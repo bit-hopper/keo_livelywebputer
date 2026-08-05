@@ -451,7 +451,12 @@ function buildWalletVaultPage() {
 function buildPostCardPage(envelope) {
   var meta = envelope.state || {};
   var title = escapeHtml(meta.title || envelope.objId);
-  var snapshot = envelope.record && envelope.record.payload && envelope.record.payload.snapshot;
+  var payload = envelope.record && envelope.record.payload;
+  // Plain postcards (§1.1/§2.3, PostcardDesignSpec-v2.md): `doc` IS the
+  // snapshot, same ProseMirror JSON shape _snapshotToHtml already renders —
+  // see PostCardView.js's/PostCardPlayback.js's identical branch.
+  var snapshot = payload &&
+    (payload.format === 'prosemirror-doc-v1' ? payload.doc : payload.snapshot);
   var staticHtml = '';
   if (snapshot && snapshot.content) {
     staticHtml = _snapshotToHtml(snapshot);
@@ -754,6 +759,15 @@ function _canReadEnvelope(envelope, identity) {
   return recipients.some(function (r) {
     return (r.did || r) === identity.did;
   });
+}
+
+// The mode discriminator (PostcardDesignSpec-v2.md §1.3), server-side twin
+// of PostCardEditor.js's isWikiMode — no stored flag, computed from fields
+// that already exist for other reasons. Only meaningful for type: "postcard"
+// envelopes; every other envelope type has no such thing as "wiki mode".
+function _isWikiModePostcard(envelope) {
+  return !!(envelope && envelope.type === "postcard" &&
+    envelope.constellation != null && envelope.state && envelope.state.wikiName);
 }
 
 // A shared envelope's record.recipients carries every recipient's
@@ -1966,62 +1980,103 @@ module.exports = function (route, app) {
         .json({ error: "Forbidden: envelope DID does not match session DID" });
     }
 
-    handleRegistry.resolve(handle, function (err, registeredDid) {
-      if (err) return res.status(500).json({ error: String(err) });
-      if (!registeredDid) {
-        return res
-          .status(404)
-          .json({ error: "Handle not registered: @" + handle });
-      }
-      if (registeredDid !== envelope.did) {
-        return res
-          .status(403)
-          .json({ error: "Forbidden: handle DID mismatch" });
-      }
-
-      // Location tags (state.location, a Plus Code) must never be stored
-      // more precisely than a 6-significant-digit floor (~5.5km cell) —
-      // enforced here regardless of what the client sent, since the client
-      // is not the trust boundary. Coerces (floors) a too-precise code
-      // rather than hard-rejecting it — a no-op for an honest client, which
-      // already floors before ever sending; only a malformed/unparseable
-      // code is a hard 400.
-      if (envelope.state && envelope.state.location != null) {
-        var flooredLocation = plusCode.truncateToFloor(envelope.state.location);
-        if (!flooredLocation) {
-          return res.status(400).json({ error: "Invalid location code" });
-        }
-        envelope = Object.assign({}, envelope, {
-          state: Object.assign({}, envelope.state, { location: flooredLocation }),
-        });
-      }
-
-      // Tip jar address (state.tipJarAddress, §5.3) — a plain Ethereum
-      // address, display-and-copy only. Unlike location's coerce-not-reject
-      // posture, this is a hard 400 on malformation: there's no sensible way
-      // to "floor" a bad address the way a too-precise Plus Code can be
-      // truncated, so an invalid value is rejected outright rather than
-      // silently dropped or mangled.
-      if (envelope.state && envelope.state.tipJarAddress != null &&
-          !/^0x[a-fA-F0-9]{40}$/.test(envelope.state.tipJarAddress)) {
-        return res.status(400).json({ error: "Invalid tip jar address" });
-      }
-
-      objectRepo.put(envelope, function (err, result) {
+    function _handleRegistryCheckAndWrite() {
+      handleRegistry.resolve(handle, function (err, registeredDid) {
         if (err) return res.status(500).json({ error: String(err) });
-        // IDENTITY: future — WaveBus-style fan-out on PUT.
-        // After a successful write, notify any WebSocket connections subscribed
-        // to this objId so other clients can pull the new version. This maps to
-        // Wave's WaveBus.publish(). Use lively.net.SessionTracker (L2L) as the
-        // transport when implementing. Not needed until live collaboration.
-        res.json({
-          ok: true,
-          objId: result.objId,
-          cid: result.cid,
-          duplicate: result.duplicate || false,
-          changed: result.changed || "content",
+        if (!registeredDid) {
+          return res
+            .status(404)
+            .json({ error: "Handle not registered: @" + handle });
+        }
+        if (registeredDid !== envelope.did) {
+          return res
+            .status(403)
+            .json({ error: "Forbidden: handle DID mismatch" });
+        }
+
+        // Location tags (state.location, a Plus Code) must never be stored
+        // more precisely than a 6-significant-digit floor (~5.5km cell) —
+        // enforced here regardless of what the client sent, since the client
+        // is not the trust boundary. Coerces (floors) a too-precise code
+        // rather than hard-rejecting it — a no-op for an honest client, which
+        // already floors before ever sending; only a malformed/unparseable
+        // code is a hard 400.
+        if (envelope.state && envelope.state.location != null) {
+          var flooredLocation = plusCode.truncateToFloor(envelope.state.location);
+          if (!flooredLocation) {
+            return res.status(400).json({ error: "Invalid location code" });
+          }
+          envelope = Object.assign({}, envelope, {
+            state: Object.assign({}, envelope.state, { location: flooredLocation }),
+          });
+        }
+
+        // Tip jar address (state.tipJarAddress, §5.3) — a plain Ethereum
+        // address, display-and-copy only. Unlike location's coerce-not-reject
+        // posture, this is a hard 400 on malformation: there's no sensible way
+        // to "floor" a bad address the way a too-precise Plus Code can be
+        // truncated, so an invalid value is rejected outright rather than
+        // silently dropped or mangled.
+        if (envelope.state && envelope.state.tipJarAddress != null &&
+            !/^0x[a-fA-F0-9]{40}$/.test(envelope.state.tipJarAddress)) {
+          return res.status(400).json({ error: "Invalid tip jar address" });
+        }
+
+        objectRepo.put(envelope, function (err, result) {
+          if (err) return res.status(500).json({ error: String(err) });
+          // IDENTITY: future — WaveBus-style fan-out on PUT.
+          // After a successful write, notify any WebSocket connections subscribed
+          // to this objId so other clients can pull the new version. This maps to
+          // Wave's WaveBus.publish(). Use lively.net.SessionTracker (L2L) as the
+          // transport when implementing. Not needed until live collaboration.
+          res.json({
+            ok: true,
+            objId: result.objId,
+            cid: result.cid,
+            duplicate: result.duplicate || false,
+            changed: result.changed || "content",
+          });
         });
       });
+    }
+
+    // Postcard write authorization against the EXISTING stored version
+    // (PostcardDesignSpec-v2.md §16.6). Scoped to type: "postcard" only —
+    // every other envelope type (world/part/file/settings/home/profile)
+    // keeps exactly the self-consistency check above, unchanged. A wiki-mode
+    // postcard (§1.2 — constellation + state.wikiName both set on the
+    // EXISTING version; mode is fixed at creation, never switched, so the
+    // existing stored version is the source of truth for what mode this
+    // objId is) may be written by its original author OR any constellation
+    // member with write access via ConstellationRegistry.canWrite, matching
+    // the same check PostCardSyncServer.js's sync-room join already uses —
+    // this extends it to the persisted-save path so both share one source
+    // of truth. Every plain (non-wiki) postcard stays strictly owner-only,
+    // same as it's always been for every other write to a plain card (§1.1).
+    if (envelope.type !== "postcard") return _handleRegistryCheckAndWrite();
+
+    objectRepo.get(objId, function (err, existing) {
+      if (err) return res.status(500).json({ error: String(err) });
+      // No existing version yet (genesis) — nothing to check authorship
+      // against; the self-consistency check above already covers this case.
+      if (!existing) return _handleRegistryCheckAndWrite();
+      if (existing.did === req.identity.did) return _handleRegistryCheckAndWrite();
+
+      if (_isWikiModePostcard(existing)) {
+        return constellationRegistry.get(existing.constellation, function (err, constellation) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (!constellation || !constellationRegistry.canWrite(constellation, req.identity.did)) {
+            return res.status(403).json({
+              error: "Forbidden: not a member of this constellation with write access",
+            });
+          }
+          _handleRegistryCheckAndWrite();
+        });
+      }
+
+      return res
+        .status(403)
+        .json({ error: "Forbidden: envelope DID does not match session DID" });
     });
   });
 
@@ -2588,6 +2643,53 @@ module.exports = function (route, app) {
           .filter(function (m) { return _canSeePostcardMeta(m, viewerDid); })
           .map(function (m) { delete m.recipients; return m; });
         res.json(result);
+      });
+    });
+  });
+
+  // Resolve a wiki page by human-friendly name within a constellation
+  // (PostcardDesignSpec-v2.md §1.2/§10) — registered before the /:objId
+  // wildcard below, same ordering discipline as every other named
+  // sub-route under /c/:constellation. A wiki page remains addressable
+  // both ways once it exists (this route, or the flat /c/:constellation/:objId
+  // route just below, or /@handle/objId directly) — this route's only job
+  // is the name -> objId lookup; everything past that reuses the exact same
+  // read path /c/:constellation/:objId already has.
+  app.get("/c/:constellation/wiki/:pageName", auth.optionalAuth, function (req, res) {
+    var name = req.params.constellation;
+    var pageName = req.params.pageName;
+
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      var viewerDid = req.identity ? req.identity.did : null;
+      if (!constellationRegistry.canRead(constellation, viewerDid)) {
+        return res.status(404).json({ error: "Constellation not found: " + name });
+      }
+
+      objectRepo.getWikiPageObjId(name, pageName, function (err, objId) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!objId) {
+          return res.status(404).json({
+            error: "No wiki page named \"" + pageName + "\" in constellation " + name,
+            canCreate: constellationRegistry.canWrite(constellation, viewerDid),
+          });
+        }
+
+        objectRepo.get(objId, function (err, envelope) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (!envelope) return res.status(404).json({ error: "Object not found: " + objId });
+          if (!_canReadEnvelope(envelope, req.identity)) {
+            return res.status(403).json({ error: "Forbidden" });
+          }
+
+          envelope = _trimRecipientsForNonOwner(envelope, req.identity);
+
+          if (req.accepts(["html", "json"]) === "html") {
+            return res.send(buildPostCardPage(envelope));
+          }
+          res.json(envelope);
+        });
       });
     });
   });
