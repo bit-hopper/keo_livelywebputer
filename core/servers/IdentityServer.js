@@ -165,17 +165,28 @@ function getWelcomeHtmlWithMap() {
     "})();}" +
     "lively.require('lively.identity.LocalMap').toRun(function(){" +
     'var el=document.createElement("div");el.id="lofi-social-map";' +
-    // Mounted inside the World's own DOM node, not document.body directly
-    // — confirmed live that a body-level sibling of the World paints above
-    // the entire morph tree (DOM order, both position:relative/absolute
-    // with z-index:auto), which blocks every window/dialog Lively opens
-    // afterward, including the login dialog. LocalMap.js's own width
-    // (calc(100vw - 48px), not 100%) is the matching half of this fix —
-    // the World's own DOM node reports 0 width itself (Lively morphs are
-    // always explicitly sized, never rely on parent auto-width), so a
-    // percentage-of-parent width would otherwise collapse to 0 once nested
-    // here.
-    "$world.renderContext().morphNode.appendChild(el);lively.identity.LocalMap.open(el);" +
+    // Mounted inside $world.renderContext().originNode specifically — NOT
+    // document.body (confirmed live: a body-level sibling of the World
+    // paints above the entire morph tree, both position:relative/absolute
+    // with z-index:auto, so plain DOM order wins), and NOT morphNode or
+    // shapeNode either (both confirmed live to *still* block dialogs: each
+    // morph gets its own per-morph DOM wrapper also classed "morphNode" —
+    // it's a reused CSS class, not a unique element — and $world's actual
+    // submorphs, including every window/dialog, all live inside one shared
+    // wrapper div together, which is originNode; morphNode is $world's own
+    // *outer* wrapper one level up, and shapeNode is the World's visual
+    // content box one level up from originNode — appending there just
+    // makes this div a sibling of that whole wrapper, still paints above
+    // everything inside it). originNode is the one level where this div
+    // becomes a true sibling of each individual morph/dialog's own
+    // wrapper, so normal DOM-order stacking (this mounts once at boot;
+    // dialogs open later and land after it) puts dialogs on top correctly.
+    // LocalMap.js's own width (calc(100vw - 48px), not 100%) is the
+    // matching half of this fix — none of these wrapper nodes report a
+    // real width themselves (Lively morphs are always explicitly sized,
+    // never rely on parent auto-width), so a percentage-of-parent width
+    // would otherwise collapse to 0 once nested here.
+    "$world.renderContext().originNode.appendChild(el);lively.identity.LocalMap.open(el);" +
     "});};</script>";
   return html.slice(0, idx) + mountScript + html.slice(idx);
 }

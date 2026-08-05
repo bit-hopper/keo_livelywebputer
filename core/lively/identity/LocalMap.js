@@ -17,15 +17,22 @@
  * point. That's the intended behavior, not a bug to work around.
  *
  * This module manages a plain `<div>` directly via DOM/Leaflet, mounted
- * inside the World's own DOM node rather than as a full morph (see
- * IdentityServer.js's onStartWorld hook) — consistent with how
+ * inside `$world.renderContext().originNode` rather than as a full morph
+ * (see IdentityServer.js's onStartWorld hook) — consistent with how
  * PostCardEditor.js/PostCardView.js already mix plain-DOM content
- * (ProseMirror) alongside morphic structures. Not document.body directly:
- * confirmed live that a body-level sibling of the World paints above the
- * entire morph tree regardless of Lively's own window/dialog stacking,
- * since both are position+z-index:auto and DOM order alone then decides —
- * nesting inside the World's own node lets it share Lively's stacking
- * context instead, so windows/dialogs still render above it correctly.
+ * (ProseMirror) alongside morphic structures. originNode specifically,
+ * confirmed live the hard way: document.body directly puts this div above
+ * the entire morph tree (DOM order, both position+z-index:auto); so does
+ * renderContext().morphNode ($world's own *outer* wrapper — every morph
+ * gets a same-classed "morphNode" wrapper, it's a reused CSS class, not a
+ * unique element) and renderContext().shapeNode (the World's visual
+ * content box, one level further in) — both still leave this div a
+ * sibling of the *entire* submorph tree as one unit, not of the
+ * individual morphs/dialogs within it. originNode is the one shared
+ * container each individual morph's own wrapper actually lands in, so
+ * mounting here makes this div a true sibling of e.g. a dialog's wrapper —
+ * normal DOM-order stacking then puts anything opened after boot
+ * (essentially every window/dialog) on top of it correctly.
  *
  * Entry point: lively.identity.LocalMap.open(containerEl)
  */
