@@ -96,7 +96,30 @@ module("lively.identity.LocalMap")
           // with no border/padding on that edge instead of creating space
           // inside it, so margin-top here is a no-op on screen. `top`
           // isn't subject to margin collapse.
-          'position:relative', 'top:100px', 'width:calc(100vw - 48px)', 'margin:24px', 'height:360px',
+          //
+          // z-index:0 (combined with position:relative just above) is
+          // load-bearing, not decorative — confirmed live the hard way,
+          // and only once a real Leaflet map (not just the pre-geolocation
+          // placeholder) was actually active. position:absolute +
+          // z-index:auto (this element's default without the line below)
+          // does NOT establish a stacking context, so it doesn't contain
+          // its own descendants' stacking — Leaflet's internal panes
+          // (.leaflet-tile-pane, .leaflet-marker-pane, etc.) carry real
+          // explicit z-index values (200-700) for their own internal
+          // layering, and with nothing here to trap them, those values
+          // escaped upward and competed directly against whatever the
+          // *nearest actual* stacking-context-establishing ancestor's
+          // other children were — including a dialog's own panel morph,
+          // which Lively's global `.Morph{transform:translate(0,0)}` rule
+          // (Main.js) puts at an effective z-index of ~0. 200-700 beats 0
+          // regardless of DOM order, so every dialog rendered behind the
+          // map the instant a real map (with its real panes) existed, even
+          // though the originNode mount ordering (see the module doc
+          // comment above) was otherwise correct. An explicit z-index here
+          // gives this element its own stacking context, so every
+          // Leaflet-internal z-index stays trapped inside it and can never
+          // compete with anything outside again.
+          'position:relative', 'top:100px', 'z-index:0', 'width:calc(100vw - 48px)', 'margin:24px', 'height:360px',
           'border-radius:10px', 'overflow:hidden',
           'box-shadow:0 4px 14px rgba(0,0,0,0.15)',
           'background:#eef0f2', 'font-family:sans-serif', 'box-sizing:border-box',
