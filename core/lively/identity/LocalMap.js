@@ -17,9 +17,15 @@
  * point. That's the intended behavior, not a bug to work around.
  *
  * This module manages a plain `<div>` directly via DOM/Leaflet, mounted
- * outside the morph tree (see IdentityServer.js's onStartWorld hook) —
- * consistent with how PostCardEditor.js/PostCardView.js already mix
- * plain-DOM content (ProseMirror) alongside morphic structures.
+ * inside the World's own DOM node rather than as a full morph (see
+ * IdentityServer.js's onStartWorld hook) — consistent with how
+ * PostCardEditor.js/PostCardView.js already mix plain-DOM content
+ * (ProseMirror) alongside morphic structures. Not document.body directly:
+ * confirmed live that a body-level sibling of the World paints above the
+ * entire morph tree regardless of Lively's own window/dialog stacking,
+ * since both are position+z-index:auto and DOM order alone then decides —
+ * nesting inside the World's own node lets it share Lively's stacking
+ * context instead, so windows/dialogs still render above it correctly.
  *
  * Entry point: lively.identity.LocalMap.open(containerEl)
  */
@@ -66,18 +72,24 @@ module("lively.identity.LocalMap")
         containerEl.className = 'lively-localmap';
         containerEl.style.cssText = [
           // width kept explicit (computed, not just dropped in favor of
-          // margin-only auto-width) — this app's body sizing isn't
-          // guaranteed to behave like a plain block context, so an
-          // explicit calc() is safer than relying on auto-width-minus-margin.
+          // margin-only auto-width) — this container is appended inside
+          // Lively's own World DOM node (IdentityServer.js's onStartWorld
+          // hook — confirmed live that appending to document.body instead
+          // stacks this div above the entire morph tree, blocking every
+          // window/dialog), and that node reports 0 width itself (Lively
+          // morphs are always explicitly sized, never rely on parent
+          // auto-width). A `%`-based width would resolve against that 0
+          // and collapse to nothing — confirmed live — so this uses `vw`
+          // instead, which resolves against the real viewport regardless
+          // of parent.
           //
           // top offset uses `top` (relative positioning), not margin-top:
-          // this div is appended straight to document.body and ends up its
-          // only in-flow child (the World's wrapper is position:absolute,
-          // out of flow) — a first-in-flow-child's top margin collapses
-          // through a parent with no border/padding on that edge instead of
-          // creating space inside it, so margin-top here is a no-op on
-          // screen. `top` isn't subject to margin collapse.
-          'position:relative', 'top:100px', 'width:calc(100% - 48px)', 'margin:24px', 'height:360px',
+          // this div ends up its parent's only in-flow child — a
+          // first-in-flow-child's top margin collapses through a parent
+          // with no border/padding on that edge instead of creating space
+          // inside it, so margin-top here is a no-op on screen. `top`
+          // isn't subject to margin collapse.
+          'position:relative', 'top:100px', 'width:calc(100vw - 48px)', 'margin:24px', 'height:360px',
           'border-radius:10px', 'overflow:hidden',
           'box-shadow:0 4px 14px rgba(0,0,0,0.15)',
           'background:#eef0f2', 'font-family:sans-serif', 'box-sizing:border-box',

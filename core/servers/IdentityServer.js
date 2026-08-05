@@ -123,8 +123,19 @@ function getWelcomeHtmlWithMap() {
     // empty margins, but never shrink below the snapshot's own extent
     // (nothing in this canvas reflows for a narrower screen, so shrinking
     // clips content instead of fitting it — confirmed the hard way).
+    // document.documentElement.clientWidth/clientHeight, not
+    // window.innerWidth/innerHeight, deliberately — confirmed live that
+    // innerWidth reports a wildly wrong, oversized "layout viewport" value
+    // on at least one real mobile rendering path this page hits, while
+    // clientWidth (and window.visualViewport.width, which agrees with it)
+    // stays correct.
     "(function(){var e=$world.getExtent();" +
     "$world.setExtent(pt(Math.max(e.x,document.documentElement.clientWidth),Math.max(e.y,document.documentElement.clientHeight)));" +
+    // Fallback for any residual gap between the World's own extent and the
+    // real viewport (sub-pixel rounding, scrollbar-width timing, etc.) —
+    // paints the World's actual current theme there instead of leaving the
+    // browser's default white showing through at the edges.
+    "document.documentElement.style.background=$world.getFill().cssBackgroundString;" +
     "})();" +
     // The system (menu bar, halos, code tools, drag-to-resize windows...) is
     // built for a mouse+keyboard desktop session, not a phone/tablet — the
@@ -132,11 +143,39 @@ function getWelcomeHtmlWithMap() {
     // touch-friendly panel meant to work on mobile for quick file transfer.
     // welcome.html itself should still render (viewport meta tag + the
     // grow-only resize above already make that reasonable), just with a
-    // heads-up that the full experience needs a bigger screen.
-    "if(document.documentElement.clientWidth<768){$world.inform('Lively is designed for larger screens. Some things here may not work well on a small screen. WarpDrop, used for quick file transfers, works fine on mobile.');}" +
+    // heads-up that the full experience needs a bigger screen. A small,
+    // purpose-built banner instead of $world.inform() deliberately —
+    // InformDialog is sized/positioned for a desktop $world and confirmed
+    // live to render wider than the viewport and off-center on a phone
+    // screen; explicit left+width in px (not left:50%+transform, and not
+    // left+right) sidesteps the same oversized-containing-block quirk that
+    // breaks window.innerWidth above, since both are confirmed live to
+    // resolve percentages/edges against that wrong width too.
+    "if(document.documentElement.clientWidth<768){(function(){" +
+    "var vw=document.documentElement.clientWidth;" +
+    "var n=document.createElement('div');" +
+    "n.textContent='Lively is designed for larger screens. Some things here may not work well on a small screen. WarpDrop, used for quick file transfers, works fine on mobile.';" +
+    "n.style.cssText='position:fixed;top:12px;left:16px;width:'+(vw-32)+'px;z-index:99999;" +
+    "box-sizing:border-box;background:#fff;color:#333;padding:12px 36px 12px 16px;" +
+    "border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.25);font:14px/1.4 sans-serif;text-align:center';" +
+    "var c=document.createElement('button');c.textContent='\\u00d7';c.setAttribute('aria-label','Dismiss');" +
+    "c.style.cssText='position:absolute;top:4px;right:8px;border:none;background:none;" +
+    "font-size:20px;line-height:1;cursor:pointer;color:#666;padding:4px';" +
+    "c.onclick=function(){n.remove()};n.appendChild(c);document.body.appendChild(n);" +
+    "})();}" +
     "lively.require('lively.identity.LocalMap').toRun(function(){" +
     'var el=document.createElement("div");el.id="lofi-social-map";' +
-    "document.body.appendChild(el);lively.identity.LocalMap.open(el);" +
+    // Mounted inside the World's own DOM node, not document.body directly
+    // — confirmed live that a body-level sibling of the World paints above
+    // the entire morph tree (DOM order, both position:relative/absolute
+    // with z-index:auto), which blocks every window/dialog Lively opens
+    // afterward, including the login dialog. LocalMap.js's own width
+    // (calc(100vw - 48px), not 100%) is the matching half of this fix —
+    // the World's own DOM node reports 0 width itself (Lively morphs are
+    // always explicitly sized, never rely on parent auto-width), so a
+    // percentage-of-parent width would otherwise collapse to 0 once nested
+    // here.
+    "$world.renderContext().morphNode.appendChild(el);lively.identity.LocalMap.open(el);" +
     "});};</script>";
   return html.slice(0, idx) + mountScript + html.slice(idx);
 }
