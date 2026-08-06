@@ -1580,10 +1580,30 @@ module.exports = function (route, app) {
       objectRepo.listPostcardsForUser(did, { limit: limit, cursor: cursor, q: q }, function (err, result) {
         if (err) return res.status(500).json({ error: String(err) });
         var viewerDid = req.identity ? req.identity.did : null;
-        result.postcards = result.postcards
-          .filter(function (m) { return _canSeePostcardMeta(m, viewerDid); })
-          .map(function (m) { delete m.recipients; return m; });
-        res.json(result);
+
+        function _finish(hiddenObjIds) {
+          result.postcards = result.postcards
+            .filter(function (m) { return _canSeePostcardMeta(m, viewerDid); })
+            .filter(function (m) { return !hiddenObjIds || hiddenObjIds.indexOf(m.objId) === -1; })
+            .map(function (m) { delete m.recipients; return m; });
+          res.json(result);
+        }
+
+        // §6.3 Layer 1: a My-Postcards Delete on a frozen (§2.5) card now
+        // writes a postcard_mailbox_hidden row instead of attempting a
+        // tombstone PUT (PostCardMailbox.js's _deletePostcard) — this route
+        // used to be exempt from that filter because nothing ever wrote a
+        // hide row reachable from it, but that's no longer true, so the
+        // filter is applied here too (post-query, same as the
+        // _canSeePostcardMeta filter above it — not before pagination like
+        // the JSONL-backed inbox/deliveries routes, a smaller-scope
+        // deviation than rebuilding this query's cursor logic to filter
+        // in SQL).
+        if (!viewerDid) return _finish(null);
+        objectRepo.getHiddenObjIdsForDid(viewerDid, function (err2, hiddenObjIds) {
+          if (err2) return res.status(500).json({ error: String(err2) });
+          _finish(hiddenObjIds);
+        });
       });
     });
   });
@@ -1710,9 +1730,27 @@ module.exports = function (route, app) {
           var record = { objId: body.objId, senderDid: senderDid, senderHandle: senderHandle, sentAt: new Date().toISOString() };
           objectRepo.putInboxRecord(inboxHandle, record, function (err3) {
             if (err3) return res.status(500).json({ error: String(err3) });
-            _recordDelivery('delivered', function () {
-              res.json({ ok: true, delivered: true });
-            });
+
+            // §2.5 whole-envelope freeze: the first time a postcard is
+            // delivered to a DID other than its own author's, stamp
+            // state.sentAt server-side (never client-supplied, never
+            // cleared once set) so PUT /@:handle/:objId can refuse every
+            // future write to it. A self-send (recipientDid === senderDid)
+            // never triggers this — it still records the delivery above,
+            // it just skips the freeze.
+            function _finishDelivery() {
+              _recordDelivery('delivered', function () {
+                res.json({ ok: true, delivered: true });
+              });
+            }
+            if (objEnvelope.type === 'postcard' && recipientDid !== senderDid) {
+              objectRepo.setSentAtIfUnset(body.objId, function (errSentAt) {
+                if (errSentAt) console.warn('[IdentityServer] setSentAtIfUnset failed:', errSentAt.message);
+                _finishDelivery();
+              });
+            } else {
+              _finishDelivery();
+            }
           });
         });
       });
@@ -2127,6 +2165,25 @@ module.exports = function (route, app) {
       // No existing version yet (genesis) — nothing to check authorship
       // against; the self-consistency check above already covers this case.
       if (!existing) return _handleRegistryCheckAndWrite();
+
+      // §2.5 whole-envelope freeze: once a plain postcard has been
+      // delivered to someone other than its author (state.sentAt set —
+      // never true for a wiki page, which is never delivered via /inbox),
+      // no further write is allowed at all — not by the author, not by a
+      // wiki collaborator (moot here since wiki pages never freeze), and
+      // not even a tombstone-only write. Checked ahead of every
+      // authorship/membership branch below since it overrides all of them.
+      if (existing.state && existing.state.sentAt) {
+        return res.status(409).json({
+          error:
+            "This post card was already sent and can't be edited or " +
+            "deleted. Delivered content is permanent, like a mailed " +
+            'postcard — use "Delete" in the three-dot menu to remove ' +
+            "it from your own postcards, which doesn't touch the sent " +
+            "envelope or anyone else's copy.",
+        });
+      }
+
       if (existing.did === req.identity.did) return _handleRegistryCheckAndWrite();
 
       if (_isWikiModePostcard(existing)) {

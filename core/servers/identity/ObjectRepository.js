@@ -853,6 +853,32 @@ function getReactionsForObjId(objId, thenDo) {
   });
 }
 
+// ─── postcard send-freeze (PostcardDesignSpec-v2.md §2.5) ─────────────────────
+
+// Stamps state.sentAt on an objId's latest version, server-side, the first
+// time it's delivered to a DID other than its own author's — a one-way
+// flag that's never cleared and never reset once set (a no-op if already
+// present, so a later self-send after a real send can't look like it
+// "un-freezes" anything). Reuses put()'s existing same-cid/metadata-changed
+// path (record.payload is untouched, only state differs) rather than a
+// bespoke UPDATE, so this goes through the same in-place-update code every
+// other state-only change already does.
+// Calls thenDo(err, envelope) — envelope is the (possibly already-frozen)
+// current version either way.
+function setSentAtIfUnset(objId, thenDo) {
+  get(objId, function (err, envelope) {
+    if (err) return thenDo(err);
+    if (!envelope) return thenDo(new Error('setSentAtIfUnset: object not found: ' + objId));
+    if (envelope.state && envelope.state.sentAt) return thenDo(null, envelope);
+
+    envelope.state = Object.assign({}, envelope.state, { sentAt: new Date().toISOString() });
+    put(envelope, function (err) {
+      if (err) return thenDo(err);
+      thenDo(null, envelope);
+    });
+  });
+}
+
 // ─── postcard mailbox hide (PostcardDesignSpec-v2.md §6.3, Layer 1) ───────────
 
 // Hide an objId from `did`'s own mailbox views — idempotent (INSERT OR
@@ -1099,6 +1125,7 @@ module.exports = {
   getReactionsForObjId:          getReactionsForObjId,
   hidePostcardForDid:            hidePostcardForDid,
   getHiddenObjIdsForDid:         getHiddenObjIdsForDid,
+  setSentAtIfUnset:              setSentAtIfUnset,
   putInboxRecord:                putInboxRecord,
   listInboxForHandle:            listInboxForHandle,
   putDeliveryRecord:             putDeliveryRecord,

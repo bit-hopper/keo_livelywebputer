@@ -446,10 +446,13 @@ module('lively.identity.PostCardSerializer')
         catch (e) { return thenDo(new Error('serializeEncrypted: encodeStateAsUpdate failed: ' + e.message)); }
 
         var snapshot = self._extractSnapshot(yDoc);
-        var title = params.title;
-        if (!title && snapshot && snapshot.content && snapshot.content.length) {
-          title = self._extractFirstBlockText(snapshot.content[0]);
-        }
+        // §16.4: never auto-extract a title from content for an encrypted
+        // card — state.title is stored in the clear (server-readable
+        // metadata, used for search/listings) even though record.payload
+        // is ciphertext, so falling back to the first line of a private
+        // note would leak it right back out. Only an explicitly user-set
+        // title is ever stored here; see _buildEncryptedEnvelope below.
+        var title = params.title || '';
 
         var payload = {
           format: 'yjs-update-v1',
@@ -480,7 +483,12 @@ module('lively.identity.PostCardSerializer')
               var prevCid = prevEnvelope && prevEnvelope.record ? (prevEnvelope.record.cid || null) : null;
 
               function _buildEncryptedEnvelope(objId, genesisNonce, recipientWraps) {
-                var state = Object.assign({}, params.stateMeta || {}, { title: title || '' });
+                // §16.4: only ever store a title here if one was explicitly
+                // given — no auto-extracted fallback (see the comment above
+                // where `title` is computed).
+                var state = Object.assign({}, params.stateMeta || {});
+                if (title) state.title = title;
+                if (params.titleExplicit) state.titleExplicit = true;
                 var visibility = (params.recipients && params.recipients.length) ? 'shared' : 'private';
 
                 var envelope = {
@@ -621,10 +629,10 @@ module('lively.identity.PostCardSerializer')
         var doc = params.doc;
         if (!doc) return thenDo(new Error('serializePlainEncrypted: doc is required'));
 
-        var title = params.title;
-        if (!title && doc.content && doc.content.length) {
-          title = self._extractFirstBlockText(doc.content[0]);
-        }
+        // §16.4: never auto-extract a title from content for an encrypted
+        // card — same reasoning as serializeEncrypted above. Only an
+        // explicitly user-set title is ever stored here.
+        var title = params.title || '';
 
         var payload = {
           format: 'prosemirror-doc-v1',
@@ -647,7 +655,12 @@ module('lively.identity.PostCardSerializer')
               var prevCid = prevEnvelope && prevEnvelope.record ? (prevEnvelope.record.cid || null) : null;
 
               function _buildEncryptedEnvelope(objId, genesisNonce, recipientWraps) {
-                var state = Object.assign({}, params.stateMeta || {}, { title: title || '' });
+                // §16.4: only ever store a title here if one was explicitly
+                // given — no auto-extracted fallback (see the comment above
+                // where `title` is computed).
+                var state = Object.assign({}, params.stateMeta || {});
+                if (title) state.title = title;
+                if (params.titleExplicit) state.titleExplicit = true;
                 var visibility = (params.recipients && params.recipients.length) ? 'shared' : 'private';
 
                 var envelope = {

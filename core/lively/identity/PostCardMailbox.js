@@ -753,11 +753,22 @@ module('lively.identity.PostCardMailbox')
       // scoped to the one authorization rule that's actually real right
       // now: author-only (this tab only ever lists the current user's own
       // cards in the first place, so there's no separate ownership check
-      // needed beyond that). The "has this ever been delivered, so use
-      // per-mailbox-hide instead" branch isn't implemented either (§2.5's
-      // send-freeze doesn't exist yet) — tombstone is unconditionally the
-      // delete mechanism for now, matching reality since nothing else here
-      // is built.
+      // needed beyond that).
+      //
+      // The "has this ever been delivered, so use per-mailbox-hide instead"
+      // decision is now partially implemented: a GET happens first so
+      // state.sentAt (§2.5) can be checked before picking a mechanism — a
+      // frozen card (delivered to a different DID at least once) delegates
+      // straight to _hideFromMailbox instead of attempting a tombstone PUT,
+      // which would otherwise 409 (PUT /@:handle/:objId rejects EVERY write
+      // to a frozen envelope, tombstone included, once §2.5 landed). This is
+      // still not the spec's full rule, though: a card that's only ever
+      // been self-sent never sets state.sentAt (§2.5's self-send carve-out)
+      // even though §6.3 says a self-send counts as "delivered" and should
+      // also use the hide mechanism — telling that case apart from "never
+      // delivered at all" needs a real delivery-history check (has this
+      // objId ever appeared in this handle's own /inbox log), which isn't
+      // wired up here. That residual gap predates this fix and isn't new.
       //
       // The mailbox listing (`pc`) is metadata-only — no record.payload —
       // so a GET is needed first to get the full envelope before PUTting
@@ -772,28 +783,35 @@ module('lively.identity.PostCardMailbox')
       // mailbox was never given.
       _deletePostcard: function (handle, pc) {
         var self = this;
-        this.world().confirm(
-          "Delete this post card? It'll disappear from your postcards, " +
-          "feeds, and mailboxes that reference it. Past versions in its " +
-          "history aren't erased.",
-          function (answer) {
-            if (!answer) return;
+        var base = lively.identity.did.baseUrl();
+        var url  = base + '/@' + handle + '/' + pc.objId;
 
-            var base = lively.identity.did.baseUrl();
-            var url  = base + '/@' + handle + '/' + pc.objId;
+        var getXhr = new XMLHttpRequest();
+        getXhr.open('GET', url, true);
+        getXhr.setRequestHeader('Accept', 'application/json');
+        getXhr.withCredentials = true;
+        getXhr.onload = function () {
+          if (getXhr.status !== 200) {
+            return self.world().inform('Could not load this post card to delete it (' + getXhr.status + ').');
+          }
+          var envelope;
+          try { envelope = JSON.parse(getXhr.responseText); } catch (e) {
+            return self.world().inform('Could not delete this post card: bad response.');
+          }
 
-            var getXhr = new XMLHttpRequest();
-            getXhr.open('GET', url, true);
-            getXhr.setRequestHeader('Accept', 'application/json');
-            getXhr.withCredentials = true;
-            getXhr.onload = function () {
-              if (getXhr.status !== 200) {
-                return self.world().inform('Could not load this post card to delete it (' + getXhr.status + ').');
-              }
-              var envelope;
-              try { envelope = JSON.parse(getXhr.responseText); } catch (e) {
-                return self.world().inform('Could not delete this post card: bad response.');
-              }
+          if (envelope.state && envelope.state.sentAt) {
+            // Frozen — a tombstone PUT would 409. Same mechanism (and same
+            // confirm-dialog wording) as the Received/Delivered/Returned
+            // tabs already use for any delivered card.
+            return self._hideFromMailbox(pc.objId, function () { self._loadOwn(); });
+          }
+
+          self.world().confirm(
+            "Delete this post card? It'll disappear from your postcards, " +
+            "feeds, and mailboxes that reference it. Past versions in its " +
+            "history aren't erased.",
+            function (answer) {
+              if (!answer) return;
 
               var updated = Object.assign({}, envelope, {
                 state: Object.assign({}, envelope.state || {}, { deleted: true }),
@@ -812,11 +830,11 @@ module('lively.identity.PostCardMailbox')
               };
               putXhr.onerror = function () { self.world().inform('Network error deleting this post card.'); };
               putXhr.send(JSON.stringify(updated));
-            };
-            getXhr.onerror = function () { self.world().inform('Network error loading this post card.'); };
-            getXhr.send();
-          }
-        );
+            }
+          );
+        };
+        getXhr.onerror = function () { self.world().inform('Network error loading this post card.'); };
+        getXhr.send();
       },
 
       // §6.3, Layer 1 — per-viewer hide, for any delivered card (Received/
