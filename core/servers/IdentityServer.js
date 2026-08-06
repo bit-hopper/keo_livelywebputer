@@ -187,7 +187,15 @@ function getWelcomeHtmlWithMap() {
     // never rely on parent auto-width), so a percentage-of-parent width
     // would otherwise collapse to 0 once nested here.
     "$world.renderContext().originNode.appendChild(el);lively.identity.LocalMap.open(el);" +
-    "});};</script>";
+    "});" +
+    // SkyMorph is a plain placeholder box saved directly into welcome.html's
+    // own snapshot (not server-injected like the map div above) — found by
+    // name at boot and handed to SkyWidget, which owns its fill color and
+    // adds its own text submorph from here on.
+    "var sky=$world.get('SkyMorph');if(sky){lively.require('lively.identity.SkyWidget').toRun(function(){" +
+    "lively.identity.SkyWidget.attachTo(sky);" +
+    "});}" +
+    "};</script>";
   return html.slice(0, idx) + mountScript + html.slice(idx);
 }
 
