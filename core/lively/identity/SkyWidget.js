@@ -138,7 +138,14 @@ module("lively.identity.SkyWidget")
       return { ra: norm360(deg(Math.atan2(ye, xe))), dec: deg(Math.asin(ze)) };
     }
 
-    function gmstDeg(d) { return norm360(280.46061837 + 360.98564736629 * d); }
+    // Takes days-since-J2000 (JD - 2451545.0) specifically — NOT the Schlyter
+    // epoch (JD - 2451543.5) used for the orbital elements above. Confirmed
+    // live the hard way: those two epochs are 1.5 days apart, and at this
+    // formula's ~361deg/day sidereal rate that's a ~181deg error in GMST —
+    // roughly a 12-hour error in what's overhead, which is why the widget
+    // showed full daytime blue well after real sunset (see computeSky below,
+    // which converts explicitly rather than reusing the Schlyter `d`).
+    function gmstDeg(daysSinceJ2000) { return norm360(280.46061837 + 360.98564736629 * daysSinceJ2000); }
 
     function altAz(raDeg, decDeg, latDeg, lstDeg) {
       var ha = rad(norm360(lstDeg - raDeg));
@@ -162,7 +169,7 @@ module("lively.identity.SkyWidget")
       var sunH = heliocentric('sun', d); // Sun's geocentric position directly
       var sunLon = norm360(deg(Math.atan2(sunH.y, sunH.x)));
       var sunEq = eclToEq(sunLon, 0, obl);
-      var lst = norm360(gmstDeg(d) + lon);
+      var lst = norm360(gmstDeg(jd - 2451545.0) + lon);
       var sunPos = altAz(sunEq.ra, sunEq.dec, lat, lst);
 
       var planets = {};
@@ -237,9 +244,9 @@ module("lively.identity.SkyWidget")
 
       var toFull = daysToPhase(sky.moon, 0.5), toNew = daysToPhase(sky.moon, 0);
       if (toFull < toNew) {
-        facts.push(moonEmoji + ' Full Moon in ' + round(toFull) + (round(toFull) === 1 ? ' day' : ' days'));
+        facts.push(MOON_EMOJI['Full Moon'] + ' Full Moon in ' + round(toFull) + (round(toFull) === 1 ? ' day' : ' days'));
       } else {
-        facts.push(moonEmoji + ' New Moon in ' + round(toNew) + (round(toNew) === 1 ? ' day' : ' days'));
+        facts.push(MOON_EMOJI['New Moon'] + ' New Moon in ' + round(toNew) + (round(toNew) === 1 ? ' day' : ' days'));
       }
 
       facts.push('☉ Sun in ' + sky.sunSign);
@@ -301,21 +308,47 @@ module("lively.identity.SkyWidget")
       // the label was added, then reloaded fresh, reuses the existing label
       // instead of stacking a duplicate on top of it.
       _buildLabel: function (morph) {
-        var existing = morph.submorphs.filter(function (m) { return m.name === 'SkyWidgetLabel'; })[0];
-        if (existing) { this._label = existing; return; }
-        var pad = 10;
-        var extent = morph.getExtent();
-        var label = new lively.morphic.Text(
-          lively.rect(pad, pad, extent.x - pad * 2, extent.y - pad * 2),
-          'Reading the sky…'
-        );
-        label.setName('SkyWidgetLabel');
+        var label = morph.submorphs.filter(function (m) { return m.name === 'SkyWidgetLabel'; })[0];
+        if (!label) {
+          var pad = 10;
+          var extent = morph.getExtent();
+          label = new lively.morphic.Text(
+            lively.rect(pad, pad, extent.x - pad * 2, extent.y - pad * 2),
+            'Reading the sky…'
+          );
+          label.setName('SkyWidgetLabel');
+          morph.addMorph(label);
+        }
+        // Re-applied even when reusing an existing (e.g. previously-saved)
+        // label, not just on first creation — a style fix here would
+        // otherwise silently never reach any label that already existed in
+        // a saved snapshot. "textAlign" is not a key applyStyle recognizes
+        // (confirmed live — TextCore.js's applyStyle reads spec.align, not
+        // spec.textAlign, so that key was silently dropped and the label
+        // rendered left-aligned despite this call). "align"/"verticalAlign"
+        // are the real keys.
         label.applyStyle({
           allowInput: false, selectable: false, fill: null, borderWidth: 0,
-          fontSize: 12, textAlign: 'center', wrapStyle: 'word',
+          fontSize: 15, align: 'center', verticalAlign: 'middle',
         });
-        morph.addMorph(label);
         this._label = label;
+      },
+
+      // CSS vertical-align only affects inline/table-cell elements — Lively
+      // renders text morphs as a plain block div (confirmed live), so the
+      // verticalAlign style above is a no-op and text always sits top-
+      // aligned regardless. Recentered manually instead: measure the actual
+      // rendered content height (getTextExtent — a real DOM measurement,
+      // not the label's own fixed box extent) and pad the top by half the
+      // leftover space. Re-run after every text change since fact length
+      // varies between one and two lines.
+      _recenterLabel: function () {
+        var label = this._label;
+        if (!label) return;
+        var boxH = label.getExtent().y;
+        var contentH = label.getTextExtent().y;
+        var topPad = Math.max(0, (boxH - contentH) / 2);
+        label.setPadding(Rectangle.inset(0, topPad, 0, 0));
       },
     },
 
@@ -347,7 +380,7 @@ module("lively.identity.SkyWidget")
         this.tick();
         this.rotate();
         morph.startStepping(60000, 'skyWidgetTick');
-        morph.startStepping(6000, 'skyWidgetRotate');
+        morph.startStepping(30000, 'skyWidgetRotate');
       },
     },
 
@@ -366,6 +399,7 @@ module("lively.identity.SkyWidget")
         if (!this._label || this._facts.length === 0) return;
         this._label.setTextString(this._facts[this._factIndex % this._facts.length]);
         this._factIndex++;
+        this._recenterLabel();
       },
     });
 
