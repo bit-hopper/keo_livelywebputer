@@ -311,17 +311,13 @@ module("lively.identity.ConstellationSpace")
     },
 
     // ─── wiki page creation ─────────────────────────────────────────────────
-    // Wiki pages (PostcardDesignSpec-v2.md §1.2) have no creation UI
-    // anywhere in this codebase yet (§1's own status note — every card
-    // today goes through the plain path regardless of what later sections
-    // assume). This is that entry point: a page name here sets
-    // state.wikiName + constellation at creation time, which is what
-    // PostCardEditor.js's isWikiMode (§1.3) reads to decide a card gets the
-    // full Yjs/live-sync/multi-writer treatment instead of the plain one —
-    // nothing else about PostCardEditor needs to know this is happening.
-    // A raw DOM button (not a morph) matches this codebase's existing
-    // raw-DOM-toolbar convention (PostCardEditor.js/FilesBrowser.js) rather
-    // than adding a lively.morphic.Button to $world's own morph tree.
+    // This is the entry point that decides a new object is a wiki page: a
+    // page name here creates a genesis type:'wikipage' envelope via
+    // WikiEditor.newCard, with constellation/wikiName fixed from the start
+    // (no mode-switching — a plain post card never becomes a wiki page or
+    // vice versa). A raw DOM button (not a morph) matches this codebase's
+    // existing raw-DOM-toolbar convention (PostCardEditor.js/FilesBrowser.js)
+    // rather than adding a lively.morphic.Button to $world's own morph tree.
 
     'wiki', {
 
@@ -341,15 +337,13 @@ module("lively.identity.ConstellationSpace")
         this._toolbarBtn = btn;
       },
 
-      // Prompts for a page name, then opens a brand-new PostCardEditor card
-      // with wikiName + constellation set from the start — mode-switching
-      // isn't supported (§1.3), so this is the only moment a card's mode is
-      // decided. Page-name charset mirrors hashtags' normalization posture
-      // (§4.2) without reusing its exact pattern, since a wiki page name
-      // isn't a hashtag; uniqueness within a constellation isn't enforced
-      // here (a second page with the same name would simply be a distinct,
-      // separately-addressed objId that getWikiPageObjId's "latest by id"
-      // resolution would shadow) — acceptable for this minimal first pass.
+      // Prompts for a page name, then opens a brand-new WikiEditor page.
+      // Page-name charset mirrors hashtags' normalization posture without
+      // reusing its exact pattern, since a wiki page name isn't a hashtag;
+      // uniqueness within a constellation isn't enforced here (a second
+      // page with the same name would simply be a distinct, separately-
+      // addressed objId that getWikiPageObjId's "latest by id" resolution
+      // would shadow) — acceptable for this minimal first pass.
       _promptNewWikiPage: function () {
         var pageName = window.prompt("New wiki page name (letters, numbers, hyphens):");
         if (!pageName) return;
@@ -360,8 +354,8 @@ module("lively.identity.ConstellationSpace")
         var user = lively.identity.did.currentUser();
         if (!user) return this._showError("Not signed in.");
         var constellationName = this._name;
-        lively.require("lively.identity.PostCardEditor").toRun(function () {
-          lively.identity.PostCardEditor.newCard(user.handle, {
+        lively.require("lively.identity.WikiEditor").toRun(function () {
+          lively.identity.WikiEditor.newCard(user.handle, {
             constellation: constellationName,
             wikiName: pageName,
           });

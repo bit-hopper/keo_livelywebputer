@@ -590,9 +590,8 @@ function listPostcardsForConstellation(constellation, opts, thenDo) {
   });
 }
 
-// Looks up a wiki page's objId by name within a constellation
-// (PostcardDesignSpec-v2.md §1.2 — a wiki page is a type: 'postcard'
-// envelope with constellation + state.wikiName both set). Used by
+// Looks up a wiki page's objId by name within a constellation (a wiki page
+// is a type: 'wikipage' envelope, addressed by state.wikiName). Used by
 // GET /c/:name/wiki/:pageName to resolve a human-friendly page name to the
 // objId every other read/write route already operates on — wiki pages
 // remain addressable both ways (by name here, or directly via
@@ -608,7 +607,7 @@ function getWikiPageObjId(constellation, wikiName, thenDo) {
       'SELECT o.obj_id FROM objects o' +
       ' INNER JOIN (' +
       '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
-      '   WHERE type = \'postcard\'' +
+      '   WHERE type = \'wikipage\'' +
       '         AND json_extract(envelope, \'$.constellation\') = ?' +
       '         AND json_extract(envelope, \'$.state.wikiName\') = ?' +
       '   GROUP BY obj_id' +
@@ -620,6 +619,39 @@ function getWikiPageObjId(constellation, wikiName, thenDo) {
       function (err, row) {
         if (err) return thenDo(err);
         thenDo(null, row ? row.obj_id : null);
+      }
+    );
+  });
+}
+
+// Lists the latest version of every wiki page in a constellation, for the
+// wiki index (GET /c/:name/wiki). Same "latest version per obj_id" join
+// shape as listPostcardsForConstellation, filtered on type = 'wikipage'
+// instead. No pagination — wiki-page counts per constellation are small;
+// add it if that stops being true.
+// Calls thenDo(null, [{ objId, wikiName, updatedAt }, ...]).
+function listWikiPages(constellation, thenDo) {
+  withDB(function (err, db) {
+    if (err) return thenDo(err);
+    db.all(
+      'SELECT o.obj_id, o.created_at,' +
+      '       json_extract(o.envelope, \'$.state.wikiName\') AS wiki_name' +
+      ' FROM objects o' +
+      ' INNER JOIN (' +
+      '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
+      '   WHERE type = \'wikipage\'' +
+      '         AND json_extract(envelope, \'$.constellation\') = ?' +
+      '   GROUP BY obj_id' +
+      ' ) latest ON o.id = latest.max_id' +
+      ' WHERE (json_extract(o.envelope, \'$.state.deleted\') IS NULL' +
+      '        OR json_extract(o.envelope, \'$.state.deleted\') != 1)' +
+      ' ORDER BY wiki_name ASC',
+      [constellation],
+      function (err, rows) {
+        if (err) return thenDo(err);
+        thenDo(null, (rows || []).map(function (r) {
+          return { objId: r.obj_id, wikiName: r.wiki_name, updatedAt: r.created_at };
+        }));
       }
     );
   });
@@ -1118,6 +1150,7 @@ module.exports = {
   listPostcardsForUser:          listPostcardsForUser,
   listPostcardsForConstellation: listPostcardsForConstellation,
   getWikiPageObjId:              getWikiPageObjId,
+  listWikiPages:                 listWikiPages,
   listPostcardsNearby:           listPostcardsNearby,
   listRepliesForPostcard:        listRepliesForPostcard,
   upsertReaction:                upsertReaction,

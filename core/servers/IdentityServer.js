@@ -558,10 +558,15 @@ function buildPostCardPage(envelope, handle) {
     // live view, using the envelope this page already fetched server-side
     // (PostCardView.open's opts.envelope skips a redundant re-fetch).
     'onStartWorld:function(){' +
-    'lively.require("lively.identity.PostCardView").toRun(function(){' +
-    'lively.identity.PostCardView.open(' + JSON.stringify(handle || null) + ',' +
-    JSON.stringify(envelope.objId) + ',{envelope:' + dataEnv + '});' +
-    '});' +
+    (envelope.type === 'wikipage'
+      ? 'lively.require("lively.identity.WikiView").toRun(function(){' +
+        'lively.identity.WikiView.open(' + JSON.stringify(handle || null) + ',' +
+        JSON.stringify(envelope.objId) + ',{envelope:' + dataEnv + '});' +
+        '});'
+      : 'lively.require("lively.identity.PostCardView").toRun(function(){' +
+        'lively.identity.PostCardView.open(' + JSON.stringify(handle || null) + ',' +
+        JSON.stringify(envelope.objId) + ',{envelope:' + dataEnv + '});' +
+        '});') +
     '}' +
     '}</script>' +
     '<script src="/core/lib/postcard/postcard-runtime.js"></script>' +
@@ -826,15 +831,6 @@ function _canReadEnvelope(envelope, identity) {
   return recipients.some(function (r) {
     return (r.did || r) === identity.did;
   });
-}
-
-// The mode discriminator (PostcardDesignSpec-v2.md §1.3), server-side twin
-// of PostCardEditor.js's isWikiMode — no stored flag, computed from fields
-// that already exist for other reasons. Only meaningful for type: "postcard"
-// envelopes; every other envelope type has no such thing as "wiki mode".
-function _isWikiModePostcard(envelope) {
-  return !!(envelope && envelope.type === "postcard" &&
-    envelope.constellation != null && envelope.state && envelope.state.wikiName);
 }
 
 // A shared envelope's record.recipients carries every recipient's
@@ -2034,7 +2030,8 @@ module.exports = function (route, app) {
         }
         return res.send(buildWorldPage(envelope, welcomeHandle));
       }
-      if (envelope.type === "postcard" && req.accepts(["html", "json"]) === "html") {
+      if ((envelope.type === "postcard" || envelope.type === "wikipage") &&
+          req.accepts(["html", "json"]) === "html") {
         return res.send(buildPostCardPage(envelope, handle));
       }
       res.json(envelope);
@@ -2079,7 +2076,16 @@ module.exports = function (route, app) {
       return res.status(403).json({ error: "Recovery worlds are read-only" });
     }
 
-    if (req.identity.did !== envelope.did) {
+    // Wiki pages (type: "wikipage") are the one exception to "envelope.did
+    // must equal the saving session's did": a wiki page's did is fixed at
+    // genesis to its original author and never changes across saves — same
+    // precedent as a constellation space envelope's did staying the
+    // constellation's own did:web regardless of who last moved a placement
+    // (ConstellationSpace.js's saveSpaceSnapshot). Attribution for
+    // individual wiki edits lives in the Yjs update history, not in this
+    // field. Write access for a non-owner is checked further down instead
+    // (constellation membership, against the EXISTING stored version).
+    if (envelope.type !== "wikipage" && req.identity.did !== envelope.did) {
       return res
         .status(403)
         .json({ error: "Forbidden: envelope DID does not match session DID" });
@@ -2145,20 +2151,15 @@ module.exports = function (route, app) {
       });
     }
 
-    // Postcard write authorization against the EXISTING stored version
-    // (PostcardDesignSpec-v2.md §16.6). Scoped to type: "postcard" only —
-    // every other envelope type (world/part/file/settings/home/profile)
-    // keeps exactly the self-consistency check above, unchanged. A wiki-mode
-    // postcard (§1.2 — constellation + state.wikiName both set on the
-    // EXISTING version; mode is fixed at creation, never switched, so the
-    // existing stored version is the source of truth for what mode this
-    // objId is) may be written by its original author OR any constellation
-    // member with write access via ConstellationRegistry.canWrite, matching
-    // the same check PostCardSyncServer.js's sync-room join already uses —
-    // this extends it to the persisted-save path so both share one source
-    // of truth. Every plain (non-wiki) postcard stays strictly owner-only,
-    // same as it's always been for every other write to a plain card (§1.1).
-    if (envelope.type !== "postcard") return _handleRegistryCheckAndWrite();
+    // Write authorization against the EXISTING stored version, for the two
+    // envelope types that need more than the self-consistency check above:
+    // plain postcards (freeze-on-send, §2.5) and wiki pages (constellation
+    // membership, §16.6). Every other envelope type (world/part/file/
+    // settings/home/profile) keeps exactly the self-consistency check above,
+    // unchanged.
+    if (envelope.type !== "postcard" && envelope.type !== "wikipage") {
+      return _handleRegistryCheckAndWrite();
+    }
 
     objectRepo.get(objId, function (err, existing) {
       if (err) return res.status(500).json({ error: String(err) });
@@ -2166,41 +2167,45 @@ module.exports = function (route, app) {
       // against; the self-consistency check above already covers this case.
       if (!existing) return _handleRegistryCheckAndWrite();
 
-      // §2.5 whole-envelope freeze: once a plain postcard has been
-      // delivered to someone other than its author (state.sentAt set —
-      // never true for a wiki page, which is never delivered via /inbox),
-      // no further write is allowed at all — not by the author, not by a
-      // wiki collaborator (moot here since wiki pages never freeze), and
-      // not even a tombstone-only write. Checked ahead of every
-      // authorship/membership branch below since it overrides all of them.
-      if (existing.state && existing.state.sentAt) {
-        return res.status(409).json({
-          error:
-            "This post card was already sent and can't be edited or " +
-            "deleted. Delivered content is permanent, like a mailed " +
-            'postcard — use "Delete" in the three-dot menu to remove ' +
-            "it from your own postcards, which doesn't touch the sent " +
-            "envelope or anyone else's copy.",
-        });
+      if (existing.type === "postcard") {
+        // §2.5 whole-envelope freeze: once a plain postcard has been
+        // delivered to someone other than its author (state.sentAt set),
+        // no further write is allowed at all — not even a tombstone-only
+        // write. Every plain postcard is strictly owner-only otherwise
+        // (§1.1 — single-author, no constellation-membership exception).
+        if (existing.state && existing.state.sentAt) {
+          return res.status(409).json({
+            error:
+              "This post card was already sent and can't be edited or " +
+              "deleted. Delivered content is permanent, like a mailed " +
+              'postcard — use "Delete" in the three-dot menu to remove ' +
+              "it from your own postcards, which doesn't touch the sent " +
+              "envelope or anyone else's copy.",
+          });
+        }
+        if (existing.did === req.identity.did) return _handleRegistryCheckAndWrite();
+        return res
+          .status(403)
+          .json({ error: "Forbidden: envelope DID does not match session DID" });
       }
 
+      // existing.type === "wikipage": may be written by its original
+      // author OR any constellation member with write access via
+      // ConstellationRegistry.canWrite, matching the same check
+      // PostCardSyncServer.js's sync-room join already uses — this extends
+      // it to the persisted-save path so both share one source of truth.
+      // Wiki pages never freeze (never delivered via /inbox).
       if (existing.did === req.identity.did) return _handleRegistryCheckAndWrite();
 
-      if (_isWikiModePostcard(existing)) {
-        return constellationRegistry.get(existing.constellation, function (err, constellation) {
-          if (err) return res.status(500).json({ error: String(err) });
-          if (!constellation || !constellationRegistry.canWrite(constellation, req.identity.did)) {
-            return res.status(403).json({
-              error: "Forbidden: not a member of this constellation with write access",
-            });
-          }
-          _handleRegistryCheckAndWrite();
-        });
-      }
-
-      return res
-        .status(403)
-        .json({ error: "Forbidden: envelope DID does not match session DID" });
+      constellationRegistry.get(existing.constellation, function (err, constellation) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!constellation || !constellationRegistry.canWrite(constellation, req.identity.did)) {
+          return res.status(403).json({
+            error: "Forbidden: not a member of this constellation with write access",
+          });
+        }
+        _handleRegistryCheckAndWrite();
+      });
     });
   });
 
@@ -2692,6 +2697,9 @@ module.exports = function (route, app) {
       objectRepo.get(objId, function (err, envelope) {
         if (err) return res.status(500).json({ error: String(err) });
         if (!envelope) return res.status(404).json({ error: "Post card not found: " + objId });
+        // type: "wikipage" is rejected here too — a wiki page is attached
+        // to a constellation at creation and addressed via the wiki index,
+        // never "posted" into the feed after the fact.
         if (envelope.type !== "postcard") {
           return res.status(400).json({ error: "Not a post card: " + objId });
         }
@@ -2767,6 +2775,40 @@ module.exports = function (route, app) {
           .filter(function (m) { return _canSeePostcardMeta(m, viewerDid); })
           .map(function (m) { delete m.recipients; return m; });
         res.json(result);
+      });
+    });
+  });
+
+  // Wiki page index: every wikiName'd page in a constellation. Registered
+  // before /c/:constellation/wiki/:pageName's segment count is the same, so
+  // it's not a routing-order conflict, but both must stay before the
+  // generic /c/:constellation/:objId and /c/:constellation wildcards below,
+  // same discipline as every other named sub-route under /c/:constellation.
+  app.get("/c/:constellation/wiki", auth.optionalAuth, function (req, res) {
+    var name = req.params.constellation;
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.canRead(constellation, req.identity ? req.identity.did : null)) {
+        return res.status(404).json({ error: "Constellation not found: " + name });
+      }
+
+      objectRepo.listWikiPages(name, function (err, pages) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (req.accepts(["html", "json"]) === "html") {
+          var items = pages.map(function (p) {
+            return '<li><a href="/c/' + encodeURIComponent(name) + '/wiki/' +
+              encodeURIComponent(p.wikiName) + '">' + escapeHtml(p.wikiName) + '</a></li>';
+          }).join('');
+          return res.send(
+            '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">' +
+            '<title>' + escapeHtml(name) + ' wiki</title></head><body>' +
+            '<h1>' + escapeHtml(name) + ' wiki</h1>' +
+            (items ? '<ul>' + items + '</ul>' : '<p>No wiki pages yet.</p>') +
+            '</body></html>'
+          );
+        }
+        res.json({ pages: pages });
       });
     });
   });

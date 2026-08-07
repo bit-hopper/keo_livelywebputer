@@ -17,12 +17,23 @@
  *       the card also unlocks its attachments with no separate reseal.
  *   }
  *
- * Envelope payload shape, plain postcards (PostcardDesignSpec-v2.md §2.3 —
- * everything that is NOT a constellation wiki page: standalone posts,
- * constellation-feed posts, and every sent/DM/self post card). No Yjs
- * doc, no CRDT machinery — a plain post card is single-author (or, once
- * sent to someone else, frozen) so there is no "shared" state to
- * reconcile:
+ * Status: the yjs-update-v1 pair above (serializeToEnvelope/
+ * deserializeFromEnvelope, serializeEncrypted/deserializeEncrypted,
+ * deserializeEncryptedAuto) is kept here ONLY for backward compatibility
+ * with plain postcards saved before the plain/wiki split (confirmed still
+ * present in the dev DB: ~400 type:'postcard' rows, public/private/shared,
+ * with payload.format 'yjs-update-v1' and no wikiName — pre-split test
+ * data, not migrated, per this codebase's established "no backfill"
+ * posture elsewhere). Every NEW postcard goes through the plain pair
+ * below. Wiki pages (type: 'wikipage') never use this file at all anymore
+ * — see WikiSerializer.js, which now owns the Yjs-based pair for genuinely
+ * new documents.
+ *
+ * Envelope payload shape, plain postcards (everything that is NOT a
+ * constellation wiki page: standalone posts, constellation-feed posts, and
+ * every sent/DM/self post card). No Yjs doc, no CRDT machinery — a plain
+ * post card is single-author (or, once sent to someone else, frozen) so
+ * there is no "shared" state to reconcile:
  *   record.payload = {
  *     format:      "prosemirror-doc-v1",
  *     doc:         <ProseMirror JSON document — IS the snapshot, no
@@ -35,9 +46,10 @@
  * serializePlainEncrypted/deserializePlainEncrypted (private) are this
  * format's counterparts to the yjs-update-v1 pair above. They share the
  * envelope-building/signing/KEK-DEK-sealing steps with the Yjs pair —
- * only payload construction differs. Callers (PostCardEditor.js) pick
- * which pair to use based on isWikiMode(envelope) — see
- * PostcardDesignSpec-v2.md §1.3.
+ * only payload construction differs. PostCardEditor.js always uses the
+ * plain pair for a brand-new card; the Yjs pair is read (and, if resaved,
+ * written) only for a loaded legacy card whose stored payload.format is
+ * already 'yjs-update-v1' — see the Status note above.
  *
  * deserializeFromEnvelope/deserializeEncrypted both call thenDo(null, doc,
  * payload) — the third arg is how callers (PostCardEditor.js) reach
@@ -757,8 +769,7 @@ module('lively.identity.PostCardSerializer')
       // payload.format and pick deserializeEncrypted vs.
       // deserializePlainEncrypted *before* decrypting, since that field only
       // exists inside the plaintext this call produces. DEK unwrapping is
-      // identical either way (isWikiMode governs which format gets WRITTEN,
-      // never which key unwraps it), so this decrypts once and branches on
+      // identical either way, so this decrypts once and branches on
       // payload.format afterward.
       //
       // Calls thenDo(null, 'wiki'|'plain', content, payload) where content is

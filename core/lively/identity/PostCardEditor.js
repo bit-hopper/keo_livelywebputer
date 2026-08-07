@@ -72,18 +72,6 @@ module('lively.identity.PostCardEditor')
       return style ? { style: style } : {};
     }
 
-    // The mode discriminator (PostcardDesignSpec-v2.md §1.3): a wiki-mode
-    // postcard is a constellation-attached envelope with wikiName set in
-    // state. No stored flag — computed from fields that already exist for
-    // other reasons (constellation attachment, wiki creation), so there's no
-    // second source of truth that could drift from what actually governs
-    // routing/feed inclusion. Everything else (standalone posts,
-    // constellation-feed posts, every sent/DM/self post card) is "plain."
-    function isWikiMode(envelope) {
-      return !!(envelope && envelope.constellation != null &&
-                envelope.state && envelope.state.wikiName);
-    }
-
     var PostCardEditorClass = lively.morphic.Box.subclass('lively.identity.PostCardEditor',
 
     // ─── serialization guard ──────────────────────────────────────────────────────
@@ -187,17 +175,16 @@ module('lively.identity.PostCardEditor')
         // run, and a world reload must not silently turn a forced-read-only
         // content viewer back into an editable instance.
         this._forceReadOnly = !!this._forceReadOnly;
-        // Mode split (PostcardDesignSpec-v2.md §1): _wikiName is set by
-        // newCard's opts (preserved here, same pattern as _forceReadOnly
-        // above) for a card created as a wiki page from the start — mode-
-        // switching isn't supported, so this is only ever meaningful at
-        // creation time. _isWikiMode is this session's resolved mode; for a
-        // new card it's known immediately from _constellation/_wikiName, for
-        // an existing one it's provisional here and gets recomputed for
-        // real in _loadExistingNow once the actual envelope (and therefore
-        // its real constellation/wikiName) is known.
-        this._wikiName = this._wikiName || null;
-        this._isWikiMode = !!(this._constellation && this._wikiName);
+        // _isWikiMode no longer means "this is a wiki page" — wiki pages
+        // are type:'wikipage' now and never reach this editor at all (see
+        // WikiEditor.js). It's kept purely as a legacy-payload-format flag:
+        // some pre-split type:'postcard' rows still have payload.format
+        // 'yjs-update-v1' (confirmed still present in the dev DB) and must
+        // keep loading/saving via the Yjs pair they were written with — no
+        // migration/backfill. Always false for a brand-new card; only
+        // _loadExistingNow (reading the actual stored format) can set it
+        // true, for an existing legacy card.
+        this._isWikiMode = false;
         this._buildChrome();
 
         // Guards against double-firing the async content-load dispatch
@@ -770,14 +757,6 @@ module('lively.identity.PostCardEditor')
           replyEnabled: this._replyEnabled !== false,
         };
         if (this._tipJarAddress) meta.tipJarAddress = this._tipJarAddress;
-        // Wiki pages (§1.2): wikiName is fixed at creation and never
-        // switched (§1.3), so once set it's carried on every save exactly
-        // like reactionsEnabled/replyEnabled above — never conditionally
-        // dropped the way location's tri-state is. _loadExistingNow re-seeds
-        // this._wikiName from the loaded envelope for the same reason it
-        // re-seeds every other field here: without that, a wiki page closed
-        // and reopened would silently lose wikiName on its very next save.
-        if (this._wikiName) meta.wikiName = this._wikiName;
         return meta;
       },
 
@@ -1036,21 +1015,16 @@ module('lively.identity.PostCardEditor')
         document.head.appendChild(s);
       },
 
-      // Create a fresh document and attach a ProseMirror editor. Wiki mode
-      // (§1.2, not buildable yet — nothing sets _wikiName today) gets a
-      // fresh Y.Doc; plain mode (§1.1, every card created today) gets no
-      // Yjs doc at all — _attachEditor seeds an empty ProseMirror state
-      // directly from local JS, and _connectSync (below) is a no-op for it.
+      // Create a fresh document and attach a ProseMirror editor. Every new
+      // card is plain (§1.1) — _isWikiMode is always false here (see
+      // _setup's comment; a brand-new card can never be the legacy-Yjs-
+      // format case that flag exists for) — so this never touches Yjs at
+      // all; _attachEditor seeds an empty ProseMirror state directly from
+      // local JS, and _connectSync is a no-op for it.
       _createNewDoc: function () {
         var self = this;
         this._ensureRuntime(function () {
-          if (self._isWikiMode) {
-            var Y = self._Y();
-            if (!Y) return self._showError('Yjs not loaded — cannot create editor');
-            self.yDoc = new Y.Doc({ gc: false });
-          } else {
-            self._partState = {};
-          }
+          self._partState = {};
           self._attachEditor();
           self._connectSync();
         });
@@ -1085,33 +1059,28 @@ module('lively.identity.PostCardEditor')
           self._reactionsEnabled = !(envelope.state && envelope.state.reactionsEnabled === false);
           self._replyEnabled = !(envelope.state && envelope.state.replyEnabled === false);
           self._tipJarAddress = (envelope.state && envelope.state.tipJarAddress) || null;
-          // Re-seed constellation/wikiName from the loaded envelope, same
-          // reasoning as every other field re-seeded here: _composeStateMeta
-          // only carries forward what this editor knows to re-include on the
-          // next save (see its own doc comment on the "save bug"), and
-          // wikiName in particular is load-bearing for isWikiMode (§1.3) —
-          // never seeding it back would silently demote a reopened wiki page
-          // to a plain card on its very next autosave. (_constellation had
-          // the identical gap for plain cards attached to a constellation,
-          // pre-existing and unrelated to wiki mode — fixed here too since
-          // it's the same statement, not a separate change.)
+          // Re-seed _constellation from the loaded envelope so a re-save of
+          // a plain card already attached to a constellation doesn't lose
+          // that attachment (_composeStateMeta/save params only carry
+          // forward what this editor knows about). wikiName is not
+          // reseeded here at all anymore — a type:'postcard' envelope never
+          // legitimately has it (wiki pages are type:'wikipage', handled by
+          // WikiEditor.js instead).
           self._constellation = envelope.constellation || null;
-          self._wikiName = (envelope.state && envelope.state.wikiName) || null;
           var user = lively.identity.did.currentUser();
           self._isOwner = !!(user && user.did === envelope.did);
+          // Every type:'postcard' envelope is owner-only, full stop — the
+          // constellation-membership write exception is a wikipage-only
+          // concept now (IdentityServer.js's PUT route enforces the same).
           self._canEdit = self._isOwner;
           self._updateVisibilityBtn();
 
-          // mode is what THIS stored version's payload.format actually is,
-          // not the envelope-level isWikiMode(envelope) computation — they
-          // agree for every card saved after this split, but a card saved
-          // under the old universal-Yjs regime has payload.format:
-          // "yjs-update-v1" regardless of envelope.constellation/wikiName
-          // (both absent, since wiki mode was never buildable before now).
-          // There's no backfill for that; it keeps behaving as the Yjs-
-          // backed card it already was until deliberately resaved/migrated —
-          // same "no migration/backfill concern" posture §4.1 already takes
-          // toward other pre-existing data.
+          // mode is what THIS stored version's payload.format actually is:
+          // 'wiki' here means legacy yjs-update-v1 (a pre-plain/wiki-split
+          // postcard, confirmed still present in the dev DB — see
+          // PostCardSerializer.js's header), never a real wiki page. No
+          // backfill for that; it keeps behaving as the Yjs-backed card it
+          // already was until deliberately resaved.
           function _onDeserialized(err, mode, content, payload) {
             if (err) return self._showError('Failed to deserialize: ' + err.message);
             self._isWikiMode = (mode === 'wiki');
@@ -1127,37 +1096,9 @@ module('lively.identity.PostCardEditor')
             // handler resolve against this array, not a fresh fetch.
             self._attachments = (payload && payload.attachments) || [];
 
-            function finishLoad() {
-              self._attachEditor();
-              self._applyReadOnlyMode();
-              self._connectSync();
-            }
-
-            // Wiki mode, non-owner (§1.2/§16.6): resolve constellation
-            // write access before attaching the editor, so a legitimate
-            // member doesn't get stuck read-only. Skipped for every other
-            // combination (owner, or any plain card, where _canEdit already
-            // equals _isOwner) to avoid an unnecessary round trip.
-            if (self._isWikiMode && !self._isOwner && envelope.constellation) {
-              var spaceTokenUrl = base + '/c/' + encodeURIComponent(envelope.constellation) + '/space-token';
-              var swxhr = new XMLHttpRequest();
-              swxhr.open('GET', spaceTokenUrl, true);
-              swxhr.setRequestHeader('Accept', 'application/json');
-              swxhr.withCredentials = true;
-              swxhr.onload = function () {
-                if (swxhr.status === 200) {
-                  try {
-                    self._canEdit = !!JSON.parse(swxhr.responseText).canWrite;
-                  } catch (e) { /* leave _canEdit at its not-owner default (false) */ }
-                }
-                finishLoad();
-              };
-              swxhr.onerror = function () { finishLoad(); }; // leave _canEdit at its default (false)
-              swxhr.send();
-              return;
-            }
-
-            finishLoad();
+            self._attachEditor();
+            self._applyReadOnlyMode();
+            self._connectSync();
           }
 
           if (envelope.visibility === 'public') {
@@ -2932,11 +2873,6 @@ module('lively.identity.PostCardEditor')
 
     Object.extend(PostCardEditorClass, {
 
-      // The mode discriminator (§1.3), exposed for other modules that need
-      // to know a loaded envelope's mode without duplicating the formula
-      // (e.g. PostCardView.js's read path).
-      isWikiMode: isWikiMode,
-
       // Wraps a freshly-created, freestanding editor in a lively.morphic.Window
       // (title bar drag handle, close (X) and minimize (–) controls) and
       // centers it — the standard Lively pattern for windowed content morphs
@@ -2983,11 +2919,6 @@ module('lively.identity.PostCardEditor')
         editor._isNew = true;
         editor._constellation = opts.constellation || null;
         editor._replyTo = opts.replyTo || null;
-        // Wiki mode (§1.2) — not creatable through any UI yet (§1's own
-        // status note: no wiki-creation entry point exists in this codebase
-        // today), but opts.wikiName is accepted here so that future entry
-        // point only has to pass it through, not touch this factory.
-        editor._wikiName = opts.wikiName || null;
         if (opts.target) {
           opts.target.addMorph(editor);
           editor._setup();

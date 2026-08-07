@@ -135,7 +135,9 @@ module("lively.identity.MenuBarEntry")
         },
 
         openMyConstellations: function openMyConstellations() {
-          $world.alert("My Constellations — coming soon");
+          lively.require("lively.identity.ConstellationsBrowser").toRun(function () {
+            lively.BuildSpec("lively.identity.ConstellationsBrowser").createMorph().openInWorldCenter();
+          });
         },
 
         openFiles: function openFiles() {
