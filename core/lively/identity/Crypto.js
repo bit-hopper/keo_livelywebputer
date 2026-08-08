@@ -217,6 +217,25 @@ Object.subclass('lively.identity.Crypto',
         thenDo(null, self.base64urlEncode(new Uint8Array(hash)).slice(0, 12));
       })
       .catch(function(err) { thenDo(err); });
+  },
+
+  // objId = base64url(SHA-256(authorDid + ':wallet-backup'))[0..12]
+  // Deliberately NOT genesis-random (WalletSpec.md §7.2.1 revision): a fixed
+  // per-identity slot so any device can recompute this exact objId from the
+  // DID alone — no local pointer needed to find a previously-created wallet
+  // backup, unlike every other object type here. Trades the object's
+  // existence being probeable by anyone who knows the DID (a 403-vs-404
+  // distinction on GET, never the ciphertext itself — access control is
+  // unchanged) for eliminating the local-pointer single point of failure,
+  // which is a deliberate, requested tradeoff for this one envelope type.
+  computeWalletBackupObjId: function(authorDid, thenDo) {
+    var self = this;
+    var input = new TextEncoder().encode(authorDid + ':wallet-backup');
+    crypto.subtle.digest('SHA-256', input)
+      .then(function(hash) {
+        thenDo(null, self.base64urlEncode(new Uint8Array(hash)).slice(0, 12));
+      })
+      .catch(function(err) { thenDo(err); });
   }
 
 },

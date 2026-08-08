@@ -394,10 +394,11 @@ module('lively.identity.Wallet')
               createBtn.textContent = 'Back up to Files';
               createBtn.style.cssText = 'margin-right:8px;';
               createBtn.addEventListener('click', function () {
+                var wb = lively.identity.walletBackup;
                 createBtn.disabled = true;
                 createBtn.textContent = 'Backing up…';
-                lively.identity.walletBackup.createBackup(
-                  function () { createBtn.textContent = 'Confirm passkey…'; },
+                wb.createBackup(
+                  function (stage) { createBtn.textContent = wb.progressLabel(stage); },
                   function (err2) {
                     createBtn.disabled = false;
                     createBtn.textContent = 'Back up to Files';
@@ -418,10 +419,11 @@ module('lively.identity.Wallet')
             refreshBtn.textContent = 'Refresh backup';
             refreshBtn.style.cssText = 'margin-right:8px;';
             refreshBtn.addEventListener('click', function () {
+              var wb = lively.identity.walletBackup;
               refreshBtn.disabled = true;
               refreshBtn.textContent = 'Refreshing…';
-              lively.identity.walletBackup.refreshBackup(
-                function () { refreshBtn.textContent = 'Confirm passkey…'; },
+              wb.refreshBackup(
+                function (stage) { refreshBtn.textContent = wb.progressLabel(stage); },
                 function (err2) {
                   refreshBtn.disabled = false;
                   refreshBtn.textContent = 'Refresh backup';
@@ -437,10 +439,11 @@ module('lively.identity.Wallet')
             deleteBtn.style.cssText = 'color:#b00020;border-color:#b00020;';
             deleteBtn.addEventListener('click', function () {
               $world.confirm(
-                'Delete the Files backup? This only stops this device from ' +
-                'treating it as active — like everything else in this storage, ' +
-                'it is not guaranteed erased server-side. Your recovery phrase ' +
-                'on paper remains the real backup (§7.3).',
+                'Delete the Files backup? This overwrites it with inert ' +
+                'content so it can no longer be used for recovery from any ' +
+                'device — like everything else in this storage, it is not ' +
+                'guaranteed erased server-side. Your recovery phrase on ' +
+                'paper remains the real backup (§7.3).',
                 function (ok) {
                   if (!ok) return;
                   deleteBtn.disabled = true;

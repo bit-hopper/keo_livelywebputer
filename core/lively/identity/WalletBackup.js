@@ -24,30 +24,35 @@
  * directly into record.payload, the same way any other small envelope
  * type already works.
  *
- * Because type: 'wallet-backup' is deliberately excluded from every
- * listing UI, there is no way to rediscover a backup's objId later except
- * by remembering it — WebKey.generateGenesisObjId is randomly generated
- * per call, not derived from anything (confirmed directly from source:
- * a fresh random 16-byte nonce every time), so refresh/delete need SOME
- * pointer. Tracked in localStorage, keyed by DID — the same convention
- * PrivacyPoolClient.js already uses for its own public, non-secret local
- * bookkeeping (deposit index/history).
+ * §7.2.1 revision — deterministic objId, not a local pointer: the original
+ * design used WebKey.generateGenesisObjId (a fresh random 16-byte nonce
+ * every call, so it hashed to something different each time) and tracked
+ * the resulting objId in localStorage, keyed by DID, since nothing else
+ * could rediscover it. That meant recovery only ever worked on the exact
+ * device/browser that created the backup — and the scenarios that
+ * actually drive someone to need recovery (dead machine, wiped/corrupted
+ * profile, switched devices) are exactly the scenarios most likely to
+ * have *also* destroyed that pointer, since both live in the same
+ * browser storage. Replaced with a fixed per-identity objId —
+ * Crypto.js's computeWalletBackupObjId(did) = base64url(SHA-256(did +
+ * ':wallet-backup'))[0..12] — so any device that can authenticate as this
+ * DID recomputes the exact same objId and can fetch/decrypt without any
+ * prior local state. Accepted tradeoff, decided deliberately (not a gap):
+ * a backup's *existence* becomes probeable by anyone who knows the DID
+ * (a 403-vs-404 distinction on GET) — never the ciphertext itself, which
+ * stays exactly as protected as before by _canReadEnvelope's owner-only
+ * check plus the KEK/DEK encryption layer.
  *
- * KNOWN LIMITATION, not solved here: clearing localStorage (or using a
- * different browser/profile) loses track of an existing backup's objId on
- * THIS device — the backup itself still exists server-side (this storage
- * layer is append-only, per ObjectRepository.listForUser/put and
- * FilesBrowser.js's own _deleteFile comment) but this module has no way to
- * rediscover it, by the same design that keeps it out of listings. Not a
- * real recovery gap: §7.3 makes the mnemonic itself, not this backup, the
- * actual recovery path — this is a cross-device convenience, never the
- * only copy.
+ * A legacy local pointer (the old localStorage-keyed objId) is still
+ * read, on a device that has one, purely to migrate that backup's
+ * ciphertext across to the new deterministic objId the first time it's
+ * needed (see _resolve) — never written for anything created from here
+ * on.
  *
  * "Delete," similarly, can only ever mean "overwrite the current version
- * with inert content and forget the local pointer," never true
- * server-side erasure — objects.db is an append-only version log (same
- * fact FilesBrowser._deleteFile's own comment documents for files). See
- * deleteBackup's own comment.
+ * with inert content," never true server-side erasure — objects.db is an
+ * append-only version log (same fact FilesBrowser._deleteFile's own
+ * comment documents for files). See deleteBackup's own comment.
  *
  * Async pattern: thenDo(err, result), matching the rest of
  * lively.identity.*.
@@ -59,7 +64,6 @@ module('lively.identity.WalletBackup')
     'lively.identity.Crypto',
     'lively.identity.WebAuthn',
     'lively.identity.DID',
-    'lively.identity.WebKey',
   )
   .toRun(function () {
 
@@ -85,35 +89,24 @@ Object.subclass('lively.identity.WalletBackup',
 
 },
 
-// ─── local pointer (public, non-secret bookkeeping — see this file's own
-//     header on why one is unavoidable) ──────────────────────────────────
+// ─── legacy local pointer (pre-§7.2.1-revision devices only) ────────────
+//     Superseded by the deterministic objId below (Crypto.js
+//     computeWalletBackupObjId) — kept only so a device that still has one
+//     can migrate a backup created before this revision. Never written to
+//     for anything new.
 
-'local pointer', {
+'legacy local pointer', {
 
   _objIdKey: function (did) {
     return 'lively.wallet.filesBackupObjId.' + did;
   },
 
-  _getLocalObjId: function (did) {
+  _getLegacyObjId: function (did) {
     return window.localStorage.getItem(this._objIdKey(did));
   },
 
-  _setLocalObjId: function (did, objId) {
-    window.localStorage.setItem(this._objIdKey(did), objId);
-  },
-
-  _clearLocalObjId: function (did) {
+  _clearLegacyObjId: function (did) {
     window.localStorage.removeItem(this._objIdKey(did));
-  },
-
-  // Calls thenDo(null, { exists, objId }) — purely local, no network call,
-  // so a Settings-style UI can decide "Create" vs "Refresh/Delete" without
-  // waiting on a fetch every time it renders.
-  status: function (thenDo) {
-    var user = lively.identity.did.currentUser();
-    if (!user) return thenDo(new Error('WalletBackup: no identity session active'));
-    var objId = this._getLocalObjId(user.did);
-    thenDo(null, { exists: !!objId, objId: objId || null });
   },
 
 },
@@ -139,9 +132,9 @@ Object.subclass('lively.identity.WalletBackup',
       .catch(function (e) { thenDo(e); });
   },
 
-  // Resolves null (not an error) on a 404 — refreshBackup/deleteBackup both
-  // treat "the local pointer exists but the server object doesn't" as a
-  // stale-pointer case to recover from, not a hard failure.
+  // Resolves null (not an error) on a 404 — every caller here treats "no
+  // envelope at this objId" as a normal not-yet-created case, not a hard
+  // failure by itself.
   _getEnvelope: function (handle, objId, thenDo) {
     var base = lively.identity.did.baseUrl();
     fetch(base + '/@' + handle + '/' + objId, { credentials: 'include' })
@@ -154,28 +147,141 @@ Object.subclass('lively.identity.WalletBackup',
       .catch(function (e) { thenDo(e); });
   },
 
+  // Overwrites the envelope at objId with inert, provably-undecryptable
+  // content (a throwaway, immediately-discarded KEK). objects.db is
+  // append-only, so this retires a version rather than truly erasing it.
+  // Shared by deleteBackup and by the legacy-pointer migration in
+  // _resolve below, which retires the pre-revision envelope once its
+  // content has been re-addressed under the new deterministic objId.
+  _tombstone: function (handle, did, objId, prevCid, thenDo) {
+    var self = this;
+    var c = lively.identity.crypto;
+    var throwawayKek = new Uint8Array(32);
+    crypto.getRandomValues(throwawayKek);
+    c.wrapDek(throwawayKek, function (err, dekResult) {
+      if (err) return thenDo(err);
+      c.encryptPayload({ deleted: true }, dekResult.dek, function (err2, encrypted) {
+        if (err2) return thenDo(err2);
+        c.computeCid(encrypted.ciphertext, function (err3, cid) {
+          if (err3) return thenDo(err3);
+          var tombstone = {
+            objId: objId,
+            did: did,
+            type: 'wallet-backup',
+            visibility: 'private',
+            created: new Date().toISOString(),
+            record: {
+              cid: cid,
+              prevCid: prevCid,
+              payload: encrypted.ciphertext,
+              nonce: encrypted.nonce,
+              wrappedDek: dekResult.wrappedDek,
+              recipients: [],
+            },
+            state: {},
+          };
+          self._putEnvelope(handle, tombstone, thenDo);
+        });
+      });
+    });
+  },
+
 },
 
-// ─── create / refresh / delete (§9.2's own three actions) ───────────────
+// ─── create / refresh / recover / delete (§9.2's own actions; §7.2.1
+//     revision: deterministic per-identity objId, so finding a backup
+//     never depends on local device state — see Crypto.js
+//     computeWalletBackupObjId for the reasoning) ─────────────────────
 
 'backup', {
+
+  // Resolves this identity's wallet-backup objId and whatever's currently
+  // there, computing the deterministic objId fresh every call. If nothing
+  // exists yet there but this device still has a legacy (pre-revision)
+  // local pointer, migrates it transparently first: the
+  // ciphertext/nonce/wrappedDek/cid are re-addressed as-is under the new
+  // deterministic objId — no decryption needed, none of those fields
+  // depend on objId — the old envelope is tombstoned, and the legacy
+  // pointer is forgotten. onProgress(stage) — 'resolving', then
+  // 'migrating' if a legacy backup gets pulled in — lets a caller surface
+  // what's happening rather than one opaque wait; pass a no-op for a
+  // silent check (status() does). Calls thenDo(null, { objId, exists,
+  // envelope }).
+  _resolve: function (user, onProgress, thenDo) {
+    var self = this;
+    onProgress('resolving');
+    lively.identity.crypto.computeWalletBackupObjId(user.did, function (err, objId) {
+      if (err) return thenDo(err);
+      self._getEnvelope(user.handle, objId, function (err2, envelope) {
+        if (err2) return thenDo(err2);
+        if (envelope) return thenDo(null, { objId: objId, exists: true, envelope: envelope });
+
+        var legacyObjId = self._getLegacyObjId(user.did);
+        if (!legacyObjId || legacyObjId === objId) {
+          return thenDo(null, { objId: objId, exists: false, envelope: null });
+        }
+
+        self._getEnvelope(user.handle, legacyObjId, function (err3, legacy) {
+          if (err3) return thenDo(err3);
+          if (!legacy) {
+            self._clearLegacyObjId(user.did);
+            return thenDo(null, { objId: objId, exists: false, envelope: null });
+          }
+          onProgress('migrating');
+
+          var migrated = {
+            objId: objId,
+            did: user.did,
+            type: 'wallet-backup',
+            visibility: 'private',
+            created: new Date().toISOString(),
+            record: {
+              cid: legacy.record.cid,
+              prevCid: null,
+              payload: legacy.record.payload,
+              nonce: legacy.record.nonce,
+              wrappedDek: legacy.record.wrappedDek,
+              recipients: [],
+            },
+            state: {},
+          };
+          self._putEnvelope(user.handle, migrated, function (errPut) {
+            if (errPut) return thenDo(errPut);
+            // Migration succeeding is what matters; a failed tombstone of
+            // the now-superseded legacy envelope isn't worth failing the
+            // whole resolve over.
+            self._tombstone(user.handle, user.did, legacyObjId, legacy.record.cid, function () {
+              self._clearLegacyObjId(user.did);
+              thenDo(null, { objId: objId, exists: true, envelope: migrated });
+            });
+          });
+        });
+      });
+    });
+  },
 
   // Encrypts the vault's own opaque exported blob (§3.4 exportBackupBlob —
   // already ciphertext; this module never sees a decrypted mnemonic) under
   // the identity's OWN existing Files-encryption-plane DEK/KEK
   // (Encryption.md §2-3, the same primitives FileCrypto.js uses for a
   // private file's metadata), then PUTs it as a type: 'wallet-backup'
-  // envelope. Calls thenDo(null, { objId }).
-  _encryptAndPut: function (objId, prevCid, onWaiting, thenDo) {
+  // envelope. onProgress(stage): 'exporting' → 'waiting-passkey' (only if
+  // the KEK isn't already cached) → 'encrypting' → 'uploading' — a caller
+  // showing one flat "Confirm passkey…" for this whole multi-step chain
+  // was flagged as confusing, since most of the wait isn't the passkey at
+  // all. Calls thenDo(null, { objId }).
+  _encryptAndPut: function (objId, prevCid, onProgress, thenDo) {
     var self = this;
     var c = lively.identity.crypto;
     var user = lively.identity.did.currentUser();
     if (!user) return thenDo(new Error('WalletBackup: no identity session active'));
 
+    onProgress('exporting');
     lively.identity.walletBridge.exportBackupBlob(function (err, blob) {
       if (err) return thenDo(err);
-      self._withKek(user, onWaiting, function (err2, kek) {
+      self._withKek(user, function () { onProgress('waiting-passkey'); }, function (err2, kek) {
         if (err2) return thenDo(err2);
+        onProgress('encrypting');
         c.wrapDek(kek, function (err3, dekResult) {
           if (err3) return thenDo(err3);
           c.encryptPayload(blob, dekResult.dek, function (err4, encrypted) {
@@ -198,6 +304,7 @@ Object.subclass('lively.identity.WalletBackup',
                 },
                 state: {},
               };
+              onProgress('uploading');
               self._putEnvelope(user.handle, envelope, function (err6) {
                 if (err6) return thenDo(err6);
                 thenDo(null, { objId: objId });
@@ -209,88 +316,107 @@ Object.subclass('lively.identity.WalletBackup',
     });
   },
 
-  // Creates a fresh wallet-backup envelope. Errors if one already exists
-  // per this device's local pointer — use refreshBackup to update an
-  // existing one instead (§9.2: create/refresh/delete are distinct
-  // actions, not one "save" button).
-  createBackup: function (onWaiting, thenDo) {
+  // Calls thenDo(null, { exists, objId }) — a real (single GET) network
+  // check now rather than a local synchronous read: the whole point of
+  // the deterministic objId is that "does a backup exist" is a server
+  // fact, not local device state. May also transparently migrate a legacy
+  // backup in (see _resolve).
+  status: function (thenDo) {
     var self = this;
     var user = lively.identity.did.currentUser();
     if (!user) return thenDo(new Error('WalletBackup: no identity session active'));
-    if (self._getLocalObjId(user.did)) {
-      return thenDo(new Error('createBackup: a backup already exists on this device — use refreshBackup instead'));
-    }
-    lively.identity.webKey.generateGenesisObjId(user.did, function (err, gen) {
+    self._resolve(user, function () {}, function (err, r) {
       if (err) return thenDo(err);
-      self._encryptAndPut(gen.objId, null, onWaiting, function (err2, result) {
-        if (err2) return thenDo(err2);
-        self._setLocalObjId(user.did, result.objId);
-        thenDo(null, result);
-      });
+      thenDo(null, { exists: r.exists, objId: r.objId });
+    });
+  },
+
+  // Human-readable label for each onProgress(stage) value create/refresh/
+  // recoverBackup emit — centralized here so the UI call sites (Wallet.js,
+  // WalletSetupDialog.js) don't duplicate/drift on wording.
+  progressLabel: function (stage) {
+    return {
+      resolving:         'Checking…',
+      migrating:         'Migrating existing backup…',
+      exporting:         'Preparing…',
+      'waiting-passkey': 'Confirm passkey…',
+      encrypting:        'Encrypting…',
+      uploading:         'Uploading…',
+      decrypting:        'Decrypting…',
+      installing:        'Installing…',
+    }[stage] || stage;
+  },
+
+  // Creates a fresh wallet-backup envelope. Errors if one already exists
+  // at this identity's deterministic objId (including one just migrated
+  // in from a legacy pointer) — use refreshBackup to update an existing
+  // one instead (§9.2: create/refresh/delete are distinct actions, not
+  // one "save" button). onProgress(stage) — see _resolve/_encryptAndPut
+  // for the stage sequence.
+  createBackup: function (onProgress, thenDo) {
+    var self = this;
+    var user = lively.identity.did.currentUser();
+    if (!user) return thenDo(new Error('WalletBackup: no identity session active'));
+    self._resolve(user, onProgress, function (err, r) {
+      if (err) return thenDo(err);
+      if (r.exists) {
+        return thenDo(new Error('createBackup: a backup already exists for this identity — use refreshBackup instead'));
+      }
+      self._encryptAndPut(r.objId, null, onProgress, thenDo);
     });
   },
 
   // Re-encrypts and re-uploads the SAME wallet-backup envelope (e.g. after
   // changing unlock methods, or just to confirm it's still current) —
-  // fetches the existing envelope first, both to chain record.prevCid
-  // correctly (same versioning convention every other envelope type uses)
-  // and to detect a stale local pointer (the object 404s — someone cleared
-  // server-side state out from under this device somehow) rather than
-  // silently creating an orphaned second envelope under a fresh objId.
-  refreshBackup: function (onWaiting, thenDo) {
+  // chains record.prevCid correctly (same versioning convention every
+  // other envelope type uses). onProgress(stage) — see _resolve/
+  // _encryptAndPut for the stage sequence.
+  refreshBackup: function (onProgress, thenDo) {
     var self = this;
     var user = lively.identity.did.currentUser();
     if (!user) return thenDo(new Error('WalletBackup: no identity session active'));
-    var objId = self._getLocalObjId(user.did);
-    if (!objId) return thenDo(new Error('refreshBackup: no backup exists on this device — use createBackup first'));
-
-    self._getEnvelope(user.handle, objId, function (err, envelope) {
+    self._resolve(user, onProgress, function (err, r) {
       if (err) return thenDo(err);
-      if (!envelope) {
-        self._clearLocalObjId(user.did);
-        return thenDo(new Error('refreshBackup: the previously-created backup is gone — forgot the stale local pointer, use createBackup to make a new one'));
+      if (!r.exists) {
+        return thenDo(new Error('refreshBackup: no backup exists yet for this identity — use createBackup first'));
       }
-      self._encryptAndPut(objId, envelope.record.cid, onWaiting, thenDo);
+      self._encryptAndPut(r.objId, r.envelope.record.cid, onProgress, thenDo);
     });
   },
 
-  // Recovery: reverse of createBackup/refreshBackup. Fetches the
-  // previously-created wallet-backup envelope via this device's own local
-  // pointer, decrypts it (this module's own Files-encryption-plane
-  // KEK/DEK — the SAME crypto create/refresh already use, reversed), and
-  // reinstalls the resulting opaque vault blob directly into this
+  // Recovery: reverse of createBackup/refreshBackup. Recomputes this
+  // identity's deterministic objId (§7.2.1 revision — works from any
+  // device that can authenticate as this DID, no local pointer needed),
+  // decrypts the fetched envelope (this module's own Files-encryption-
+  // plane KEK/DEK — the SAME crypto create/refresh already use, reversed),
+  // and reinstalls the resulting opaque vault blob directly into this
   // identity's vault record via WalletBridge.importBackupBlob. Never
   // touches the decrypted mnemonic itself: what this decrypts is still the
   // vault's own opaque, separately-encrypted blob (§7.2's whole point —
   // the vault's own encryption is a second, independent layer this module
-  // never has the keys to open). Only usable on the SAME device/browser
-  // that created the backup, since the local pointer is the only way this
-  // device knows the backup's objId at all (§7.2's own design: hidden from
-  // every listing, on purpose) — not a substitute for a genuinely new
-  // device, where §7.3's recovery-phrase-on-paper is still the real path.
-  // WalletVault's own importBackupBlob refuses to overwrite an
-  // already-set-up wallet, so this is safe to offer even if the caller
-  // isn't sure whether one already exists.
-  recoverBackup: function (onWaiting, thenDo) {
+  // never has the keys to open). WalletVault's own importBackupBlob
+  // refuses to overwrite an already-set-up wallet, so this is safe to
+  // offer even if the caller isn't sure whether one already exists.
+  // onProgress(stage): 'resolving' → 'waiting-passkey' (only if the KEK
+  // isn't already cached) → 'decrypting' → 'installing'.
+  recoverBackup: function (onProgress, thenDo) {
     var self = this;
     var c = lively.identity.crypto;
     var user = lively.identity.did.currentUser();
     if (!user) return thenDo(new Error('WalletBackup: no identity session active'));
-    var objId = self._getLocalObjId(user.did);
-    if (!objId) return thenDo(new Error('recoverBackup: no backup known on this device for this identity'));
-
-    self._getEnvelope(user.handle, objId, function (err, envelope) {
+    self._resolve(user, onProgress, function (err, r) {
       if (err) return thenDo(err);
-      if (!envelope) {
-        self._clearLocalObjId(user.did);
-        return thenDo(new Error('recoverBackup: the previously-created backup is gone — forgot the stale local pointer'));
+      if (!r.exists) {
+        return thenDo(new Error('recoverBackup: no backup found for this identity'));
       }
-      self._withKek(user, onWaiting, function (err2, kek) {
+      self._withKek(user, function () { onProgress('waiting-passkey'); }, function (err2, kek) {
         if (err2) return thenDo(err2);
-        c.unwrapDek(envelope.record.wrappedDek, kek, function (err3, dek) {
+        onProgress('decrypting');
+        c.unwrapDek(r.envelope.record.wrappedDek, kek, function (err3, dek) {
           if (err3) return thenDo(err3);
-          c.decryptPayload(envelope.record.payload, envelope.record.nonce, dek, function (err4, blob) {
+          c.decryptPayload(r.envelope.record.payload, r.envelope.record.nonce, dek, function (err4, blob) {
             if (err4) return thenDo(err4);
+            onProgress('installing');
             lively.identity.walletBridge.importBackupBlob(blob, thenDo);
           });
         });
@@ -299,60 +425,21 @@ Object.subclass('lively.identity.WalletBackup',
   },
 
   // Per this module's own header: "delete" can only ever mean "overwrite
-  // the current version with inert content and forget the local pointer,"
-  // never true server-side erasure — objects.db is an append-only version
-  // log, so an older ciphertext version is not guaranteed gone. Overwrites
-  // record with a harmless marker payload encrypted under a throwaway,
-  // immediately-discarded key (generated here, never persisted or wrapped
-  // meaningfully anywhere) so THIS version specifically is provably
-  // undecryptable by anyone, including this module a moment later — then
-  // forgets the local pointer regardless of whether the PUT succeeds, since
-  // an unreachable local pointer isn't worth keeping either way. Needs no
-  // passkey/password prompt: unlike create/refresh, nothing here needs the
-  // real KEK. Calls thenDo(null) if there was nothing local to delete.
+  // the current version with inert content," never true server-side
+  // erasure — objects.db is an append-only version log, so an older
+  // ciphertext version is not guaranteed gone. Needs no passkey/password
+  // prompt: unlike create/refresh, nothing here needs the real KEK, so
+  // there's no multi-step wait worth surfacing — stays a plain thenDo.
+  // Calls thenDo(null) if there was nothing to delete.
   deleteBackup: function (thenDo) {
     var self = this;
-    var c = lively.identity.crypto;
     var user = lively.identity.did.currentUser();
     if (!user) return thenDo(new Error('WalletBackup: no identity session active'));
-    var objId = self._getLocalObjId(user.did);
-    if (!objId) return thenDo(null);
-
-    self._getEnvelope(user.handle, objId, function (err, envelope) {
+    self._resolve(user, function () {}, function (err, r) {
       if (err) return thenDo(err);
-      var prevCid = envelope && envelope.record ? envelope.record.cid : null;
-
-      var throwawayKek = new Uint8Array(32);
-      crypto.getRandomValues(throwawayKek);
-
-      c.wrapDek(throwawayKek, function (err2, dekResult) {
-        if (err2) return thenDo(err2);
-        c.encryptPayload({ deleted: true }, dekResult.dek, function (err3, encrypted) {
-          if (err3) return thenDo(err3);
-          c.computeCid(encrypted.ciphertext, function (err4, cid) {
-            if (err4) return thenDo(err4);
-            var tombstone = {
-              objId: objId,
-              did: user.did,
-              type: 'wallet-backup',
-              visibility: 'private',
-              created: new Date().toISOString(),
-              record: {
-                cid: cid,
-                prevCid: prevCid,
-                payload: encrypted.ciphertext,
-                nonce: encrypted.nonce,
-                wrappedDek: dekResult.wrappedDek,
-                recipients: [],
-              },
-              state: {},
-            };
-            self._putEnvelope(user.handle, tombstone, function (errPut) {
-              self._clearLocalObjId(user.did);
-              thenDo(errPut || null);
-            });
-          });
-        });
+      if (!r.exists) return thenDo(null);
+      self._tombstone(user.handle, user.did, r.objId, r.envelope.record.cid, function (errPut) {
+        thenDo(errPut || null);
       });
     });
   },

@@ -280,10 +280,9 @@ module("lively.identity.WalletSetupDialog")
         var y = this._addHeading(content, "Recover from Files Backup", 14);
         y = this._addText(
           content,
-          "If this wallet was previously backed up to your private Files " +
-            "from THIS device/browser, this restores it without re-entering " +
-            "your recovery phrase. It only works here — it can't search your " +
-            "account for a backup made elsewhere.",
+          "If this wallet was ever backed up to your private Files, this " +
+            "restores it — from any device, after signing in and confirming " +
+            "your passkey — without re-entering your recovery phrase.",
           y,
           { fontSize: 11 },
         );
@@ -306,14 +305,15 @@ module("lively.identity.WalletSetupDialog")
 
       _onRecoverConfirm: function _onRecoverConfirm() {
         var self = this;
-        this._recoverBtn.setEnabled(false);
+        var wb = lively.identity.walletBackup;
+        this._recoverBtn.setActive(false);
         this._recoverStatusText.applyStyle({ fontColor: Color.rgb(100, 100, 100) });
         this._recoverStatusText.setTextString("Recovering…");
-        lively.identity.walletBackup.recoverBackup(
-          function () { self._recoverStatusText.setTextString("Confirm passkey…"); },
+        wb.recoverBackup(
+          function (stage) { self._recoverStatusText.setTextString(wb.progressLabel(stage)); },
           function (err) {
             if (err) {
-              self._recoverBtn.setEnabled(true);
+              self._recoverBtn.setActive(true);
               self._recoverStatusText.applyStyle({ fontColor: Color.rgb(180, 40, 40) });
               self._recoverStatusText.setTextString(err.message);
               return;
