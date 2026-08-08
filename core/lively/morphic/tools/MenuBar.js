@@ -65,12 +65,13 @@ lively.BuildSpec("lively.morphic.tools.MenuBar", {
       this.addMorph(morph);
       morph.setExtent(morph.getExtent().withY(this.getExtent().y-1));
       morph.align(morph.bounds()[align === "right" ? "topRight" : "topLeft"](), pos);
+      morph.recenterText && morph.recenterText();
     },
 
     alignInWorld: function alignInWorld() {
       var wBounds = $world.visibleBounds();
       this.align(this.bounds().topLeft(), wBounds.topLeft().addXY(-1,-1));
-      this.setExtent(wBounds.extent().withY(23).addXY(2,0));
+      this.setExtent(wBounds.extent().withY(26).addXY(2,0));
     },
 
     onMouseDownEntry: function onMouseDownEntry(evt) {
@@ -178,7 +179,23 @@ lively.BuildSpec("lively.morphic.tools.MenuBarEntry", {
       this.applyStyle({fixedWidth: true, clipMode: "hidden"});
       this.fixedWidth = true;
       this.owner && this.owner.relayout && this.owner.relayout();
+      this.recenterText();
     }.bind(this));
+  },
+
+  // CSS vertical-align is a no-op on Lively's text morphs (they render as
+  // plain block divs — see SkyWidget.js's _recenterLabel for the same fix).
+  // Measures the actual rendered line height and pads the top by half the
+  // box/content difference, keeping whatever left/right padding is already
+  // set (icon space, etc.) untouched.
+  recenterText: function recenterText() {
+    var text = this.getTextString ? this.getTextString() : this.textString;
+    if (!text) return;
+    var pad = this.getPadding();
+    var boxH = this.getExtent().y;
+    var contentH = this.getTextExtent().y;
+    var topPad = Math.max(0, (boxH - contentH) / 2);
+    this.applyStyle({ padding: lively.Rectangle.inset(pad.left(), topPad, pad.right(), 0) });
   },
 
   onLoad: function onLoad() {
@@ -219,7 +236,18 @@ Object.extend(lively.morphic.tools.MenuBar, {
     if (menuBar && !menuBar.isGlobalMenuBar)
       menuBar = null;
 
-    return menuBar || lively.BuildSpec("lively.morphic.tools.MenuBar")
+    // A menu bar already saved into a world (the common case — worlds
+    // persist their morphs) is reused as-is here rather than rebuilt, so
+    // dimension changes to this BuildSpec (e.g. bar height) would otherwise
+    // never reach it. Re-run alignInWorld() on the reused bar too, so it
+    // always picks up the current height/width, not whatever was baked in
+    // at the time the world was last saved.
+    if (menuBar) {
+      menuBar.alignInWorld();
+      return menuBar;
+    }
+
+    return lively.BuildSpec("lively.morphic.tools.MenuBar")
         .createMorph().openInWorld().onLoad();
   },
 

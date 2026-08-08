@@ -2,6 +2,7 @@ module("lively.identity.MenuBarEntry")
   .requires(
     "lively.identity.DID",
     "lively.identity.SignedSerializer",
+    "lively.identity.PostCardUtils",
     "lively.persistence.BuildSpec",
     "lively.morphic.tools.MenuBar",
   )
@@ -27,10 +28,16 @@ module("lively.identity.MenuBarEntry")
         style: lively.lang.obj.merge(
           lively.BuildSpec("lively.morphic.tools.MenuBarEntry").attributeStore.style,
           {
-            extent: lively.pt(80, 22),
+            extent: lively.pt(80, 25),
             toolTip: "Identity — sign in or manage your account",
           },
         ),
+
+        // avatar shown to the left of the "@handle" label, once signed in
+        AVATAR_SIZE:   16,
+        AVATAR_GAP:    2,
+        BASE_PADDING:  6,
+        BASE_WIDTH:    80,
 
         morphMenuItems: function morphMenuItems() {
           var self = this;
@@ -169,10 +176,58 @@ module("lively.identity.MenuBarEntry")
 
         update: function update() {
           if (!lively.identity || !lively.identity.did) return;
-          var label = lively.identity.did.isLoggedIn()
-            ? "@" + lively.identity.did.currentUser().handle
-            : "sign in";
-          this.textString = label;
+          var loggedIn = lively.identity.did.isLoggedIn();
+          var user = loggedIn && lively.identity.did.currentUser();
+          this.textString = loggedIn ? "@" + user.handle : "sign in";
+          this.updateAvatar(loggedIn ? user.handle : null);
+        },
+
+        // Shows a small identicon (or the user's uploaded avatarUrl, once
+        // fetched) to the left of the "@handle" label. Grows/shrinks this
+        // entry's width to make room and re-triggers the bar's relayout,
+        // same as updateText() does for label-width changes.
+        updateAvatar: function updateAvatar(handle) {
+          var self = this;
+          var AV = this.AVATAR_SIZE, GAP = this.AVATAR_GAP, PAD = this.BASE_PADDING;
+
+          if (!handle) {
+            if (!this._avatarMorph) return;
+            this._avatarMorph.remove();
+            this._avatarMorph = null;
+            this._avatarHandle = null;
+            this.applyStyle({ padding: lively.Rectangle.inset(PAD, 0, PAD, 0) });
+            this.setExtent(this.getExtent().withX(this.BASE_WIDTH));
+            this.owner && this.owner.relayout && this.owner.relayout();
+            this.recenterText();
+            return;
+          }
+
+          if (!this._avatarMorph) {
+            var img = new lively.morphic.Image(lively.rect(PAD, 0, AV, AV));
+            img.applyStyle({ borderRadius: AV / 2, borderWidth: 0, clipMode: "hidden" });
+            this._avatarMorph = this.addMorph(img);
+            this.applyStyle({ padding: lively.Rectangle.inset(PAD + AV + GAP, 0, PAD, 0) });
+            this.setExtent(this.getExtent().withX(this.BASE_WIDTH + AV + GAP));
+            this.owner && this.owner.relayout && this.owner.relayout();
+            this.recenterText();
+          }
+          this._avatarMorph.setPosition(
+            lively.pt(PAD, Math.max(0, (this.getExtent().y - AV) / 2)));
+
+          if (this._avatarHandle === handle) return;
+          this._avatarHandle = handle;
+
+          this._avatarMorph.setImageURL(
+            lively.identity.postCardUtils.identiconDataUrl(handle, AV));
+
+          fetch("/@" + handle + "/profile", { credentials: "include" })
+            .then(function (res) { return res.ok ? res.json() : null; })
+            .then(function (env) {
+              if (!env || self._avatarHandle !== handle || !self._avatarMorph) return;
+              var payload = (env.record && env.record.payload) || {};
+              if (payload.avatarUrl) self._avatarMorph.setImageURL(payload.avatarUrl);
+            })
+            .catch(function () {});
         },
 
         // Called when the morph is added to the world from a saved world file,
