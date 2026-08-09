@@ -43,11 +43,14 @@ module("lively.identity.ConstellationSpace")
         this._name            = null;
         this._genesisObjId    = null;
         this._canWrite         = false;
+        this._isController     = false;
+        this._joinRequestStatus = null;
         this.yDoc               = null;
         this.wsProvider         = null;
         this._placementMorphs  = {};
         this._presenceMorphs   = {};
         this._toolbarBtn       = null;
+        this._menuBarEntry      = null;
       },
     },
 
@@ -76,7 +79,10 @@ module("lively.identity.ConstellationSpace")
           catch (e) { return self._showError("Bad space-token response"); }
           self._genesisObjId = data.genesisObjId;
           self._canWrite      = !!data.canWrite;
+          self._isController  = !!data.isController;
+          self._joinRequestStatus = data.joinRequestStatus || null;
           self._buildToolbar();
+          self._installMenuBarEntry();
           self._connect(data.token);
         };
         xhr.onerror = function () { self._showError("Network error loading space"); };
@@ -358,6 +364,146 @@ module("lively.identity.ConstellationSpace")
           lively.identity.WikiEditor.newCard(user.handle, {
             constellation: constellationName,
             wikiName: pageName,
+          });
+        });
+      },
+
+    },
+
+    // ─── membership — menu bar entry + join requests (§4.2) ────────────────
+    // Replaces the generic world-name menu bar entry's rename affordance
+    // (lively.morphic.tools.WorldNameMenuBarEntry — every Lively world gets
+    // one, constellation spaces included, since they boot as a full world
+    // per the file header) with a constellation-aware one: "c/<name>"
+    // instead of the raw name, and a dropdown (Join… / Request pending…)
+    // instead of a rename prompt — constellations don't rename
+    // (ConstellationDesignSpec.md §1.3). Done by monkey-patching the one
+    // instance that lives in this world, not by editing the shared
+    // WorldNameMenuBarEntry.js class, which every non-constellation world
+    // still needs unchanged.
+    //
+    // Approving/declining a join request happens on the request card itself
+    // in the controller's mailbox (PostCardView.js's constellation-join-
+    // request rendering), not in a separate panel here — the card IS the
+    // UI, per the owner's explicit direction. This file's only remaining
+    // membership job is sending that card in the first place.
+
+    'membership', {
+
+      _installMenuBarEntry: function () {
+        var self = this;
+        var attempts = 0;
+        (function tryInstall() {
+          var entry = null;
+          // Not constructor.type — WorldNameMenuBarEntry is a BuildSpec
+          // customization of the generic lively.morphic.Text class (not a
+          // true .subclass()), so every menu bar entry's constructor.type
+          // reads "lively.morphic.Text" regardless of which entry it is
+          // (confirmed live). The BuildSpec's own `name` field is what's
+          // actually distinguishing.
+          var menuBar = typeof $world !== 'undefined' && $world && $world.get(/^MenuBar/);
+          if (menuBar) {
+            entry = (menuBar.submorphs || []).find(function (m) { return m.name === 'WorldNameMenuBarEntry'; });
+          }
+          if (entry) return self._patchMenuBarEntry(entry);
+          // Menu bar entries load asynchronously (MenuBar.js's addEntries),
+          // so this may run before the entry exists yet — give up quietly
+          // after ~5s rather than polling forever.
+          if (++attempts > 25) return;
+          setTimeout(tryInstall, 200);
+        })();
+      },
+
+      _patchMenuBarEntry: function (entry) {
+        var self = this;
+        this._menuBarEntry = entry;
+        var label = 'c/' + this._name;
+        entry.currentWorldDisplayName = function () { return label; };
+        entry.toolTip = 'Constellation ' + this._name + ' — click for options';
+        entry.onMouseUp = function (evt) {
+          self._openMembershipMenu(entry);
+          evt.stop();
+          return true;
+        };
+        entry.update();
+      },
+
+      _openMembershipMenu: function (entry) {
+        var self = this;
+        var items = [];
+
+        if (this._canWrite) {
+          items.push(['✓ Member', function () {}]);
+        } else if (this._joinRequestStatus === 'pending') {
+          items.push(['Request pending…', function () {}]);
+        } else {
+          items.push(['Join…', function () { self._requestJoin(); }]);
+        }
+
+        items.push(['Open feed', function () {
+          window.location.href = '/c/' + encodeURIComponent(self._name) + '/feed';
+        }]);
+
+        var pos = entry.worldPoint(lively.pt(0, entry.getExtent().y));
+        lively.morphic.Menu.openAt(pos, 'c/' + this._name, items);
+      },
+
+      // Builds a real, client-signed postcard (state.kind:
+      // 'constellation-join-request') and sends it down the same postal
+      // rail every other card uses — never server-fabricated. Two steps:
+      // PUT the card to the requester's own inbox-of-record (/@handle/objId,
+      // same as any authored card), then POST /c/:name/join-requests with
+      // its objId, which records the join_requests row and delivers the
+      // card into every controller's inbox server-side.
+      _requestJoin: function () {
+        var self = this;
+        var user = lively.identity.did.currentUser();
+        if (!user) return this._showError('Not signed in.');
+
+        lively.require('lively.identity.PostCardSerializer').toRun(function () {
+          var doc = {
+            type: 'doc',
+            content: [{
+              type: 'paragraph',
+              content: [{ type: 'text', text: '@' + user.handle + ' wants to join c/' + self._name + '.' }],
+            }],
+          };
+          lively.identity.postCardSerializer.serializePlainToEnvelope({
+            doc: doc,
+            title: 'Join request for c/' + self._name,
+            titleExplicit: true,
+            constellation: self._name,
+            visibility: 'public',
+            stateMeta: { kind: 'constellation-join-request' },
+          }, function (err, envelope) {
+            if (err) return self._showError('Could not create join request: ' + err.message);
+
+            var base = lively.identity.did.baseUrl();
+            var putXhr = new XMLHttpRequest();
+            putXhr.open('PUT', base + '/@' + encodeURIComponent(user.handle) + '/' + encodeURIComponent(envelope.objId), true);
+            putXhr.withCredentials = true;
+            putXhr.setRequestHeader('Content-Type', 'application/json');
+            putXhr.onload = function () {
+              if (putXhr.status !== 200) return self._showError('Could not save join request card (' + putXhr.status + ')');
+
+              var postXhr = new XMLHttpRequest();
+              postXhr.open('POST', base + '/c/' + encodeURIComponent(self._name) + '/join-requests', true);
+              postXhr.withCredentials = true;
+              postXhr.setRequestHeader('Content-Type', 'application/json');
+              postXhr.onload = function () {
+                if (postXhr.status !== 201) {
+                  var msg = 'Join request failed (' + postXhr.status + ')';
+                  try { var body = JSON.parse(postXhr.responseText); if (body.error) msg = body.error; } catch (e) {}
+                  return self._showError(msg);
+                }
+                self._joinRequestStatus = 'pending';
+                $world.alert('Join request sent — the constellation\'s controller(s) will see it in their mailbox.');
+              };
+              postXhr.onerror = function () { self._showError('Network error sending join request'); };
+              postXhr.send(JSON.stringify({ objId: envelope.objId }));
+            };
+            putXhr.onerror = function () { self._showError('Network error saving join request card'); };
+            putXhr.send(JSON.stringify(envelope));
           });
         });
       },

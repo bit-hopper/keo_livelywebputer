@@ -20,12 +20,15 @@
  *     silently no-op'ing — creationSig is mandatory, unlike an envelope's
  *     optional sig), then POSTs it. On success, navigates into the new
  *     constellation's live space.
- *   - Known constellations: a client-side-only (localStorage) list of
- *     constellations created or opened from this browser, plus a plain
- *     "open by name" field for one you didn't create yourself (e.g.
- *     joined via a direct link). No server-side "list my constellations"
- *     route exists yet — out of scope here; nothing today tracks
- *     membership in a way that's cheap to query for this.
+ *   - Constellations list: merges a client-side-only (localStorage) list of
+ *     constellations created or opened from this browser (may include
+ *     private ones you have access to) with the server's public directory
+ *     (`GET /c` -> ConstellationRegistry.listPublic, tagged "· public" when
+ *     not already in the local list), de-duplicated by name — plus a plain
+ *     "open by name" field for one you didn't create yourself (e.g. joined
+ *     via a direct link). Still no server-side "list my constellations
+ *     (incl. private)" route — that needs real membership tracking, out of
+ *     scope here.
  *
  * NOTE: every helper this spec's methods need lives ON the spec object
  * itself (this._foo), not as a free function in the enclosing .toRun()
@@ -77,8 +80,10 @@ module("lively.identity.ConstellationsBrowser")
         var titleBar = this.makeTitleBar("My Constellations", this.getExtent().x);
         this.titleBar = this.addMorph(titleBar);
         this._visibility = "public";
+        this._publicList = [];
         this.buildUI();
         this.renderKnown();
+        this.refreshPublicList();
       },
 
       buildUI: function buildUI() {
@@ -134,7 +139,7 @@ module("lively.identity.ConstellationsBrowser")
         content.addMorph(div);
         y += 12;
 
-        var knownHeader = new lively.morphic.Text(lively.rect(pad, y, w, 18), "Known constellations");
+        var knownHeader = new lively.morphic.Text(lively.rect(pad, y, w, 18), "Constellations");
         knownHeader.applyStyle({ allowInput: false, fontSize: 13, fontWeight: "bold", textColor: Color.rgb(40, 40, 40), fill: null });
         content.addMorph(knownHeader);
         y += 24;
@@ -189,16 +194,51 @@ module("lively.identity.ConstellationsBrowser")
         try { localStorage.setItem(this._knownStorageKey(), JSON.stringify(known.slice(0, 30))); } catch (e) {}
       },
 
+      // ─── server-backed public constellations directory ─────────────────────
+      // Fills the gap the localStorage-only list otherwise has: a public
+      // constellation created elsewhere, or by another user, never showed up
+      // here before GET /c existed (ConstellationRegistry.js's listPublic).
+
+      refreshPublicList: function refreshPublicList() {
+        var self = this;
+        var base = lively.identity.did.baseUrl();
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", base + "/c", true);
+        xhr.withCredentials = true;
+        xhr.setRequestHeader("Accept", "application/json");
+        xhr.onload = function () {
+          if (xhr.status !== 200) return;
+          try {
+            var data = JSON.parse(xhr.responseText);
+            self._publicList = data.constellations || [];
+          } catch (e) { return; }
+          self.renderKnown();
+        };
+        xhr.send();
+      },
+
+      // Merges the locally-remembered list (created/opened from this device
+      // — may include private constellations the user has access to) with
+      // the server's public directory (self._publicList, populated by
+      // refreshPublicList), de-duplicated by name. Method name kept as
+      // renderKnown since it's still the "known constellations" list, just
+      // no longer localStorage-only.
       renderKnown: function renderKnown() {
         var listBox = this._listBox;
         if (!listBox) return;
         listBox.removeAllMorphs();
         var known = this._loadKnown();
+        var knownNames = {};
+        known.forEach(function (k) { knownNames[k.name] = true; });
+        var publicOnly = (this._publicList || []).filter(function (c) { return !knownNames[c.name]; });
+        var rows = known.map(function (k) { return { name: k.name, isPublic: false }; })
+          .concat(publicOnly.map(function (c) { return { name: c.name, isPublic: true }; }));
+
         var w = listBox.getExtent().x;
         var PINK = Color.rgb(240, 26, 105);
         var GRAY = Color.rgb(170, 170, 170);
 
-        if (!known.length) {
+        if (!rows.length) {
           var none = new lively.morphic.Text(lively.rect(10, 10, w - 20, 20), "None yet — create one above.");
           none.applyStyle({ allowInput: false, fontSize: 11, textColor: GRAY, fill: null });
           listBox.addMorph(none);
@@ -207,12 +247,13 @@ module("lively.identity.ConstellationsBrowser")
 
         var rowH = 30;
         var y = 4;
-        known.forEach(function (k) {
+        rows.forEach(function (k) {
           var row = new lively.morphic.Box(lively.rect(0, y, w, rowH));
           row.applyStyle({ fill: null, borderWidth: 0 });
 
-          var nameText = new lively.morphic.Text(lively.rect(10, 6, w - 90, 18), k.name);
-          nameText.applyStyle({ allowInput: false, fontSize: 12, textColor: Color.rgb(40, 40, 40), fill: null });
+          var label = k.isPublic ? (k.name + "  ·  public") : k.name;
+          var nameText = new lively.morphic.Text(lively.rect(10, 6, w - 90, 18), label);
+          nameText.applyStyle({ allowInput: false, fontSize: 12, textColor: k.isPublic ? GRAY : Color.rgb(40, 40, 40), fill: null });
           row.addMorph(nameText);
 
           var openLink = new lively.morphic.Text(lively.rect(w - 68, 6, 58, 18), "open →");

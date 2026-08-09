@@ -61,7 +61,26 @@ function withDB(thenDo) {
       '  creation_sig   TEXT NOT NULL,' +
       '  visibility     TEXT NOT NULL DEFAULT \'public\'' +
       ')',
-      function(err) { thenDo(err || null, db); }
+      function(err) {
+        if (err) return thenDo(err);
+        // ConstellationDesignSpec.md §4.2/§7 — request-to-join flow. One row
+        // per (constellation, did): a re-request after a decline overwrites
+        // the old row rather than accumulating history, since only the
+        // current status is ever consulted (join-request-status is a
+        // display concern for the requester's own dropdown, not an audit
+        // log — unlike the space doc's moderation log, §4.4, which is
+        // deliberately transparent/replayable).
+        db.run(
+          'CREATE TABLE IF NOT EXISTS join_requests (' +
+          '  constellation TEXT NOT NULL,' +
+          '  did           TEXT NOT NULL,' +
+          '  requested_at  TEXT NOT NULL,' +
+          '  status        TEXT NOT NULL DEFAULT \'pending\',' +
+          '  PRIMARY KEY (constellation, did)' +
+          ')',
+          function(err) { thenDo(err || null, db); }
+        );
+      }
     );
   });
 }
@@ -123,6 +142,41 @@ function exists(name, thenDo) {
     db.get('SELECT 1 FROM constellations WHERE name = ?', [name], function(err, row) {
       thenDo(err || null, !!row);
     });
+  });
+}
+
+// Lists public constellations, newest first — backs the "browse public
+// constellations" affordance ConstellationsBrowser.js otherwise has no way
+// to fill (it previously only ever showed a localStorage-cached list of
+// constellations the current device had created or opened, so any public
+// constellation created elsewhere/by someone else never showed up there).
+// Calls thenDo(null, [{ name, did, createdAt, memberCount }, ...]).
+function listPublic(opts, thenDo) {
+  var limit = Math.min((opts && opts.limit) || 50, 200);
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.all(
+      'SELECT name, did, created_at, members FROM constellations' +
+      ' WHERE visibility = \'public\' ORDER BY created_at DESC LIMIT ?',
+      [limit],
+      function(err, rows) {
+        if (err) return thenDo(err);
+        try {
+          thenDo(null, (rows || []).map(function(row) {
+            var members;
+            try { members = JSON.parse(row.members); } catch (e) { members = []; }
+            return {
+              name: row.name,
+              did: row.did,
+              createdAt: row.created_at,
+              memberCount: members.length
+            };
+          }));
+        } catch (e) {
+          thenDo(e);
+        }
+      }
+    );
   });
 }
 
@@ -212,14 +266,121 @@ function canWrite(constellation, did) {
   return constellation.members.indexOf(did) !== -1;
 }
 
+// True if `did` is on the controller list — governs settings, invites,
+// join-request approval/decline (§4.1).
+function isController(constellation, did) {
+  if (!did) return false;
+  return constellation.controllers.indexOf(did) !== -1;
+}
+
+// ─── membership — join requests ─────────────────────────────────────────────
+// §4.2 "Requests" door: any authenticated user may ask to join; a controller
+// approves or declines. (The "Invites" door — a controller-issued,
+// delivery-rail invite card — is a separate, not-yet-built mechanism; this
+// only covers the request half.)
+
+// Adds `did` to a constellation's members if not already present.
+// Read-modify-write on the JSON column — fine at this table's write volume
+// (membership changes are rare, human-paced events, not a hot path).
+// Calls thenDo(err).
+function addMember(name, did, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    get(name, function(err, constellation) {
+      if (err) return thenDo(err);
+      if (!constellation) return thenDo(new Error('Constellation not found: ' + name));
+      if (constellation.members.indexOf(did) !== -1) return thenDo(null);
+      var members = constellation.members.concat([did]);
+      db.run('UPDATE constellations SET members = ? WHERE name = ?',
+        [JSON.stringify(members), name],
+        function(err) { thenDo(err || null); });
+    });
+  });
+}
+
+// Upserts a pending request — a re-request after a decline resets status to
+// pending rather than leaving the old decline in place. Calls thenDo(err).
+function requestJoin(name, did, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.run(
+      'INSERT INTO join_requests (constellation, did, requested_at, status) VALUES (?, ?, ?, \'pending\')' +
+      ' ON CONFLICT(constellation, did) DO UPDATE SET requested_at = excluded.requested_at, status = \'pending\'',
+      [name, did, new Date().toISOString()],
+      function(err) { thenDo(err || null); }
+    );
+  });
+}
+
+// Calls thenDo(null, 'pending'|'declined'|null) — null means no request on file.
+function getJoinRequestStatus(name, did, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.get('SELECT status FROM join_requests WHERE constellation = ? AND did = ?', [name, did], function(err, row) {
+      if (err) return thenDo(err);
+      thenDo(null, row ? row.status : null);
+    });
+  });
+}
+
+// Calls thenDo(null, [{ did, requestedAt }, ...]), oldest first.
+function listPendingJoinRequests(name, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.all(
+      'SELECT did, requested_at FROM join_requests WHERE constellation = ? AND status = \'pending\' ORDER BY requested_at ASC',
+      [name],
+      function(err, rows) {
+        if (err) return thenDo(err);
+        thenDo(null, (rows || []).map(function(r) { return { did: r.did, requestedAt: r.requested_at }; }));
+      }
+    );
+  });
+}
+
+// Approving adds the requester to members AND marks the request approved,
+// in that order — a crash between the two leaves a stray 'approved' row
+// with no membership rather than silently-approved membership with no
+// record, which is the safer failure mode to leave for a controller to
+// notice and retry. Calls thenDo(err).
+function approveJoinRequest(name, did, thenDo) {
+  addMember(name, did, function(err) {
+    if (err) return thenDo(err);
+    withDB(function(err, db) {
+      if (err) return thenDo(err);
+      db.run('UPDATE join_requests SET status = \'approved\' WHERE constellation = ? AND did = ?',
+        [name, did],
+        function(err) { thenDo(err || null); });
+    });
+  });
+}
+
+// Calls thenDo(err).
+function declineJoinRequest(name, did, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.run('UPDATE join_requests SET status = \'declined\' WHERE constellation = ? AND did = ?',
+      [name, did],
+      function(err) { thenDo(err || null); });
+  });
+}
+
 module.exports = {
   withDB: withDB,
   isValidName: isValidName,
   RESERVED_NAMES: RESERVED_NAMES,
   create: create,
   exists: exists,
+  listPublic: listPublic,
   get: get,
   getByGenesisObjId: getByGenesisObjId,
   canRead: canRead,
-  canWrite: canWrite
+  canWrite: canWrite,
+  isController: isController,
+  addMember: addMember,
+  requestJoin: requestJoin,
+  getJoinRequestStatus: getJoinRequestStatus,
+  listPendingJoinRequests: listPendingJoinRequests,
+  approveJoinRequest: approveJoinRequest,
+  declineJoinRequest: declineJoinRequest
 };

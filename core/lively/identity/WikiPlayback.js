@@ -1,7 +1,15 @@
 /**
- * lively.identity.PostCardPlayback
+ * lively.identity.WikiPlayback
  *
- * BuildSpec morph — read-only history playback mode for a post card.
+ * BuildSpec morph — read-only history playback mode for wiki pages
+ * (WikiEditor.js's "History" button). Plain post cards dropped their
+ * playback entry point since they're single-author and never live-synced,
+ * so there's rarely a meaningful history to scrub (PostcardDesignSpec-v2.md
+ * §15, ConstellationDesignSpec.md §2.2/§3.1's wiki-playback carryover) —
+ * this file used to be named PostCardPlayback.js from when both types
+ * shared it. The mechanism itself stays generic over any envelope type —
+ * `/versions` and `/at/:cid` are type-agnostic — in case a plain-card entry
+ * point returns later.
  *
  * Architecture:
  *   - Opens a windowed morph that shows a timeline slider + snapshot viewer.
@@ -12,7 +20,10 @@
  *   - Snapshot rendered as static ProseMirror HTML (no editor, no Y.Doc).
  *   - Entirely disconnected from the live sync provider — never touches
  *     WebsocketProvider or mutates the live Y.Doc.
- *   - "Live view" button returns the user to the live PostCardEditor state.
+ *   - "Live view" button returns the user to the live editor/view state,
+ *     routed by the envelope type seen on the last version fetched
+ *     (WikiEditor/WikiView today; PostCardEditor/PostCardView kept as the
+ *     fallback branch).
  *
  * Version API shapes:
  *   GET /@:handle/:objId/versions
@@ -22,25 +33,22 @@
  *   → { envelope } (full signed envelope at that version)
  *
  * Entry point:
- *   lively.identity.PostCardPlayback.open(handle, objId, options)
+ *   lively.identity.WikiPlayback.openPlayback(handle, objId, options)
  *
  * Dependencies:
  *   lively.identity.DID — baseUrl()
  */
 
-module('lively.identity.PostCardPlayback')
-  // Deliberately does NOT declare lively.identity.PostCardEditor or
-  // lively.identity.PostCardView as requires: PostCardEditor.js requires
-  // PostCardPlayback, so either edge back here would be a module cycle.
-  // Both are referenced lazily in _exitPlayback below, relying on them
-  // having been loaded by whatever opened this playback view in the first
-  // place (PostCardEditor itself, or the world's own bootstrap already
-  // having pulled in PostCardMailbox/ConstellationSpace, which do require
-  // PostCardView).
+module('lively.identity.WikiPlayback')
+  // Deliberately does NOT declare lively.identity.WikiEditor/WikiView (or
+  // the plain-card equivalents) as requires: WikiEditor.js requires
+  // WikiPlayback, so either edge back here would be a module cycle.
+  // _exitPlayback below loads whichever module it needs via lively.require
+  // instead of assuming it's already loaded.
   .requires('lively.identity.DID', 'lively.identity.PostCardUtils')
   .toRun(function () {
 
-    lively.morphic.Box.subclass('lively.identity.PostCardPlayback',
+    lively.morphic.Box.subclass('lively.identity.WikiPlayback',
 
     // ─── initialization ──────────────────────────────────────────────────────────
 
@@ -54,6 +62,14 @@ module('lively.identity.PostCardPlayback')
       // (playBtn, sliderInput, snapDiv) — clear old submorphs first so a
       // restore rebuild doesn't stack a second header/timeline on top.
       _setup: function () {
+        // Not disabled by default (confirmed live: isGrabbable() === true
+        // out of the box, same as any Morph) — without this, a mousedown on
+        // the slider grabs and drags the whole panel around instead of
+        // seeking, since the panel sits on top of the native <input
+        // type=range> rather than the other way around. WikiView.js/
+        // PostCardView.js disable both for the same reason.
+        this.disableDragging();
+        this.disableGrabbing();
         (this.submorphs || []).slice().forEach(function (m) { m.remove(); });
         this._versions = [];
         this._currentIndex = 0;
@@ -129,9 +145,19 @@ module('lively.identity.PostCardPlayback')
         timelinePanel.renderContext().shapeNode.appendChild(playBtn);
         this._playBtn = playBtn;
 
-        // Slider — rendered as an <input type="range"> via HtmlWrapperMorph
+        // Slider — rendered as an <input type="range"> via HtmlWrapperMorph.
+        // Content must go through the morph's own appendChild() (which
+        // targets the live renderContext().shapeNode), not
+        // wrap.rootElement.appendChild() directly — rootElement is the
+        // constructor-time DOM node the External shape was built from, but
+        // it never ends up attached to the actual render tree (confirmed
+        // live: appending to it silently produces an empty, invisible
+        // morph). Same fix applies to snapViewer below. Also: addMorph()
+        // before appendChild(), so renderContext() resolves to the node
+        // that's actually mounted.
         var sliderWrap = new lively.morphic.HtmlWrapperMorph(lively.pt(456, 28));
         sliderWrap.setPosition(lively.pt(52, 8));
+        timelinePanel.addMorph(sliderWrap);
         var sliderInput = document.createElement('input');
         sliderInput.type = 'range';
         sliderInput.min = '0';
@@ -142,8 +168,7 @@ module('lively.identity.PostCardPlayback')
           var idx = parseInt(sliderInput.value, 10);
           self._seekTo(idx);
         });
-        sliderWrap.rootElement.appendChild(sliderInput);
-        timelinePanel.addMorph(sliderWrap);
+        sliderWrap.appendChild(sliderInput);
         this._sliderInput = sliderInput;
 
         // Version info label (timestamp + seq)
@@ -153,13 +178,18 @@ module('lively.identity.PostCardPlayback')
         );
         versionInfo.setPosition(lively.pt(516, 14));
         versionInfo.setExtent(lively.pt(136, 20));
-        versionInfo.setTextAlignment('right');
+        // Not setTextAlignment() — that method doesn't exist on a
+        // makeLabel()'d Text morph (confirmed live: TypeError, and this was
+        // the only call to it anywhere in the codebase, so it had never
+        // actually run before this playback entry point became reachable).
+        versionInfo.applyStyle({ textAlign: 'right' });
         timelinePanel.addMorph(versionInfo);
         this._versionInfo = versionInfo;
 
         // Snapshot viewer — a scrollable HTML area
         var snapViewer = new lively.morphic.HtmlWrapperMorph(lively.pt(660, 416));
         snapViewer.setPosition(lively.pt(0, 84));
+        this.addMorph(snapViewer);
         var snapDiv = document.createElement('div');
         snapDiv.style.cssText = [
           'padding:20px 28px',
@@ -171,8 +201,7 @@ module('lively.identity.PostCardPlayback')
           'box-sizing:border-box',
           'background:#fff',
         ].join(';');
-        snapViewer.rootElement.appendChild(snapDiv);
-        this.addMorph(snapViewer);
+        snapViewer.appendChild(snapDiv);
         this._snapViewer = snapViewer;
         this._snapDiv = snapDiv;
       },
@@ -198,7 +227,7 @@ module('lively.identity.PostCardPlayback')
           }
           var data;
           try { data = JSON.parse(xhr.responseText); } catch (e) {
-            self._setSnapHtml('<p style="color:red">JSON parse error: ' + _escapeHtml(e.message) + '</p>');
+            self._setSnapHtml('<p style="color:red">JSON parse error: ' + lively.identity.postCardUtils.escapeHtml(e.message) + '</p>');
             return;
           }
           self._onVersionsLoaded(data.versions || []);
@@ -308,10 +337,11 @@ module('lively.identity.PostCardPlayback')
           }
           var data;
           try { data = JSON.parse(xhr.responseText); } catch (e) {
-            self._setSnapHtml('<p style="color:red">Parse error: ' + _escapeHtml(e.message) + '</p>');
+            self._setSnapHtml('<p style="color:red">Parse error: ' + lively.identity.postCardUtils.escapeHtml(e.message) + '</p>');
             return;
           }
           var envelope = data.envelope || data;
+          self._objType = envelope.type || self._objType;
           var payload = envelope.record && envelope.record.payload;
           // Plain postcards (§1.1/§2.3): `doc` IS the snapshot, same
           // ProseMirror JSON shape `snapshotToHtml` renders either way —
@@ -325,7 +355,7 @@ module('lively.identity.PostCardPlayback')
           var titleHtml = '';
           if (envelope.state && envelope.state.title) {
             titleHtml = '<h1 style="font-size:22px;margin:0 0 16px">' +
-                        _escapeHtml(envelope.state.title) + '</h1>';
+                        lively.identity.postCardUtils.escapeHtml(envelope.state.title) + '</h1>';
           }
           self._setSnapHtml(titleHtml + lively.identity.postCardUtils.snapshotToHtml(snapshot));
         };
@@ -342,31 +372,51 @@ module('lively.identity.PostCardPlayback')
 
     'navigation', {
 
+      // Only wiki pages open playback today (plain post cards dropped the
+      // "History" entry point — PostcardDesignSpec-v2.md §15, they're
+      // single-author/never live-synced so there's rarely anything to
+      // scrub). this._objType is captured off the last version fetched
+      // (envelope.type); default to 'wikipage' since that's the only
+      // remaining caller (WikiEditor.js), but keep the branch generic in
+      // case a plain-card entry point returns later.
       _exitPlayback: function () {
         this._stopPlay();
         var self = this;
-        // this._handle is the card's owning handle (same assumption
-        // PostCardView.open callers make elsewhere) — only the owner should
+        var isWiki = this._objType !== 'postcard';
+        var editorModule = isWiki ? 'lively.identity.WikiEditor' : 'lively.identity.PostCardEditor';
+        var viewModule = isWiki ? 'lively.identity.WikiView' : 'lively.identity.PostCardView';
+
+        // this._handle is the page's owning handle (same assumption
+        // WikiView.open callers make elsewhere) — only the owner should
         // land back in the editor; anyone else returns to the read-only view.
         var user = lively.identity.did.currentUser();
         var isOwner = !!(user && user.handle === this._handle);
 
-        if (isOwner) {
-          var existing = null;
-          (lively.morphic.World.current().submorphs || []).forEach(function (m) {
-            if (m instanceof lively.identity.PostCardEditor &&
-                m._handle === self._handle && m._objId === self._objId) {
-              existing = m;
+        lively.require(isOwner ? editorModule : viewModule).toRun(function () {
+          var Editor = lively.Class.forName(editorModule);
+          if (isOwner) {
+            var existing = null;
+            // withAllSubmorphsDo, not world.submorphs — Editor.openCard opens
+            // via editor.openInWindow(), so the editor instance is nested
+            // inside a separately-created Window morph, not a direct world
+            // child. Confirmed live: the shallow world.submorphs scan this
+            // used to do never matched anything, so every "Live" click while
+            // an editor was already open behind the playback panel opened a
+            // second, duplicate editor window instead of resurfacing it.
+            lively.morphic.World.current().withAllSubmorphsDo(function (m) {
+              if (m instanceof Editor && m._handle === self._handle && m._objId === self._objId) {
+                existing = m;
+              }
+            });
+            if (existing) {
+              existing.bringToFront();
+            } else {
+              Editor.openCard(self._handle, self._objId);
             }
-          });
-          if (existing) {
-            existing.bringToFront();
           } else {
-            lively.identity.PostCardEditor.openCard(this._handle, this._objId);
+            lively.Class.forName(viewModule).open(self._handle, self._objId);
           }
-        } else {
-          lively.identity.PostCardView.open(this._handle, this._objId);
-        }
+        });
         this.remove();
       },
 
@@ -386,10 +436,10 @@ module('lively.identity.PostCardPlayback')
 
     });
 
-    Object.extend(lively.identity.PostCardPlayback, {
+    Object.extend(lively.identity.WikiPlayback, {
       openPlayback: function (handle, objId, options) {
         var opts = options || {};
-        var morph = new lively.identity.PostCardPlayback(lively.rect(0, 0, 660, 500));
+        var morph = new lively.identity.WikiPlayback(lively.rect(0, 0, 660, 500));
         morph._handle = handle;
         morph._objId = objId;
         if (opts.target) {
@@ -403,4 +453,4 @@ module('lively.identity.PostCardPlayback')
       },
     });
 
-  }); // end module('lively.identity.PostCardPlayback')
+  }); // end module('lively.identity.WikiPlayback')

@@ -512,7 +512,7 @@ function buildPostCardPage(envelope, handle) {
   var payload = envelope.record && envelope.record.payload;
   // Plain postcards (§1.1/§2.3, PostcardDesignSpec-v2.md): `doc` IS the
   // snapshot, same ProseMirror JSON shape _snapshotToHtml already renders —
-  // see PostCardView.js's/PostCardPlayback.js's identical branch.
+  // see PostCardView.js's/WikiPlayback.js's identical branch.
   var snapshot = payload &&
     (payload.format === 'prosemirror-doc-v1' ? payload.doc : payload.snapshot);
   var staticHtml = '';
@@ -1184,6 +1184,27 @@ module.exports = function (route, app) {
           });
         });
       });
+    });
+  });
+
+  // Batch-resolves DIDs to handles — e.g. WikiView.js resolving
+  // state.contributors/state.lastEditedBy for the author/contributor avatar
+  // row. Can't fold this into the envelope response itself (GET
+  // /@:handle/:objId) because envelope objects round-trip through
+  // verifyEnvelopeIntegrity's canonicalJson comparison client-side; adding
+  // fields to that object would break signature verification for any
+  // caller that didn't strip them back out first. Read-only and no more of
+  // a privacy exposure than what's already public: every DID this resolves
+  // is one the caller already has from a public field they can already read
+  // (envelope.did, constellation.controllers, state.contributors, ...), and
+  // _resolveHandlesForDids is the same helper /postcards/nearby's listing
+  // already uses for the same purpose.
+  app.get("/dids/handles", auth.optionalAuth, function (req, res) {
+    var raw = typeof req.query.dids === "string" ? req.query.dids : "";
+    var dids = raw.split(",").map(function (d) { return d.trim(); }).filter(Boolean).slice(0, 100);
+    _resolveHandlesForDids(dids, function (err, handles) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json({ handles: handles });
     });
   });
 
@@ -2151,6 +2172,33 @@ module.exports = function (route, app) {
       });
     }
 
+    // Merges server-trusted contributor tracking into envelope.state for a
+    // wiki-page save: state.contributors accumulates every DID that has
+    // ever saved this page besides the genesis author (never includes
+    // envelope.did itself — WikiView.js's "Author" row covers that
+    // separately), and state.lastEditedBy records who actually signed THIS
+    // version. envelope.did is pinned to the genesis author forever
+    // (WikiSerializer.js), so without this, resolving who signed a given
+    // version has no data to go on beyond the always-wrong assumption that
+    // it was the genesis author. Merged against `existing.state` — never
+    // trusting the client's envelope.state to have faithfully round-tripped
+    // these fields from the version it last read. Reassigns the outer
+    // `envelope` var; call before _handleRegistryCheckAndWrite().
+    function _applyWikiContributorTracking(existing) {
+      var priorContributors = (existing.state && Array.isArray(existing.state.contributors))
+        ? existing.state.contributors : [];
+      var contributors = priorContributors;
+      if (req.identity.did !== envelope.did && priorContributors.indexOf(req.identity.did) === -1) {
+        contributors = priorContributors.concat([req.identity.did]);
+      }
+      envelope = Object.assign({}, envelope, {
+        state: Object.assign({}, envelope.state, {
+          contributors: contributors,
+          lastEditedBy: req.identity.did
+        })
+      });
+    }
+
     // Write authorization against the EXISTING stored version, for the two
     // envelope types that need more than the self-consistency check above:
     // plain postcards (freeze-on-send, §2.5) and wiki pages (constellation
@@ -2195,7 +2243,10 @@ module.exports = function (route, app) {
       // PostCardSyncServer.js's sync-room join already uses — this extends
       // it to the persisted-save path so both share one source of truth.
       // Wiki pages never freeze (never delivered via /inbox).
-      if (existing.did === req.identity.did) return _handleRegistryCheckAndWrite();
+      if (existing.did === req.identity.did) {
+        _applyWikiContributorTracking(existing);
+        return _handleRegistryCheckAndWrite();
+      }
 
       constellationRegistry.get(existing.constellation, function (err, constellation) {
         if (err) return res.status(500).json({ error: String(err) });
@@ -2204,6 +2255,7 @@ module.exports = function (route, app) {
             error: "Forbidden: not a member of this constellation with write access",
           });
         }
+        _applyWikiContributorTracking(existing);
         _handleRegistryCheckAndWrite();
       });
     });
@@ -2588,6 +2640,19 @@ module.exports = function (route, app) {
   // the HTTP routes here and the Yjs sync socket (PostCardSyncServer.js)
   // share exactly one source of truth for who can read/write a constellation.
 
+  // GET /c — public constellations directory. ConstellationsBrowser.js's
+  // "Known constellations" list was previously client-side-only
+  // (localStorage), so a public constellation created on another device or
+  // by another user never showed up there; this fills that gap. Distinct
+  // path from /c/:name — no route-ordering conflict.
+  app.get("/c", auth.optionalAuth, function (req, res) {
+    var limit = parseInt(req.query.limit, 10);
+    constellationRegistry.listPublic({ limit: isNaN(limit) ? undefined : limit }, function (err, constellations) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json({ constellations: constellations });
+    });
+  });
+
   app.post("/c/:name", auth.requireAuth, function (req, res) {
     var name = req.params.name;
     var body = req.body || {};
@@ -2669,10 +2734,157 @@ module.exports = function (route, app) {
       if (!constellationRegistry.canRead(constellation, viewerDid)) {
         return res.status(404).json({ error: "Constellation not found: " + name });
       }
-      res.json({
-        token: constellationSpace.mintSpaceToken(constellation, req.identity),
-        genesisObjId: constellation.genesisObjId,
-        canWrite: constellationRegistry.canWrite(constellation, viewerDid)
+      var canWrite = constellationRegistry.canWrite(constellation, viewerDid);
+      var isController = constellationRegistry.isController(constellation, viewerDid);
+
+      // isController/joinRequestStatus back the menu bar's "c/<name>" entry
+      // (ConstellationSpace.js) — a member/controller-aware dropdown
+      // (Join / Request pending / Pending requests…) in place of the
+      // generic world-rename entry, since constellations don't rename
+      // (ConstellationDesignSpec.md §1.3) and joining is member-facing.
+      // joinRequestStatus only matters for a non-member, so skip the extra
+      // query otherwise.
+      function respond(joinRequestStatus) {
+        res.json({
+          token: constellationSpace.mintSpaceToken(constellation, req.identity),
+          genesisObjId: constellation.genesisObjId,
+          canWrite: canWrite,
+          isController: isController,
+          joinRequestStatus: joinRequestStatus
+        });
+      }
+
+      if (!viewerDid || canWrite) return respond(null);
+      constellationRegistry.getJoinRequestStatus(name, viewerDid, function (err, status) {
+        if (err) return res.status(500).json({ error: String(err) });
+        respond(status);
+      });
+    });
+  });
+
+  // ─── membership — join requests (§4.2 "Requests" door) ─────────────────────
+  // The "Invites" door (controller-issued, delivered via the postal rail) is
+  // a separate, not-yet-built mechanism — these three routes cover only the
+  // request/approve/decline half.
+
+  // Body: { objId } — a postcard the caller already created+signed
+  // client-side (ConstellationSpace.js's _requestJoin, via
+  // PostCardSerializer.serializePlainToEnvelope with state.kind:
+  // 'constellation-join-request') and PUT to their own /@handle/objId
+  // before calling this. Rides the same postal rail as everything else
+  // (never server-fabricated) — this route's job is to (1) record the
+  // join_requests row (source of truth for the requester's own "Request
+  // pending…" check) and (2) deliver the card to every controller's inbox,
+  // same as PostCardMailbox.js's /inbox mechanism, reusing
+  // objectRepo.putInboxRecord directly rather than looping HTTP calls back
+  // into this same server.
+  app.post("/c/:name/join-requests", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var objId = req.body && req.body.objId;
+    if (!objId) return res.status(400).json({ error: "Missing required field: objId" });
+
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (constellationRegistry.canWrite(constellation, req.identity.did)) {
+        return res.status(409).json({ error: "Already a member of " + name });
+      }
+
+      objectRepo.get(objId, function (err, envelope) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!envelope) return res.status(404).json({ error: "Post card not found: " + objId });
+        if (envelope.did !== req.identity.did) {
+          return res.status(403).json({ error: "Forbidden: you do not own this post card" });
+        }
+        if (envelope.type !== "postcard" ||
+            !envelope.state || envelope.state.kind !== "constellation-join-request" ||
+            envelope.constellation !== name) {
+          return res.status(400).json({
+            error: "objId must be a postcard with state.kind='constellation-join-request' and constellation='" + name + "'",
+          });
+        }
+
+        constellationRegistry.requestJoin(name, req.identity.did, function (err) {
+          if (err) return res.status(500).json({ error: String(err) });
+
+          _resolveHandlesForDids(constellation.controllers, function (err, didToHandle) {
+            if (err) return res.status(500).json({ error: String(err) });
+            var record = {
+              objId: objId,
+              senderDid: req.identity.did,
+              senderHandle: req.identity.handle,
+              sentAt: new Date().toISOString(),
+            };
+            var controllerHandles = constellation.controllers
+              .map(function (did) { return didToHandle[did]; })
+              .filter(Boolean);
+            var remaining = controllerHandles.length;
+            if (!remaining) return res.status(201).json({ ok: true, status: "pending" });
+            var firstErr = null;
+            controllerHandles.forEach(function (controllerHandle) {
+              objectRepo.putInboxRecord(controllerHandle, record, function (err) {
+                if (err) firstErr = firstErr || err;
+                if (--remaining === 0) {
+                  if (firstErr) return res.status(500).json({ error: String(firstErr) });
+                  res.status(201).json({ ok: true, status: "pending" });
+                }
+              });
+            });
+          });
+        });
+      });
+    });
+  });
+
+  app.get("/c/:name/join-requests", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.isController(constellation, req.identity.did)) {
+        return res.status(403).json({ error: "Forbidden: controllers only" });
+      }
+      constellationRegistry.listPendingJoinRequests(name, function (err, requests) {
+        if (err) return res.status(500).json({ error: String(err) });
+        _resolveHandlesForDids(requests.map(function (r) { return r.did; }), function (err, didToHandle) {
+          if (err) return res.status(500).json({ error: String(err) });
+          res.json({
+            requests: requests.map(function (r) {
+              return { did: r.did, handle: didToHandle[r.did] || null, requestedAt: r.requestedAt };
+            })
+          });
+        });
+      });
+    });
+  });
+
+  app.put("/c/:name/join-requests/:did", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var did = req.params.did;
+    var action = req.body && req.body.action;
+    if (action !== "approve" && action !== "decline") {
+      return res.status(400).json({ error: 'Missing/invalid required field: action ("approve" or "decline")' });
+    }
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.isController(constellation, req.identity.did)) {
+        return res.status(403).json({ error: "Forbidden: controllers only" });
+      }
+      // With multiple controllers, each gets their own copy of the request
+      // card (every entry in constellation.controllers) — this check stops
+      // a second controller's Approve/Decline click from clobbering
+      // whatever the first controller already decided.
+      constellationRegistry.getJoinRequestStatus(name, did, function (err, status) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (status !== "pending") {
+          return res.status(409).json({ error: "Already resolved (status: " + (status || "none") + ")" });
+        }
+        var apply = action === "approve" ? constellationRegistry.approveJoinRequest : constellationRegistry.declineJoinRequest;
+        apply(name, did, function (err) {
+          if (err) return res.status(500).json({ error: String(err) });
+          res.json({ ok: true, status: action === "approve" ? "approved" : "declined" });
+        });
       });
     });
   });

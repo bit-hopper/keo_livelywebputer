@@ -2,7 +2,7 @@
  * lively.identity.PostCardUtils
  *
  * Shared client-side utilities for rendering ProseMirror snapshot JSON as HTML.
- * Used by PostCardFeed and PostCardPlayback, so those two stay in sync.
+ * Used by PostCardFeed and WikiPlayback, so those two stay in sync.
  *
  * NOT shared with the server: IdentityServer.js's `_pmNodeToHtml` is an
  * independent copy for static server-side rendering, and PostCardEditor.js's

@@ -12,7 +12,7 @@
  *   - Public envelopes: rendered directly via
  *     lively.identity.postCardUtils.snapshotToHtml — no Yjs/ProseMirror
  *     dependency, matching the read-only rendering PostCardFeed/
- *     PostCardPlayback/ConstellationSpace already used before this file
+ *     WikiPlayback/ConstellationSpace already used before this file
  *     existed.
  *   - Private/shared envelopes: there is no plaintext snapshot in an
  *     encrypted envelope (by design — that's what makes it encrypted), so
@@ -539,9 +539,97 @@ module("lively.identity.PostCardView")
             this._editBtn.style.display = this._isOwner ? "" : "none";
 
           this._renderContentArea(envelope);
+          this._renderMembershipActions(envelope);
           this._renderBackMeta(envelope);
           this._renderReactionsFooter(envelope);
           this._verify(envelope);
+        },
+
+        // Approve/Decline for a constellation-join-request card
+        // (ConstellationSpace.js's _requestJoin) — the card itself is the
+        // approval UI (owner decision: no separate pending-requests panel).
+        // envelope.did is the requester (they authored+signed this card
+        // themselves), matching PUT /c/:constellation/join-requests/:did's
+        // expected param. Controller-gated via the same GET
+        // /c/:constellation/space-token check WikiView.js's Edit button
+        // already uses for its own owner-or-canWrite gate.
+        _renderMembershipActions: function (envelope) {
+          var self = this;
+          var state = envelope.state || {};
+          if (state.kind !== "constellation-join-request" || !envelope.constellation) return;
+
+          var bar = document.createElement("div");
+          bar.style.cssText = [
+            "margin-bottom:8px", "padding:6px 8px",
+            "background:#fff9e6", "border:1px solid #f0e0a0", "border-radius:6px",
+            "font-size:11px", "color:#8a6d1f", "line-height:1.6",
+          ].join(";");
+          bar.textContent = "Checking access…";
+          this._contentEl.insertBefore(bar, this._contentEl.firstChild);
+
+          var base = lively.identity.did.baseUrl();
+          var constellation = envelope.constellation;
+          fetch(base + "/c/" + encodeURIComponent(constellation) + "/space-token", { credentials: "include" })
+            .then(function (res) { return res.ok ? res.json() : null; })
+            .then(function (data) {
+              // Not a controller (or not signed in) — this card is still a
+              // perfectly normal, readable postcard for everyone else; just
+              // no action bar.
+              if (!data || !data.isController) { bar.remove(); return; }
+
+              bar.innerHTML = "";
+              var label = document.createElement("span");
+              label.textContent = "Join request for c/" + constellation + ": ";
+              bar.appendChild(label);
+
+              function makeBtn(text, colorBorder, colorBg, colorText) {
+                var btn = document.createElement("button");
+                btn.textContent = text;
+                btn.style.cssText = [
+                  "margin-right:6px", "font-size:11px", "padding:2px 8px", "cursor:pointer",
+                  "border:1px solid " + colorBorder, "border-radius:10px",
+                  "background:" + colorBg, "color:" + colorText,
+                ].join(";");
+                ["mousedown", "click"].forEach(function (t) {
+                  btn.addEventListener(t, function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  });
+                });
+                return btn;
+              }
+              var approveBtn = makeBtn("Approve", "#8fbf8f", "#eaf7ea", "#1e7a1e");
+              var declineBtn = makeBtn("Decline", "#d9a0a0", "#fbeaea", "#a11e1e");
+
+              function resolve(action) {
+                approveBtn.disabled = true;
+                declineBtn.disabled = true;
+                var xhr = new XMLHttpRequest();
+                xhr.open("PUT", base + "/c/" + encodeURIComponent(constellation) +
+                  "/join-requests/" + encodeURIComponent(envelope.did), true);
+                xhr.withCredentials = true;
+                xhr.setRequestHeader("Content-Type", "application/json");
+                xhr.onload = function () {
+                  bar.innerHTML = "";
+                  if (xhr.status === 200) {
+                    bar.textContent = action === "approve"
+                      ? "✓ Approved — @" + self._handle + " is now a member of c/" + constellation + "."
+                      : "Declined @" + self._handle + "'s request.";
+                  } else {
+                    var msg = "Failed (" + xhr.status + ")";
+                    try { var body = JSON.parse(xhr.responseText); if (body.error) msg = body.error; } catch (e) {}
+                    bar.textContent = msg;
+                  }
+                };
+                xhr.onerror = function () { bar.textContent = "Network error"; };
+                xhr.send(JSON.stringify({ action: action }));
+              }
+              approveBtn.addEventListener("click", function () { resolve("approve"); });
+              declineBtn.addEventListener("click", function () { resolve("decline"); });
+              bar.appendChild(approveBtn);
+              bar.appendChild(declineBtn);
+            })
+            .catch(function () { bar.remove(); });
         },
 
         // Show the identicon immediately (cheap, synchronous, always

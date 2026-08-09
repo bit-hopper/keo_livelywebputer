@@ -43,7 +43,6 @@
 module('lively.identity.PostCardEditor')
   .requires(
     'lively.identity.PostCardSerializer',
-    'lively.identity.PostCardPlayback',
     'lively.identity.DID',
     'lively.identity.WebAuthn',
     'lively.identity.WebKey',
@@ -548,18 +547,6 @@ module('lively.identity.PostCardEditor')
       // formatting toolbar so it reads as a distinct "card" action group).
       _buildFooter: function (footerDiv) {
         var self = this;
-
-        // History is leftmost — a "view this card" action, distinct from
-        // the Save/visibility/Send cluster on the right.
-        var histBtn = document.createElement('button');
-        histBtn.textContent = 'History';
-        histBtn.title = 'View version history (save first)';
-        histBtn.style.cssText = 'position:absolute;top:6px;left:8px;width:64px;height:24px;padding:0;font-size:11px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
-        histBtn.addEventListener('mousedown', function (e) {
-          e.preventDefault(); e.stopPropagation();
-          self._openPlayback();
-        });
-        footerDiv.appendChild(histBtn);
 
         var statusSpan = document.createElement('span');
         statusSpan.style.cssText = 'position:absolute;top:7px;right:252px;font-size:10px;color:#888;pointer-events:none;';
@@ -2666,17 +2653,6 @@ module('lively.identity.PostCardEditor')
             if (--remaining === 0) cb();
           });
         });
-      },
-
-    },
-
-    // ─── playback ─────────────────────────────────────────────────────────────────
-
-    'playback', {
-
-      _openPlayback: function () {
-        if (!this._objId) return alert('Save the card first before viewing history.');
-        lively.identity.PostCardPlayback.openPlayback(this._handle, this._objId);
       },
 
     },

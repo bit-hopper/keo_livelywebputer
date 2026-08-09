@@ -355,6 +355,23 @@ module('lively.identity.PostCardMailbox')
           when.textContent   = self._formatDate(rec.sentAt);
 
           card.appendChild(from);
+          // Constellation tag — lets a controller spot a join-request card
+          // (or any other constellation-tagged card) in the list without
+          // opening every row. rec.constellation/rec.kind are enriched
+          // server-side onto this page's records only (bounded to the page
+          // size, not the whole inbox log) — see ObjectRepository.js's
+          // _enrichWithConstellationTag.
+          if (rec.constellation) {
+            var isJoinRequest = rec.kind === 'constellation-join-request';
+            var tag = document.createElement('div');
+            tag.style.cssText = 'display:inline-block;margin-bottom:4px;padding:2px 7px;' +
+              'font-size:10px;border-radius:9px;' +
+              (isJoinRequest
+                ? 'background:#fff3cd;color:#8a6d1f;font-weight:600;'
+                : 'background:#eef0ff;color:#4a55c4;');
+            tag.textContent = (isJoinRequest ? '📨 join request · ' : '') + 'c/' + rec.constellation;
+            card.appendChild(tag);
+          }
           card.appendChild(id);
           card.appendChild(when);
 

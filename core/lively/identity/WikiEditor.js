@@ -55,7 +55,7 @@
 module('lively.identity.WikiEditor')
   .requires(
     'lively.identity.WikiSerializer',
-    'lively.identity.PostCardPlayback',
+    'lively.identity.WikiPlayback',
     'lively.identity.DID',
     'lively.identity.WebAuthn',
     'lively.identity.WebKey',
@@ -1684,7 +1684,7 @@ module('lively.identity.WikiEditor')
 
       _openPlayback: function () {
         if (!this._objId) return alert('Save the page first before viewing history.');
-        lively.identity.PostCardPlayback.openPlayback(this._handle, this._objId);
+        lively.identity.WikiPlayback.openPlayback(this._handle, this._objId);
       },
 
     },

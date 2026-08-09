@@ -1057,7 +1057,33 @@ function listInboxForHandle(handle, opts, thenDo) {
       if (err) return thenDo(err);
       var page = filtered.slice(offset, offset + limit);
       var nextOffset = offset + limit < filtered.length ? offset + limit : null;
-      thenDo(null, { records: page, cursor: nextOffset });
+      _enrichWithConstellationTag(page, function (err, enriched) {
+        if (err) return thenDo(err);
+        thenDo(null, { records: enriched, cursor: nextOffset });
+      });
+    });
+  });
+}
+
+// Merges envelope.constellation/envelope.state.kind onto each record on the
+// *returned page only* (bounded to `limit`, never the full inbox log) — so
+// PostCardMailbox.js can show a "c/<name>" badge distinguishing e.g. a
+// constellation-join-request card from a regular postcard without a
+// separate per-row fetch when the list first renders. Same bounded-cost
+// per-page envelope lookup _filterRecordsByTitle above already does for
+// search; this just always runs, not only when q is set.
+function _enrichWithConstellationTag(page, thenDo) {
+  if (!page.length) return thenDo(null, page);
+  var remaining = page.length;
+  var firstErr = null;
+  page.forEach(function (rec) {
+    get(rec.objId, function (err, envelope) {
+      if (err) firstErr = firstErr || err;
+      if (envelope) {
+        rec.constellation = envelope.constellation || null;
+        rec.kind = (envelope.state && envelope.state.kind) || null;
+      }
+      if (--remaining === 0) thenDo(firstErr, page);
     });
   });
 }
