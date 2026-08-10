@@ -4,7 +4,7 @@
  * The fixed-layout landing page at /c/:name (ConstellationDesignSpec.md's
  * "space", reframed as a lounge/main-feed UI rather than the freeform
  * drag/place world — that world now lives at /c/:name/canvas,
- * ConstellationSpace.js). A visitor to /c/:name sees:
+ * ConstellationCanvas.js). A visitor to /c/:name sees:
  *
  *   - a search field (top, styled after PartsBin/iPadWidgets/SearchField.json
  *     — white rounded pill, magnifying-glass icon, blue "Go" button, same
@@ -33,7 +33,7 @@
  *     other DID in constellation.controllers, per the owner's "every
  *     added controller is also a moderator" framing — no separate
  *     moderator role in the schema) — active members (live Yjs
- *     awareness/presence, ConstellationSpace.js's own mechanism, connected
+ *     awareness/presence, ConstellationCanvas.js's own mechanism, connected
  *     here read/write-for-presence-only, no layout rendering)
  *
  * Boot: server-rendered skeleton (buildConstellationLoungePage,
@@ -53,7 +53,7 @@
  * focus after every character; (2) later-opened morphic windows (e.g. the
  * mailbox) rendered *underneath* the raw DOM chrome, because that chrome
  * sat outside Lively's own z-order/bringToFront management entirely. Real
- * morphs (added via addMorph, same as ConstellationSpace.js's placements)
+ * morphs (added via addMorph, same as ConstellationCanvas.js's placements)
  * fix both by construction, and — the actual reason this matters per the
  * project owner — keep every element halo-selectable and Object-Editor
  * inspectable, the way everything else in this codebase is. The postcard/
@@ -342,7 +342,7 @@ module("lively.identity.ConstellationLounge")
         });
 
         // This is fixed-layout chrome, not a freeform space (that's the
-        // canvas, ConstellationSpace.js) — nothing here should be
+        // canvas, ConstellationCanvas.js) — nothing here should be
         // draggable. Recurses into submorphs since dragging is a
         // per-morph flag, not inherited from a container.
         [
@@ -870,7 +870,7 @@ module("lively.identity.ConstellationLounge")
         });
       },
 
-      // Mirrors ConstellationSpace.js's _promptNewWikiPage exactly (same
+      // Mirrors ConstellationCanvas.js's _promptNewWikiPage exactly (same
       // page-name charset, same WikiEditor.newCard entry point) — this is
       // the same "create a wiki page" affordance, just relocated to the
       // lounge's wiki panel instead of the canvas toolbar.
@@ -1037,9 +1037,9 @@ module("lively.identity.ConstellationLounge")
       },
     },
 
-    // ─── membership — menu bar entry (§1.3 pattern, ConstellationSpace.js) ────
+    // ─── membership — menu bar entry (§1.3 pattern, ConstellationCanvas.js) ────
     // Replaces the generic per-world menu bar entry's rename affordance with
-    // a constellation-aware dropdown, exactly as ConstellationSpace.js
+    // a constellation-aware dropdown, exactly as ConstellationCanvas.js
     // already does for the canvas — the lounge boots its own separate
     // Lively world (buildConstellationLoungePage), so it gets its own
     // un-patched WorldNameMenuBarEntry instance and needs this too.
@@ -1094,7 +1094,7 @@ module("lively.identity.ConstellationLounge")
         lively.morphic.Menu.openAt(pos, "c/" + this._name, items);
       },
 
-      // Identical flow to ConstellationSpace.js's _requestJoin — a real,
+      // Identical flow to ConstellationCanvas.js's _requestJoin — a real,
       // client-signed postcard riding the same postal rail, never
       // server-fabricated.
       _requestJoin: function () {

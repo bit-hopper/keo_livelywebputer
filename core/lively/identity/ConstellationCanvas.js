@@ -1,12 +1,13 @@
 /**
- * lively.identity.ConstellationSpace
+ * lively.identity.ConstellationCanvas
  *
- * Live multi-user view of a constellation's space: a full Lively world (same
- * category as a user's home world at /@handle, just shared/synced instead of
- * private) whose content is a Yjs-synced layout of placed post cards and
- * parts, with live presence. Reuses the same Yjs runtime (postcard-runtime.js
- * bundle) and sync server (PostCardSyncServer) post cards already use — the
- * room name is the constellation's genesisObjId.
+ * Live multi-user view of a constellation's freeform canvas: a full Lively
+ * world (same category as a user's home world at /@handle, just
+ * shared/synced instead of private) whose content is a Yjs-synced layout of
+ * placed post cards and parts, with live presence. Reuses the same Yjs
+ * runtime (postcard-runtime.js bundle) and sync server (PostCardSyncServer)
+ * post cards already use — the room name is the constellation's
+ * genesisObjId.
  *
  * Placements render as top-level morphs directly on $world — not inside a
  * window. Each visiting browser boots its own independent $world (there is
@@ -18,20 +19,22 @@
  *
  * Auth: PostCardSyncServer's WS layer has no access to the Express session,
  * so room access rides a short-lived signed token minted by
- * GET /c/:name/space-token (see ConstellationSpace.js server-side and
- * PostCardSyncServer.js's TODO(constellation-write-gate) for the current
- * scope of what that token does and doesn't protect).
+ * GET /c/:name/space-token (see the server-side space/token module,
+ * core/servers/identity/ConstellationSpace.js — a different file from this
+ * one, named for the Yjs space document it manages rather than for this
+ * canvas UI — and PostCardSyncServer.js's TODO(constellation-write-gate)
+ * for the current scope of what that token does and doesn't protect).
  *
  * Boots at /c/:name/canvas — the fixed-layout landing page at /c/:name
  * itself is lively.identity.ConstellationLounge (ConstellationLounge.js),
  * not this class.
  *
- * Open: lively.identity.ConstellationSpace.open(name) — called from
+ * Open: lively.identity.ConstellationCanvas.open(name) — called from
  * buildConstellationCanvasPage's onStartWorld hook once $world exists (see
  * IdentityServer.js), or from anywhere $world is already available.
  */
 
-module("lively.identity.ConstellationSpace")
+module("lively.identity.ConstellationCanvas")
   .requires(
     "lively.identity.DID",
     "lively.identity.IdentityPartsSpace",
@@ -40,7 +43,7 @@ module("lively.identity.ConstellationSpace")
   )
   .toRun(function () {
 
-    Object.subclass("lively.identity.ConstellationSpaceController",
+    Object.subclass("lively.identity.ConstellationCanvasController",
 
     'initializing', {
       initialize: function () {
@@ -112,7 +115,7 @@ module("lively.identity.ConstellationSpace")
           params: { token: token },
         });
         this.wsProvider.on("status", function (event) {
-          console.log("[ConstellationSpace] sync status:", event.status);
+          console.log("[ConstellationCanvas] sync status:", event.status);
         });
 
         var layoutMap = this.yDoc.getMap("layout");
@@ -594,7 +597,7 @@ module("lively.identity.ConstellationSpace")
       },
 
       _showError: function (msg) {
-        console.error("[ConstellationSpace]", msg);
+        console.error("[ConstellationCanvas]", msg);
       },
 
     });
@@ -602,9 +605,9 @@ module("lively.identity.ConstellationSpace")
     // Static open helper — constructs a fresh controller bound to $world.
     // Callers (buildConstellationCanvasPage's onStartWorld hook) are expected
     // to only call this once $world already exists.
-    lively.identity.ConstellationSpace = {
+    lively.identity.ConstellationCanvas = {
       open: function (name) {
-        var controller = new lively.identity.ConstellationSpaceController();
+        var controller = new lively.identity.ConstellationCanvasController();
         controller.open(name);
         return controller;
       },

@@ -6,7 +6,7 @@
  * *viewer's own* location, requested at runtime via the browser Geolocation
  * API. A separate, additive section on the welcome page (see
  * IdentityServer.js's GET /welcome.html handler) — it does not replace or
- * touch ConstellationSpace.js's arbitrary x/y postcard-placement canvas.
+ * touch ConstellationCanvas.js's arbitrary x/y postcard-placement canvas.
  *
  * Privacy model: every postcard's `state.location` is already a floored
  * Plus Code (<=6 significant digits, ~5.5km x 5.5km cell — see

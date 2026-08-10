@@ -12,7 +12,7 @@
  *   - Public envelopes: rendered directly via
  *     lively.identity.postCardUtils.snapshotToHtml — no Yjs/ProseMirror
  *     dependency, matching the read-only rendering PostCardFeed/
- *     WikiPlayback/ConstellationSpace already used before this file
+ *     WikiPlayback/ConstellationCanvas already used before this file
  *     existed.
  *   - Private/shared envelopes: there is no plaintext snapshot in an
  *     encrypted envelope (by design — that's what makes it encrypted), so
@@ -89,7 +89,7 @@ module("lively.identity.PostCardView")
         // running as part of the normal open() call sequence.
         _setup: function () {
           // Same rationale as PostCardEditor._setup: this morph is either
-          // embedded (ConstellationSpace/PostCardFeed manage its position
+          // embedded (ConstellationCanvas/ConstellationLounge/PostCardFeed manage its position
           // themselves) or windowed (openInWindow's title bar is the drag
           // handle) — either way, this morph's own body-dragging must not
           // fight with those.
@@ -546,7 +546,7 @@ module("lively.identity.PostCardView")
         },
 
         // Approve/Decline for a constellation-join-request card
-        // (ConstellationSpace.js's _requestJoin) — the card itself is the
+        // (ConstellationCanvas.js's / ConstellationLounge.js's _requestJoin) — the card itself is the
         // approval UI (owner decision: no separate pending-requests panel).
         // envelope.did is the requester (they authored+signed this card
         // themselves), matching PUT /c/:constellation/join-requests/:did's

@@ -600,7 +600,7 @@ function _layoutSnapshotToHtml(snapshot) {
 // Serve a constellation's freeform canvas (the drag/place/resize live
 // space, ConstellationDesignSpec.md §2) as a standalone HTML page, same
 // two-mode shape as buildPostCardPage: static layout render for fast first
-// paint, then boots the live ConstellationSpace morph (Yjs-synced,
+// paint, then boots the live ConstellationCanvas morph (Yjs-synced,
 // multi-user). Lives at /c/:name/canvas — the top-level /c/:name route is
 // the fixed-layout lounge (buildConstellationLoungePage below); the canvas
 // is the "fully customizable" space members/controllers arrange.
@@ -670,8 +670,8 @@ function buildConstellationCanvasPage(constellation, spaceEnvelope) {
     // removeDOMContentBeforeWorldLoad (default true) already wiped
     // #constellation-static/#constellation-loader along with the rest of
     // the page's prior DOM before this callback runs — nothing left to hide.
-    'lively.require("lively.identity.ConstellationSpace").toRun(function(){' +
-    'lively.identity.ConstellationSpace.open(' + JSON.stringify(constellation.name) + ');' +
+    'lively.require("lively.identity.ConstellationCanvas").toRun(function(){' +
+    'lively.identity.ConstellationCanvas.open(' + JSON.stringify(constellation.name) + ');' +
     '});' +
     '}' +
     '}</script>' +
@@ -960,7 +960,7 @@ function _canSeePostcardMeta(meta, viewerDid) {
 // listing projection only carries `did` — see _runPostcardQuery in
 // ObjectRepository.js — but PostCardView.open(handle, objId) needs a
 // handle. Every other existing caller of this projection already has
-// `handle` from its own data, e.g. ConstellationSpace's placement layout;
+// `handle` from its own data, e.g. ConstellationCanvas's placement layout;
 // /postcards/nearby is the first cross-user listing route that doesn't, so
 // it resolves once here rather than adding handle to the shared projection
 // for every caller). Calls thenDo(null, { [did]: handle|null }).
@@ -2828,10 +2828,11 @@ module.exports = function (route, app) {
       var isController = constellationRegistry.isController(constellation, viewerDid);
 
       // isController/joinRequestStatus back the menu bar's "c/<name>" entry
-      // (ConstellationSpace.js) — a member/controller-aware dropdown
-      // (Join / Request pending / Pending requests…) in place of the
-      // generic world-rename entry, since constellations don't rename
-      // (ConstellationDesignSpec.md §1.3) and joining is member-facing.
+      // (ConstellationCanvas.js and ConstellationLounge.js each patch their
+      // own instance) — a member/controller-aware dropdown (Join / Request
+      // pending… / Pending requests…) in place of the generic world-rename
+      // entry, since constellations don't rename (ConstellationDesignSpec.md
+      // §1.3) and joining is member-facing.
       // joinRequestStatus only matters for a non-member, so skip the extra
       // query otherwise.
       //
@@ -2878,8 +2879,9 @@ module.exports = function (route, app) {
   // request/approve/decline half.
 
   // Body: { objId } — a postcard the caller already created+signed
-  // client-side (ConstellationSpace.js's _requestJoin, via
-  // PostCardSerializer.serializePlainToEnvelope with state.kind:
+  // client-side (ConstellationCanvas.js's and ConstellationLounge.js's
+  // own _requestJoin, via PostCardSerializer.serializePlainToEnvelope
+  // with state.kind:
   // 'constellation-join-request') and PUT to their own /@handle/objId
   // before calling this. Rides the same postal rail as everything else
   // (never server-fabricated) — this route's job is to (1) record the
