@@ -22,8 +22,12 @@
  * PostCardSyncServer.js's TODO(constellation-write-gate) for the current
  * scope of what that token does and doesn't protect).
  *
+ * Boots at /c/:name/canvas — the fixed-layout landing page at /c/:name
+ * itself is lively.identity.ConstellationLounge (ConstellationLounge.js),
+ * not this class.
+ *
  * Open: lively.identity.ConstellationSpace.open(name) — called from
- * buildConstellationSpacePage's onStartWorld hook once $world exists (see
+ * buildConstellationCanvasPage's onStartWorld hook once $world exists (see
  * IdentityServer.js), or from anywhere $world is already available.
  */
 
@@ -440,8 +444,8 @@ module("lively.identity.ConstellationSpace")
           items.push(['Join…', function () { self._requestJoin(); }]);
         }
 
-        items.push(['Open feed', function () {
-          window.location.href = '/c/' + encodeURIComponent(self._name) + '/feed';
+        items.push(['Open lounge', function () {
+          window.location.href = '/c/' + encodeURIComponent(self._name);
         }]);
 
         var pos = entry.worldPoint(lively.pt(0, entry.getExtent().y));
@@ -596,7 +600,7 @@ module("lively.identity.ConstellationSpace")
     });
 
     // Static open helper — constructs a fresh controller bound to $world.
-    // Callers (buildConstellationSpacePage's onStartWorld hook) are expected
+    // Callers (buildConstellationCanvasPage's onStartWorld hook) are expected
     // to only call this once $world already exists.
     lively.identity.ConstellationSpace = {
       open: function (name) {

@@ -95,7 +95,7 @@ var NAME_RE = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/;
 var RESERVED_NAMES = {
   'feed': true, 'wiki': true, 'members': true, 'invites': true,
   'join-requests': true, 'settings': true, 'did.json': true, 'space': true,
-  'admin': true, 'api': true, 'www': true
+  'canvas': true, 'admin': true, 'api': true, 'www': true
 };
 
 function isValidName(name) {

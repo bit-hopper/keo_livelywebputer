@@ -543,11 +543,14 @@ function listPostcardsForUser(did, opts, thenDo) {
 }
 
 // List the latest postcard envelopes for a constellation, newest first.
-// opts: { limit, cursor } — same pagination shape as listPostcardsForUser.
+// opts: { limit, cursor, q } — same pagination/search shape as
+// listPostcardsForUser (q filters on state.title, LIKE-style).
 // Calls thenDo(null, { postcards: [envelopeMetadata...], cursor: String|null }).
 function listPostcardsForConstellation(constellation, opts, thenDo) {
   var limit = (opts && opts.limit) || 20;
   var cursor = (opts && opts.cursor) || null;
+  var q = (opts && opts.q) || null;
+  var qLike = q ? '%' + _escapeLikePrefix(q) + '%' : null;
 
   withDB(function(err, db) {
     if (err) return thenDo(err);
@@ -561,7 +564,13 @@ function listPostcardsForConstellation(constellation, opts, thenDo) {
       '   GROUP BY obj_id' +
       ' ) latest ON o.id = latest.max_id' +
       ' WHERE (json_extract(o.envelope, \'$.state.deleted\') IS NULL' +
-      '        OR json_extract(o.envelope, \'$.state.deleted\') != 1)';
+      '        OR json_extract(o.envelope, \'$.state.deleted\') != 1)' +
+      // System-generated cards (join requests riding the same postal rail
+      // as everything else, ConstellationDesignSpec.md §4.2) belong in
+      // controllers' inboxes, not the public constellation feed.
+      '        AND (json_extract(o.envelope, \'$.state.kind\') IS NULL' +
+      '             OR json_extract(o.envelope, \'$.state.kind\') != \'constellation-join-request\')' +
+      (qLike ? ' AND json_extract(o.envelope, \'$.state.title\') LIKE ? ESCAPE \'\\\'' : '');
 
     var params, sql;
     if (cursor) {
@@ -572,19 +581,20 @@ function listPostcardsForConstellation(constellation, opts, thenDo) {
         function(err, pivotRow) {
           if (err) return thenDo(err);
           var pivotId = pivotRow ? pivotRow.pivot : null;
+          var qParams = qLike ? [qLike] : [];
           if (pivotId) {
             sql = baseSql + ' AND o.id < ? ORDER BY o.id DESC LIMIT ?';
-            params = [constellation, pivotId, limit + 1];
+            params = [constellation].concat(qParams, [pivotId, limit + 1]);
           } else {
             sql = baseSql + ' ORDER BY o.id DESC LIMIT ?';
-            params = [constellation, limit + 1];
+            params = [constellation].concat(qParams, [limit + 1]);
           }
           _runPostcardQuery(db, sql, params, limit, thenDo);
         }
       );
     } else {
       sql = baseSql + ' ORDER BY o.id DESC LIMIT ?';
-      params = [constellation, limit + 1];
+      params = qLike ? [constellation, qLike, limit + 1] : [constellation, limit + 1];
       _runPostcardQuery(db, sql, params, limit, thenDo);
     }
   });

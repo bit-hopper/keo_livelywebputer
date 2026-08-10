@@ -87,7 +87,7 @@ function getBlankWorldJso() {
 // small <script> in before the bootstrap.js tag that mounts LocalMap once
 // $world exists, via Config.onStartWorld (fires after world-load regardless
 // of snapshot vs. from-scratch loading — same mechanism buildWarpDropPage/
-// buildConstellationSpacePage use, just without manuallyCreateWorld since
+// buildConstellationCanvasPage use, just without manuallyCreateWorld since
 // there's no snapshot to bypass here).
 //
 // Deliberately NOT cached (unlike getBlankWorldJso/getRestoreWorldJso
@@ -548,12 +548,12 @@ function buildPostCardPage(envelope, handle) {
     // Without this, bootstrap.js's default Loader#getWorldData routes
     // through WorldDataAccessor.forHTMLDoc, which looks for a
     // <script type="text/x-lively-world"> tag this page never has and
-    // crashes on JSON.parse("") — see buildConstellationSpacePage's
+    // crashes on JSON.parse("") — see buildConstellationCanvasPage's
     // identical fix above for the full explanation.
     'manuallyCreateWorld:true,' +
     // removeDOMContentBeforeWorldLoad (default true) wipes #postcard-static/
     // #postcard-loader once the (blank, unused) World is built, same as
-    // buildConstellationSpacePage's #constellation-static/#constellation-loader
+    // buildConstellationCanvasPage's #constellation-static/#constellation-loader
     // — onStartWorld is what replaces that wiped content with the actual
     // live view, using the envelope this page already fetched server-side
     // (PostCardView.open's opts.envelope skips a redundant re-fetch).
@@ -597,10 +597,15 @@ function _layoutSnapshotToHtml(snapshot) {
   }).join('');
 }
 
-// Serve a constellation's space as a standalone HTML page, same two-mode
-// shape as buildPostCardPage: static layout render for fast first paint,
-// then boots the live ConstellationSpace morph (Yjs-synced, multi-user).
-// A constellation's space is served as a full, freshly-built Lively world
+// Serve a constellation's freeform canvas (the drag/place/resize live
+// space, ConstellationDesignSpec.md §2) as a standalone HTML page, same
+// two-mode shape as buildPostCardPage: static layout render for fast first
+// paint, then boots the live ConstellationSpace morph (Yjs-synced,
+// multi-user). Lives at /c/:name/canvas — the top-level /c/:name route is
+// the fixed-layout lounge (buildConstellationLoungePage below); the canvas
+// is the "fully customizable" space members/controllers arrange.
+//
+// A constellation's canvas is served as a full, freshly-built Lively world
 // (same category as a user's home world at /@handle, just shared/synced
 // instead of private), not a window opened inside someone else's world.
 //
@@ -618,7 +623,7 @@ function _layoutSnapshotToHtml(snapshot) {
 // fallback altogether. Same mechanism buildWarpDropPage already uses for
 // GET /warpdrop; onStartWorld is Lively's own "$world is ready" callback,
 // used here instead of polling for it.
-function buildConstellationSpacePage(constellation, spaceEnvelope) {
+function buildConstellationCanvasPage(constellation, spaceEnvelope) {
   var title = escapeHtml(constellation.name);
   var snapshot = spaceEnvelope && spaceEnvelope.record && spaceEnvelope.record.payload &&
     spaceEnvelope.record.payload.snapshot;
@@ -673,6 +678,91 @@ function buildConstellationSpacePage(constellation, spaceEnvelope) {
     '<script src="/core/lively/bootstrap.js"></script>' +
     '</body></html>'
   );
+}
+
+// Serve a constellation's lounge — the fixed-layout landing page at
+// /c/:name (search, postcard turnover reel + reply thread, quick-info
+// panel, embedded wiki, member list) — as a standalone HTML page. Same
+// boot shape as buildConstellationCanvasPage: manuallyCreateWorld so
+// bootstrap.js builds a blank world instead of trying (and failing) to
+// load a per-user home-world config, then onStartWorld hands off to the
+// live lively.identity.ConstellationLounge controller.
+//
+// Unlike the canvas (whose static render is a real layout snapshot), the
+// lounge's static render only pre-fills the quick-info panel — that data
+// (name/visibility/memberCount/createdAt/co-creator handle) is already in
+// hand from the route handler's constellationRegistry.get() call, so it's
+// free to render server-side. The postcard reel, reply thread, wiki panel,
+// and member list all need additional queries (feed, wiki index, presence)
+// that the live controller makes anyway, so they render as loading
+// placeholders here rather than duplicating that fetching server-side.
+function buildConstellationLoungePage(constellation, quickInfo) {
+  var title = escapeHtml(constellation.name);
+  var pageData = {
+    name: constellation.name,
+    did: constellation.did,
+    genesisObjId: constellation.genesisObjId,
+    visibility: constellation.visibility,
+    quickInfo: quickInfo
+  };
+  var dataJson = JSON.stringify(pageData).replace(/<\/script>/gi, '<\\/script>');
+
+  var quickInfoHtml =
+    '<div class="lounge-quickinfo-name">c/' + title + '</div>' +
+    '<div class="lounge-quickinfo-row">' + escapeHtml(quickInfo.visibility) + ' &middot; ' +
+    quickInfo.memberCount + ' member' + (quickInfo.memberCount === 1 ? '' : 's') + '</div>' +
+    '<div class="lounge-quickinfo-row">Created ' + escapeHtml(_formatDateForLounge(quickInfo.createdAt)) +
+    (quickInfo.createdByHandle ? ' by @' + escapeHtml(quickInfo.createdByHandle) : '') + '</div>';
+
+  return (
+    '<!DOCTYPE html><html lang="en"><head>' +
+    '<meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<meta name="apple-mobile-web-app-capable" content="yes">' +
+    '<link rel="shortcut icon" href="/core/media/lively.ico">' +
+    '<title>c/' + title + '</title>' +
+    '<style>' +
+    'body{margin:0;font-family:system-ui,sans-serif;background:#fafafa}' +
+    '.lounge-static{position:relative;min-height:100vh}' +
+    '.lounge-quickinfo{position:fixed;top:16px;right:16px;width:220px;' +
+    'background:#fff;border:1px solid #eee;border-radius:8px;padding:12px 14px;' +
+    'box-shadow:0 1px 3px rgba(0,0,0,.08);font-size:13px}' +
+    '.lounge-quickinfo-name{font-weight:bold;font-size:15px;margin-bottom:6px}' +
+    '.lounge-quickinfo-row{color:#666;margin-top:2px}' +
+    '.lounge-loading{padding:48px;text-align:center;color:#999}' +
+    '.lounge-loader{position:fixed;bottom:12px;right:12px;font-size:12px;' +
+    'color:#999;background:#fff;border:1px solid #eee;border-radius:4px;padding:4px 8px}' +
+    '</style>' +
+    '</head><body>' +
+    '<div class="lounge-static" id="lounge-static">' +
+    '<div class="lounge-quickinfo" id="lounge-quickinfo">' + quickInfoHtml + '</div>' +
+    '<div class="lounge-loading">Loading c/' + title + '&hellip;</div>' +
+    '</div>' +
+    '<div class="lounge-loader" id="lounge-loader">Loading live mode…</div>' +
+    '<script type="application/json" id="lounge-data">' + dataJson + '</script>' +
+    '<script src="/core/lib/postcard/postcard-runtime.js"></script>' +
+    '<script>window.Config={' +
+    'codeBase:location.protocol+"//"+location.host+"/core/",' +
+    'rootPath:location.protocol+"//"+location.host+"/",' +
+    'manuallyCreateWorld:true,' +
+    // Same reasoning as buildConstellationCanvasPage: the lounge is a
+    // place the user inhabits, so the normal menu bar stays available.
+    'onStartWorld:function(){' +
+    'lively.require("lively.identity.ConstellationLounge").toRun(function(){' +
+    'lively.identity.ConstellationLounge.open(' + JSON.stringify(constellation.name) + ');' +
+    '});' +
+    '}' +
+    '}</script>' +
+    '<script src="/core/lively/bootstrap.js"></script>' +
+    '</body></html>'
+  );
+}
+
+function _formatDateForLounge(iso) {
+  if (!iso) return '—';
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso);
+  return d.toLocaleDateString();
 }
 
 // Convert a ProseMirror snapshot JSON to simple HTML for static rendering.
@@ -2744,13 +2834,33 @@ module.exports = function (route, app) {
       // (ConstellationDesignSpec.md §1.3) and joining is member-facing.
       // joinRequestStatus only matters for a non-member, so skip the extra
       // query otherwise.
+      //
+      // quickInfo/memberHandles back ConstellationLounge.js's quick-info
+      // panel and Discord-style member list (co-creator/moderator/member
+      // badges, §4.1's role split applied client-side since there's no
+      // separate moderator role in the schema — createdBy is the
+      // co-creator, every other controller is treated as a moderator).
+      // Resolving all of `members` (a superset of controllers, §4.1) in
+      // one batch here means the client never has to resolve DIDs itself.
       function respond(joinRequestStatus) {
-        res.json({
-          token: constellationSpace.mintSpaceToken(constellation, req.identity),
-          genesisObjId: constellation.genesisObjId,
-          canWrite: canWrite,
-          isController: isController,
-          joinRequestStatus: joinRequestStatus
+        _resolveHandlesForDids(constellation.members, function (err, memberHandles) {
+          if (err) return res.status(500).json({ error: String(err) });
+          res.json({
+            token: constellationSpace.mintSpaceToken(constellation, req.identity),
+            genesisObjId: constellation.genesisObjId,
+            canWrite: canWrite,
+            isController: isController,
+            joinRequestStatus: joinRequestStatus,
+            quickInfo: {
+              createdBy: constellation.createdBy,
+              controllers: constellation.controllers,
+              members: constellation.members,
+              memberCount: constellation.members.length,
+              memberHandles: memberHandles,
+              createdAt: constellation.createdAt,
+              visibility: constellation.visibility
+            }
+          });
         });
       }
 
@@ -2854,6 +2964,27 @@ module.exports = function (route, app) {
             })
           });
         });
+      });
+    });
+  });
+
+  // Lets a controller check one specific requester's resolution status —
+  // PostCardView.js uses this to decide whether a join-request card still
+  // shows live Approve/Decline buttons or a persistent resolved-status line
+  // (previously it always showed the buttons, even long after the request
+  // had already been approved/declined by any controller).
+  app.get("/c/:name/join-requests/:did", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var did = req.params.did;
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.isController(constellation, req.identity.did)) {
+        return res.status(403).json({ error: "Forbidden: controllers only" });
+      }
+      constellationRegistry.getJoinRequestStatus(name, did, function (err, status) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({ status: status });
       });
     });
   });
@@ -2980,7 +3111,8 @@ module.exports = function (route, app) {
 
       var limit  = Math.min(parseInt(req.query.limit,  10) || 20, 100);
       var cursor = req.query.cursor || null;
-      objectRepo.listPostcardsForConstellation(name, { limit: limit, cursor: cursor }, function (err, result) {
+      var q      = typeof req.query.q === "string" ? req.query.q : null;
+      objectRepo.listPostcardsForConstellation(name, { limit: limit, cursor: cursor, q: q }, function (err, result) {
         if (err) return res.status(500).json({ error: String(err) });
         var viewerDid = req.identity ? req.identity.did : null;
         result.postcards = result.postcards
@@ -3074,6 +3206,25 @@ module.exports = function (route, app) {
     });
   });
 
+  // The freeform, drag/place/resize live space (ConstellationDesignSpec.md
+  // §2) — registered before the /:objId wildcard below, same ordering
+  // discipline as every other named sub-route under /c/:constellation.
+  // /c/:constellation itself is the fixed-layout lounge (below).
+  app.get("/c/:constellation/canvas", auth.optionalAuth, function (req, res) {
+    var name = req.params.constellation;
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.canRead(constellation, req.identity ? req.identity.did : null)) {
+        return res.status(404).json({ error: "Constellation not found: " + name });
+      }
+      objectRepo.get(constellation.genesisObjId, function (err, spaceEnvelope) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.send(buildConstellationCanvasPage(constellation, spaceEnvelope));
+      });
+    });
+  });
+
   app.get("/c/:constellation/:objId", auth.optionalAuth, function (req, res) {
     var name  = req.params.constellation;
     var objId = req.params.objId;
@@ -3121,13 +3272,22 @@ module.exports = function (route, app) {
         return res.status(404).json({ error: "Constellation not found: " + name });
       }
 
-      // HTML: the constellation's live space (static layout render, then
-      // boots the live ConstellationSpace morph). JSON: unchanged, still the
-      // post card feed listing — no breaking change for existing API callers.
+      // HTML: the constellation's lounge (fixed-layout landing page,
+      // static quick-info render then boots the live ConstellationLounge
+      // controller). JSON: unchanged, still the post card feed listing —
+      // no breaking change for existing API callers. The freeform
+      // drag/place canvas lives at /c/:name/canvas now, not here.
       if (req.accepts(["html", "json"]) === "html") {
-        return objectRepo.get(constellation.genesisObjId, function (err, spaceEnvelope) {
-          if (err) return res.status(500).json({ error: String(err) });
-          res.send(buildConstellationSpacePage(constellation, spaceEnvelope));
+        return handleRegistry.resolveHandleForDid(constellation.createdBy, function (err, createdByHandle) {
+          var quickInfo = {
+            createdBy: constellation.createdBy,
+            createdByHandle: createdByHandle || null,
+            controllers: constellation.controllers,
+            memberCount: constellation.members.length,
+            createdAt: constellation.createdAt,
+            visibility: constellation.visibility
+          };
+          res.send(buildConstellationLoungePage(constellation, quickInfo));
         });
       }
 
