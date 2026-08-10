@@ -25,9 +25,9 @@
  *     IdentityServer.js, so the same route recurses to any depth). Clicking
  *     a reply focuses it into the active slot; a breadcrumb steps back out
  *     without disturbing the top-level stack position.
- *   - an embedded wiki panel (most-recently-updated page, with a
- *     page-switcher menu and "+ New wiki page" for members) extending to
- *     the page bottom, right of the reel
+ *   - an embedded wiki panel (most-recently-updated page, with an inline
+ *     list of every published page as click-to-open pills and "+ New wiki
+ *     page" for members) extending to the page bottom, right of the reel
  *   - a Discord-style member list on the far right: co-creator (green
  *     badge, constellation.createdBy) — moderator (yellow badge, every
  *     other DID in constellation.controllers, per the owner's "every
@@ -304,11 +304,11 @@ module("lively.identity.ConstellationLounge")
         this._wikiHeaderBox.applyStyle({ fill: null, borderWidth: 0 });
         $world.addMorph(this._wikiHeaderBox);
 
-        this._wikiPageLabel = lively.morphic.Text.makeLabel("", { fontSize: 13 });
-        this._wikiPageLabel.setPosition(lively.pt(0, 7));
-        this._wikiPageLabel.setExtent(lively.pt(180, 18));
-        this._wikiPageLabel.onMouseDown = function () { self._openWikiPageMenu(); };
-        this._wikiHeaderBox.addMorph(this._wikiPageLabel);
+        this._wikiPagesRow = new lively.morphic.Box(lively.rect(0, 4, 10, 24));
+        this._wikiPagesRow.applyStyle({ fill: null, borderWidth: 0 });
+        this._wikiPagesRow.renderContext().shapeNode.style.overflowX = "auto";
+        this._wikiPagesRow.renderContext().shapeNode.style.whiteSpace = "nowrap";
+        this._wikiHeaderBox.addMorph(this._wikiPagesRow);
 
         this._wikiNewBtn = new lively.morphic.Button(lively.rect(190, 4, 100, 24));
         this._wikiNewBtn.setLabel("+ New page");
@@ -382,7 +382,7 @@ module("lively.identity.ConstellationLounge")
         // field's own node renders after it in the same stacking context)
         // and is hidden the moment there's real text.
         var placeholder = lively.morphic.Text.makeLabel("Search c/" + this._name + "…", {
-          fontSize: 14, textColor: Color.rgb(170, 170, 170),
+          fontSize: 12, textColor: Color.rgb(170, 170, 170),
         });
         placeholder.setPosition(fieldRect.topLeft());
         placeholder.setExtent(fieldRect.extent());
@@ -391,7 +391,7 @@ module("lively.identity.ConstellationLounge")
         this._searchPlaceholder = placeholder;
 
         var field = new lively.morphic.Text(fieldRect, "");
-        field.applyStyle({ allowInput: true, fontSize: 14, fill: null, borderWidth: 0 });
+        field.applyStyle({ allowInput: true, fontSize: 12, fill: null, borderWidth: 0 });
         field.beInputLine();
         // Enter fires the search without losing the $super keydown chain
         // (undo/redo, selection, etc. all still work as they do on any
@@ -829,7 +829,12 @@ module("lively.identity.ConstellationLounge")
         this._wikiBox.addMorph(empty);
       },
 
+      // Renders every matching page as a click-to-open pill in a horizontally
+      // scrolling row, left of "+ New page" — the full list is always
+      // visible (no menu to open first), and the active page's pill is
+      // highlighted.
       _renderWikiHeader: function (filterQuery) {
+        var self = this;
         var pages = this._wikiPages;
         if (filterQuery) {
           var q = filterQuery.toLowerCase();
@@ -837,20 +842,41 @@ module("lively.identity.ConstellationLounge")
         }
         this._wikiPagesFiltered = pages;
 
-        var current = pages.filter(function (p) { return p.objId === this._activeWikiObjId; }, this)[0];
-        this._wikiPageLabel.textString = current ? current.wikiName : (pages[0] ? pages[0].wikiName + " ▾" : "(no pages)");
-        this._wikiNewBtn.setVisible(!!this._canWrite);
-      },
+        var row = this._wikiPagesRow;
+        (row.submorphs || []).slice().forEach(function (m) { m.remove(); });
 
-      _openWikiPageMenu: function () {
-        var self = this;
-        var pages = this._wikiPagesFiltered || this._wikiPages;
-        if (!pages.length) return;
-        var items = pages.map(function (p) {
-          return [p.wikiName, function () { self._openWikiPage(p.objId); }];
-        });
-        var pos = this._wikiPageLabel.worldPoint(lively.pt(0, this._wikiPageLabel.getExtent().y));
-        lively.morphic.Menu.openAt(pos, "Wiki pages", items);
+        var headerW = this._wikiHeaderBox.getExtent().x || 200;
+        var newBtnW = this._wikiNewBtn.getExtent().x || 100;
+        var rowW = Math.max(40, headerW - newBtnW - 10);
+        row.setExtent(lively.pt(rowW, 24));
+        this._wikiNewBtn.setPosition(lively.pt(rowW + 10, 4));
+
+        if (!pages.length) {
+          var empty = lively.morphic.Text.makeLabel("(no pages)", { fontSize: 12, textColor: Color.gray });
+          empty.setPosition(lively.pt(0, 3));
+          row.addMorph(empty);
+        } else {
+          var x = 0;
+          pages.forEach(function (p) {
+            var isActive = p.objId === self._activeWikiObjId;
+            var w = Math.max(30, p.wikiName.length * 7 + 16);
+            var pillBox = new lively.morphic.Box(lively.rect(x, 0, w, 22));
+            pillBox.setFill(isActive ? Color.rgb(53, 83, 255) : Color.rgb(240, 240, 240));
+            pillBox.applyStyle({ borderWidth: 0, borderRadius: 11 });
+            pillBox.onMouseDown = function () { self._openWikiPage(p.objId); };
+            var pillLabel = lively.morphic.Text.makeLabel(p.wikiName, {
+              fontSize: 12, textColor: isActive ? Color.white : Color.rgb(51, 51, 51),
+            });
+            pillLabel.setPosition(lively.pt(8, 3));
+            pillLabel.setExtent(lively.pt(w - 8, 16));
+            pillLabel.eventsAreIgnored = true;
+            pillBox.addMorph(pillLabel);
+            row.addMorph(pillBox);
+            x += w + 6;
+          });
+        }
+        this._wikiNewBtn.setVisible(!!this._canWrite);
+        this._disableDragging(this._wikiHeaderBox);
       },
 
       // Same handle-free-fetch-then-resolve path as _renderCardInto, for
@@ -1088,6 +1114,9 @@ module("lively.identity.ConstellationLounge")
 
         items.push(["Open canvas", function () {
           window.location.href = "/c/" + encodeURIComponent(self._name) + "/canvas";
+        }]);
+        items.push(["Open wiki", function () {
+          window.location.href = "/c/" + encodeURIComponent(self._name) + "/wiki";
         }]);
 
         var pos = entry.worldPoint(lively.pt(0, entry.getExtent().y));

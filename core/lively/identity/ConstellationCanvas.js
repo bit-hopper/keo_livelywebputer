@@ -43,6 +43,12 @@ module("lively.identity.ConstellationCanvas")
   )
   .toRun(function () {
 
+    // Height of the title-bar-style drag strip reserved above each
+    // placement's embedded content (see _addDragHandle) — content can't be
+    // the drag surface itself, since PostCardView/parts need their own
+    // clicks (flip, links) and disable their own morph-level dragging.
+    var DRAG_HANDLE_H = 18;
+
     Object.subclass("lively.identity.ConstellationCanvasController",
 
     'initializing', {
@@ -172,22 +178,55 @@ module("lively.identity.ConstellationCanvas")
         this._placementMorphs[id] = wrapper;
         $world.addMorph(wrapper);
 
+        // Content first, so it's the bottom layer — the drag handle, resize
+        // handle, and remove button below are added after it and render on
+        // top, staying visible/clickable instead of sitting underneath a
+        // full-bleed embedded card. Dragging can't be wired to the wrapper
+        // itself: PostCardView/parts fill the whole wrapper and are always
+        // the actual mousedown target, so the wrapper's own draggingEnabled
+        // is never consulted by Lively's drag dispatch (see _addDragHandle).
+        this._renderPlacementContent(wrapper, data.kind, data.ref || {}, id);
+
         if (this._canWrite) {
-          wrapper.draggingEnabled = true;
-          Trait("lively.morphic.DragMoveTrait").applyTo(wrapper, {
-            override: ["onDragStart", "onDrag", "onDragEnd"],
-          });
-          var traitDragEnd = wrapper.onDragEnd;
-          wrapper.onDragEnd = function (evt) {
-            var result = traitDragEnd.call(this, evt);
-            self._commitPlacementPosition(id);
-            return result;
-          };
+          this._addDragHandle(wrapper, id);
           this._addResizeHandle(wrapper, id);
           this._addRemoveButton(wrapper, id);
         }
+      },
 
-        this._renderPlacementContent(wrapper, data.kind, data.ref || {}, id);
+      // A slim title-bar-style strip is its own morph (not the wrapper)
+      // because it — not the wrapper — is what actually receives the
+      // mousedown, and moves the wrapper explicitly on drag, same pattern
+      // _addResizeHandle already uses for resizing.
+      _addDragHandle: function (wrapper, id) {
+        var self = this;
+        var handle = new lively.morphic.Box(lively.rect(0, 0, wrapper.getExtent().x, DRAG_HANDLE_H));
+        handle.setFill(Color.rgb(245, 245, 247));
+        handle.setBorderWidth(0);
+        handle.draggingEnabled = true;
+        handle.renderContext().shapeNode.style.cursor = "move";
+
+        function reposition() {
+          handle.setExtent(lively.pt(wrapper.getExtent().x, DRAG_HANDLE_H));
+        }
+        reposition();
+        wrapper._repositionDragHandle = reposition;
+
+        handle.onDragStart = function (evt) {
+          this._startWrapperPos = wrapper.getPosition();
+          this._startPos = evt.getPosition();
+          evt.stop(); return true;
+        };
+        handle.onDrag = function (evt) {
+          var delta = evt.getPosition().subPt(this._startPos);
+          wrapper.setPosition(this._startWrapperPos.addPt(delta));
+          evt.stop(); return true;
+        };
+        handle.onDragEnd = function (evt) {
+          self._commitPlacementPosition(id);
+          evt.stop(); return true;
+        };
+        wrapper.addMorph(handle);
       },
 
       _commitPlacementPosition: function (id) {
@@ -230,6 +269,7 @@ module("lively.identity.ConstellationCanvas")
           newExtent.y = Math.max(40, newExtent.y);
           wrapper.setExtent(newExtent);
           reposition();
+          if (wrapper._repositionDragHandle) wrapper._repositionDragHandle();
           evt.stop(); return true;
         };
         handle.onDragEnd = function (evt) {
@@ -253,10 +293,14 @@ module("lively.identity.ConstellationCanvas")
       // "postcard"/"part" content — read-only excerpt fetch, same envelope
       // resolution path PostCardEditor.js uses for embedded parts, just
       // rendered into a placement wrapper instead of a ProseMirror NodeView.
+      // Content is inset by DRAG_HANDLE_H from the top on writable spaces
+      // (see _addDragHandle) so the drag strip doesn't cover it; read-only
+      // viewers get no strip, so content fills the full wrapper for them.
       _renderPlacementContent: function (wrapper, kind, ref, id) {
         if (!ref.handle || !ref.objId) return;
-        if (kind === "part") this._renderPartPlacement(wrapper, ref, id);
-        else this._renderPostcardPlacement(wrapper, ref);
+        var topInset = this._canWrite ? DRAG_HANDLE_H : 0;
+        if (kind === "part") this._renderPartPlacement(wrapper, ref, id, topInset);
+        else this._renderPostcardPlacement(wrapper, ref, topInset);
       },
 
       // Embeds a real, interactive PostCardView morph — click-to-flip and
@@ -266,16 +310,16 @@ module("lively.identity.ConstellationCanvas")
       // the wrapper's own Yjs-synced layout (_commitPlacementPosition/
       // _commitPlacementSize) — the view just fills it, same as
       // _renderPartPlacement's embedded part morph does.
-      _renderPostcardPlacement: function (wrapper, ref) {
+      _renderPostcardPlacement: function (wrapper, ref, topInset) {
         var extent = wrapper.getExtent();
         lively.identity.PostCardView.open(ref.handle, ref.objId, {
           target: wrapper,
           cid: ref.cid || null,
-          bounds: lively.rect(0, 0, extent.x, extent.y),
+          bounds: lively.rect(0, topInset, extent.x, extent.y - topInset),
         });
       },
 
-      _renderPartPlacement: function (wrapper, ref, id) {
+      _renderPartPlacement: function (wrapper, ref, id, topInset) {
         var self = this;
         var base = lively.identity.did.baseUrl();
         var url = base + "/@" + encodeURIComponent(ref.handle) + "/" + encodeURIComponent(ref.objId);
@@ -291,7 +335,7 @@ module("lively.identity.ConstellationCanvas")
           if (!item) return;
           item.loadPart(false, false, envelope.record && envelope.record.cid, function (err, part) {
             if (err || !part) return;
-            part.setPosition(lively.pt(0, 0));
+            part.setPosition(lively.pt(0, topInset));
             wrapper.addMorph(part);
             if (typeof part.onPostCardEmbed === "function") {
               part.onPostCardEmbed(self._placementStateApi(id));
@@ -449,6 +493,9 @@ module("lively.identity.ConstellationCanvas")
 
         items.push(['Open lounge', function () {
           window.location.href = '/c/' + encodeURIComponent(self._name);
+        }]);
+        items.push(['Open wiki', function () {
+          window.location.href = '/c/' + encodeURIComponent(self._name) + '/wiki';
         }]);
 
         var pos = entry.worldPoint(lively.pt(0, entry.getExtent().y));
