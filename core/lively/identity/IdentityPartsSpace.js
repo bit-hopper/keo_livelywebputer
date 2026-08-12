@@ -3,6 +3,7 @@ module("lively.identity.IdentityPartsSpace")
     "lively.PartsBin",
     "lively.identity.ObjectStore",
     "lively.identity.DID",
+    "lively.identity.PartSerializer",
   )
   .toRun(function () {
 
@@ -19,6 +20,7 @@ module("lively.identity.IdentityPartsSpace")
       "loading",
       {
         loadPart: function (isAsync, optCached, rev, cb) {
+          var self = this;
           var envelope = this.envelope;
 
           if (!envelope || !envelope.record || !envelope.record.payload) {
@@ -28,23 +30,39 @@ module("lively.identity.IdentityPartsSpace")
             return this;
           }
 
-          var payload = envelope.record.payload;
-          // deserializePart expects a JSON string, not a JSO
-          var json = typeof payload === "string" ? payload : JSON.stringify(payload);
-          var metaInfo = this.loadedMetaInfo;
-          var cid = envelope.record.cid;
-
-          try {
-            // setPartFromJSON(json, metaInfo, rev) requires metaInfo to have
-            // lastModifiedDate set — our createPartItemFromEnvelope ensures this.
-            this.setPartFromJSON(json, metaInfo, cid);
-          } catch (e) {
-            console.error("[IdentityPartItem] loadPart failed for " + this.name + ":", e);
-            if (cb) cb(e);
-            return this;
+          function _apply(err, json) {
+            if (err) {
+              console.error("[IdentityPartItem] loadPart failed for " + self.name + ":", err);
+              if (cb) cb(err);
+              return;
+            }
+            var metaInfo = self.loadedMetaInfo;
+            var cid = envelope.record.cid;
+            try {
+              // setPartFromJSON(json, metaInfo, rev) requires metaInfo to have
+              // lastModifiedDate set — our createPartItemFromEnvelope ensures this.
+              self.setPartFromJSON(json, metaInfo, cid);
+            } catch (e) {
+              console.error("[IdentityPartItem] loadPart failed for " + self.name + ":", e);
+              if (cb) cb(e);
+              return;
+            }
+            if (cb) cb(null, self.part);
           }
 
-          if (cb) cb(null, this.part);
+          if (envelope.visibility === "public") {
+            // Historically record.payload was stringified/re-stringified
+            // inline here rather than through PartSerializer — kept
+            // equivalent so already-published public parts need no migration.
+            var payload = envelope.record.payload;
+            var json = typeof payload === "string" ? payload : JSON.stringify(payload);
+            _apply(null, json);
+          } else {
+            lively.identity.partSerializer.deserializeEncrypted(envelope, function (err, json) {
+              _apply(err, json);
+            });
+          }
+
           return this;
         },
       },

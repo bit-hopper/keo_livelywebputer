@@ -1467,7 +1467,7 @@ lively.morphic.Morph.addMethods(
         // partsbin related
         items.push(['Publish', function(evt) { self.copyToPartsBinWithUserRequest(); }]);
         if (typeof lively !== 'undefined' && lively.identity && lively.identity.did && lively.identity.did.isLoggedIn()) {
-            items.push(['Save to My Parts', function(evt) { self.copyToIdentityPartsSpace(); }]);
+            items.push(['Publish to Inventory', function(evt) { self.promptPublishToInventory(); }]);
         }
         if (this.reset) {
             [].pushAt
@@ -1798,7 +1798,7 @@ lively.morphic.World.addMethods(
         return whenDone instanceof Function && whenDone($world.drawingCanvas);
       } else {
         $world.loadPartItem('DrawingCanvas', 
-              'https://lively-web.org/PartsBin/Pronto-system/',
+              'https://smalltalkzoo.computerhistory.org/PartsBin/Pronto-system/',
               function(err, canvas) {
                   $world.drawingCanvas = canvas
                   canvas.prepareForEdits(morphToEdit);

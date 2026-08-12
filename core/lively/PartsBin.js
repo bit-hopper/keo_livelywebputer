@@ -846,109 +846,148 @@ Trait('lively.PartsBin.PartTrait', {
         this.getPartItem().uploadPart();
     },
 
-    // Save this part as an identity-aware envelope (postcard-audit F15) rather
-    // than to WebDAV's PartsBin — makes it browsable from the postcard editor's
-    // insert-part picker (lively.identity.IdentityPartsSpace), which reads
-    // type:'part' envelopes instead of a WebDAV directory.
-    copyToIdentityPartsSpace: function() {
+    // Opens the "Publish to Inventory" dialog: lets the user set name,
+    // comment, category and visibility (public/private/shared) before
+    // saving this part as an identity-aware envelope (postcard-audit F15)
+    // rather than to WebDAV's PartsBin — makes it browsable from the
+    // postcard editor's insert-part picker (lively.identity.IdentityPartsSpace),
+    // which reads type:'part' envelopes instead of a WebDAV directory.
+    // Replaces the old copyToIdentityPartsSpace, which saved immediately
+    // with a hardcoded empty comment, a locked name, and no privacy choice.
+    promptPublishToInventory: function() {
         var morph = this;
         if (!this.name) {
-            alert('Cannot save to My Parts without a name');
+            alert('Cannot publish to Inventory without a name');
             return;
         }
         if (typeof lively === 'undefined' || !lively.require) {
-            alert('Cannot save to My Parts: Lively module system not available');
+            alert('Cannot publish to Inventory: Lively module system not available');
             return;
         }
-        lively.require('lively.identity.UserSpace', 'lively.identity.WebKey').toRun(function() {
+        lively.require('lively.identity.UserSpace', 'lively.identity.WebKey', 'lively.identity.PartSerializer', 'lively.morphic.tools.PublishToInventoryDialog').toRun(function() {
             var user = lively.identity.did.currentUser();
-            if (!user) { alert('Cannot save to My Parts: not signed in'); return; }
+            if (!user) { alert('Cannot publish to Inventory: not signed in'); return; }
+            var world = morph.world();
+            if (world.publishToInventoryDialog) world.publishToInventoryDialog.remove();
+            var dlg = lively.BuildSpec('lively.morphic.tools.PublishToInventoryDialog').createMorph();
+            dlg.openInWorldCenter().comeForward();
+            world.publishToInventoryDialog = dlg;
+            dlg.get('PublishToInventoryPane').setTarget(morph);
+        });
+    },
 
-            var serialized;
-            try {
-                serialized = morph.getPartItem().serializePart(morph);
-            } catch (e) {
-                alert('Could not serialize part: ' + e.message);
-                return;
-            }
-            var json = serialized.json;
-            var c = lively.identity.crypto;
+    // Does the actual serialize + (optionally encrypt) + save + sync +
+    // refresh, parameterized by the Publish to Inventory dialog's input.
+    // opts: { name, comment, tags, visibility: 'public'|'private'|'shared',
+    //         recipientHandles, onWaiting }
+    // Calls thenDo(err, envelope).
+    _publishToInventory: function(opts, thenDo) {
+        var morph = this;
+        var user = lively.identity.did.currentUser();
+        if (!user) { thenDo(new Error('Not signed in')); return; }
 
-            c.computeCid(json, function(err, cid) {
-                if (err) { alert('Could not compute CID: ' + err.message); return; }
-                lively.identity.webKey.generateGenesisObjId(user.did, function(err, result) {
-                    if (err) { alert('Could not derive objId: ' + err.message); return; }
+        var serialized;
+        try {
+            serialized = morph.getPartItem().serializePart(morph);
+        } catch (e) {
+            thenDo(new Error('Could not serialize part: ' + e.message));
+            return;
+        }
 
-                    var envelope = {
-                        objId: result.objId,
-                        did: user.did,
-                        type: 'part',
-                        visibility: 'public',
-                        created: new Date().toISOString(),
-                        genesisNonce: result.genesisNonce,
-                        record: { cid: cid, prevCid: null, payload: json },
-                        // serializePart() already renders an HTML snapshot via
-                        // asHTMLLogo() for exactly this purpose (it's how WebDAV
-                        // parts get their .html logo file) — previously this was
-                        // computed and thrown away, leaving IdentityPartItem with
-                        // no icon at all. Stored in state (not record.payload) so
-                        // it's server-readable without needing to deserialize the
-                        // whole part just to show a thumbnail.
-                        state: { partName: morph.name, comment: '', tags: [], htmlLogo: serialized.htmlLogo || null },
-                    };
+        var params = {
+            json: serialized.json,
+            htmlLogo: serialized.htmlLogo || null,
+            partName: opts.name,
+            comment: opts.comment || '',
+            tags: opts.tags || [],
+        };
 
-                    // Local-first, same as every other identity write (UserSpace.js) —
-                    // write to the local ObjectStore (IndexedDB) first, then sync to
-                    // the server. Previously this PUT the envelope straight to the
-                    // server via raw XHR and never touched ObjectStore at all, so the
-                    // part was saved server-side but invisible everywhere that reads
-                    // "my parts" locally (IdentityPartsSpace.load() -> objectStore.listAll()) —
-                    // the postcard/wiki "Insert part" picker and the PartsBinBrowser's
-                    // My Parts category both depend on this local cache actually being
-                    // populated.
-                    lively.identity.objectStore.put(envelope, function(err) {
-                        if (err) { alert('Save to My Parts failed: ' + err.message); return; }
+        // Local-first, same as every other identity write (UserSpace.js) —
+        // write to the local ObjectStore (IndexedDB) first, then sync to
+        // the server, then refresh any open PartsBinBrowser showing My
+        // Parts / a tag category. Re-clicking the same category in the
+        // browser's sidebar does NOT reliably do this on its own —
+        // categoryName is driven by categoryList.selection, and reselecting
+        // an already-selected value there never fires the connection that
+        // would reload (confirmed live: 0 loadPartsOfCategory calls on a
+        // same-value reselect) — a pre-existing quirk of that shared list
+        // widget, not something specific to identity parts. Calling
+        // loadPartsOfCategory directly here sidesteps that property-change
+        // machinery entirely.
+        function withEnvelope(envelope) {
+            lively.identity.objectStore.put(envelope, function(err) {
+                if (err) { thenDo(new Error('Publish to Inventory failed: ' + err.message)); return; }
 
-                        lively.identity.userSpace.addPart('general', {
-                            objId: envelope.objId, cid: cid, title: morph.name, partName: morph.name,
-                        }, function(addErr) {
-                            if (addErr) alert('Saved, but could not register in My Parts: ' + addErr.message);
-                            else alert('Saved "' + morph.name + '" to My Parts.');
-                        });
+                lively.identity.userSpace.addPart('general', {
+                    objId: envelope.objId, cid: envelope.record.cid, title: opts.name, partName: opts.name,
+                }, function(addErr) {
+                    // Non-fatal: the envelope is already saved and browsable
+                    // via *myparts*/tag categories even if this index write fails.
+                    if (addErr) console.warn('[_publishToInventory] Could not register in My Parts index:', addErr.message);
 
-                        // Non-fatal sync: local save already succeeded.
-                        lively.identity.objectStore.syncObject(
-                            envelope.objId, user.handle, lively.identity.did.baseUrl(),
-                            function(syncErr) {
-                                if (syncErr) console.warn('[copyToIdentityPartsSpace] sync failed (will retry later):', syncErr.message);
-                            }
-                        );
-
-                        // Refresh any already-open PartsBinBrowser currently
-                        // showing My Parts (or an identity tag category) so
-                        // the newly published part actually shows up.
-                        // Re-clicking the same category in the browser's
-                        // sidebar does NOT reliably do this on its own —
-                        // categoryName is driven by categoryList.selection,
-                        // and reselecting an already-selected value there
-                        // never fires the connection that would reload
-                        // (confirmed live: 0 loadPartsOfCategory calls on a
-                        // same-value reselect) — a pre-existing quirk of
-                        // that shared list widget, not something specific
-                        // to identity parts. Calling loadPartsOfCategory
-                        // directly here sidesteps that property-change
-                        // machinery entirely.
-                        if (typeof $world !== 'undefined' && $world.submorphs) {
-                            $world.submorphs.forEach(function(w) {
-                                if (w.name !== 'PartsBinBrowser' || !w.get) return;
-                                var browser = w.get('PartsBinBrowser');
-                                var cat = browser && browser.categoryName;
-                                if (cat === '*myparts*' || (cat && cat.charAt(0) === '#')) {
-                                    browser.loadPartsOfCategory(cat);
-                                }
-                            });
+                    lively.identity.objectStore.syncObject(
+                        envelope.objId, user.handle, lively.identity.did.baseUrl(),
+                        function(syncErr) {
+                            if (syncErr) console.warn('[_publishToInventory] sync failed (will retry later):', syncErr.message);
                         }
-                    });
+                    );
+
+                    if (typeof $world !== 'undefined' && $world.submorphs) {
+                        $world.submorphs.forEach(function(w) {
+                            if (w.name !== 'PartsBinBrowser' || !w.get) return;
+                            var browser = w.get('PartsBinBrowser');
+                            var cat = browser && browser.categoryName;
+                            if (cat === '*myparts*' || (cat && cat.charAt(0) === '#')) {
+                                browser.loadPartsOfCategory(cat);
+                            }
+                        });
+                    }
+
+                    thenDo(null, envelope);
+                });
+            });
+        }
+
+        if (opts.visibility === 'public') {
+            lively.identity.partSerializer.serializeToEnvelope(params, function(err, envelope) {
+                if (err) { thenDo(err); return; }
+                withEnvelope(envelope);
+            });
+            return;
+        }
+
+        // private/shared: need the KEK cached (one passkey prompt per
+        // session, same as every other private save in this codebase), then
+        // for shared, each recipient's current X25519 public key.
+        var wa = lively.identity.webAuthn;
+        function withKek(cb) {
+            if (wa._kekCache && wa._kekCache[user.credentialId]) return cb(null);
+            if (opts.onWaiting) opts.onWaiting();
+            var ch = new Uint8Array(32);
+            crypto.getRandomValues(ch);
+            wa.deriveKek({ credentialId: user.credentialId, rpId: user.rpId, challenge: ch }, function(err) { cb(err); });
+        }
+
+        withKek(function(err) {
+            if (err) { thenDo(new Error('Could not unlock encryption key: ' + err.message)); return; }
+
+            function withRecipients(cb) {
+                if (opts.visibility !== 'shared' || !opts.recipientHandles.length) return cb(null, []);
+                lively.identity.partSerializer.resolveRecipientPubKeys(opts.recipientHandles, function(err, result) {
+                    if (err) return cb(err);
+                    if (result.failed.length) {
+                        return cb(new Error(result.failed.map(function(h) { return '@' + h; }).join(', ') + " hasn't set up encryption yet"));
+                    }
+                    cb(null, result.resolved.map(function(r) { return { did: r.did, x25519PublicKey: r.x25519PublicKey }; }));
+                });
+            }
+
+            withRecipients(function(err, recipients) {
+                if (err) { thenDo(err); return; }
+                params.recipients = recipients;
+                lively.identity.partSerializer.serializeEncrypted(params, function(err, envelope) {
+                    if (err) { thenDo(err); return; }
+                    withEnvelope(envelope);
                 });
             });
         });
