@@ -1,20 +1,35 @@
 /**
  * scripts/build-jenga3d-libs.js
  *
- * One-time build step (Jenga3Dspec_v0.md §3, §13 step 1): bundles the
- * OCCT.js (opencascade.js) Emscripten JS glue + `three` into a single
- * browser-ready IIFE at core/lib/jenga3d/jenga3d-deps.js, and copies the
- * accompanying .wasm binary to core/lib/jenga3d/occt.wasm as-is.
+ * Build step (Jenga3Dspec_v0.md §3, §13 steps 1-2) producing three files
+ * under core/lib/jenga3d/:
+ *
+ *   jenga3d-deps.js  — `three`, bundled as a browser IIFE (window.jenga3dDeps.THREE).
+ *                       Main-thread only, for lively.jenga3d.Viewport (§13 step 4).
+ *   occt-worker.js   — core/lively/jenga3d/occt-worker-src.js (the actual worker
+ *                       protocol/Disposer/evaluate logic, §4) bundled together
+ *                       with the OCCT Emscripten glue. Worker-only.
+ *   occt.wasm        — opencascade.js's wasm binary, copied as-is (tens of MB —
+ *                       kept out of both JS bundles so it's fetched via
+ *                       WebAssembly.instantiateStreaming rather than inlined).
  *
  * Run from the project root: node scripts/build-jenga3d-libs.js
  * (also runs automatically via the postinstall npm script)
  *
- * Unlike build-libsodium.js/build-geo-libs.js, the wasm binary (tens of MB)
- * is NOT inlined into the JS bundle — it's copied as a separate static
- * asset, matched to opencascade.js's own `locateFile` hook so its
- * Emscripten glue fetches it (via WebAssembly.instantiateStreaming) rather
- * than the bundle carrying it as bytes, which would bloat the bundle and
- * defeat streaming instantiation.
+ * Deviation from §3's literal wording, recorded here and in the spec
+ * itself: §3 originally described ONE combined bundle (glue + three) that
+ * occt-worker.js would then "bundle". Building step 2 surfaced two real
+ * problems with that: (1) nothing on the main thread ever calls into OCCT
+ * directly (the worker returns raw typed arrays; only the worker touches
+ * `oc`), so shipping the glue to the main thread and `three` to the worker
+ * would each be pure dead weight — the opposite of §4.1's whole reason for
+ * a dedicated lean worker; (2) a combined bundle built as `window.X` can't
+ * even be loaded inside a worker via importScripts(), since workers have
+ * no `window` global (self only) — confirmed against this repo's own
+ * build-wallet-vault-prover-libs.js, which hit the identical issue and
+ * assigns to `self`, not `window`, for exactly this reason. Splitting into
+ * two single-purpose bundles avoids both problems outright rather than
+ * working around them.
  *
  * The OCCT glue (opencascade.js/dist/opencascade.full.js) is Emscripten
  * output with runtime-guarded Node.js code paths (`require('fs')`,
@@ -31,17 +46,6 @@
  * STEPControl_Writer, IGESControl_Writer) rather than the 1.1.x line, which
  * stopped at OCCT's older API set in 2020. Confirmed against this exact
  * version's dist/opencascade.full.d.ts before pinning.
- *
- * occt-worker.js — the dedicated worker script that actually calls
- * initOpenCascade() and speaks Jenga3D's worker protocol (§4) — is a
- * separate build output added in implementation step 2, not here; step 1
- * only needs the shared dependency bundle + wasm asset to exist so a bare
- * sanity check can run against them.
- *
- * Globals exposed on window after the script loads (window.jenga3dDeps):
- *   THREE            — three.js namespace
- *   initOpenCascade   — the Emscripten module factory (call with a
- *                       { locateFile } option pointing at occt.wasm's URL)
  */
 
 'use strict';
@@ -54,34 +58,47 @@ var rootDir = path.join(__dirname, '..');
 var outDir = path.join(rootDir, 'core', 'lib', 'jenga3d');
 fs.mkdirSync(outDir, { recursive: true });
 
-var entryContents = [
-  "import * as THREE from 'three';",
-  "import initOpenCascade from 'opencascade.js/dist/opencascade.full.js';",
-  "window.jenga3dDeps = { THREE: THREE, initOpenCascade: initOpenCascade };",
-].join('\n');
+function buildDeps() {
+  var entryContents = [
+    "import * as THREE from 'three';",
+    "window.jenga3dDeps = { THREE: THREE };",
+  ].join('\n');
 
-esbuild.build({
-  stdin: {
-    contents:   entryContents,
-    resolveDir: rootDir,
-    sourcefile: 'jenga3d-deps-entry.js',
-  },
-  bundle:    true,
-  format:    'iife',
-  platform:  'browser',
-  external:  ['fs', 'path'],
-  outfile:   path.join(outDir, 'jenga3d-deps.js'),
-  minify:    false,
-  sourcemap: false,
-  logLevel:  'info',
-}).then(function () {
-  var stat = fs.statSync(path.join(outDir, 'jenga3d-deps.js'));
-  console.log('✓ jenga3d-deps.js  ' + Math.round(stat.size / 1024) + ' KB');
-  copyWasm();
-}).catch(function (e) {
-  console.error('Build failed:', e.message);
-  process.exit(1);
-});
+  return esbuild.build({
+    stdin: {
+      contents:   entryContents,
+      resolveDir: rootDir,
+      sourcefile: 'jenga3d-deps-entry.js',
+    },
+    bundle:    true,
+    format:    'iife',
+    platform:  'browser',
+    outfile:   path.join(outDir, 'jenga3d-deps.js'),
+    minify:    false,
+    sourcemap: false,
+    logLevel:  'info',
+  }).then(function () {
+    var stat = fs.statSync(path.join(outDir, 'jenga3d-deps.js'));
+    console.log('✓ jenga3d-deps.js  ' + Math.round(stat.size / 1024) + ' KB');
+  });
+}
+
+function buildOcctWorker() {
+  return esbuild.build({
+    entryPoints: [path.join(rootDir, 'core', 'lively', 'jenga3d', 'occt-worker-src.js')],
+    bundle:    true,
+    format:    'iife',
+    platform:  'browser',
+    external:  ['fs', 'path'],
+    outfile:   path.join(outDir, 'occt-worker.js'),
+    minify:    false,
+    sourcemap: false,
+    logLevel:  'info',
+  }).then(function () {
+    var stat = fs.statSync(path.join(outDir, 'occt-worker.js'));
+    console.log('✓ occt-worker.js  ' + Math.round(stat.size / 1024) + ' KB');
+  });
+}
 
 function copyWasm() {
   var wasmSrc = path.join(rootDir, 'node_modules', 'opencascade.js', 'dist', 'opencascade.full.wasm');
@@ -90,3 +107,10 @@ function copyWasm() {
   var stat = fs.statSync(wasmDest);
   console.log('✓ occt.wasm  ' + Math.round(stat.size / 1024 / 1024) + ' MB copied to ' + outDir);
 }
+
+Promise.all([buildDeps(), buildOcctWorker()]).then(function () {
+  copyWasm();
+}).catch(function (e) {
+  console.error('Build failed:', e.message);
+  process.exit(1);
+});
