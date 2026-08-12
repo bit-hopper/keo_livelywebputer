@@ -15,10 +15,20 @@
  * `MeshNormalMaterial` is the default (no lighting setup needed, and
  * doubles as a visual check that step 2's winding/normal-flip fix
  * produced sane normals) — swap for something else once real UI exists.
+ *
+ * §13 step 8 adds face picking + highlight (§10): `setMesh` now carries
+ * the worker's per-face `groups` (`{start, count, occtFaceIndex}`, §4.3)
+ * onto the built `BufferGeometry.groups`, and the mesh's material becomes
+ * a `[normal, highlight]` array so a picked face's group can flip its
+ * `materialIndex` to render highlighted without touching any other face.
+ * A `click` listener (not `pointerdown`/move/up — those are the drag
+ * tools' gesture, §13 steps 6-7; `click` only fires for a genuine
+ * no-movement click) resolves the hit via `lively.jenga3d.PickIndex` and
+ * highlights the picked face automatically.
  */
 
 module('lively.jenga3d.Viewport')
-  .requires('lively.morphic')
+  .requires('lively.morphic', 'lively.jenga3d.PickIndex')
   .toRun(function () {
 
     lively.morphic.Shapes.External.subclass('lively.jenga3d.ViewportShape',
@@ -118,6 +128,7 @@ module('lively.jenga3d.Viewport')
         node.appendChild(renderer.domElement);
 
         this._three = { THREE: THREE, scene: scene, camera: camera, renderer: renderer };
+        this._attachPicking();
 
         if (this._pendingMesh) {
           var pending = this._pendingMesh;
@@ -144,8 +155,9 @@ module('lively.jenga3d.Viewport')
     },
 
     'mesh', {
-      // mesh: { positions: Float32Array, normals: Float32Array, indices: Uint32Array }
-      // — the exact shape lively.jenga3d.Worker's "evaluate" response carries (§4.3).
+      // mesh: { positions: Float32Array, normals: Float32Array, indices: Uint32Array,
+      //         groups: [{start, count, occtFaceIndex}] } — the exact shape
+      // lively.jenga3d.Worker's "evaluate" response carries (§4.3).
       setMesh: function (mesh) {
         if (!this._three) { this._pendingMesh = mesh; return; } // apply once three.js is ready
         var THREE = this._three.THREE;
@@ -153,16 +165,32 @@ module('lively.jenga3d.Viewport')
         if (this._mesh) {
           this._three.scene.remove(this._mesh);
           this._mesh.geometry.dispose();
-          this._mesh.material.dispose();
+          this._mesh.material.forEach(function (m) { m.dispose(); });
         }
+        this._highlightedGroupIndex = null;
 
         var geometry = new THREE.BufferGeometry();
         geometry.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
         geometry.setAttribute('normal', new THREE.BufferAttribute(mesh.normals, 3));
         geometry.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
 
+        // §10/§13 step 8: preserve the worker's per-face ranges as real
+        // BufferGeometry groups (materialIndex 0 = normal to start) so a
+        // raycaster hit can be resolved back to an occtFaceIndex
+        // (PickIndex) and a picked face highlighted via materialIndex 1,
+        // without touching any other face's geometry or material.
+        if (mesh.groups && mesh.groups.length > 0) {
+          mesh.groups.forEach(function (g) {
+            geometry.addGroup(g.start, g.count, 0);
+            geometry.groups[geometry.groups.length - 1].occtFaceIndex = g.occtFaceIndex;
+          });
+        } else {
+          geometry.addGroup(0, mesh.indices.length, 0);
+        }
+
         var material = new THREE.MeshNormalMaterial();
-        this._mesh = new THREE.Mesh(geometry, material);
+        var highlightMaterial = new THREE.MeshBasicMaterial({ color: 0xffee00 });
+        this._mesh = new THREE.Mesh(geometry, [material, highlightMaterial]);
         this._three.scene.add(this._mesh);
 
         this._frameMesh(geometry);
@@ -185,6 +213,53 @@ module('lively.jenga3d.Viewport')
         camera.far = distance * 100;
         camera.updateProjectionMatrix();
         camera.lookAt(sphere.center);
+      },
+    },
+
+    'picking (§10)', {
+      _attachPicking: function () {
+        var self = this;
+        this._three.renderer.domElement.addEventListener('click', function (evt) {
+          var pick = self.pickFaceAt(evt.clientX, evt.clientY);
+          self.highlightGroup(pick ? pick.groupIndex : null);
+        });
+      },
+
+      // Returns { occtFaceIndex, groupIndex } for the face under
+      // (clientX, clientY), or null if nothing was hit.
+      pickFaceAt: function (clientX, clientY) {
+        if (!this._three || !this._mesh) return null;
+        var THREE = this._three.THREE;
+        var canvas = this._three.renderer.domElement;
+        var rect = canvas.getBoundingClientRect();
+        var ndc = new THREE.Vector2(
+          ((clientX - rect.left) / rect.width) * 2 - 1,
+          -((clientY - rect.top) / rect.height) * 2 + 1
+        );
+        var raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(ndc, this._three.camera);
+        var hits = raycaster.intersectObject(this._mesh);
+        if (hits.length === 0) return null;
+        return lively.jenga3d.PickIndex.resolve(this._mesh.geometry, hits[0].faceIndex);
+      },
+
+      // groupIndex: a BufferGeometry group index (as returned by
+      // pickFaceAt), or null/undefined to clear any current highlight.
+      highlightGroup: function (groupIndex) {
+        if (!this._mesh) return;
+        var groups = this._mesh.geometry.groups;
+        if (this._highlightedGroupIndex != null && groups[this._highlightedGroupIndex]) {
+          groups[this._highlightedGroupIndex].materialIndex = 0;
+        }
+        this._highlightedGroupIndex = (groupIndex == null) ? null : groupIndex;
+        if (this._highlightedGroupIndex != null && groups[this._highlightedGroupIndex]) {
+          groups[this._highlightedGroupIndex].materialIndex = 1;
+        }
+        this._render();
+      },
+
+      clearHighlight: function () {
+        this.highlightGroup(null);
       },
     });
 
