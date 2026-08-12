@@ -52,9 +52,10 @@ module('lively.jenga3d.Worker')
       _queuedNext: null,      // at most one not-yet-sent envelope, superseded on each new request while busy
 
       // lively.jenga3d.Worker.request(nodeId, op, params, thenDo)
-      // thenDo(err, mesh) where mesh = { positions, normals, indices, groups }
-      // (op: "evaluate") or { fileBytes, mime } (op: "exportStep"/"exportIges",
-      // not implemented by occt-worker-src.js until §13 step 12).
+      // thenDo(err, mesh) where mesh = { positions, normals, indices, groups,
+      // edges } (op: "evaluate"; edges added §13 step 10) or { fileBytes, mime }
+      // (op: "exportStep"/"exportIges", not implemented by occt-worker-src.js
+      // until §13 step 12).
       //
       // If the worker is currently busy with an earlier request, this one
       // is held rather than sent immediately (§5.3) — superseding whatever
@@ -103,6 +104,7 @@ module('lively.jenga3d.Worker')
               normals:   data.normals,
               indices:   data.indices,
               groups:    data.groups,
+              edges:     data.edges,
             });
           }
         }

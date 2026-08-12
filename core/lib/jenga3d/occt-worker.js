@@ -15526,6 +15526,10 @@
       case "booleanIntersect":
         shape = buildBoolean(oc, disposer, node.params, tree, cache, "BRepAlgoAPI_Common_3");
         break;
+      case "fillet":
+      case "chamfer":
+        shape = buildFilletOrChamfer(oc, disposer, node.op, node.params, tree, cache);
+        break;
       default:
         throw new Error("op not supported yet: " + node.op);
     }
@@ -15539,6 +15543,35 @@
     var op = disposer.track(new oc[ctorName](shapeA, shapeB, range));
     if (!op.IsDone()) throw new Error(ctorName + " did not complete");
     return disposer.track(op.Shape());
+  }
+  function buildFilletOrChamfer(oc, disposer, op, params, tree, cache) {
+    var ofShape = buildNode(oc, disposer, params.of, tree, cache);
+    var edgeExplorer = disposer.track(new oc.TopExp_Explorer_2(
+      ofShape,
+      oc.TopAbs_ShapeEnum.TopAbs_EDGE,
+      oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+    ));
+    var edgesByIndex = {};
+    var edgeCount = 0;
+    for (; edgeExplorer.More(); edgeExplorer.Next()) {
+      edgeCount++;
+      edgesByIndex[edgeCount] = oc.TopoDS.Edge_1(edgeExplorer.Current());
+    }
+    var isFillet = op === "fillet";
+    var mk = isFillet ? disposer.track(new oc.BRepFilletAPI_MakeFillet(ofShape, oc.ChFi3d_FilletShape.ChFi3d_Rational)) : disposer.track(new oc.BRepFilletAPI_MakeChamfer(ofShape));
+    var amount = isFillet ? params.radius : params.distance;
+    params.edges.forEach(function(selector) {
+      if (selector.index < 1 || selector.index > edgeCount) {
+        throw new Error(
+          "edge selector index " + selector.index + " out of range (of has " + edgeCount + " edges) \u2014 an upstream edit changed the operand; re-selection needed"
+        );
+      }
+      mk.Add_2(amount, edgesByIndex[selector.index]);
+    });
+    var range = disposer.track(new oc.Message_ProgressRange_1());
+    mk.Build(range);
+    if (!mk.IsDone()) throw new Error((isFillet ? "fillet" : "chamfer") + " did not complete");
+    return disposer.track(mk.Shape());
   }
   function applyTransform(oc, disposer, shape, p) {
     var scale = p.scale || [1, 1, 1];
@@ -15629,12 +15662,39 @@
       groups
     };
   }
+  function extractEdges(oc, disposer, shape) {
+    var edges = [];
+    var explorer = disposer.track(new oc.TopExp_Explorer_2(
+      shape,
+      oc.TopAbs_ShapeEnum.TopAbs_EDGE,
+      oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+    ));
+    var index = 0;
+    for (; explorer.More(); explorer.Next()) {
+      index++;
+      var edge = oc.TopoDS.Edge_1(explorer.Current());
+      var vertexExplorer = disposer.track(new oc.TopExp_Explorer_2(
+        edge,
+        oc.TopAbs_ShapeEnum.TopAbs_VERTEX,
+        oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+      ));
+      var points = [];
+      for (; vertexExplorer.More(); vertexExplorer.Next()) {
+        var v = oc.TopoDS.Vertex_1(vertexExplorer.Current());
+        var p = oc.BRep_Tool.Pnt(v);
+        points.push([p.X(), p.Y(), p.Z()]);
+      }
+      if (points.length === 2) edges.push({ index, a: points[0], b: points[1] });
+    }
+    return edges;
+  }
   function handleEvaluate(oc, msg) {
     var disposer = new Disposer();
     try {
       var cache = {};
       var rootShape = buildNode(oc, disposer, msg.params.featureTree.root, msg.params.featureTree, cache);
       var mesh = extractMesh(oc, disposer, rootShape, msg.params.deflection);
+      var edges = extractEdges(oc, disposer, rootShape);
       disposer.disposeAll();
       return {
         id: msg.id,
@@ -15644,7 +15704,8 @@
         positions: mesh.positions,
         normals: mesh.normals,
         indices: mesh.indices,
-        groups: mesh.groups
+        groups: mesh.groups,
+        edges
       };
     } catch (e) {
       disposer.disposeAll();

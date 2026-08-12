@@ -21,11 +21,22 @@
  * for its own acknowledged reinterpretations.
  *
  * Node ops implemented so far: createBox/createCylinder/createSphere/
- * transform (§13 step 2) and booleanUnion/booleanCut/booleanIntersect
- * (§13 step 9). Only the "evaluate" op (§4.3) is implemented — export
- * ops arrive in §13 step 12. fillet/chamfer (§13 step 10) and any other
- * unrecognized node op return an error response rather than throwing
+ * transform (§13 step 2), booleanUnion/booleanCut/booleanIntersect (§13
+ * step 9), and fillet/chamfer (§13 step 10). Only the "evaluate" op
+ * (§4.3) is implemented — export ops arrive in §13 step 12. Any other
+ * unrecognized node op returns an error response rather than throwing
  * uncaught.
+ *
+ * §13 step 10 also adds `edges` to the evaluate response — straight-line
+ * (start/end vertex only) approximations of every edge in the root
+ * shape, 1-based indexed the same way occtFaceIndex is, for the
+ * edge-selection UI's picking overlay (§7.3, §10). v1 scope, matching
+ * CreateBoxTool/EditHandleTool's box-only precedent elsewhere in this
+ * project: only edges with exactly two distinct endpoint vertices are
+ * included — closed/circular edges (a cylinder's rim, a fillet's own new
+ * rounded edges) have no meaningful two-point line approximation and are
+ * silently omitted from the overlay, not just approximated as a chord.
+ * Revisit if picking a curved edge turns out to matter in practice.
  *
  * Feature tree JSON envelope (not pinned elsewhere in the spec before
  * this): { root: nodeId, nodes: { [nodeId]: { op, params } } } — operand
@@ -110,6 +121,10 @@ function buildNode(oc, disposer, nodeId, tree, cache) {
     case 'booleanIntersect':
       shape = buildBoolean(oc, disposer, node.params, tree, cache, 'BRepAlgoAPI_Common_3');
       break;
+    case 'fillet':
+    case 'chamfer':
+      shape = buildFilletOrChamfer(oc, disposer, node.op, node.params, tree, cache);
+      break;
     default:
       throw new Error('op not supported yet: ' + node.op);
   }
@@ -134,6 +149,50 @@ function buildBoolean(oc, disposer, params, tree, cache, ctorName) {
   var op = disposer.track(new oc[ctorName](shapeA, shapeB, range));
   if (!op.IsDone()) throw new Error(ctorName + ' did not complete');
   return disposer.track(op.Shape());
+}
+
+// §13 step 10, §7.3: `edges` is a list of index-based selectors
+// { operandNodeId, kind: 'edge', index } — operandNodeId is unused here
+// (it's always `of`, kept in the selector for the general shape §7.3
+// describes); `index` is validated against `of`'s own edge explorer at
+// evaluation time and the whole node fails loudly if it's out of range,
+// rather than silently filleting whatever now sits at that index.
+// BRepFilletAPI_MakeFillet/MakeChamfer both need an explicit .Build()
+// after .Add()-ing edges — confirmed empirically, unlike the boolean
+// ops' two-shape constructor, which computes immediately.
+function buildFilletOrChamfer(oc, disposer, op, params, tree, cache) {
+  var ofShape = buildNode(oc, disposer, params.of, tree, cache);
+
+  var edgeExplorer = disposer.track(new oc.TopExp_Explorer_2(
+    ofShape, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+  ));
+  var edgesByIndex = {};
+  var edgeCount = 0;
+  for (; edgeExplorer.More(); edgeExplorer.Next()) {
+    edgeCount++;
+    edgesByIndex[edgeCount] = oc.TopoDS.Edge_1(edgeExplorer.Current());
+  }
+
+  var isFillet = op === 'fillet';
+  var mk = isFillet
+    ? disposer.track(new oc.BRepFilletAPI_MakeFillet(ofShape, oc.ChFi3d_FilletShape.ChFi3d_Rational))
+    : disposer.track(new oc.BRepFilletAPI_MakeChamfer(ofShape));
+  var amount = isFillet ? params.radius : params.distance;
+
+  params.edges.forEach(function (selector) {
+    if (selector.index < 1 || selector.index > edgeCount) {
+      throw new Error(
+        'edge selector index ' + selector.index + ' out of range (of has ' +
+        edgeCount + ' edges) — an upstream edit changed the operand; re-selection needed'
+      );
+    }
+    mk.Add_2(amount, edgesByIndex[selector.index]);
+  });
+
+  var range = disposer.track(new oc.Message_ProgressRange_1());
+  mk.Build(range);
+  if (!mk.IsDone()) throw new Error((isFillet ? 'fillet' : 'chamfer') + ' did not complete');
+  return disposer.track(mk.Shape());
 }
 
 // Scale/rotate about the local origin, then translate — standard TRS
@@ -245,6 +304,33 @@ function extractMesh(oc, disposer, shape, deflection) {
   };
 }
 
+// ─── Edge extraction (§7.3, §10, §13 step 10) ──────────────────────────
+
+function extractEdges(oc, disposer, shape) {
+  var edges = [];
+  var explorer = disposer.track(new oc.TopExp_Explorer_2(
+    shape, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+  ));
+  var index = 0;
+  for (; explorer.More(); explorer.Next()) {
+    index++;
+    var edge = oc.TopoDS.Edge_1(explorer.Current());
+    var vertexExplorer = disposer.track(new oc.TopExp_Explorer_2(
+      edge, oc.TopAbs_ShapeEnum.TopAbs_VERTEX, oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+    ));
+    var points = [];
+    for (; vertexExplorer.More(); vertexExplorer.Next()) {
+      var v = oc.TopoDS.Vertex_1(vertexExplorer.Current());
+      var p = oc.BRep_Tool.Pnt(v);
+      points.push([p.X(), p.Y(), p.Z()]);
+    }
+    // v1 scope (see file doc): only straight edges with two distinct
+    // endpoints are picked up; closed/circular edges are skipped.
+    if (points.length === 2) edges.push({ index: index, a: points[0], b: points[1] });
+  }
+  return edges;
+}
+
 // ─── Protocol (§4.3) ────────────────────────────────────────────────────
 
 function handleEvaluate(oc, msg) {
@@ -253,11 +339,12 @@ function handleEvaluate(oc, msg) {
     var cache = {};
     var rootShape = buildNode(oc, disposer, msg.params.featureTree.root, msg.params.featureTree, cache);
     var mesh = extractMesh(oc, disposer, rootShape, msg.params.deflection);
+    var edges = extractEdges(oc, disposer, rootShape);
     disposer.disposeAll();
     return {
       id: msg.id, nodeId: msg.nodeId, generation: msg.generation, ok: true,
       positions: mesh.positions, normals: mesh.normals, indices: mesh.indices,
-      groups: mesh.groups
+      groups: mesh.groups, edges: edges
     };
   } catch (e) {
     disposer.disposeAll();

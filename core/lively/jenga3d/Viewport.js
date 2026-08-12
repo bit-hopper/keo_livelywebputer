@@ -25,6 +25,19 @@
  * tools' gesture, §13 steps 6-7; `click` only fires for a genuine
  * no-movement click) resolves the hit via `lively.jenga3d.PickIndex` and
  * highlights the picked face automatically.
+ *
+ * §13 step 10 adds the same treatment for edges (§7.3's edge selectors):
+ * `setMesh` also builds a `THREE.LineSegments` overlay from the worker's
+ * `edges` (straight-line approximations, one 2-vertex group per edge,
+ * same `[normal, highlight]`-material-array approach as faces).
+ * `pickEdgeAt`/`highlightEdge`/`clearEdgeHighlight` are exposed as
+ * methods, not wired into the existing `click` listener — a single click
+ * shouldn't have to disambiguate "pick a face" from "pick an edge for a
+ * fillet," so which one applies is left to whatever calls these
+ * explicitly (a future edge-selection mode), matching
+ * `CreateBoxTool`/`EditHandleTool`/`CombineTool`'s existing pattern of
+ * being driven directly rather than through an as-yet-nonexistent
+ * toolbar/mode UI.
  */
 
 module('lively.jenga3d.Viewport')
@@ -63,7 +76,7 @@ module('lively.jenga3d.Viewport')
     lively.morphic.Morph.subclass('lively.jenga3d.Viewport',
 
     'settings', {
-      doNotSerialize: ['_three', '_mesh'],
+      doNotSerialize: ['_three', '_mesh', '_edgeLines'],
       style: { enableGrabbing: false, enableDropping: false },
     },
 
@@ -168,6 +181,13 @@ module('lively.jenga3d.Viewport')
           this._mesh.material.forEach(function (m) { m.dispose(); });
         }
         this._highlightedGroupIndex = null;
+        if (this._edgeLines) {
+          this._three.scene.remove(this._edgeLines);
+          this._edgeLines.geometry.dispose();
+          this._edgeLines.material.forEach(function (m) { m.dispose(); });
+          this._edgeLines = null;
+        }
+        this._highlightedEdgeGroupIndex = null;
 
         var geometry = new THREE.BufferGeometry();
         geometry.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
@@ -192,6 +212,27 @@ module('lively.jenga3d.Viewport')
         var highlightMaterial = new THREE.MeshBasicMaterial({ color: 0xffee00 });
         this._mesh = new THREE.Mesh(geometry, [material, highlightMaterial]);
         this._three.scene.add(this._mesh);
+
+        // §13 step 10, §7.3: straight-line edge overlay for edge
+        // selection (fillet/chamfer). Same per-group materialIndex
+        // highlight approach as faces, just 2 vertices per group instead
+        // of a variable-length triangle run.
+        if (mesh.edges && mesh.edges.length > 0) {
+          var edgePositions = [];
+          mesh.edges.forEach(function (e) {
+            edgePositions.push(e.a[0], e.a[1], e.a[2], e.b[0], e.b[1], e.b[2]);
+          });
+          var edgeGeometry = new THREE.BufferGeometry();
+          edgeGeometry.setAttribute('position', new THREE.Float32BufferAttribute(edgePositions, 3));
+          mesh.edges.forEach(function (e, i) {
+            edgeGeometry.addGroup(i * 2, 2, 0);
+            edgeGeometry.groups[edgeGeometry.groups.length - 1].occtEdgeIndex = e.index;
+          });
+          var edgeMaterial = new THREE.LineBasicMaterial({ color: 0x1a1a1a });
+          var edgeHighlightMaterial = new THREE.LineBasicMaterial({ color: 0xff2222 });
+          this._edgeLines = new THREE.LineSegments(edgeGeometry, [edgeMaterial, edgeHighlightMaterial]);
+          this._three.scene.add(this._edgeLines);
+        }
 
         this._frameMesh(geometry);
         this._render();
@@ -260,6 +301,49 @@ module('lively.jenga3d.Viewport')
 
       clearHighlight: function () {
         this.highlightGroup(null);
+      },
+    },
+
+    'edge picking (§7.3, §13 step 10)', {
+      // Returns { occtEdgeIndex, groupIndex } for the edge under
+      // (clientX, clientY), or null if nothing was hit within the
+      // pick threshold. Not wired to the `click` listener — see file doc.
+      pickEdgeAt: function (clientX, clientY) {
+        if (!this._three || !this._edgeLines) return null;
+        var THREE = this._three.THREE;
+        var canvas = this._three.renderer.domElement;
+        var rect = canvas.getBoundingClientRect();
+        var ndc = new THREE.Vector2(
+          ((clientX - rect.left) / rect.width) * 2 - 1,
+          -((clientY - rect.top) / rect.height) * 2 + 1
+        );
+        var raycaster = new THREE.Raycaster();
+        raycaster.params.Line = raycaster.params.Line || {};
+        raycaster.params.Line.threshold = this._edgePickThreshold || 0.5;
+        raycaster.setFromCamera(ndc, this._three.camera);
+        var hits = raycaster.intersectObject(this._edgeLines);
+        if (hits.length === 0) return null;
+        var found = lively.jenga3d.PickIndex.resolveOffset(
+          this._edgeLines.geometry, hits[0].index, 'occtEdgeIndex'
+        );
+        return found ? { occtEdgeIndex: found.value, groupIndex: found.groupIndex } : null;
+      },
+
+      highlightEdge: function (groupIndex) {
+        if (!this._edgeLines) return;
+        var groups = this._edgeLines.geometry.groups;
+        if (this._highlightedEdgeGroupIndex != null && groups[this._highlightedEdgeGroupIndex]) {
+          groups[this._highlightedEdgeGroupIndex].materialIndex = 0;
+        }
+        this._highlightedEdgeGroupIndex = (groupIndex == null) ? null : groupIndex;
+        if (this._highlightedEdgeGroupIndex != null && groups[this._highlightedEdgeGroupIndex]) {
+          groups[this._highlightedEdgeGroupIndex].materialIndex = 1;
+        }
+        this._render();
+      },
+
+      clearEdgeHighlight: function () {
+        this.highlightEdge(null);
       },
     });
 
