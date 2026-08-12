@@ -20,6 +20,14 @@ module('lively.jenga3d.FeatureTree')
 
     Object.subclass('lively.jenga3d.FeatureTree',
 
+    'settings', {
+      // §13 step 13: a cache, not real data — excluded so a deserialized
+      // tree always recomputes fresh rather than trusting a serialized
+      // snapshot of it. See onrestore below for why this alone isn't
+      // enough (initialize doesn't run again on restore).
+      doNotSerialize: ['_classification'],
+    },
+
     'initializing', {
       // json: optional { root, nodes } to restore from (undo/redo, load
       // from an envelope's payload, §6.2/§8). Omit for a fresh empty tree.
@@ -27,6 +35,17 @@ module('lively.jenga3d.FeatureTree')
         this.root = json ? json.root : null;
         this.nodes = json ? json.nodes : {};
         this._classification = {}; // nodeId -> isPrimitiveEditable, cached per §5.1
+      },
+    },
+
+    'serialization', {
+      // Without this, a restored tree would have no _classification
+      // property at all (doNotSerialize excludes it, and initialize
+      // doesn't run again on restore) — isPrimitiveEditable's `nodeId in
+      // this._classification` check would throw on `undefined` rather
+      // than just miss the cache.
+      onrestore: function () {
+        this._classification = {};
       },
     },
 
