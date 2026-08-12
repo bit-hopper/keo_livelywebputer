@@ -2804,6 +2804,21 @@ Object.extend(lively.morphic.KeyboardDispatcher, {
     }
 
     function doGlobalActionsOnBubble(evt) { // 2. bubbling phase, in -> out
+        // Same reasoning as ensureFocusedMorph's native-focus guard above:
+        // a genuine native form control (or contenteditable) not owned by a
+        // morph — e.g. a plain DOM dialog overlaid on the world — can hold
+        // real DOM focus here. KeyboardDispatcher.handleGlobalKeyEvent
+        // treats most non-command keystrokes as consumed (evt.stop(), which
+        // calls preventDefault()) as part of building ace-style key chains;
+        // that silently blocked ordinary character typing (and Backspace)
+        // in such a control even after the focus-steal above was fixed —
+        // confirmed live: keydown/keyup fired but no keypress/input, value
+        // never changed. Global keybindings should never fire while the
+        // user is typing into a real text field anyway.
+        var activeEl = document.activeElement;
+        if (activeEl && (/^(INPUT|TEXTAREA|SELECT)$/.test(activeEl.tagName) || activeEl.isContentEditable)) {
+            return false;
+        }
         var h = lively.morphic.KeyboardDispatcher.global();
         h.keyInputState = h.mergeKeyChainWithInputState(ace.ext.keys.$lastKeyChain, h.keyInputState);
         var result = lively.morphic.KeyboardDispatcher.handleGlobalKeyEvent(evt);
@@ -2825,6 +2840,22 @@ Object.extend(lively.morphic.KeyboardDispatcher, {
     }
 
     function ensureFocusedMorph(evt, keys) {
+        // A genuine native form control (or contenteditable) not part of the
+        // morph tree — e.g. a plain DOM dialog overlaid on top of the world,
+        // like PostCardEditor's send panel or PartsBin's Publish to Inventory
+        // dialog — can legitimately hold real DOM focus. focusedMorph()'s
+        // walk up from document.activeElement finds no morph for it and
+        // returns null just like the "truly nothing is focused" case below,
+        // but calling world.focus() here would steal real DOM focus away
+        // from it (renderContextDispatch('focus') is a genuine native
+        // .focus() call) — confirmed live: this was why typing and Backspace
+        // silently did nothing in such an overlay's <textarea>/<input>,
+        // every keystroke re-triggered the steal. Leave real native focus
+        // alone rather than assuming "no morph" means "nothing."
+        var activeEl = document.activeElement;
+        if (activeEl && (/^(INPUT|TEXTAREA|SELECT)$/.test(activeEl.tagName) || activeEl.isContentEditable)) {
+            return false;
+        }
         var focused = lively.morphic.Morph.focusedMorph(),
             world = focused && focused.world() || evt.world || lively.morphic.World.current(),
             focused = lively.morphic.Morph.focusedMorph();
