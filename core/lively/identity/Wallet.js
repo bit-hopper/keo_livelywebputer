@@ -70,9 +70,46 @@ module('lively.identity.Wallet')
         this._refresh();
       },
 
+      // Scoped base styling for the raw <button>/<input> elements this
+      // dashboard creates throughout (deposit/withdraw/exit/send flows,
+      // unlock form, etc.) — dozens of individual createElement call sites,
+      // almost none of which style themselves beyond the browser default.
+      // One shared stylesheet, scoped to this dashboard's own shapeNode via
+      // a class (never a bare `button {...}` — that would leak into the
+      // rest of the app), gives every current and future one of them the
+      // same baseline polish (radii/colors/spacing) established for morph
+      // dialogs elsewhere, without editing every call site individually.
+      _ensureBaseStyles: function () {
+        if (document.getElementById('lively-wallet-dashboard-styles')) return;
+        var style = document.createElement('style');
+        style.id = 'lively-wallet-dashboard-styles';
+        style.textContent = [
+          '.lively-wallet-dashboard button {',
+          '  font-family: sans-serif; font-size: 12px; padding: 6px 14px;',
+          '  cursor: pointer; border: 1px solid #d6d6d6; border-radius: 5px;',
+          '  background: #f2f2f2; color: #1c1c1e;',
+          '}',
+          '.lively-wallet-dashboard button:hover { background: #e8e8e8; }',
+          '.lively-wallet-dashboard button:disabled { opacity: 0.5; cursor: default; }',
+          '.lively-wallet-dashboard button.primary {',
+          '  background: #eaffea; border-color: #96d696; color: #1a7a1a;',
+          '}',
+          '.lively-wallet-dashboard button.primary:hover { background: #ddffdd; }',
+          '.lively-wallet-dashboard input[type=text],',
+          '.lively-wallet-dashboard input[type=password],',
+          '.lively-wallet-dashboard input[type=number] {',
+          '  font-family: sans-serif; font-size: 12px; padding: 5px 6px;',
+          '  border: 1px solid #cbcbcb; border-radius: 3.75px; box-sizing: border-box;',
+          '}',
+        ].join('\n');
+        document.head.appendChild(style);
+      },
+
       _buildChrome: function () {
+        this._ensureBaseStyles();
         this.setFill(Color.white);
         var shapeNode = this.renderContext().shapeNode;
+        shapeNode.classList.add('lively-wallet-dashboard');
         shapeNode.style.borderRadius = '8px';
         shapeNode.style.boxShadow    = '0 4px 16px rgba(0,0,0,0.18)';
 
@@ -218,6 +255,7 @@ module('lively.identity.Wallet')
 
         var unlockPwBtn = document.createElement('button');
         unlockPwBtn.textContent = 'Unlock with password';
+        unlockPwBtn.className = 'primary';
         unlockPwBtn.style.cssText = 'margin-right:8px;';
         unlockPwBtn.addEventListener('click', function () {
           lively.identity.walletBridge.unlock({ password: passwordInput.value }, function (err) {
@@ -233,6 +271,7 @@ module('lively.identity.Wallet')
 
         var unlockPasskeyBtn = document.createElement('button');
         unlockPasskeyBtn.textContent = 'Unlock with passkey';
+        unlockPasskeyBtn.className = 'primary';
         unlockPasskeyBtn.addEventListener('click', function () {
           lively.identity.walletBridge.unlock({}, function (err) {
             if (err) {
@@ -285,12 +324,14 @@ module('lively.identity.Wallet')
         //    buttons off the one dashboard screen for now. ──
         var depositBtn = document.createElement('button');
         depositBtn.textContent = 'Deposit into pool';
+        depositBtn.className = 'primary';
         depositBtn.style.cssText = 'margin-bottom:8px;margin-right:8px;';
         depositBtn.addEventListener('click', function () { self._renderDepositAmount(); });
         content.appendChild(depositBtn);
 
         var withdrawBtn = document.createElement('button');
         withdrawBtn.textContent = 'Withdraw from pool';
+        withdrawBtn.className = 'primary';
         withdrawBtn.style.cssText = 'margin-bottom:20px;';
         withdrawBtn.addEventListener('click', function () { self._renderWithdrawList(); });
         content.appendChild(withdrawBtn);
