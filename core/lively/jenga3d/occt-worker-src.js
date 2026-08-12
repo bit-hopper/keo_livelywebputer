@@ -20,11 +20,12 @@
  * literal wording in Jenga3Dspec_v0.md itself, same pattern the doc uses
  * for its own acknowledged reinterpretations.
  *
- * Step 2 scope: only createBox/createCylinder/createSphere/transform
- * nodes (§7.2) and the "evaluate" op (§4.3) are implemented. Booleans,
- * fillet/chamfer, and exportStep/exportIges arrive in later steps (§13
- * steps 9, 10, 12) — an unsupported op or node op returns an error
- * response rather than throwing uncaught.
+ * Node ops implemented so far: createBox/createCylinder/createSphere/
+ * transform (§13 step 2) and booleanUnion/booleanCut/booleanIntersect
+ * (§13 step 9). Only the "evaluate" op (§4.3) is implemented — export
+ * ops arrive in §13 step 12. fillet/chamfer (§13 step 10) and any other
+ * unrecognized node op return an error response rather than throwing
+ * uncaught.
  *
  * Feature tree JSON envelope (not pinned elsewhere in the spec before
  * this): { root: nodeId, nodes: { [nodeId]: { op, params } } } — operand
@@ -100,12 +101,39 @@ function buildNode(oc, disposer, nodeId, tree, cache) {
       shape = applyTransform(oc, disposer, operandShape, p);
       break;
     }
+    case 'booleanUnion':
+      shape = buildBoolean(oc, disposer, node.params, tree, cache, 'BRepAlgoAPI_Fuse_3');
+      break;
+    case 'booleanCut':
+      shape = buildBoolean(oc, disposer, node.params, tree, cache, 'BRepAlgoAPI_Cut_3');
+      break;
+    case 'booleanIntersect':
+      shape = buildBoolean(oc, disposer, node.params, tree, cache, 'BRepAlgoAPI_Common_3');
+      break;
     default:
       throw new Error('op not supported yet: ' + node.op);
   }
 
   cache[nodeId] = shape;
   return shape;
+}
+
+// §13 step 9: booleanUnion/Cut/Intersect (§7.2) each consume two already-
+// built operand shapes per §4.5's bottom-up walk. The two-shape
+// convenience constructors (BRepAlgoAPI_Fuse/Cut/Common's "_3" overload)
+// compute the result immediately — confirmed empirically (IsDone() true
+// right after construction, no separate .Build() call needed) rather
+// than assumed from the .d.ts, same discipline as every other OCCT call
+// in this file. Message_ProgressRange_1() is OCCT's "no progress
+// reporting needed" default, required by the constructor signature but
+// otherwise unused here.
+function buildBoolean(oc, disposer, params, tree, cache, ctorName) {
+  var shapeA = buildNode(oc, disposer, params.a, tree, cache);
+  var shapeB = buildNode(oc, disposer, params.b, tree, cache);
+  var range = disposer.track(new oc.Message_ProgressRange_1());
+  var op = disposer.track(new oc[ctorName](shapeA, shapeB, range));
+  if (!op.IsDone()) throw new Error(ctorName + ' did not complete');
+  return disposer.track(op.Shape());
 }
 
 // Scale/rotate about the local origin, then translate — standard TRS

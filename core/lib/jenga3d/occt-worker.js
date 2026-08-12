@@ -15517,11 +15517,28 @@
         shape = applyTransform(oc, disposer, operandShape, p);
         break;
       }
+      case "booleanUnion":
+        shape = buildBoolean(oc, disposer, node.params, tree, cache, "BRepAlgoAPI_Fuse_3");
+        break;
+      case "booleanCut":
+        shape = buildBoolean(oc, disposer, node.params, tree, cache, "BRepAlgoAPI_Cut_3");
+        break;
+      case "booleanIntersect":
+        shape = buildBoolean(oc, disposer, node.params, tree, cache, "BRepAlgoAPI_Common_3");
+        break;
       default:
         throw new Error("op not supported yet: " + node.op);
     }
     cache[nodeId] = shape;
     return shape;
+  }
+  function buildBoolean(oc, disposer, params, tree, cache, ctorName) {
+    var shapeA = buildNode(oc, disposer, params.a, tree, cache);
+    var shapeB = buildNode(oc, disposer, params.b, tree, cache);
+    var range = disposer.track(new oc.Message_ProgressRange_1());
+    var op = disposer.track(new oc[ctorName](shapeA, shapeB, range));
+    if (!op.IsDone()) throw new Error(ctorName + " did not complete");
+    return disposer.track(op.Shape());
   }
   function applyTransform(oc, disposer, shape, p) {
     var scale = p.scale || [1, 1, 1];

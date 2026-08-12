@@ -59,8 +59,20 @@ module('lively.jenga3d.tools.EditHandleTool')
       // nodeId: the primitive node whose param is being dragged (§5.1 —
       // even a handle on a Complex node's composite surface still
       // targets one specific ancestor primitive's param).
+      //
+      // Complex-vs-Primitive branching is decided by the TREE'S ROOT, not
+      // by `nodeId` itself — a bare createBox/etc. node is *always*
+      // individually Primitive by definition (§5.1: classification walks
+      // a node's own operand chain), even when it's an operand deep
+      // inside a boolean elsewhere in the tree. What decides whether a
+      // proxy mesh can approximate the drag is whether the *displayed*
+      // shape (the root) is Primitive or Complex — found only once a
+      // real Complex node existed to drag against (§13 step 9); every
+      // step 7 test happened to use a tree where the dragged node and
+      // the root were classified the same way, which is why this didn't
+      // surface until real booleans made it observable.
       startDrag: function (nodeId, paramField, initialValue) {
-        var isComplex = !this.featureTree.isPrimitiveEditable(nodeId);
+        var isComplex = !this.featureTree.isPrimitiveEditable(this.featureTree.root);
         this._dragging = {
           nodeId: nodeId, paramField: paramField,
           isComplex: isComplex, lastSendTime: 0, pendingValue: null,
