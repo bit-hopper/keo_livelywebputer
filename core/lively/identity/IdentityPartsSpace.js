@@ -48,6 +48,79 @@ module("lively.identity.IdentityPartsSpace")
           return this;
         },
       },
+
+      "versioning",
+      {
+        // Override of PartItem.loadPartVersions (core/lively/PartsBin.js) —
+        // the base implementation queries lively.store.ObjectRepository,
+        // a WebDAV-backed version log identity parts were never written
+        // through, so it can only ever come back empty for one of these.
+        // Real version history lives in the identity ObjectRepository
+        // (server-side, SQLite) and is already exposed at
+        // GET /@:handle/:objId/versions — this fetches that and reshapes
+        // it into the {date, author, version} entries the PartsBinBrowser's
+        // formatVersionEntry/setSelectedPartVersions already expect, so the
+        // existing "partVersions" binding (wired in setSelectedPartItem
+        // before this is called) needs no changes on the browser side.
+        loadPartVersions: function (isAsync) {
+          var self = this;
+          var envelope = this.envelope;
+          var space = this.getPartsSpace();
+          var handle = space && space.handle;
+          if (!envelope || !envelope.objId || !handle ||
+              typeof lively === "undefined" || !lively.identity || !lively.identity.did) {
+            this.partVersions = [];
+            return this;
+          }
+
+          var base = lively.identity.did.baseUrl();
+          var url = base + "/@" + encodeURIComponent(handle) + "/" +
+            encodeURIComponent(envelope.objId) + "/versions";
+          var xhr = new XMLHttpRequest();
+          xhr.open("GET", url, true);
+          xhr.setRequestHeader("Accept", "application/json");
+          xhr.withCredentials = true;
+          xhr.onload = function () {
+            if (xhr.status !== 200) { self.partVersions = []; return; }
+            var data;
+            try { data = JSON.parse(xhr.responseText); }
+            catch (e) { self.partVersions = []; return; }
+            self.partVersions = (data.versions || []).map(function (v) {
+              return { date: v.createdAt, author: "@" + handle, version: v.cid.slice(0, 8) };
+            });
+          };
+          xhr.onerror = function () { self.partVersions = []; };
+          xhr.send();
+          return this;
+        },
+
+        // Override of PartItem.loadPartMetaInfo — metaInfo (comment, tags,
+        // partName, etc.) was already populated synchronously from the
+        // envelope by IdentityPartsSpace.createPartItemFromEnvelope, so
+        // there is nothing to fetch here. Without this override, the base
+        // implementation would still fire a WebDAV ObjectRepository query
+        // for a path identity parts were never written through (guarded
+        // against crashing, per the existing "IDENTITY: pre-existing bug"
+        // comment in PartsBin.js, but a wasted round-trip on every select).
+        //
+        // Re-firing the (unchanged) value below is not a no-op, despite
+        // looking like one: PartsBinBrowser.setSelectedItem wires up
+        // Global.connect(item, 'loadedMetaInfo', ...) *after* this item was
+        // already constructed with loadedMetaInfo set, so the connection's
+        // listener (setMetaInfoOfSelectedItem, which populates the comment
+        // panel) has never seen a value yet — the underlying lively.bindings
+        // connection setter fires on every assignment regardless of whether
+        // the value actually changed (no equality check), so a same-value
+        // reassignment here is exactly what the base class's real network
+        // round-trip was standing in for.
+        loadPartMetaInfo: function (isAsync, rev) {
+          var self = this;
+          if (this.loadedMetaInfo) {
+            (function () { self.loadedMetaInfo = self.loadedMetaInfo; }).delay(0);
+          }
+          return this;
+        },
+      },
     );
 
     // ─── IdentityPartsSpace ───────────────────────────────────────────────────
@@ -109,6 +182,17 @@ module("lively.identity.IdentityPartsSpace")
 
           var item = new lively.identity.IdentityPartItem(partName, this.name);
           item.envelope = envelope;
+          // Set directly rather than resolved later via item.getPartsSpace().handle
+          // — that goes through the shared, mutable lively.PartsBin.partSpaces
+          // registry (keyed by partsSpaceName), which can be reset out from under
+          // us (e.g. PartsBinBrowser.setPartsBinURL does
+          // `lively.PartsBin.partSpaces = {}`) between when this item was built
+          // and when something reads its handle. A registry miss falls back to
+          // constructing a plain lively.PartsBin.PartsSpace (partsSpaceNamed's
+          // fallback), which has no .handle — that's what was silently sending
+          // Share Link down the WebDAV url branch instead of the intermittent
+          // symptom looked like a real bug in the URL logic itself.
+          item.handle = this.handle;
 
           var metaInfo = new lively.PartsBin.PartsBinMetaInfo();
           metaInfo.partName         = partName;

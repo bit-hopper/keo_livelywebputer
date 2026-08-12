@@ -640,7 +640,7 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
                     name: "MoreContentContainer",
                     sourceModule: "lively.morphic.Core",
                     submorphs: [{
-                        _Extent: lively.pt(127.2,28.0),
+                        _Extent: lively.pt(320.0,28.0),
                         _Fill: Color.rgba(255,255,255,0),
                         className: "lively.morphic.Box",
                         droppingEnabled: false,
@@ -655,6 +655,43 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
                         name: "InfoContainer",
                         sourceModule: "lively.morphic.Core",
                         submorphs: [{
+                            _BorderColor: Color.rgba(255,255,255,0),
+                            _BorderWidth: 8,
+                            _ClipMode: "auto",
+                            _Extent: lively.pt(320.0,110.0),
+                            _Fill: Color.rgba(255,255,255,0),
+                            _FontFamily: "Arial, sans-serif",
+                            _FontSize: 9,
+                            _HandStyle: null,
+                            _InputAllowed: false,
+                            _IsSelectable: true,
+                            _MaxTextWidth: 315.04,
+                            _MinTextWidth: 315.04,
+                            _TextColor: Color.rgb(120,120,120),
+                            allowInput: false,
+                            className: "lively.morphic.Text",
+                            emphasis: [[0,0,{}]],
+                            eventsAreIgnored: true,
+                            fixedHeight: true,
+                            fixedWidth: true,
+                            layout: {
+                                resizeHeight: true,
+                                resizeWidth: true
+                            },
+                            // Populated only for identity-published parts (see
+                            // PartsBinBrowser.describeIdentityPartMeta / setSelectedPartItem)
+                            // — empty for WebDAV parts. Height is fixed (not 0) so
+                            // all 4 metadata lines are visible without scrolling —
+                            // resizeHeight:true alone doesn't auto-grow to fit
+                            // content in this layout engine (confirmed live: a
+                            // 0-height start plus resizeHeight:true still rendered
+                            // as a small fixed-size scrollable box, same as the
+                            // comment field below it).
+                            name: "selectedPartIdentityMeta",
+                            sourceModule: "lively.morphic.TextCore",
+                            submorphs: [],
+                            withoutLayers: []
+                        },{
                             _BorderColor: Color.rgba(255,255,255,0),
                             _BorderWidth: 8,
                             _ClipMode: "auto",
@@ -790,9 +827,9 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
                         }],
                         withoutLayers: []
                     },{
-                        _Extent: lively.pt(522.5,28.0),
+                        _Extent: lively.pt(329.7,28.0),
                         _Fill: Color.rgba(255,255,255,0),
-                        _Position: lively.pt(135.2,0.0),
+                        _Position: lively.pt(328.0,0.0),
                         className: "lively.morphic.Box",
                         droppingEnabled: false,
                         layout: {
@@ -965,7 +1002,7 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
                         _BorderColor: null,
                         _Extent: lively.pt(2.0,28.0),
                         _Fill: Color.rgb(204,204,204),
-                        _Position: lively.pt(130.2,0.0),
+                        _Position: lively.pt(323.0,0.0),
                         className: "lively.morphic.VerticalDivider",
                         draggingEnabled: true,
                         droppingEnabled: true,
@@ -1003,12 +1040,64 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
     },
         addCategoryInteractively: function addCategoryInteractively() {
         var partsBin = this, world = this.world();
+        // While browsing identity parts (My Parts or an identity tag
+        // category), "+" creates an identity-aware category instead of a
+        // WebDAV directory — WebDAV categories are directories on disk and
+        // meaningless for identity parts, which don't live on disk at all.
+        // Identity categories are just envelope.state.tags (see
+        // addTagToSelectedPart) — there's no empty-category concept since
+        // categories are derived from what parts are actually tagged with,
+        // so this requires a part to be selected to tag.
+        if (this.categoryName === '*myparts*' || (this.categoryName && this.categoryName.charAt(0) === '#')) {
+            var item = this.selectedPartItem;
+            if (!item || !item.envelope) {
+                world.alert('Select one of your published parts first, then create a category to file it under.');
+                return;
+            }
+            world.prompt('Name of new identity category?', function(tagName) {
+                if (!tagName || tagName === '') { alert('no category created!'); return; }
+                partsBin.addTagToSelectedPart(tagName.replace(/^#/, '').trim());
+            });
+            return;
+        }
         world.prompt('Name of new category?', function(categoryName) {
             if (!categoryName || categoryName == '') {
            alert('no category created!')
            return;
         }
             partsBin.addCategory(categoryName)
+        });
+    },
+        // Tags the currently selected identity part with a new category
+        // name and persists it: local-first (ObjectStore.updateState — a
+        // plain put() would silently no-op here since state.tags doesn't
+        // change record.cid, see that method's comment), then synced to the
+        // server the same way every other identity write is. Refreshes the
+        // current listing + category sidebar afterward so the new tag
+        // category shows up immediately.
+        addTagToSelectedPart: function addTagToSelectedPart(tagName) {
+        var item = this.selectedPartItem;
+        if (!item || !item.envelope) { alert('Select an identity-published part first.'); return; }
+        var envelope = item.envelope;
+        var tags = (envelope.state && envelope.state.tags) || [];
+        if (tags.indexOf(tagName) !== -1) { alert('Already tagged "' + tagName + '".'); return; }
+        var newEnvelope = Object.assign({}, envelope, {
+            state: Object.assign({}, envelope.state, { tags: tags.concat([tagName]) })
+        });
+        var self = this;
+        if (typeof lively === 'undefined' || !lively.require) { alert('Identity module not available'); return; }
+        lively.require('lively.identity.UserSpace').toRun(function () {
+            var user = lively.identity.did.currentUser();
+            if (!user) { alert('Not signed in'); return; }
+            lively.identity.objectStore.updateState(newEnvelope, function (err) {
+                if (err) { alert('Could not save category: ' + err.message); return; }
+                item.envelope = newEnvelope;
+                lively.identity.objectStore.syncObject(newEnvelope.objId, user.handle, lively.identity.did.baseUrl(), function (syncErr) {
+                    if (syncErr) console.warn('[addTagToSelectedPart] sync failed (will retry later):', syncErr.message);
+                });
+                Global.alertOK('Tagged "' + item.name + '" with "#' + tagName + '"');
+                self.loadPartsOfCategory(self.categoryName);
+            });
         });
     },
         addExternalCategory: function addExternalCategory(categoryName, url, createPath) {
@@ -1042,8 +1131,27 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
     },
         addPartsOfCategory: function addPartsOfCategory(categoryName) {
         var partsSpace = this.getPartsSpaceForCategory(categoryName);
+        // Stashed on partsSpace itself (read back via this.sourceObj below),
+        // not captured as a closure variable — converter/updater functions
+        // passed to Global.connect are persisted as source text and
+        // reconstructed standalone (lively.Closure.fromSource) whenever this
+        // part/world is reloaded from a saved state, which strips normal JS
+        // closures entirely. Only `this` (the AttributeConnection itself —
+        // sourceObj/targetObj) survives that round-trip; a captured
+        // `categoryName` local does not (confirmed live: "ReferenceError:
+        // categoryName is not defined" from exactly this pattern).
+        partsSpace._requestedForCategory = categoryName;
         Global.connect(partsSpace, 'partItems', this, 'addMorphsForPartItems', {
-            converter: function(partItemObj) { return Global.Properties.ownValues(partItemObj) }})
+            converter: function(partItemObj) { return Global.Properties.ownValues(partItemObj) },
+            // Staleness guard, same reasoning as loadMyParts: this WebDAV
+            // directory listing is async and can arrive after the user has
+            // already switched to a different category (including
+            // *myparts*) — applying it late would silently overwrite
+            // whatever the current category already rendered.
+            updater: function($upd, partItemObj) {
+                if (this.targetObj.categoryName === this.sourceObj._requestedForCategory) $upd(partItemObj);
+            }
+        })
         partsSpace.load(true);
     },
         collectAllPartItemURLs: function collectAllPartItemURLs(spec) {
@@ -1156,7 +1264,7 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
         var partItem = this.selectedPartItem, categories = this.categories, self = this;
         if (!partItem) { alert('no item selected'); return }
         var items = Global.Properties.own(categories).sort()
-                .reject(function(ea) { return ea.startsWith("*") || ea === self. categoryName})
+                .reject(function(ea) { return ea.startsWith("*") || ea.charAt(0) === '#' || ea === self. categoryName})
                 .collect(function(catName) {
             return [catName, function() {
                 var url = new Global.URL(categories[catName]);
@@ -1171,7 +1279,7 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
         var partItem = this.selectedPartItem, categories = this.categories, self = this;
         if (!partItem) { alert('no item selected'); return }
         var items = Global.Properties.own(categories).sort()
-                .reject(function(ea) { return ea.startsWith("*") || ea === self. categoryName})
+                .reject(function(ea) { return ea.startsWith("*") || ea.charAt(0) === '#' || ea === self. categoryName})
                 .collect(function(catName) {
             return [catName, function() {
                 var url = new Global.URL(categories[catName]);
@@ -1271,11 +1379,122 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
               result = result.sortByKey('lastModified').reverse().slice(0,20);
               this.onLoadLatest(result);
             }.bind(this));
+        } else if (categoryName == "*myparts*") {
+            this.showMsg("loading my parts...");
+            this.loadMyParts();
+        } else if (categoryName.charAt(0) === '#') {
+            this.showMsg("loading " + categoryName + "...");
+            this.loadIdentityTagCategory(categoryName);
         } else if (categoryName == "*search*") {
             this.doSearch();
         } else {
             this.addPartsOfCategory(categoryName);
         }
+    },
+        // Identity-published parts (Save to My Parts / copyToIdentityPartsSpace)
+        // live in lively.identity.IdentityPartsSpace, backed by the signed-in
+        // user's local ObjectStore — an entirely different space from the
+        // WebDAV categories the rest of this browser reads from, so it can't
+        // reuse addPartsOfCategory's WebDAV directory listing.
+        loadMyParts: function loadMyParts() {
+        var self = this;
+        if (typeof lively === 'undefined' || !lively.require) {
+            this.showMsg("Identity module not available");
+            return;
+        }
+        lively.require('lively.identity.UserSpace').toRun(function () {
+            lively.identity.userSpace.getPersonalPartsSpace(function (err, space) {
+                if (err) { self.showMsg('Sign in to see My Parts'); return; }
+                space.load(function (loadErr) {
+                    if (loadErr) { self.showMsg('Error loading parts: ' + loadErr.message); return; }
+                    // Guard against a stale response: if the user switched to
+                    // another category while this (async ObjectStore) load was
+                    // in flight, categoryName has already moved on — applying
+                    // these results now would silently overwrite whatever the
+                    // new category already rendered, leaving categoryName
+                    // saying "*myparts*" while the visible list is really the
+                    // old category's. addPartsOfCategory's WebDAV path has an
+                    // analogous unguarded race, but that's pre-existing and
+                    // out of scope here.
+                    if (self.categoryName !== '*myparts*') return;
+                    self._refreshIdentityCategories(space.getPartItems());
+                    self.addMorphsForPartItems(space.getPartItems());
+                });
+            });
+        });
+    },
+        // Identity categories aren't stored anywhere separately — they're
+        // derived from the union of state.tags across the signed-in user's
+        // own parts (set via addTagToSelectedPart), rendered as "#tagname"
+        // entries in the same sidebar category list as WebDAV categories.
+        // Called whenever *myparts* (re)loads, so the list stays in sync
+        // with whatever tags actually exist right now — stale tags (from a
+        // part that no longer has them, or was deleted) are dropped, not
+        // just accumulated forever.
+        _refreshIdentityCategories: function _refreshIdentityCategories(items) {
+        this.ensureCategories();
+        var self = this;
+        var tags = {};
+        items.forEach(function (item) {
+            var itemTags = item.envelope && item.envelope.state && item.envelope.state.tags;
+            (itemTags || []).forEach(function (t) { tags['#' + t] = true; });
+        });
+        var existingIdentityNames = Object.keys(this.categories).filter(function (name) {
+            return self.categories[name] && self.categories[name].isIdentityCategory;
+        });
+        var newTagNames = Object.keys(tags);
+        // Skip the rebuild entirely when the tag set hasn't actually
+        // changed — categoryList.updateList (called by updateCategoryList)
+        // internally tries to "restore the current selection at its new
+        // index" any time it runs, and that restore can re-fire the
+        // categoryName connection even for a no-op rebuild, which was
+        // wiping out whatever part the user had just selected (confirmed
+        // live: selecting an item, then re-entering *myparts*, silently
+        // cleared the selection through exactly this path with no tags
+        // having changed at all). A guard on the *caller* side
+        // (loadPartsOfCategory) was tried first and rejected — it also
+        // blocked a legitimate user re-click on the same category to
+        // force a refresh, which is a real, more important use case (e.g.
+        // to pick up a part just published while the browser was open).
+        var unchanged = existingIdentityNames.length === newTagNames.length &&
+            existingIdentityNames.every(function (name) { return tags[name]; });
+        if (unchanged) return;
+        existingIdentityNames.forEach(function (name) {
+            if (!tags[name]) delete self.categories[name];
+        });
+        newTagNames.forEach(function (name) {
+            self.categories[name] = { isIdentityCategory: true };
+        });
+        this.updateCategoryList(this.categoryName, true);
+    },
+        // Same shape as loadMyParts, filtered to items tagged with this
+        // category's name. Loads the full personal space rather than a
+        // separate tag-indexed query — identity part counts per user are
+        // small enough that this is simpler than adding real tag-query
+        // plumbing to IdentityPartsSpace/ObjectStore for what's currently a
+        // client-side-only filter.
+        loadIdentityTagCategory: function loadIdentityTagCategory(categoryName) {
+        var self = this;
+        var tag = categoryName.slice(1);
+        if (typeof lively === 'undefined' || !lively.require) {
+            this.showMsg("Identity module not available");
+            return;
+        }
+        lively.require('lively.identity.UserSpace').toRun(function () {
+            lively.identity.userSpace.getPersonalPartsSpace(function (err, space) {
+                if (err) { self.showMsg('Sign in required'); return; }
+                space.load(function (loadErr) {
+                    if (loadErr) { self.showMsg('Error loading parts: ' + loadErr.message); return; }
+                    if (self.categoryName !== categoryName) return;
+                    var filtered = space.getPartItems().filter(function (item) {
+                        var itemTags = item.envelope && item.envelope.state && item.envelope.state.tags;
+                        return itemTags && itemTags.indexOf(tag) !== -1;
+                    });
+                    self._refreshIdentityCategories(space.getPartItems());
+                    self.addMorphsForPartItems(filtered);
+                });
+            });
+        });
     },
         makeUpPartNameFor: function makeUpPartNameFor(name) {
         if (!$morph(name)) return name;
@@ -1343,6 +1562,7 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
         this.updateCategoriesDictFromPartsBin(function() {
             this.addCategory("*latest*", true);
             this.addCategory("*all*", true);
+            this.addCategory("*myparts*", true);
             this.addCategory("*search*", true);
             this.get('categoryList').setSelection('Basic');
         });
@@ -1430,18 +1650,26 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
         setSelectedPartItem: function setSelectedPartItem(item) {
         this.selectedPartItem = item;
         this.get('selectedPartComment').textString = '';
+        this.get('selectedPartIdentityMeta').textString = '';
         // this.get('CommitLog').textString = '';
         this.get('selectedPartVersions').updateList(item ? ['Loading versions...']: []);
         this.get('selectedPartVersions').setSelection(null);
         if (!item) {
             this.get('selectedPartName').textString = ''
+            // '#'-prefixed identity tag categories (see loadIdentityTagCategory)
+            // aren't WebDAV directories — getPartsSpaceForCategory would try to
+            // resolve one as a URL and throw (confirmed live: "pathString.startsWith
+            // is not a function", which aborted this entire method before
+            // loadPartsOfCategory's '#' dispatch branch ever ran, since this
+            // runs first via loadPartsOfCategory's own setSelectedPartItem(null)).
             this.get('selectedPartSpaceName').textString = this.categoryName ? (
-                this.categoryName.startsWith('*') ? this.categoryName :
+                (this.categoryName.startsWith('*') || this.categoryName.charAt(0) === '#') ? this.categoryName :
                 this.getPartsSpaceForCategory(this.categoryName).getName()) : '';
             return;
         }
         this.get('selectedPartName').textString = item.name
-        this.get('selectedPartSpaceName').textString = item.partsSpaceName
+        this.get('selectedPartSpaceName').textString = this.describePartItemSource(item)
+        this.renderIdentityPartMeta(item)
 
         // load versions
         Global.connect(item, 'partVersions', this, 'setSelectedPartVersions');
@@ -1481,11 +1709,87 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
         })
         listMorph.updateList(list)
     },
+        // Reused for the "space name" label: for a WebDAV part this is just
+        // its partsSpaceName (unchanged behavior). For an identity-published
+        // part (item.envelope set by IdentityPartsSpace.createPartItemFromEnvelope)
+        // the WebDAV path is meaningless — show the publisher's handle
+        // instead. Deliberately just the handle, not handle+date: this label
+        // shares a tight, fixed-width HorizontalLayout row with the part
+        // name/Share Link/inspect controls (MoreTitleContainer) with no room
+        // to grow, and a longer string here doesn't wrap onto a visible
+        // second line — it gets clipped. Full detail (including the publish
+        // date) lives in describeIdentityPartMeta below, which has real room.
+        describePartItemSource: function describePartItemSource(item) {
+        if (!item.envelope) return item.partsSpaceName;
+        return '@' + (item.handle || '?');
+    },
+        // Builds the metadata text plus the character range of the trailing
+        // copy-icon glyph, so renderIdentityPartMeta can apply a click
+        // handler to just that glyph via emphasize(). Returns null for
+        // WebDAV parts (no envelope).
+        describeIdentityPartMeta: function describeIdentityPartMeta(item) {
+        if (!item.envelope) return null;
+        var env = item.envelope;
+        var created = env.created ? new Date(env.created).format('yyyy-mm-dd HH:MM') : 'unknown';
+        // Full DIDs run ~200 chars — even at this panel's widened ~320px
+        // column that's still too long for one line at full length, so it's
+        // truncated for display; the icon glyph appended right after it
+        // copies the full value (see renderIdentityPartMeta).
+        var did = env.did || 'unknown';
+        var didShort = did.length > 30 ? (did.slice(0, 20) + '…' + did.slice(-6)) : did;
+        var iconGlyph = '⧉';
+        var line1 = 'Published by: @' + (item.handle || '?');
+        var line2 = 'Created: ' + created;
+        // Icon sits at the end of THIS line, not the end of the full text —
+        // text.length (what this used to compute iconStart/iconEnd from)
+        // is the length of the whole 4-line string, which points past the
+        // Hosting line entirely. Confirmed live: the emphasis landed on the
+        // 'd' in "...world" instead of the icon, making it both invisible
+        // as a clickable target and a stray blue-underlined character
+        // where nothing should be styled.
+        var didLinePrefix = 'Object ID: ' + (env.objId || 'unknown') + '   Author DID: ' + didShort + ' ';
+        var didLine = didLinePrefix + iconGlyph;
+        var line4 = 'Hosting: ' + (Global.URL.root.hostname || 'unknown');
+        var text = [line1, line2, didLine, line4].join('\n');
+        var iconStart = line1.length + 1 + line2.length + 1 + didLinePrefix.length;
+        var iconEnd = iconStart + iconGlyph.length;
+        return { text: text, did: env.did || null, iconStart: iconStart, iconEnd: iconEnd };
+    },
+        // Sets selectedPartIdentityMeta's text and, for identity parts,
+        // makes the trailing copy-icon glyph clickable via a ranged
+        // emphasis (same mechanism the static "Share Link"/"inspect" labels
+        // use elsewhere in this file, just applied dynamically since the
+        // text and the icon's position both vary per selection). Icon-only,
+        // positioned inline right after the DID it copies — same idea as
+        // ProfileCard.js's copy-DID button, adapted to sit inside flowing
+        // text instead of as a separate morph.
+        renderIdentityPartMeta: function renderIdentityPartMeta(item) {
+        var metaMorph = this.get('selectedPartIdentityMeta');
+        var meta = this.describeIdentityPartMeta(item);
+        metaMorph.textString = meta ? meta.text : '';
+        metaMorph._copyAuthorDid = meta ? meta.did : null;
+        if (!meta) return;
+        metaMorph.emphasize({
+            color: Color.blue,
+            doit: {
+                code: "var m = evt.getTargetMorph();" +
+                    "if (!m._copyAuthorDid || !navigator.clipboard) return;" +
+                    "navigator.clipboard.writeText(m._copyAuthorDid);",
+                context: null
+            }
+        }, meta.iconStart, meta.iconEnd);
+    },
         setShareLink: function setShareLink(partItem) {
         var linkText = this.get('shareLink');
         linkText.setTextString('Share Link');
-        var url = Global.URL.root + 'viral.html?part='
-            + partItem.name + '&path=' + partItem.partsSpaceName.replace(/\//g, '%2F');
+        var url;
+        if (partItem.envelope && partItem.envelope.objId && partItem.handle) {
+            url = Global.URL.root + '@' + partItem.handle + '/parts/' + partItem.envelope.objId;
+        }
+        if (!url) {
+            url = Global.URL.root + 'viral.html?part='
+                + partItem.name + '&path=' + partItem.partsSpaceName.replace(/\//g, '%2F');
+        }
         linkText.emphasizeAll({uri: url});
     },
         setupConnections: function setupConnections() {

@@ -108,6 +108,38 @@ Object.subclass('lively.identity.ObjectStore',
     });
   },
 
+  // Overwrite the stored envelope for an existing (objId, cid) key — for
+  // metadata-only changes (e.g. state.tags) where the cid is unchanged
+  // because cid only ever hashes record.payload (mirrors the server's
+  // ObjectRepository._updateInPlace, same reasoning). put()'s dedup check
+  // above only compares the (objId, cid) key, not the stored content, so it
+  // silently no-ops a metadata-only change with the same cid — this bypasses
+  // that check for callers that specifically know they're updating state.
+  // Marks synced:false so the normal sync path pushes it to the server.
+  // Calls thenDo(err).
+  updateState: function(envelope, thenDo) {
+    if (!envelope || !envelope.objId || !envelope.record || !envelope.record.cid) {
+      return thenDo(new Error('ObjectStore.updateState: envelope missing objId or record.cid'));
+    }
+    var key = envelope.objId + ':' + envelope.record.cid;
+    this.withDB(function(err, db) {
+      if (err) return thenDo(err);
+      var tx = db.transaction(['envelopes', 'heads'], 'readwrite');
+      tx.onerror = function(e) { thenDo(e.target.error); };
+      tx.onabort = function() { thenDo(new Error('ObjectStore.updateState: transaction aborted')); };
+      tx.objectStore('envelopes').put({
+        objId:    envelope.objId,
+        cid:      envelope.record.cid,
+        prevCid:  envelope.record.prevCid || null,
+        created:  new Date().toISOString(),
+        envelope: JSON.stringify(envelope),
+        synced:   false
+      }, key);
+      tx.objectStore('heads').put({ objId: envelope.objId, cid: envelope.record.cid });
+      tx.oncomplete = function() { thenDo(null); };
+    });
+  },
+
   // Get the HEAD (latest) envelope for an objId.
   // Calls thenDo(null, envelope) or thenDo(null, null).
   get: function(objId, thenDo) {

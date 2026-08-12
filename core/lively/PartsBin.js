@@ -887,29 +887,68 @@ Trait('lively.PartsBin.PartTrait', {
                         created: new Date().toISOString(),
                         genesisNonce: result.genesisNonce,
                         record: { cid: cid, prevCid: null, payload: json },
-                        state: { partName: morph.name, comment: '', tags: [] },
+                        // serializePart() already renders an HTML snapshot via
+                        // asHTMLLogo() for exactly this purpose (it's how WebDAV
+                        // parts get their .html logo file) — previously this was
+                        // computed and thrown away, leaving IdentityPartItem with
+                        // no icon at all. Stored in state (not record.payload) so
+                        // it's server-readable without needing to deserialize the
+                        // whole part just to show a thumbnail.
+                        state: { partName: morph.name, comment: '', tags: [], htmlLogo: serialized.htmlLogo || null },
                     };
 
-                    var base = lively.identity.did.baseUrl();
-                    var url = base + '/@' + encodeURIComponent(user.handle) + '/' + encodeURIComponent(envelope.objId);
-                    var xhr = new XMLHttpRequest();
-                    xhr.open('PUT', url, true);
-                    xhr.setRequestHeader('Content-Type', 'application/json');
-                    xhr.withCredentials = true;
-                    xhr.onload = function() {
-                        if (xhr.status !== 200 && xhr.status !== 201) {
-                            alert('Save to My Parts failed: HTTP ' + xhr.status);
-                            return;
-                        }
+                    // Local-first, same as every other identity write (UserSpace.js) —
+                    // write to the local ObjectStore (IndexedDB) first, then sync to
+                    // the server. Previously this PUT the envelope straight to the
+                    // server via raw XHR and never touched ObjectStore at all, so the
+                    // part was saved server-side but invisible everywhere that reads
+                    // "my parts" locally (IdentityPartsSpace.load() -> objectStore.listAll()) —
+                    // the postcard/wiki "Insert part" picker and the PartsBinBrowser's
+                    // My Parts category both depend on this local cache actually being
+                    // populated.
+                    lively.identity.objectStore.put(envelope, function(err) {
+                        if (err) { alert('Save to My Parts failed: ' + err.message); return; }
+
                         lively.identity.userSpace.addPart('general', {
                             objId: envelope.objId, cid: cid, title: morph.name, partName: morph.name,
                         }, function(addErr) {
                             if (addErr) alert('Saved, but could not register in My Parts: ' + addErr.message);
                             else alert('Saved "' + morph.name + '" to My Parts.');
                         });
-                    };
-                    xhr.onerror = function() { alert('Save to My Parts failed: network error'); };
-                    xhr.send(JSON.stringify(envelope));
+
+                        // Non-fatal sync: local save already succeeded.
+                        lively.identity.objectStore.syncObject(
+                            envelope.objId, user.handle, lively.identity.did.baseUrl(),
+                            function(syncErr) {
+                                if (syncErr) console.warn('[copyToIdentityPartsSpace] sync failed (will retry later):', syncErr.message);
+                            }
+                        );
+
+                        // Refresh any already-open PartsBinBrowser currently
+                        // showing My Parts (or an identity tag category) so
+                        // the newly published part actually shows up.
+                        // Re-clicking the same category in the browser's
+                        // sidebar does NOT reliably do this on its own —
+                        // categoryName is driven by categoryList.selection,
+                        // and reselecting an already-selected value there
+                        // never fires the connection that would reload
+                        // (confirmed live: 0 loadPartsOfCategory calls on a
+                        // same-value reselect) — a pre-existing quirk of
+                        // that shared list widget, not something specific
+                        // to identity parts. Calling loadPartsOfCategory
+                        // directly here sidesteps that property-change
+                        // machinery entirely.
+                        if (typeof $world !== 'undefined' && $world.submorphs) {
+                            $world.submorphs.forEach(function(w) {
+                                if (w.name !== 'PartsBinBrowser' || !w.get) return;
+                                var browser = w.get('PartsBinBrowser');
+                                var cat = browser && browser.categoryName;
+                                if (cat === '*myparts*' || (cat && cat.charAt(0) === '#')) {
+                                    browser.loadPartsOfCategory(cat);
+                                }
+                            });
+                        }
+                    });
                 });
             });
         });
