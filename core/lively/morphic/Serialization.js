@@ -107,7 +107,18 @@ Object.extend(lively.morphic.Morph, {
         options = options || {};
         function loadModules(modules) {
             modules.forEach(function(ea) {
-                var m = module(ea); if (m != Global && !m.isLoaded()) m.load(true); });
+                var m = module(ea);
+                // A class declared with the same fully-qualified name as its
+                // own module (e.g. module('a.b.C').toRun(fn) where fn does
+                // Object.subclass('a.b.C', ...)) overwrites the lively.Module
+                // instance that used to live at that Global slot with the
+                // class itself once that module's toRun body has executed.
+                // The only way module(ea) can resolve to something that
+                // isn't a lively.Module is for that overwrite to have already
+                // happened, i.e. the module is already loaded - so treat a
+                // non-Module result the same as an already-loaded module
+                // instead of crashing on the missing isLoaded().
+                if (m != Global && m.isLivelyModule && !m.isLoaded()) m.load(true); });
         }
         var jso = Object.isString(json) ? JSON.parse(json) : json,
             modulesForDeserialization = lively.persistence.Serializer.sourceModulesIn(jso),
