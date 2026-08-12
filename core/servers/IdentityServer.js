@@ -219,6 +219,13 @@ function genObjId() {
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
 }
 
+// Same shape genObjId() produces — mirrors the client-side check in
+// lively.identity.WebKey.isValidObjId, so /@:handle/parts/:nameOrObjId can
+// tell a part's objId apart from its human-readable alias.
+function looksLikeObjId(str) {
+  return typeof str === "string" && /^[A-Za-z0-9\-_]{12}$/.test(str);
+}
+
 function computeCidSync(jso) {
   return nodeCrypto.createHash("sha256")
     .update(JSON.stringify(jso))
@@ -1994,6 +2001,40 @@ module.exports = function (route, app) {
     objectRepo.put(envelope, function (err, result) {
       if (err) return res.status(500).json({ error: String(err) });
       res.json({ ok: true, objId: result.objId, cid: result.cid, changed: result.changed });
+    });
+  });
+
+  // ─── parts name aliasing (Roadmap.md §3) ───────────────────────────────────
+  // /@:handle/parts/MyButton (human-readable) and /@:handle/parts/<objId>
+  // (canonical) both resolve to the same part envelope. The part_aliases
+  // table is kept current by ObjectRepository.put() itself — see its
+  // comments — so there is nothing to write here beyond resolution.
+
+  app.get("/@:handle/parts/:nameOrObjId", auth.optionalAuth, function (req, res) {
+    var handle = req.params.handle;
+    var nameOrObjId = req.params.nameOrObjId;
+
+    function serveByObjId(objId) {
+      objectRepo.get(objId, function (err, envelope) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!envelope || envelope.type !== 'part')
+          return res.status(404).json({ error: "Part not found: " + nameOrObjId });
+        if (!_canReadEnvelope(envelope, req.identity))
+          return res.status(403).json({ error: "Forbidden" });
+        res.json(_trimRecipientsForNonOwner(envelope, req.identity));
+      });
+    }
+
+    if (looksLikeObjId(nameOrObjId)) return serveByObjId(nameOrObjId);
+
+    handleRegistry.resolve(handle, function (err, did) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!did) return res.status(404).json({ error: "Handle not found: @" + handle });
+      objectRepo.resolvePartAlias(did, nameOrObjId, function (err, objId) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!objId) return res.status(404).json({ error: "Part not found: " + nameOrObjId });
+        serveByObjId(objId);
+      });
     });
   });
 

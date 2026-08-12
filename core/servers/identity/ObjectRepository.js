@@ -40,6 +40,17 @@
  *     created_at TEXT NOT NULL
  *     PRIMARY KEY (obj_id, did)
  *
+ *   part_aliases table — human-readable name -> current objId, per author
+ *   (Roadmap.md §3, "Phase 2 — Parts Name Aliasing"). One name per (did,
+ *   alias_name); republishing a part under the same name repoints it. Kept
+ *   up to date by put() itself (see below) rather than a separate write
+ *   path, so nothing client-side needs to know this table exists:
+ *     did         TEXT NOT NULL
+ *     alias_name  TEXT NOT NULL
+ *     obj_id      TEXT NOT NULL
+ *     updated_at  TEXT NOT NULL
+ *     PRIMARY KEY (did, alias_name)
+ *
  * The latest version of an object is the row with the highest id for a
  * given obj_id. No DELETE ever happens on `objects` — that log is
  * append-only (postcard_reactions rows are deleted freely on un-react).
@@ -122,6 +133,18 @@ function withDB(thenDo) {
         '  obj_id    TEXT NOT NULL,' +
         '  hidden_at TEXT NOT NULL,' +
         '  PRIMARY KEY (did, obj_id)' +
+        ')'
+      );
+      // part_aliases (Roadmap.md §3): human-readable part name -> objId,
+      // scoped per author. Written by put() itself whenever a type:'part'
+      // envelope carries a state.partName (see put() below).
+      db.run(
+        'CREATE TABLE IF NOT EXISTS part_aliases (' +
+        '  did        TEXT NOT NULL,' +
+        '  alias_name TEXT NOT NULL,' +
+        '  obj_id     TEXT NOT NULL,' +
+        '  updated_at TEXT NOT NULL,' +
+        '  PRIMARY KEY (did, alias_name)' +
         ')', function(err) {
         thenDo(err, db);
       });
@@ -168,6 +191,23 @@ function put(envelope, thenDo) {
   if (!envelope || !envelope.objId || !envelope.record || !envelope.record.cid) {
     return thenDo(new Error('ObjectRepository.put: invalid envelope — missing objId or record.cid'));
   }
+
+  // Keep part_aliases in sync with every successful put() of a named part,
+  // regardless of which path below handled it (new version, in-place
+  // metadata update, or true no-op duplicate) — upserting is idempotent, so
+  // it's simplest and safest to always run it here rather than duplicate
+  // this at each call site. A failure here logs but never fails the put()
+  // itself; the alias is a resolution convenience, not the object record.
+  var callerThenDo = thenDo;
+  thenDo = function(err, result) {
+    if (err || envelope.type !== 'part' || !envelope.state || !envelope.state.partName) {
+      return callerThenDo(err, result);
+    }
+    upsertPartAlias(envelope.did, envelope.state.partName, envelope.objId, function(aliasErr) {
+      if (aliasErr) console.warn('[ObjectRepository] Failed to upsert part_aliases for', envelope.objId, ':', aliasErr.message);
+      callerThenDo(err, result);
+    });
+  };
 
   get(envelope.objId, function(err, existing) {
     if (err) return thenDo(err);
@@ -853,6 +893,44 @@ function _runPostcardQuery(db, sql, params, limit, thenDo) {
   });
 }
 
+// ─── part aliases (Roadmap.md §3, "Phase 2 — Parts Name Aliasing") ────────────
+
+// Point (did, aliasName) at objId, overwriting whatever it pointed to
+// before — REPLACE INTO, not INSERT, since PRIMARY KEY (did, alias_name)
+// means an author can only have one part named e.g. "MyButton" at a time,
+// and republishing under that name should repoint the alias rather than
+// error. Called by put() itself (see above) whenever a type:'part' envelope
+// carries a state.partName, so no client code needs to know this table
+// exists — the alias table stays a purely server-side resolution
+// convenience, per Roadmap.md §3.
+// Calls thenDo(err).
+function upsertPartAlias(did, aliasName, objId, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.run(
+      'REPLACE INTO part_aliases (did, alias_name, obj_id, updated_at) VALUES (?, ?, ?, ?)',
+      [did, aliasName, objId, new Date().toISOString()],
+      function(err) { thenDo(err || null); }
+    );
+  });
+}
+
+// Resolve a human-readable part name to its current objId for a given
+// author DID. Calls thenDo(null, objId | null).
+function resolvePartAlias(did, aliasName, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.get(
+      'SELECT obj_id FROM part_aliases WHERE did = ? AND alias_name = ?',
+      [did, aliasName],
+      function(err, row) {
+        if (err) return thenDo(err);
+        thenDo(null, row ? row.obj_id : null);
+      }
+    );
+  });
+}
+
 // ─── postcard reactions (PostcardDesignSpec-v2.md §5.1) ────────────────────────
 
 // Upsert (replace) the caller's own reaction on a postcard. PRIMARY KEY
@@ -1183,6 +1261,8 @@ module.exports = {
   deleteVersionsAfter:           deleteVersionsAfter,
   getObjIdsForBlob:              getObjIdsForBlob,
   addRecipient:                  addRecipient,
+  upsertPartAlias:               upsertPartAlias,
+  resolvePartAlias:              resolvePartAlias,
   listPostcardsForUser:          listPostcardsForUser,
   listPostcardsForConstellation: listPostcardsForConstellation,
   getWikiPageObjId:              getWikiPageObjId,
