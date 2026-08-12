@@ -1040,6 +1040,19 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
     },
         addCategoryInteractively: function addCategoryInteractively() {
         var partsBin = this, world = this.world();
+        // categoryName's default selection (reloadEverything -> the
+        // categoryList.setSelection('Basic') at the end of
+        // updateCategoriesDictFromPartsBin) resolves only after an async
+        // WebDAV directory listing completes — categoryName stays undefined
+        // until then. Clicking "+" in that window used to fall through the
+        // check below (undefined matches neither branch) straight to the
+        // legacy "Name of new category?" prompt, silently creating a real
+        // WebDAV directory even for a signed-in user who never saw a
+        // WebDAV category selected. Fail safe instead of falling through.
+        if (this.categoryName === undefined) {
+            world.alert('Categories are still loading — try again in a moment.');
+            return;
+        }
         // While browsing identity parts (My Parts or an identity tag
         // category), "+" creates an identity-aware category instead of a
         // WebDAV directory — WebDAV categories are directories on disk and
