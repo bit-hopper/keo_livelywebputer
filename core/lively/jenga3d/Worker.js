@@ -54,8 +54,8 @@ module('lively.jenga3d.Worker')
       // lively.jenga3d.Worker.request(nodeId, op, params, thenDo)
       // thenDo(err, mesh) where mesh = { positions, normals, indices, groups,
       // edges } (op: "evaluate"; edges added §13 step 10) or { fileBytes, mime }
-      // (op: "exportStep"/"exportIges", not implemented by occt-worker-src.js
-      // until §13 step 12).
+      // (op: "exportStep", §13 step 12; "exportIges" is named in the protocol
+      // but deliberately not implemented, §11.2 — always errors).
       //
       // If the worker is currently busy with an earlier request, this one
       // is held rather than sent immediately (§5.3) — superseding whatever
@@ -99,6 +99,10 @@ module('lively.jenga3d.Worker')
           // §5.3: discard if a newer request for this nodeId has since been sent.
           if (data.generation === this._generationByNode[data.nodeId]) {
             if (!data.ok) entry.thenDo(new Error(data.error));
+            // §11.2, §13 step 12: exportStep/exportIges responses carry
+            // fileBytes/mime instead of mesh data (§4.3) — pass through
+            // whichever shape this response actually has.
+            else if (data.fileBytes) entry.thenDo(null, { fileBytes: data.fileBytes, mime: data.mime });
             else entry.thenDo(null, {
               positions: data.positions,
               normals:   data.normals,

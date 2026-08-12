@@ -22,10 +22,19 @@
  *
  * Node ops implemented so far: createBox/createCylinder/createSphere/
  * transform (§13 step 2), booleanUnion/booleanCut/booleanIntersect (§13
- * step 9), and fillet/chamfer (§13 step 10). Only the "evaluate" op
- * (§4.3) is implemented — export ops arrive in §13 step 12. Any other
- * unrecognized node op returns an error response rather than throwing
- * uncaught.
+ * step 9), and fillet/chamfer (§13 step 10). Any unrecognized node op
+ * returns an error response rather than throwing uncaught.
+ *
+ * Protocol ops: "evaluate" (§4.3) and, since §13 step 12, "exportStep"
+ * — the real B-Rep path (§11.2, §6.4): replay the tree the same way
+ * evaluate does, but instead of meshing, feed the final shape straight
+ * to STEPControl_Writer and return the written file's bytes.
+ * "exportIges" is named in the protocol (§4.3) and in §11.2 but
+ * deliberately not implemented — the spec itself says to build it only
+ * once something downstream actually needs it, not speculatively; it
+ * returns a clear "not implemented" error rather than pretending to
+ * work. Same reasoning NAMESPACE.md already applies to /files/ and
+ * /settings.
  *
  * §13 step 10 also adds `edges` to the evaluate response — straight-line
  * (start/end vertex only) approximations of every edge in the root
@@ -355,21 +364,74 @@ function handleEvaluate(oc, msg) {
   }
 }
 
+// §11.2, §6.4: same full-tree replay as evaluate, but instead of meshing,
+// feed the final shape straight to STEPControl_Writer. The writer needs a
+// real filename on OCCT's virtual (Emscripten MEMFS) filesystem — write,
+// read the bytes back, then remove it; nothing about this weakens §6.1's
+// "nothing survives past the evaluation that produced it", it just
+// extends that evaluation's natural endpoint to include the write step
+// (§6.4), same as the Disposer already does for the shape itself.
+function handleExportStep(oc, msg) {
+  var disposer = new Disposer();
+  try {
+    var cache = {};
+    var rootShape = buildNode(oc, disposer, msg.params.featureTree.root, msg.params.featureTree, cache);
+
+    var writer = disposer.track(new oc.STEPControl_Writer_1());
+    var range = disposer.track(new oc.Message_ProgressRange_1());
+    var transferStatus = writer.Transfer(
+      rootShape, oc.STEPControl_StepModelType.STEPControl_AsIs, true, range
+    );
+    if (transferStatus.value !== oc.IFSelect_ReturnStatus.IFSelect_RetDone.value) {
+      throw new Error('STEP transfer did not complete');
+    }
+
+    var path = '/jenga3d-export-' + msg.id + '.step';
+    var writeStatus = writer.Write(path);
+    if (writeStatus.value !== oc.IFSelect_ReturnStatus.IFSelect_RetDone.value) {
+      throw new Error('STEP write did not complete');
+    }
+    var fileBytes = oc.FS.readFile(path);
+    try { oc.FS.unlink(path); } catch (e) { /* best-effort cleanup of the scratch file */ }
+
+    disposer.disposeAll();
+    return {
+      id: msg.id, nodeId: msg.nodeId, generation: msg.generation, ok: true,
+      fileBytes: fileBytes, mime: 'model/step'
+    };
+  } catch (e) {
+    disposer.disposeAll();
+    return {
+      id: msg.id, nodeId: msg.nodeId, generation: msg.generation, ok: false,
+      error: e && e.message || String(e)
+    };
+  }
+}
+
 self.onmessage = function (evt) {
   var msg = evt.data;
   ensureOcct().then(function (oc) {
     var response;
     if (msg.op === 'evaluate') {
       response = handleEvaluate(oc, msg);
+    } else if (msg.op === 'exportStep') {
+      response = handleExportStep(oc, msg);
+    } else if (msg.op === 'exportIges') {
+      response = {
+        id: msg.id, nodeId: msg.nodeId, generation: msg.generation, ok: false,
+        error: 'exportIges not implemented — named in the spec (§11.2) but deliberately not built until something downstream needs it'
+      };
     } else {
       response = {
         id: msg.id, nodeId: msg.nodeId, generation: msg.generation, ok: false,
         error: 'op not supported yet: ' + msg.op
       };
     }
-    var transferables = response.ok
-      ? [response.positions.buffer, response.normals.buffer, response.indices.buffer]
-      : [];
+    var transferables = [];
+    if (response.ok) {
+      if (response.positions) transferables = [response.positions.buffer, response.normals.buffer, response.indices.buffer];
+      else if (response.fileBytes) transferables = [response.fileBytes.buffer];
+    }
     self.postMessage(response, transferables);
   });
 };

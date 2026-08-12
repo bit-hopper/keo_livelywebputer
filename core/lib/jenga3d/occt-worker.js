@@ -15718,12 +15718,68 @@
       };
     }
   }
+  function handleExportStep(oc, msg) {
+    var disposer = new Disposer();
+    try {
+      var cache = {};
+      var rootShape = buildNode(oc, disposer, msg.params.featureTree.root, msg.params.featureTree, cache);
+      var writer = disposer.track(new oc.STEPControl_Writer_1());
+      var range = disposer.track(new oc.Message_ProgressRange_1());
+      var transferStatus = writer.Transfer(
+        rootShape,
+        oc.STEPControl_StepModelType.STEPControl_AsIs,
+        true,
+        range
+      );
+      if (transferStatus.value !== oc.IFSelect_ReturnStatus.IFSelect_RetDone.value) {
+        throw new Error("STEP transfer did not complete");
+      }
+      var path = "/jenga3d-export-" + msg.id + ".step";
+      var writeStatus = writer.Write(path);
+      if (writeStatus.value !== oc.IFSelect_ReturnStatus.IFSelect_RetDone.value) {
+        throw new Error("STEP write did not complete");
+      }
+      var fileBytes = oc.FS.readFile(path);
+      try {
+        oc.FS.unlink(path);
+      } catch (e) {
+      }
+      disposer.disposeAll();
+      return {
+        id: msg.id,
+        nodeId: msg.nodeId,
+        generation: msg.generation,
+        ok: true,
+        fileBytes,
+        mime: "model/step"
+      };
+    } catch (e) {
+      disposer.disposeAll();
+      return {
+        id: msg.id,
+        nodeId: msg.nodeId,
+        generation: msg.generation,
+        ok: false,
+        error: e && e.message || String(e)
+      };
+    }
+  }
   self.onmessage = function(evt) {
     var msg = evt.data;
     ensureOcct().then(function(oc) {
       var response;
       if (msg.op === "evaluate") {
         response = handleEvaluate(oc, msg);
+      } else if (msg.op === "exportStep") {
+        response = handleExportStep(oc, msg);
+      } else if (msg.op === "exportIges") {
+        response = {
+          id: msg.id,
+          nodeId: msg.nodeId,
+          generation: msg.generation,
+          ok: false,
+          error: "exportIges not implemented \u2014 named in the spec (\xA711.2) but deliberately not built until something downstream needs it"
+        };
       } else {
         response = {
           id: msg.id,
@@ -15733,7 +15789,11 @@
           error: "op not supported yet: " + msg.op
         };
       }
-      var transferables = response.ok ? [response.positions.buffer, response.normals.buffer, response.indices.buffer] : [];
+      var transferables = [];
+      if (response.ok) {
+        if (response.positions) transferables = [response.positions.buffer, response.normals.buffer, response.indices.buffer];
+        else if (response.fileBytes) transferables = [response.fileBytes.buffer];
+      }
       self.postMessage(response, transferables);
     });
   };

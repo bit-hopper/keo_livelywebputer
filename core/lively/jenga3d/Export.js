@@ -10,14 +10,23 @@
  * already provides." That's exactly what this does — no worker changes
  * in this step.
  *
+ * §13 step 12 adds `toSTEP`/`downloadStep` — unlike STL/OBJ, this is a
+ * real worker op (`exportStep`, §11.2, §6.4): the exact B-Rep, not a
+ * mesh conversion, so there's no throwaway-mesh step here at all — the
+ * worker hands back file bytes directly. `exportIges` is intentionally
+ * not exposed here: the spec names it in the protocol but says build it
+ * only once something downstream needs it, and occt-worker-src.js's own
+ * "exportIges" handler always errors for the same reason.
+ *
  * A plain utility object, not a class — matches `lively.jenga3d.Worker`/
  * `lively.jenga3d.PickIndex`'s "capitalized, used directly" shape, since
  * export has no per-instance state of its own.
  *
- * `toSTL`/`toOBJ` produce content only (easy to verify without touching
- * the DOM); `downloadSTL`/`downloadOBJ` are the convenience wrappers that
- * also trigger a real browser download, kept as a thin separate layer so
- * the actual export logic is testable on its own.
+ * `toSTL`/`toOBJ`/`toSTEP` produce content only (easy to verify without
+ * touching the DOM); `downloadSTL`/`downloadOBJ`/`downloadStep` are the
+ * convenience wrappers that also trigger a real browser download, kept
+ * as a thin separate layer so the actual export logic is testable on
+ * its own.
  */
 
 module('lively.jenga3d.Export')
@@ -62,6 +71,28 @@ module('lively.jenga3d.Export')
           if (err) { if (thenDo) thenDo(err); return; }
           lively.jenga3d.Export._triggerDownload(filename || 'model.obj', text, 'model/obj');
           if (thenDo) thenDo(null, text);
+        });
+      },
+
+      // §11.2, §13 step 12: real worker op, real B-Rep — no throwaway
+      // THREE.Mesh involved at all, unlike toSTL/toOBJ. thenDo(err, bytes)
+      // where bytes is a Uint8Array of the STEP file's ASCII/UTF-8 text.
+      toSTEP: function (featureTree, thenDo) {
+        if (!featureTree.root) { thenDo(new Error('lively.jenga3d.Export: feature tree has no root')); return; }
+        lively.jenga3d.Worker.request(featureTree.root, 'exportStep', {
+          featureTree: featureTree.toJSON(),
+          dirtyNodeId: featureTree.root,
+        }, function (err, result) {
+          if (err) return thenDo(err);
+          thenDo(null, result.fileBytes);
+        });
+      },
+
+      downloadStep: function (featureTree, filename, thenDo) {
+        this.toSTEP(featureTree, function (err, bytes) {
+          if (err) { if (thenDo) thenDo(err); return; }
+          lively.jenga3d.Export._triggerDownload(filename || 'model.step', bytes, 'model/step');
+          if (thenDo) thenDo(null, bytes);
         });
       },
 
