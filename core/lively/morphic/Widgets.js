@@ -1811,6 +1811,21 @@ lively.morphic.World.addMethods(
       }
     },
     
+    openJenga3D: function() {
+        var self = this;
+        lively.require('lively.jenga3d.SolidMorph', 'lively.jenga3d.tools.CreateBoxTool').toRun(function() {
+            var solid = new lively.jenga3d.SolidMorph(lively.rect(0, 0, 700, 500));
+            solid.openInWorld(pt(0, 0));
+            solid.align(solid.bounds().center(), self.visibleBounds().center());
+            solid.comeForward();
+            // Jenga3Dspec_v0.md §14: no toolbar/Assembly yet (steps 15-21,
+            // not built) — attach CreateBoxTool directly against the
+            // morph's own featureTree/sceneSync so drag-to-create-a-box
+            // is reachable from this menu entry today.
+            solid._createBoxTool = new lively.jenga3d.tools.CreateBoxTool(solid, solid.featureTree, solid.sceneSync);
+        });
+    },
+
     openObjectEditor: function(whenDone) {
         lively.require('lively.ide.tools.ObjectEditor').toRun(function() {
             var editor = lively.BuildSpec('lively.ide.tools.ObjectEditor').createMorph().
@@ -2172,6 +2187,7 @@ lively.morphic.World.addMethods(
                 ['Object Editor', this.openObjectEditor.bind(this)],
                 ['Test Runner', this.openTestRunner.bind(this)],
                 ['Text Editor', function() { lively.require('lively.ide').toRun(function() { lively.ide.openFile(URL.source.toString()); }); }],
+                ['Jenga3D', this.openJenga3D.bind(this)],
                 ['System Console', this.openSystemConsole.bind(this)],
                 ['Subserver Viewer', this.openSubserverViewer.bind(this)],
                 ['Server Workspace', this.openServerWorkspace.bind(this)],
