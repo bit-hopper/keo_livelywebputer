@@ -47,7 +47,8 @@ module("lively.identity.WalletSetupDialog")
   )
   .toRun(function () {
     lively.BuildSpec("lively.identity.WalletSetupDialog", {
-      _Extent: lively.pt(520, 560),
+      _BorderRadius: 7,
+      _Extent: lively.pt(306, 260),
       className: "lively.morphic.Window",
       contentOffset: lively.pt(3, 22),
       draggingEnabled: true,
@@ -57,13 +58,13 @@ module("lively.identity.WalletSetupDialog")
       titleBar: "Set up Wallet",
       submorphs: [
         {
-          _Extent: lively.pt(514, 535),
-          _Fill: Color.rgb(250, 250, 250),
+          _BorderRadius: 4,
+          _Extent: lively.pt(300, 235),
+          _Fill: Color.rgb(243, 243, 243),
           _Position: lively.pt(3, 22),
           className: "lively.morphic.Box",
           layout: {
             adjustForNewBounds: true,
-            resizeHeight: true,
             resizeWidth: true,
           },
           name: "setupContent",
@@ -71,9 +72,25 @@ module("lively.identity.WalletSetupDialog")
         },
       ],
 
+      // Fires this dialog's own onRemove (below) on close, however it
+      // closes -- X button, Cancel, or the normal completion flow -- so the
+      // vault-frame sync loop and the vault iframe itself always get
+      // cleaned up, not just on the paths that already call
+      // _stopVaultFrameSync()/hideVaultFrame() explicitly.
+      connectionRebuilder: function connectionRebuilder() {
+        lively.bindings.connect(this, "remove", this, "onRemove", {});
+      },
+
       // ─── lifecycle ──────────────────────────────────────────────────────────
 
       onFromBuildSpecCreated: function onFromBuildSpecCreated() {
+        // Window's own onFromBuildSpecCreated (BuildSpecMorphExtensions.js)
+        // is what actually builds the title bar and reframe handles from
+        // the titleBar:/reframeHandle: BuildSpec properties above -- this
+        // override used to shadow it entirely with no $super() call, so
+        // the dialog rendered with no title bar, no drag handle, and no
+        // resize handles at all.
+        $super();
         this._wordCount = 12;
         this._kdf = "argon2id";
         this.buildChoiceScreen();
@@ -87,20 +104,93 @@ module("lively.identity.WalletSetupDialog")
         return content;
       },
 
+      // Shrinks/grows the window to fit whichever screen is currently
+      // built, instead of a single large fixed size sitting mostly empty
+      // for the short screens (choice/success/error) and only actually
+      // needed for the vault-visible screen, which stays a fixed generous
+      // size on purpose since its content (mnemonic display, confirmation
+      // quiz) is unknown from the main world. Width is NOT included in this
+      // fit -- see PANE_WIDTH below for why it's a fixed constant instead.
+      _fitToContent: function _fitToContent() {
+        var content = this.get("setupContent");
+        var maxBottom = 0;
+        content.submorphs.forEach(function (m) {
+          var b = m.bounds();
+          maxBottom = Math.max(maxBottom, b.y + b.height);
+        });
+        var newContentHeight = Math.max(120, maxBottom + 20);
+        content.setExtent(pt(content.getExtent().x, newContentHeight));
+        var contentOffset = this.contentOffset || lively.pt(3, 22);
+        this.setExtent(pt(this.getExtent().x, newContentHeight + contentOffset.y + 6));
+      },
+
+      // Measures real rendered text width (canvas measureText, not a
+      // character-count guess) so buttons can hug their label instead of
+      // every button sharing one oversized fixed width regardless of how
+      // short its text is. PANE_WIDTH itself stays a fixed constant (not
+      // computed from content each screen) because the paragraph-style body
+      // copy on some screens (recover/backup explanation, success address)
+      // needs a stable, readable wrap width -- calculated once here from
+      // the widest actual button row across every screen (the Unlock
+      // method row), not from those paragraphs.
+      _measureTextWidth: function _measureTextWidth(text, fontSize) {
+        if (!this._measureCtx) this._measureCtx = document.createElement("canvas").getContext("2d");
+        this._measureCtx.font = (fontSize || 12) + "px Arial, sans-serif";
+        return this._measureCtx.measureText(text).width;
+      },
+
+      // rect for a button sized to hug its own label instead of a fixed
+      // one-size-fits-all width.
+      _buttonRect: function _buttonRect(x, y, text, height) {
+        var w = Math.ceil(this._measureTextWidth(text, 12)) + 28;
+        return lively.rect(x, y, w, height || 24);
+      },
+
+      // Resizes a just-added Text morph to its REAL wrapped height and
+      // returns that height. Must be called AFTER content.addMorph(t) --
+      // getTextExtent() dispatches to the render context (TextCore.js), so
+      // it only reflects genuine wrapped rendering once the morph is
+      // actually in the world; a canvas-measureText guess was tried first
+      // and confirmed wrong in practice (it doesn't know this Text morph's
+      // actual rendered font, so it under/over-estimated how many lines
+      // some headings/paragraphs would wrap to -- e.g. predicted 1 line for
+      // a heading that really wrapped to 2, so the next control drawn below
+      // it silently overlapped the unaccounted-for second line).
+      _fitTextHeight: function _fitTextHeight(t, w, minHeight) {
+        var textHeight = t.getTextExtent().y;
+        var h = Math.max(minHeight, textHeight || minHeight);
+        t.setExtent(pt(w, h));
+        return h;
+      },
+
       _addHeading: function _addHeading(content, text, y) {
+        // Text defaults to a visible border (its normal "input box" look) --
+        // headings/body copy in this dialog are plain labels, not editable
+        // fields, so borderWidth must be zeroed explicitly or every line of
+        // copy renders looking like an empty text input.
         var w = content.getExtent().x - 28;
         var heading = new lively.morphic.Text(lively.rect(14, y, w, 24), text);
-        heading.applyStyle({ allowInput: false, fontSize: 16, fill: null });
+        heading.applyStyle({ allowInput: false, fontSize: 16, fontWeight: 'bold', borderWidth: 0, fill: null });
         content.addMorph(heading);
-        return y + 36;
+        var h = this._fitTextHeight(heading, w, 22);
+        return y + h + 12;
       },
 
       _addText: function _addText(content, text, y, style) {
         var w = content.getExtent().x - 28;
-        var t = new lively.morphic.Text(lively.rect(14, y, w, 40), text);
-        t.applyStyle(Object.assign({ allowInput: false, fontSize: 12, fill: null }, style || {}));
+        var fontSize = (style && style.fontSize) || 12;
+        var t = new lively.morphic.Text(lively.rect(14, y, w, 24), text);
+        // wordBreak: 'break-all' -- confirmed live this matters: a long
+        // unbroken token (an 0x... address is the case that surfaced it)
+        // has no spaces to wrap on, so without this it silently overflows
+        // the pane's right edge horizontally instead of respecting w,
+        // getTextExtent() reporting a width wider than the box it was
+        // given. Harmless for normal prose, which never needs mid-word
+        // breaks in the first place.
+        t.applyStyle(Object.assign({ allowInput: false, fontSize: fontSize, borderWidth: 0, fill: null, wordBreak: 'break-all' }, style || {}));
         content.addMorph(t);
-        return y + 44;
+        var h = this._fitTextHeight(t, w, fontSize + 6);
+        return y + h + 12;
       },
 
       // ─── choice screen ──────────────────────────────────────────────────────
@@ -110,24 +200,25 @@ module("lively.identity.WalletSetupDialog")
         var content = this._clearContent();
         var y = this._addHeading(content, "Set up your wallet", 14);
 
-        var createBtn = new lively.morphic.Button(lively.rect(14, y, 220, 28), "Create New Wallet");
+        var createBtn = new lively.morphic.Button(this._buttonRect(14, y, "Create New Wallet", 28), "Create New Wallet");
         lively.bindings.connect(createBtn, "fire", self, "startCreate");
         content.addMorph(createBtn);
         y += 36;
 
-        var importBtn = new lively.morphic.Button(lively.rect(14, y, 220, 28), "Import Existing Wallet");
+        var importBtn = new lively.morphic.Button(this._buttonRect(14, y, "Import Existing Wallet", 28), "Import Existing Wallet");
         lively.bindings.connect(importBtn, "fire", self, "startImport");
         content.addMorph(importBtn);
         y += 36;
 
-        var recoverBtn = new lively.morphic.Button(lively.rect(14, y, 220, 28), "Recover from Files Backup");
+        var recoverBtn = new lively.morphic.Button(this._buttonRect(14, y, "Recover from Backup", 28), "Recover from Backup");
         lively.bindings.connect(recoverBtn, "fire", self, "startRecover");
         content.addMorph(recoverBtn);
         y += 44;
 
-        var cancelBtn = new lively.morphic.Button(lively.rect(14, y, 80, 24), "Cancel");
+        var cancelBtn = new lively.morphic.Button(this._buttonRect(14, y, "Cancel"), "Cancel");
         lively.bindings.connect(cancelBtn, "fire", self, "remove");
         content.addMorph(cancelBtn);
+        this._fitToContent();
       },
 
       startCreate: function startCreate() { this.buildOptionsScreen("create"); },
@@ -147,24 +238,39 @@ module("lively.identity.WalletSetupDialog")
         );
 
         if (mode === "create") {
-          y = this._addText(content, "Word count:", y - 20, { fontSize: 11 });
-          var wc12 = new lively.morphic.Button(lively.rect(14, y, 60, 24), "12 words");
-          var wc24 = new lively.morphic.Button(lively.rect(80, y, 60, 24), "24 words");
+          // _addText's return value is already a tight, real gap (measures
+          // actual wrapped height -- see _fitTextHeight), so no manual
+          // compaction is needed here or on "Unlock method:" below.
+          y = this._addText(content, "Word count:", y, { fontSize: 11 });
+          var wc12Rect = this._buttonRect(14, y, "12 words");
+          var wc12 = new lively.morphic.Button(wc12Rect, "12 words");
+          var wc24 = new lively.morphic.Button(this._buttonRect(wc12Rect.right() + 6, y, "24 words"), "24 words");
           this._wc12Btn = wc12;
           this._wc24Btn = wc24;
           lively.bindings.connect(wc12, "fire", self, "_selectWordCount12");
           lively.bindings.connect(wc24, "fire", self, "_selectWordCount24");
-          this._paintWordCount();
           content.addMorph(wc12);
           content.addMorph(wc24);
+          // Paint AFTER addMorph, not before -- confirmed live: styling a
+          // button before it's actually in the world's render tree updates
+          // the model (getFill()/getBorderColor() report the new values
+          // correctly) but never reaches the DOM, since addMorph renders a
+          // fresh node for it on insertion rather than reusing whatever
+          // render context a not-yet-attached morph had.
+          this._paintWordCount();
           y += 36;
         }
 
+        // No "- 24" compaction here either, same reasoning as "Word count:"
+        // above -- _addText's return value is already a tight, real gap
+        // now that it measures actual wrapped height instead of assuming a
+        // fixed one, so subtracting further just re-introduces the overlap
+        // this comment used to warn the word-count block away from.
         y = this._addText(content, "Unlock method:", y, { fontSize: 11 });
-        y -= 24;
-        var kdfWebAuthn = new lively.morphic.Button(lively.rect(14, y, 120, 24), "Passkey (WebAuthn)");
-        var kdfPassword = new lively.morphic.Button(lively.rect(140, y, 120, 24), "Password");
-        var passwordInput = new lively.morphic.Text(lively.rect(14, y + 32, 246, 22), "");
+        var kdfWebAuthnRect = this._buttonRect(14, y, "Passkey (WebAuthn)");
+        var kdfWebAuthn = new lively.morphic.Button(kdfWebAuthnRect, "Passkey (WebAuthn)");
+        var kdfPassword = new lively.morphic.Button(this._buttonRect(kdfWebAuthnRect.right() + 6, y, "Password"), "Password");
+        var passwordInput = new lively.morphic.Text(lively.rect(14, y + 32, content.getExtent().x - 28, 22), "");
         passwordInput.applyStyle({
           allowInput: true, fontSize: 12, fill: Color.white,
           borderWidth: 1, borderColor: Color.rgb(190, 190, 190), borderRadius: 3,
@@ -177,40 +283,68 @@ module("lively.identity.WalletSetupDialog")
         this._passwordInput = passwordInput;
         lively.bindings.connect(kdfWebAuthn, "fire", self, "_selectKdfWebAuthn");
         lively.bindings.connect(kdfPassword, "fire", self, "_selectKdfPassword");
-        this._paintKdf();
         content.addMorph(kdfWebAuthn);
         content.addMorph(kdfPassword);
         content.addMorph(passwordInput);
+        this._paintKdf(); // after addMorph -- see word-count's own comment above
         y += 64;
 
         var statusText = new lively.morphic.Text(lively.rect(14, y, content.getExtent().x - 28, 22), "");
         statusText.name = "statusText";
-        statusText.applyStyle({ allowInput: false, fontSize: 11, fill: null, fontColor: Color.rgb(180, 40, 40) });
+        statusText.applyStyle({ allowInput: false, fontSize: 11, borderWidth: 0, fill: null, fontColor: Color.rgb(180, 40, 40) });
         content.addMorph(statusText);
         this._statusText = statusText;
         y += 30;
 
-        var continueBtn = new lively.morphic.Button(lively.rect(14, y, 100, 24), "Continue");
+        var continueRect = this._buttonRect(14, y, "Continue");
+        var continueBtn = new lively.morphic.Button(continueRect, "Continue");
         lively.bindings.connect(continueBtn, "fire", self, "_onOptionsContinue");
         content.addMorph(continueBtn);
 
-        var backBtn = new lively.morphic.Button(lively.rect(122, y, 80, 24), "Back");
+        var backBtn = new lively.morphic.Button(this._buttonRect(continueRect.right() + 6, y, "Back"), "Back");
         lively.bindings.connect(backBtn, "fire", self, "buildChoiceScreen");
         content.addMorph(backBtn);
+        this._fitToContent();
+      },
+
+      // Shared selected/unselected look for a manual toggle-button group
+      // (Lively has no built-in radio widget). Root-caused live: Button's
+      // fill/borderColor model setters (setFill/applyStyle({fill:...}))
+      // update getFill()/getBorderColor() correctly but never actually
+      // touch the rendered DOM at all for this morph type -- confirmed by
+      // diffing shapeNode.outerHTML before/after setFill(), byte-identical.
+      // borderWidth is the only style property that does reach the DOM via
+      // the model layer. Rather than rely on that alone, this sets
+      // background/border-color directly on the rendered shapeNode -- a
+      // real, verified-working fix, not a workaround stacked on top of a
+      // guess -- so the selected state gets an unambiguous filled-blue look
+      // instead of depending solely on a 1px border-width difference.
+      _paintToggleButton: function _paintToggleButton(btn, isSelected) {
+        btn.setBorderWidth(isSelected ? 2 : 1);
+        var node = btn.renderContext().shapeNode;
+        // A solid fill made the button's own (green) label text hard to
+        // read against it -- a translucent tint over the button's existing
+        // white background keeps the selected state obvious while leaving
+        // the label legible.
+        node.style.background = isSelected ? 'rgba(51,122,204,0.25)' : '#fff';
+        node.style.borderColor = isSelected ? 'rgb(51,122,204)' : 'rgb(180,180,180)';
+        if (btn.label && btn.label.applyStyle) {
+          btn.label.applyStyle({ fontWeight: isSelected ? 'bold' : 'normal' });
+        }
       },
 
       _paintWordCount: function _paintWordCount() {
         if (!this._wc12Btn) return;
-        this._wc12Btn.applyStyle({ fill: this._wordCount === 12 ? Color.rgb(200, 220, 255) : Color.white });
-        this._wc24Btn.applyStyle({ fill: this._wordCount === 24 ? Color.rgb(200, 220, 255) : Color.white });
+        this._paintToggleButton(this._wc12Btn, this._wordCount === 12);
+        this._paintToggleButton(this._wc24Btn, this._wordCount === 24);
       },
       _selectWordCount12: function _selectWordCount12() { this._wordCount = 12; this._paintWordCount(); },
       _selectWordCount24: function _selectWordCount24() { this._wordCount = 24; this._paintWordCount(); },
 
       _paintKdf: function _paintKdf() {
         if (!this._kdfWebAuthnBtn) return;
-        this._kdfWebAuthnBtn.applyStyle({ fill: this._kdf === "webauthn-prf" ? Color.rgb(200, 220, 255) : Color.white });
-        this._kdfPasswordBtn.applyStyle({ fill: this._kdf === "argon2id" ? Color.rgb(200, 220, 255) : Color.white });
+        this._paintToggleButton(this._kdfWebAuthnBtn, this._kdf === "webauthn-prf");
+        this._paintToggleButton(this._kdfPasswordBtn, this._kdf === "argon2id");
         this._passwordInput.setVisible(this._kdf === "argon2id");
       },
       _selectKdfWebAuthn: function _selectKdfWebAuthn() { this._kdf = "webauthn-prf"; this._paintKdf(); },
@@ -240,20 +374,29 @@ module("lively.identity.WalletSetupDialog")
           { fontSize: 13 },
         );
 
+        // The vault's own content (mnemonic word grid, confirmation quiz,
+        // import textarea) needs real room -- more than the compact option
+        // screens this dialog otherwise auto-fits to (_fitToContent's
+        // screens can be as small as ~300x260). Explicitly grow to a fixed,
+        // generous size for this screen specifically, before positioning
+        // the iframe over it, instead of inheriting whatever size the
+        // previous screen left the window at -- confirmed live this was
+        // cutting off the vault's own input/textarea.
+        var vaultContentHeight = 420;
+        content.setExtent(pt(content.getExtent().x, vaultContentHeight));
+        var contentOffset = this.contentOffset || lively.pt(3, 22);
+        this.setExtent(pt(this.getExtent().x, vaultContentHeight + contentOffset.y + 6));
+
         // The vault iframe is positioned over this dialog's own content
         // area (never reparented — see WalletBridge.showVaultFrame's own
         // header for why: reparenting an iframe reloads it in most
         // browsers, which would wipe WalletVault's in-memory _unlockedDek
-        // mid-flow).
-        var shapeNode = this.renderContext().shapeNode;
-        var domRect = shapeNode.getBoundingClientRect();
-        var contentOffset = this.contentOffset || lively.pt(3, 22);
-        lively.identity.walletBridge.showVaultFrame({
-          top: domRect.top + contentOffset.y,
-          left: domRect.left + contentOffset.x,
-          width: domRect.width - contentOffset.x * 2,
-          height: domRect.height - contentOffset.y - contentOffset.x,
-        });
+        // mid-flow). Position is kept in sync continuously, not set once --
+        // see _startVaultFrameSync: the iframe is a plain position:fixed
+        // DOM element with no awareness of morphic window dragging, so a
+        // one-time snapshot left it visibly behind on screen the moment the
+        // user dragged this window (confirmed live, reported directly).
+        this._startVaultFrameSync();
 
         var options = {
           mode: this._mode,
@@ -262,10 +405,57 @@ module("lively.identity.WalletSetupDialog")
           password: this._password,
         };
         lively.identity.walletBridge.setup(options, function (err, result) {
+          self._stopVaultFrameSync();
           lively.identity.walletBridge.hideVaultFrame();
           if (err) return self.buildErrorScreen(err);
           self.buildSuccessScreen(result.address);
         });
+      },
+
+      // Keeps the vault iframe's on-screen position matching this dialog's
+      // actual current bounds for as long as the vault-visible screen is
+      // showing. requestAnimationFrame rather than a fixed-interval timer
+      // so it tracks smoothly during an active drag and costs nothing once
+      // idle (the loop still ticks at display refresh rate while idle, but
+      // showVaultFrame's cssText write is cheap and only actually changes
+      // anything during a drag).
+      _startVaultFrameSync: function _startVaultFrameSync() {
+        var self = this;
+        this._stopVaultFrameSync();
+        function sync() {
+          if (!self.world || !self.world()) return; // dialog was removed
+          var shapeNode = self.renderContext().shapeNode;
+          var domRect = shapeNode.getBoundingClientRect();
+          var contentOffset = self.contentOffset || lively.pt(3, 22);
+          lively.identity.walletBridge.showVaultFrame({
+            top: domRect.top + contentOffset.y,
+            left: domRect.left + contentOffset.x,
+            width: domRect.width - contentOffset.x * 2,
+            height: domRect.height - contentOffset.y - contentOffset.x,
+          });
+          self._vaultFrameSyncHandle = requestAnimationFrame(sync);
+        }
+        sync();
+      },
+
+      _stopVaultFrameSync: function _stopVaultFrameSync() {
+        if (this._vaultFrameSyncHandle) {
+          cancelAnimationFrame(this._vaultFrameSyncHandle);
+          this._vaultFrameSyncHandle = null;
+        }
+      },
+
+      // Safety net for closing the dialog (X button, Cancel) WHILE the
+      // vault screen is showing -- without this the sync loop above would
+      // keep running against a removed morph, and the vault iframe would
+      // stay visible (just stuck at its last position) instead of hiding.
+      // Wired via connectionRebuilder below, same pattern
+      // PublishToInventoryDialog.js uses for its own window-level cleanup.
+      onRemove: function onRemove() {
+        this._stopVaultFrameSync();
+        if (typeof lively !== "undefined" && lively.identity && lively.identity.walletBridge) {
+          lively.identity.walletBridge.hideVaultFrame();
+        }
       },
 
       // ─── recover-from-Files-backup screen ───────────────────────────────────
@@ -277,7 +467,7 @@ module("lively.identity.WalletSetupDialog")
       buildRecoverScreen: function buildRecoverScreen() {
         var self = this;
         var content = this._clearContent();
-        var y = this._addHeading(content, "Recover from Files Backup", 14);
+        var y = this._addHeading(content, "Recover from Backup", 14);
         y = this._addText(
           content,
           "If this wallet was ever backed up to your private Files, this " +
@@ -288,19 +478,21 @@ module("lively.identity.WalletSetupDialog")
         );
 
         var statusText = new lively.morphic.Text(lively.rect(14, y, content.getExtent().x - 28, 22), "");
-        statusText.applyStyle({ allowInput: false, fontSize: 11, fill: null, fontColor: Color.rgb(180, 40, 40) });
+        statusText.applyStyle({ allowInput: false, fontSize: 11, borderWidth: 0, fill: null, fontColor: Color.rgb(180, 40, 40) });
         content.addMorph(statusText);
         this._recoverStatusText = statusText;
         y += 30;
 
-        var recoverBtn = new lively.morphic.Button(lively.rect(14, y, 140, 24), "Recover Wallet");
+        var recoverRect = this._buttonRect(14, y, "Recover Wallet");
+        var recoverBtn = new lively.morphic.Button(recoverRect, "Recover Wallet");
         lively.bindings.connect(recoverBtn, "fire", self, "_onRecoverConfirm");
         content.addMorph(recoverBtn);
         this._recoverBtn = recoverBtn;
 
-        var backBtn = new lively.morphic.Button(lively.rect(162, y, 80, 24), "Back");
+        var backBtn = new lively.morphic.Button(this._buttonRect(recoverRect.right() + 6, y, "Back"), "Back");
         lively.bindings.connect(backBtn, "fire", self, "buildChoiceScreen");
         content.addMorph(backBtn);
+        this._fitToContent();
       },
 
       _onRecoverConfirm: function _onRecoverConfirm() {
@@ -335,9 +527,10 @@ module("lively.identity.WalletSetupDialog")
           { fontSize: 12 },
         );
 
-        var openBtn = new lively.morphic.Button(lively.rect(14, y, 100, 24), "Open Wallet");
+        var openBtn = new lively.morphic.Button(this._buttonRect(14, y, "Open Wallet"), "Open Wallet");
         lively.bindings.connect(openBtn, "fire", self, "_onOpenWallet");
         content.addMorph(openBtn);
+        this._fitToContent();
       },
 
       // ─── success / error screens ────────────────────────────────────────────
@@ -348,9 +541,10 @@ module("lively.identity.WalletSetupDialog")
         var y = this._addHeading(content, "Wallet created", 14);
         y = this._addText(content, "Address:\n" + address, y, { fontSize: 12 });
 
-        var openBtn = new lively.morphic.Button(lively.rect(14, y, 100, 24), "Open Wallet");
+        var openBtn = new lively.morphic.Button(this._buttonRect(14, y, "Open Wallet"), "Open Wallet");
         lively.bindings.connect(openBtn, "fire", self, "_onOpenWallet");
         content.addMorph(openBtn);
+        this._fitToContent();
       },
 
       _onOpenWallet: function _onOpenWallet() {
@@ -366,13 +560,15 @@ module("lively.identity.WalletSetupDialog")
         var y = this._addHeading(content, "Setup didn't complete", 14);
         y = this._addText(content, err && err.message ? err.message : String(err), y, { fontSize: 12, fontColor: Color.rgb(180, 40, 40) });
 
-        var retryBtn = new lively.morphic.Button(lively.rect(14, y, 100, 24), "Try Again");
+        var retryRect = this._buttonRect(14, y, "Try Again");
+        var retryBtn = new lively.morphic.Button(retryRect, "Try Again");
         lively.bindings.connect(retryBtn, "fire", self, "buildChoiceScreen");
         content.addMorph(retryBtn);
 
-        var closeBtn = new lively.morphic.Button(lively.rect(122, y, 80, 24), "Close");
+        var closeBtn = new lively.morphic.Button(this._buttonRect(retryRect.right() + 6, y, "Close"), "Close");
         lively.bindings.connect(closeBtn, "fire", self, "remove");
         content.addMorph(closeBtn);
+        this._fitToContent();
       },
     });
   }); // end module('lively.identity.WalletSetupDialog')
