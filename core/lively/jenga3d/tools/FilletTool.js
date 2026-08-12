@@ -39,6 +39,7 @@ module('lively.jenga3d.tools.FilletTool')
         var params = { of: ofId, edges: selectors };
         params[op === 'fillet' ? 'radius' : 'distance'] = amount;
 
+        this.featureTree.checkpoint(); // §6.2/§13 step 14
         var newId = this.featureTree.addNode(op, params);
         this.featureTree.setRoot(newId);
         this.sceneSync.rebuild(newId, thenDo);

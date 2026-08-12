@@ -39,7 +39,15 @@ module('lively.jenga3d.SceneSync')
       // and meshes the root) — dirtyNodeId only decides which in-flight
       // request a newer one is allowed to supersede.
       rebuild: function (dirtyNodeId, thenDo) {
-        if (!this.featureTree.root) return;
+        if (!this.featureTree.root) {
+          // §13 step 14: reachable now that undo can walk a tree back to
+          // empty — nothing to mesh, but the viewport's last mesh is
+          // stale and needs explicit teardown rather than being left on
+          // screen.
+          this.viewport.clearMesh();
+          if (thenDo) thenDo(null, null);
+          return;
+        }
         var nodeId = dirtyNodeId || this.featureTree.root;
         var self = this;
         lively.jenga3d.Worker.request(nodeId, 'evaluate', {
@@ -59,10 +67,33 @@ module('lively.jenga3d.SceneSync')
 
       // Convenience: update one node's params (§7.2), then rebuild keyed
       // on that node. This is the whole "non-interactive path" this step
-      // targets — a param change that isn't part of a drag stream.
+      // targets — a param change that isn't part of a drag stream. Also
+      // exactly the "FeatureTree node's params are committed" point §5.2
+      // names as the undo boundary (§6.2/§13 step 14) — the throttled
+      // complex-drag path (§5.3) deliberately calls featureTree.updateParams
+      // + rebuild directly instead of through here, so its intermediate
+      // frames don't pile up undo entries; only endDrag's final commit
+      // goes through updateParam.
       updateParam: function (nodeId, params, thenDo) {
+        this.featureTree.checkpoint();
         this.featureTree.updateParams(nodeId, params);
         this.rebuild(nodeId, thenDo);
+      },
+    },
+
+    'undo/redo (§6.2, §13 step 14)', {
+      // thenDo(err, didChange, mesh) — didChange is false when the
+      // respective stack was empty (nothing to do, no rebuild fired).
+      undo: function (thenDo) {
+        if (!this.featureTree.undo()) { if (thenDo) thenDo(null, false); return false; }
+        this.rebuild(this.featureTree.root, function (err, mesh) { if (thenDo) thenDo(err, true, mesh); });
+        return true;
+      },
+
+      redo: function (thenDo) {
+        if (!this.featureTree.redo()) { if (thenDo) thenDo(null, false); return false; }
+        this.rebuild(this.featureTree.root, function (err, mesh) { if (thenDo) thenDo(err, true, mesh); });
+        return true;
       },
     });
 

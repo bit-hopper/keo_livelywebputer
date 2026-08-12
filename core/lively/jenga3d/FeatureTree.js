@@ -25,7 +25,12 @@ module('lively.jenga3d.FeatureTree')
       // tree always recomputes fresh rather than trusting a serialized
       // snapshot of it. See onrestore below for why this alone isn't
       // enough (initialize doesn't run again on restore).
-      doNotSerialize: ['_classification'],
+      // §13 step 14: the undo/redo stacks are session-only editing
+      // history, not part of either Two Truths row (§7.1's table has no
+      // "undo history" row) — excluded from persistence the same way, so
+      // a reload/restore always starts with empty history rather than
+      // resurrecting stale snapshots from a previous session.
+      doNotSerialize: ['_classification', '_undoStack', '_redoStack'],
     },
 
     'initializing', {
@@ -35,6 +40,8 @@ module('lively.jenga3d.FeatureTree')
         this.root = json ? json.root : null;
         this.nodes = json ? json.nodes : {};
         this._classification = {}; // nodeId -> isPrimitiveEditable, cached per §5.1
+        this._undoStack = []; // §6.2: stack of prior toJSON() snapshots
+        this._redoStack = [];
       },
     },
 
@@ -43,9 +50,12 @@ module('lively.jenga3d.FeatureTree')
       // property at all (doNotSerialize excludes it, and initialize
       // doesn't run again on restore) — isPrimitiveEditable's `nodeId in
       // this._classification` check would throw on `undefined` rather
-      // than just miss the cache.
+      // than just miss the cache. Same reasoning extends _undoStack/
+      // _redoStack to plain arrays rather than leaving them undefined.
       onrestore: function () {
         this._classification = {};
+        this._undoStack = [];
+        this._redoStack = [];
       },
     },
 
@@ -153,6 +163,50 @@ module('lively.jenga3d.FeatureTree')
     'persistence', { // §6.2, §6.3, §8 — plain JSON, no OCCT/render state
       toJSON: function () {
         return { root: this.root, nodes: JSON.parse(JSON.stringify(this.nodes)) };
+      },
+    },
+
+    'undo/redo (§6.2)', {
+      // Captures the tree's current state as a point a caller can later
+      // undo back to. Deliberately NOT called from addNode/updateParams/
+      // etc. themselves — those also run during throttled complex-drag
+      // preview frames (§5.3), which are explicitly not undo points (only
+      // the drag's final commit is, per §5.2's own wording: "FeatureTree
+      // node's params are committed — this is the point an undo entry is
+      // created"). Callers that represent one completed, user-visible
+      // commit (SceneSync.updateParam; CreateBoxTool/CombineTool/
+      // FilletTool's own commit methods) call this themselves, right
+      // before mutating.
+      checkpoint: function () {
+        this._undoStack.push(this.toJSON());
+        this._redoStack = []; // a new commit invalidates whatever redo history existed
+      },
+
+      canUndo: function () { return this._undoStack.length > 0; },
+      canRedo: function () { return this._redoStack.length > 0; },
+
+      // Returns true if a step was actually undone/redone (false if the
+      // respective stack was empty). Callers that also drive a worker
+      // rebuild (e.g. lively.jenga3d.SceneSync) check this return value
+      // to decide whether a rebuild is even needed.
+      undo: function () {
+        if (!this.canUndo()) return false;
+        this._redoStack.push(this.toJSON());
+        this._restore(this._undoStack.pop());
+        return true;
+      },
+
+      redo: function () {
+        if (!this.canRedo()) return false;
+        this._undoStack.push(this.toJSON());
+        this._restore(this._redoStack.pop());
+        return true;
+      },
+
+      _restore: function (json) {
+        this.root = json.root;
+        this.nodes = json.nodes;
+        this._invalidateClassification();
       },
     });
 

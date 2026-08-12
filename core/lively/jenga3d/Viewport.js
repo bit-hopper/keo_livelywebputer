@@ -238,6 +238,29 @@ module('lively.jenga3d.Viewport')
         this._render();
       },
 
+      // §13 step 14: undoing all the way back past a tree's first commit
+      // leaves featureTree.root null — nothing to rebuild/mesh, so the
+      // previously-displayed mesh needs to be explicitly torn down rather
+      // than left showing stale geometry for a now-empty tree.
+      clearMesh: function () {
+        if (!this._three) { this._pendingMesh = null; return; }
+        if (this._mesh) {
+          this._three.scene.remove(this._mesh);
+          this._mesh.geometry.dispose();
+          this._mesh.material.forEach(function (m) { m.dispose(); });
+          this._mesh = null;
+        }
+        this._highlightedGroupIndex = null;
+        if (this._edgeLines) {
+          this._three.scene.remove(this._edgeLines);
+          this._edgeLines.geometry.dispose();
+          this._edgeLines.material.forEach(function (m) { m.dispose(); });
+          this._edgeLines = null;
+        }
+        this._highlightedEdgeGroupIndex = null;
+        this._render();
+      },
+
       // Points the camera at the mesh's bounding sphere so whatever gets
       // handed to setMesh is actually visible regardless of its scale —
       // real parts built via CreateBoxTool (§13 step 6) will be a handful

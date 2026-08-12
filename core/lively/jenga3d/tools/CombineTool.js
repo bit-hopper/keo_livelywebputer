@@ -38,6 +38,7 @@ module('lively.jenga3d.tools.CombineTool')
         if (!this.featureTree.getNode(nodeIdA) || !this.featureTree.getNode(nodeIdB)) {
           throw new Error('lively.jenga3d.tools.CombineTool: unknown operand nodeId');
         }
+        this.featureTree.checkpoint(); // §6.2/§13 step 14
         var newId = this.featureTree.addNode(op, { a: nodeIdA, b: nodeIdB });
         this.featureTree.setRoot(newId);
         this.sceneSync.rebuild(newId, thenDo);

@@ -148,6 +148,7 @@ module('lively.jenga3d.tools.CreateBoxTool')
         var width = Math.abs(end.x - start.x);
         var depth = Math.abs(end.z - start.z);
         if (width < this.MIN_DRAG || depth < this.MIN_DRAG) return; // discard near-zero/stray-click drags
+        this.featureTree.checkpoint(); // §6.2/§13 step 14 — one undo entry per completed drag-to-create
         var cx = (start.x + end.x) / 2, cz = (start.z + end.z) / 2;
 
         // createBox always builds from its own local origin outward
