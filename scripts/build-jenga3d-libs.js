@@ -4,8 +4,12 @@
  * Build step (Jenga3Dspec_v0.md §3, §13 steps 1-2) producing three files
  * under core/lib/jenga3d/:
  *
- *   jenga3d-deps.js  — `three`, bundled as a browser IIFE (window.jenga3dDeps.THREE).
- *                       Main-thread only, for lively.jenga3d.Viewport (§13 step 4).
+ *   jenga3d-deps.js  — `three` plus its STLExporter/OBJExporter (added §13 step
+ *                       11, from three/examples/jsm/exporters/ — not part of the
+ *                       core `three` package export, need bundling separately),
+ *                       as a browser IIFE (window.jenga3dDeps.{THREE,STLExporter,
+ *                       OBJExporter}). Main-thread only, for lively.jenga3d.Viewport
+ *                       (§13 step 4) and lively.jenga3d.Export (§13 step 11).
  *   occt-worker.js   — core/lively/jenga3d/occt-worker-src.js (the actual worker
  *                       protocol/Disposer/evaluate logic, §4) bundled together
  *                       with the OCCT Emscripten glue. Worker-only.
@@ -61,7 +65,9 @@ fs.mkdirSync(outDir, { recursive: true });
 function buildDeps() {
   var entryContents = [
     "import * as THREE from 'three';",
-    "window.jenga3dDeps = { THREE: THREE };",
+    "import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';",
+    "import { OBJExporter } from 'three/examples/jsm/exporters/OBJExporter.js';",
+    "window.jenga3dDeps = { THREE: THREE, STLExporter: STLExporter, OBJExporter: OBJExporter };",
   ].join('\n');
 
   return esbuild.build({

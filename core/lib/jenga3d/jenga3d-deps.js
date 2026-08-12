@@ -30939,8 +30939,263 @@ void main() {
     }
   }
 
+  // node_modules/three/examples/jsm/exporters/STLExporter.js
+  var STLExporter = class {
+    parse(scene, options = {}) {
+      options = Object.assign({
+        binary: false
+      }, options);
+      const binary = options.binary;
+      const objects = [];
+      let triangles = 0;
+      scene.traverse(function(object) {
+        if (object.isMesh) {
+          const geometry = object.geometry;
+          const index = geometry.index;
+          const positionAttribute = geometry.getAttribute("position");
+          triangles += index !== null ? index.count / 3 : positionAttribute.count / 3;
+          objects.push({
+            object3d: object,
+            geometry
+          });
+        }
+      });
+      let output;
+      let offset = 80;
+      if (binary === true) {
+        const bufferLength = triangles * 2 + triangles * 3 * 4 * 4 + 80 + 4;
+        const arrayBuffer = new ArrayBuffer(bufferLength);
+        output = new DataView(arrayBuffer);
+        output.setUint32(offset, triangles, true);
+        offset += 4;
+      } else {
+        output = "";
+        output += "solid exported\n";
+      }
+      const vA = new Vector3();
+      const vB = new Vector3();
+      const vC = new Vector3();
+      const cb = new Vector3();
+      const ab = new Vector3();
+      const normal = new Vector3();
+      for (let i = 0, il = objects.length; i < il; i++) {
+        const object = objects[i].object3d;
+        const geometry = objects[i].geometry;
+        const index = geometry.index;
+        const positionAttribute = geometry.getAttribute("position");
+        if (index !== null) {
+          for (let j = 0; j < index.count; j += 3) {
+            const a = index.getX(j + 0);
+            const b = index.getX(j + 1);
+            const c = index.getX(j + 2);
+            writeFace(a, b, c, positionAttribute, object);
+          }
+        } else {
+          for (let j = 0; j < positionAttribute.count; j += 3) {
+            const a = j + 0;
+            const b = j + 1;
+            const c = j + 2;
+            writeFace(a, b, c, positionAttribute, object);
+          }
+        }
+      }
+      if (binary === false) {
+        output += "endsolid exported\n";
+      }
+      return output;
+      function writeFace(a, b, c, positionAttribute, object) {
+        vA.fromBufferAttribute(positionAttribute, a);
+        vB.fromBufferAttribute(positionAttribute, b);
+        vC.fromBufferAttribute(positionAttribute, c);
+        if (object.isSkinnedMesh === true) {
+          object.applyBoneTransform(a, vA);
+          object.applyBoneTransform(b, vB);
+          object.applyBoneTransform(c, vC);
+        }
+        vA.applyMatrix4(object.matrixWorld);
+        vB.applyMatrix4(object.matrixWorld);
+        vC.applyMatrix4(object.matrixWorld);
+        writeNormal(vA, vB, vC);
+        writeVertex(vA);
+        writeVertex(vB);
+        writeVertex(vC);
+        if (binary === true) {
+          output.setUint16(offset, 0, true);
+          offset += 2;
+        } else {
+          output += "		endloop\n";
+          output += "	endfacet\n";
+        }
+      }
+      function writeNormal(vA2, vB2, vC2) {
+        cb.subVectors(vC2, vB2);
+        ab.subVectors(vA2, vB2);
+        cb.cross(ab).normalize();
+        normal.copy(cb).normalize();
+        if (binary === true) {
+          output.setFloat32(offset, normal.x, true);
+          offset += 4;
+          output.setFloat32(offset, normal.y, true);
+          offset += 4;
+          output.setFloat32(offset, normal.z, true);
+          offset += 4;
+        } else {
+          output += "	facet normal " + normal.x + " " + normal.y + " " + normal.z + "\n";
+          output += "		outer loop\n";
+        }
+      }
+      function writeVertex(vertex2) {
+        if (binary === true) {
+          output.setFloat32(offset, vertex2.x, true);
+          offset += 4;
+          output.setFloat32(offset, vertex2.y, true);
+          offset += 4;
+          output.setFloat32(offset, vertex2.z, true);
+          offset += 4;
+        } else {
+          output += "			vertex " + vertex2.x + " " + vertex2.y + " " + vertex2.z + "\n";
+        }
+      }
+    }
+  };
+
+  // node_modules/three/examples/jsm/exporters/OBJExporter.js
+  var OBJExporter = class {
+    parse(object) {
+      let output = "";
+      let indexVertex = 0;
+      let indexVertexUvs = 0;
+      let indexNormals = 0;
+      const vertex2 = new Vector3();
+      const color = new Color();
+      const normal = new Vector3();
+      const uv = new Vector2();
+      const face = [];
+      function parseMesh(mesh) {
+        let nbVertex = 0;
+        let nbNormals = 0;
+        let nbVertexUvs = 0;
+        const geometry = mesh.geometry;
+        const normalMatrixWorld = new Matrix3();
+        const vertices = geometry.getAttribute("position");
+        const normals = geometry.getAttribute("normal");
+        const uvs = geometry.getAttribute("uv");
+        const indices = geometry.getIndex();
+        output += "o " + mesh.name + "\n";
+        if (mesh.material && mesh.material.name) {
+          output += "usemtl " + mesh.material.name + "\n";
+        }
+        if (vertices !== void 0) {
+          for (let i = 0, l = vertices.count; i < l; i++, nbVertex++) {
+            vertex2.fromBufferAttribute(vertices, i);
+            vertex2.applyMatrix4(mesh.matrixWorld);
+            output += "v " + vertex2.x + " " + vertex2.y + " " + vertex2.z + "\n";
+          }
+        }
+        if (uvs !== void 0) {
+          for (let i = 0, l = uvs.count; i < l; i++, nbVertexUvs++) {
+            uv.fromBufferAttribute(uvs, i);
+            output += "vt " + uv.x + " " + uv.y + "\n";
+          }
+        }
+        if (normals !== void 0) {
+          normalMatrixWorld.getNormalMatrix(mesh.matrixWorld);
+          for (let i = 0, l = normals.count; i < l; i++, nbNormals++) {
+            normal.fromBufferAttribute(normals, i);
+            normal.applyMatrix3(normalMatrixWorld).normalize();
+            output += "vn " + normal.x + " " + normal.y + " " + normal.z + "\n";
+          }
+        }
+        if (indices !== null) {
+          for (let i = 0, l = indices.count; i < l; i += 3) {
+            for (let m = 0; m < 3; m++) {
+              const j = indices.getX(i + m) + 1;
+              face[m] = indexVertex + j + (normals || uvs ? "/" + (uvs ? indexVertexUvs + j : "") + (normals ? "/" + (indexNormals + j) : "") : "");
+            }
+            output += "f " + face.join(" ") + "\n";
+          }
+        } else {
+          for (let i = 0, l = vertices.count; i < l; i += 3) {
+            for (let m = 0; m < 3; m++) {
+              const j = i + m + 1;
+              face[m] = indexVertex + j + (normals || uvs ? "/" + (uvs ? indexVertexUvs + j : "") + (normals ? "/" + (indexNormals + j) : "") : "");
+            }
+            output += "f " + face.join(" ") + "\n";
+          }
+        }
+        indexVertex += nbVertex;
+        indexVertexUvs += nbVertexUvs;
+        indexNormals += nbNormals;
+      }
+      function parseLine(line) {
+        let nbVertex = 0;
+        const geometry = line.geometry;
+        const type = line.type;
+        const vertices = geometry.getAttribute("position");
+        output += "o " + line.name + "\n";
+        if (vertices !== void 0) {
+          for (let i = 0, l = vertices.count; i < l; i++, nbVertex++) {
+            vertex2.fromBufferAttribute(vertices, i);
+            vertex2.applyMatrix4(line.matrixWorld);
+            output += "v " + vertex2.x + " " + vertex2.y + " " + vertex2.z + "\n";
+          }
+        }
+        if (type === "Line") {
+          output += "l ";
+          for (let j = 1, l = vertices.count; j <= l; j++) {
+            output += indexVertex + j + " ";
+          }
+          output += "\n";
+        }
+        if (type === "LineSegments") {
+          for (let j = 1, k = j + 1, l = vertices.count; j < l; j += 2, k = j + 1) {
+            output += "l " + (indexVertex + j) + " " + (indexVertex + k) + "\n";
+          }
+        }
+        indexVertex += nbVertex;
+      }
+      function parsePoints(points) {
+        let nbVertex = 0;
+        const geometry = points.geometry;
+        const vertices = geometry.getAttribute("position");
+        const colors = geometry.getAttribute("color");
+        output += "o " + points.name + "\n";
+        if (vertices !== void 0) {
+          for (let i = 0, l = vertices.count; i < l; i++, nbVertex++) {
+            vertex2.fromBufferAttribute(vertices, i);
+            vertex2.applyMatrix4(points.matrixWorld);
+            output += "v " + vertex2.x + " " + vertex2.y + " " + vertex2.z;
+            if (colors !== void 0) {
+              color.fromBufferAttribute(colors, i).convertLinearToSRGB();
+              output += " " + color.r + " " + color.g + " " + color.b;
+            }
+            output += "\n";
+          }
+          output += "p ";
+          for (let j = 1, l = vertices.count; j <= l; j++) {
+            output += indexVertex + j + " ";
+          }
+          output += "\n";
+        }
+        indexVertex += nbVertex;
+      }
+      object.traverse(function(child) {
+        if (child.isMesh === true) {
+          parseMesh(child);
+        }
+        if (child.isLine === true) {
+          parseLine(child);
+        }
+        if (child.isPoints === true) {
+          parsePoints(child);
+        }
+      });
+      return output;
+    }
+  };
+
   // jenga3d-deps-entry.js
-  window.jenga3dDeps = { THREE: three_module_exports };
+  window.jenga3dDeps = { THREE: three_module_exports, STLExporter, OBJExporter };
 })();
 /*! Bundled license information:
 
