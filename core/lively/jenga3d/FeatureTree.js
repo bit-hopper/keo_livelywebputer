@@ -13,6 +13,7 @@
  */
 
 module('lively.jenga3d.FeatureTree')
+  .requires()
   .toRun(function () {
 
     var PRIMITIVE_OPS = ['createBox', 'createCylinder', 'createSphere'];

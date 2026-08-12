@@ -19,6 +19,7 @@
  */
 
 module('lively.jenga3d.Worker')
+  .requires()
   .toRun(function () {
 
     lively.jenga3d.Worker = {
