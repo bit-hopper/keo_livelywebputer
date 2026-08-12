@@ -1465,13 +1465,17 @@ lively.morphic.Morph.addMethods(
 
         // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
         // partsbin related
-        items.push(['Publish', function(evt) { self.copyToPartsBinWithUserRequest(); }]);
-        if (typeof lively !== 'undefined' && lively.identity && lively.identity.did && lively.identity.did.isLoggedIn()) {
+        // "Publish" (old WebDAV flow) is only offered signed-out — a signed-in
+        // user gets the identity-aware "Publish to Inventory" instead, not both.
+        var isSignedIn = typeof lively !== 'undefined' && lively.identity && lively.identity.did && lively.identity.did.isLoggedIn();
+        if (!isSignedIn) {
+            items.push(['Publish', function(evt) { self.copyToPartsBinWithUserRequest(); }]);
+        } else {
             items.push(['Publish to Inventory', function(evt) { self.promptPublishToInventory(); }]);
         }
         if (this.reset) {
             [].pushAt
-            var idx=-1; items.detect(function(item, i) { idx = i; return item[0] === 'Publish'; });
+            var idx=-1; items.detect(function(item, i) { idx = i; return item[0] === 'Publish' || item[0] === 'Publish to Inventory'; });
             idx > -1 && items.pushAt(['Reset', this.reset.bind(this)], idx+1);
         }
 
