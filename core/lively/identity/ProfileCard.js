@@ -328,10 +328,21 @@ module("lively.identity.ProfileCard")
           // by the circular clip mask on any non-circular SVG.
           var CIRC = 38, GAP = 20, ICON_PAD = 6;
           var ICON_BOX = CIRC - ICON_PAD * 2;
-          var ry = dividerY + 12;
           var rowEndX = pw - contentX;
           var rowStartX = rowEndX - (5 * CIRC + 4 * GAP);
           var accounts = (payload.socialAccounts || []).slice(0, 5);
+
+          // "Connect" caption — centered over the icon row, between the
+          // divider and the circles, in the same small-caption style as
+          // the astro box's item labels (fontSize 9, gray).
+          var connectLbl = new lively.morphic.Text(
+            lively.rect(rowStartX, dividerY + 6, rowEndX - rowStartX, 12), "Connect");
+          connectLbl.applyStyle({ allowInput: false, fontSize: 9,
+            textColor: Color.rgb(160, 160, 160),
+            fill: Color.rgba(0, 0, 0, 0), borderWidth: 0, align: 'center' });
+          pane.addMorph(connectLbl);
+
+          var ry = dividerY + 6 + 12 + 6;
 
           function addFilledCircle(cx, acc) {
             var btn = new lively.morphic.Button(lively.rect(cx, ry, CIRC, CIRC), '');
