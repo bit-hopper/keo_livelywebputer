@@ -17,6 +17,7 @@ module("lively.identity.ProfileCard")
     "lively.identity.DID",
     "lively.identity.FileCrypto",
     "lively.identity.PostCardUtils",
+    "lively.identity.WebKey",
     "lively.persistence.BuildSpec",
     "lively.morphic.Complete",
   )
@@ -76,8 +77,15 @@ module("lively.identity.ProfileCard")
                 : fetch("/@" + target + "/did-document", { credentials: "include" })
                     .then(function (r) { return r.ok ? r.json() : null; })
                     .catch(function () { return null; });
-              dp.then(function (didDoc) {
-                self._renderView(target, payload, didDoc, env.did);
+              var domainsP = fetch("/@" + target + "/domains", { credentials: "include" })
+                .then(function (r) { return r.ok ? r.json() : { domains: [] }; })
+                .then(function (r) { return r.domains || []; })
+                .catch(function () { return []; });
+              Promise.all([dp, domainsP]).then(function (results) {
+                var didDoc  = results[0];
+                var domains = results[1];
+                self._domains = domains;
+                self._renderView(target, payload, didDoc, env.did, domains);
               });
             });
           })
@@ -99,11 +107,59 @@ module("lively.identity.ProfileCard")
 
       // ── read view ────────────────────────────────────────────────────────────
 
-      _renderView: function _renderView(handle, payload, didDoc, did) {
+      _renderView: function _renderView(handle, payload, didDoc, did, domains) {
         var self = this;
         var pane = this.targetMorph;
         if (!pane) return;
         pane.removeAllMorphs();
+
+        // Preset platform catalog for the social-account circles below.
+        // Declared locally (not shared from outer module scope) because
+        // lively.BuildSpec methods are rehydrated via evalJS from their
+        // source text, which discards any closure over the enclosing
+        // .toRun(function(){...}) scope — same reason SIGNS/GLYPHS are
+        // redeclared locally rather than shared, see _renderEdit below.
+        // Each key doubles as the icon's filename under
+        // core/media/social-icons/<key>.svg.
+        var SOCIAL_PLATFORMS = [
+          { key: 'discord',     label: 'Discord' },
+          { key: 'spotify',     label: 'Spotify' },
+          { key: 'instagram',   label: 'Instagram' },
+          { key: 'github',      label: 'GitHub' },
+          { key: 'youtube',     label: 'YouTube' },
+          { key: 'tiktok',      label: 'TikTok' },
+          { key: 'twitch',      label: 'Twitch' },
+          { key: 'bluesky',     label: 'Bluesky' },
+          { key: 'blacksky',    label: 'Blacksky' },
+          { key: 'behance',     label: 'Behance' },
+          { key: 'steam',       label: 'Steam' },
+          { key: 'cashapp',     label: 'Cash App' },
+          { key: 'pinterest',   label: 'Pinterest' },
+          { key: 'arena',       label: 'Are.na' },
+          { key: 'goodreads',   label: 'Goodreads' },
+          { key: 'applemusic',  label: 'Apple Music' },
+          { key: 'ytmusic',     label: 'YT Music' },
+          { key: 'storygraph',  label: 'StoryGraph' },
+          { key: 'itch',        label: 'itch.io' },
+          { key: 'psn',         label: 'PlayStation Network' },
+          { key: 'mynintendo',  label: 'My Nintendo' },
+          { key: 'xbox',        label: 'Xbox' },
+          { key: 'epic',        label: 'Epic Games' },
+          { key: 'tumblr',      label: 'Tumblr' },
+          { key: 'threads',     label: 'Threads' },
+        ];
+        function socialPlatformInfo(key) {
+          for (var i = 0; i < SOCIAL_PLATFORMS.length; i++) {
+            if (SOCIAL_PLATFORMS[i].key === key) return SOCIAL_PLATFORMS[i];
+          }
+          return null;
+        }
+        function socialIconUrl(platformKey) {
+          // Absolute path (leading slash) — this card is normally viewed at
+          // a nested URL like /@handle/objId, where a relative path would
+          // resolve against that path instead of site root and 404.
+          return '/core/media/social-icons/' + platformKey + '.svg';
+        }
 
         // Store context on the pane so button onFire handlers can reach it
         // without relying on closures (evalJS loses them).
@@ -177,7 +233,7 @@ module("lively.identity.ProfileCard")
         if (hasAstro || self._isOwner) {
           var astroBox = new lively.morphic.Box(
             lively.rect(bx, by, BW, astroBoxH));
-          astroBox.applyStyle({ fill: Color.rgb(249, 249, 251),
+          astroBox.applyStyle({ fill: Color.rgb(242, 203, 217),
             borderRadius: 8, borderColor: Color.rgb(218, 218, 224), borderWidth: 1 });
           pane.addMorph(astroBox);
           astroItems.forEach(function (item, i) {
@@ -250,6 +306,118 @@ module("lively.identity.ProfileCard")
         var dividerY = y;
         y += 12;
 
+        // social account circles — right column, directly under the
+        // divider, in the space below the astro-signs box/Friends button
+        // (same x = bx as that column, so it reads as one aligned strip).
+        // Owner always sees all 5 slots (filled + empty "add" placeholders,
+        // clicking an empty one jumps straight to the Accounts tab);
+        // visitors only see the filled ones, packed with no gaps for the
+        // slots the owner hasn't used.
+        (function () {
+          // CIRC=38 (up from the original 32) with a generous GAP=20 so the
+          // row reads as clearly-separated icons rather than a packed
+          // strip. The row is right-aligned to the card's existing right
+          // margin (pw - contentX, same edge the divider/astro box use)
+          // and, since 5*CIRC+4*GAP (270px) is wider than the ~190px astro
+          // -box column below which it sits, its start point extends left
+          // of that column into the space below the "encryption status"
+          // line — safe because that line is short (ends around x=300) and
+          // nothing else on the left column shares this row's y.
+          // ICON_PAD insets the icon inside the circle rather than filling
+          // it edge-to-edge, since a full-bleed icon gets its corners cut
+          // by the circular clip mask on any non-circular SVG.
+          var CIRC = 38, GAP = 20, ICON_PAD = 6;
+          var ICON_BOX = CIRC - ICON_PAD * 2;
+          var ry = dividerY + 12;
+          var rowEndX = pw - contentX;
+          var rowStartX = rowEndX - (5 * CIRC + 4 * GAP);
+          var accounts = (payload.socialAccounts || []).slice(0, 5);
+
+          function addFilledCircle(cx, acc) {
+            var btn = new lively.morphic.Button(lively.rect(cx, ry, CIRC, CIRC), '');
+            btn.applyStyle({ fill: Color.rgb(255, 255, 255), borderRadius: CIRC / 2,
+              borderColor: Color.rgb(225, 225, 231), borderWidth: 1 });
+            btn.setAppearanceStylingMode(false);
+            btn.setBorderStylingMode(false);
+            var icon = new lively.morphic.Image(lively.rect(ICON_PAD, ICON_PAD, ICON_BOX, ICON_BOX));
+            icon.applyStyle({ borderWidth: 0 });
+            icon.ignoreEvents();
+            btn.addMorph(icon);
+            // useNativeExtent + max{Width,Height} scales the icon down to
+            // fit within its padded box while preserving aspect ratio
+            // (plain setImageURL stretches to exactly fill ICON_BOX x
+            // ICON_BOX, distorting any non-square icon) — then re-center
+            // it, since the resulting extent may be narrower/shorter than
+            // ICON_BOX once aspect ratio is preserved.
+            icon.setImageURL(socialIconUrl(acc.platform),
+              { useNativeExtent: true, maxWidth: ICON_BOX, maxHeight: ICON_BOX },
+              function (err, loadedIcon) {
+                if (err) return;
+                var ext = loadedIcon.getExtent();
+                loadedIcon.setPosition(lively.pt(
+                  Math.round((CIRC - ext.x) / 2),
+                  Math.round((CIRC - ext.y) / 2)));
+                // lively.morphic.Shapes.Image's <img> DOM node is created
+                // with `position: absolute` but no explicit left/top
+                // (Rendering.js's htmlImg() leaves them commented out) — as
+                // a child of this circle's Button, it inherits the
+                // Button's own `text-align: center` styling (meant for
+                // centering the button's label), which shifts an <img>
+                // with left:auto right by roughly half its own width.
+                // Pin left/top explicitly so the morph's own (already
+                // correct) position isn't overridden by that inherited
+                // centering.
+                var imgNode = loadedIcon.renderContext && loadedIcon.renderContext().imgNode;
+                if (imgNode) { imgNode.style.left = '0px'; imgNode.style.top = '0px'; }
+              });
+            btn._openUrl = acc.url;
+            btn.addScript(function doAction() {
+              if (this._openUrl) window.open(this._openUrl, '_blank', 'noopener');
+            });
+            lively.bindings.connect(btn, 'fire', btn, 'doAction');
+            pane.addMorph(btn);
+            var info = socialPlatformInfo(acc.platform);
+            btn.renderContext().morphNode.title = info ? info.label : acc.platform;
+          }
+
+          function addEmptyCircle(cx) {
+            var btn = new lively.morphic.Button(lively.rect(cx, ry, CIRC, CIRC), '');
+            btn.applyStyle({
+              fill: new lively.morphic.LinearGradient([
+                { offset: 0, color: Color.rgb(230, 230, 238) },
+                { offset: 1, color: Color.rgb(248, 248, 251) },
+              ], 'northwest'),
+              borderRadius: CIRC / 2,
+              borderColor: Color.rgb(222, 222, 228), borderWidth: 1,
+            });
+            btn.setAppearanceStylingMode(false);
+            btn.setBorderStylingMode(false);
+            btn.addScript(function doAction() {
+              var pane = this.owner;
+              var win  = pane && pane.owner;
+              if (!win) return;
+              var env = win._envelope;
+              var p   = (env && env.record && env.record.payload) || {};
+              win._renderEdit(win._handle, p, win._currentDid, 'accounts');
+            });
+            lively.bindings.connect(btn, 'fire', btn, 'doAction');
+            pane.addMorph(btn);
+            btn.renderContext().morphNode.title = 'Add a social account';
+          }
+
+          if (self._isOwner) {
+            for (var i = 0; i < 5; i++) {
+              var cx = rowStartX + i * (CIRC + GAP);
+              if (accounts[i]) addFilledCircle(cx, accounts[i]);
+              else addEmptyCircle(cx);
+            }
+          } else {
+            accounts.forEach(function (acc, i) {
+              addFilledCircle(rowStartX + i * (CIRC + GAP), acc);
+            });
+          }
+        })();
+
         // encryption status — whether this account can receive private/shared
         // postcards. Surfaced here (rather than only failing at Send time,
         // see PostCardEditor.js's Send dialog) so it's visible up front,
@@ -259,7 +427,8 @@ module("lively.identity.ProfileCard")
           ? "🔒 Can receive encrypted postcards"
           : "🔓 Hasn't set up encryption yet";
         var encColor = payload.accountX25519Pub ? [46, 125, 50] : [170, 130, 20];
-        pane.addMorph(txt(encLabel, contentX, y, cw, 14, 10,
+        var encW = Math.min(cw, Math.ceil(encLabel.length * 7.5) + 16);
+        pane.addMorph(txt(encLabel, contentX, y, encW, 14, 10,
           encColor[0], encColor[1], encColor[2], false));
         y += 17;
 
@@ -312,11 +481,13 @@ module("lively.identity.ProfileCard")
           friendsBtn._handle  = handle;
           friendsBtn._isOwner = !!self._isOwner;
           friendsBtn.addScript(function doAction() {
+            var pane   = this.owner;
             var FW     = 280;
             var FH     = this._isOwner ? 160 : 120;
-            var btnPos = this.getGlobalTransform().getTranslation();
+            var anchorPos = this.getPosition();
+            var px = pane ? Math.min(anchorPos.x, Math.max(0, pane.getExtent().x - FW - 8)) : anchorPos.x;
             var panel  = new lively.morphic.Box(
-              lively.rect(btnPos.x, btnPos.y + this.getExtent().y + 4, FW, FH));
+              lively.rect(px, anchorPos.y + this.getExtent().y + 4, FW, FH));
             panel.applyStyle({ fill: Color.white, borderRadius: 8,
               borderColor: Color.rgb(218, 218, 224), borderWidth: 1 });
             var titleM = new lively.morphic.Text(lively.rect(12, 10, FW - 44, 18), 'Friends');
@@ -359,7 +530,7 @@ module("lively.identity.ProfileCard")
             closeBtn.addScript(function doAction() { this.owner.remove(); });
             lively.bindings.connect(closeBtn, 'fire', closeBtn, 'doAction');
             panel.addMorph(closeBtn);
-            $world.addMorph(panel);
+            if (pane) pane.addMorph(panel);
           });
           lively.bindings.connect(friendsBtn, 'fire', friendsBtn, 'doAction');
           pane.addMorph(friendsBtn);
@@ -396,6 +567,59 @@ module("lively.identity.ProfileCard")
         pane.addMorph(copyBtn);
         copyBtn.renderContext().morphNode.title = 'Copy DID';
         y += 24;
+
+        // Domain — same heading/content convention as "Verified identity"/DID
+        // above: gray label line, then the value(s) on their own line(s).
+        // Verified domains get a green tick immediately after the domain
+        // text (not way off at the content edge); lapsed ones get a yellow
+        // "?" (tooltip "Invalid domain"). The @handle line up top is never
+        // replaced by a domain, verified or not, so an invalid domain
+        // "falls back to the original handle" by construction.
+        if (domains && domains.length) {
+          pane.addMorph(txt("Domain", contentX, y, cw, 16, 10, 140, 140, 140, false)).applyStyle({ fixedWidth: false });
+          y += 18;
+          domains.forEach(function (d) {
+            var isVerified = d.status === 'verified';
+            var domW = Math.ceil(d.domain.length * 7.5) + 16;
+            pane.addMorph(txt(d.domain, contentX, y, domW, 16, 10, 50, 50, 50, false));
+            var badge = txt(isVerified ? 'Verified!' : 'Invalid!', contentX + domW + 4, y, 70, 16, 10,
+              isVerified ? 34 : 200, isVerified ? 139 : 150, isVerified ? 34 : 0, false);
+            pane.addMorph(badge);
+            badge.renderContext().morphNode.title = isVerified ? 'Verified domain' : 'Invalid domain';
+            y += 20;
+          });
+          y += 6;
+        }
+
+        // ETH address — heading line, then the copiable address on its own line.
+        if (payload.ethAddress) {
+          pane.addMorph(txt("ETH address", contentX, y, cw, 16, 10, 140, 140, 140, false)).applyStyle({ fixedWidth: false });
+          y += 18;
+          var addrStr = lively.identity.postCardUtils.truncateAddress(payload.ethAddress);
+          var addrW = Math.ceil(addrStr.length * 7.5) + 16;
+          pane.addMorph(txt(addrStr, contentX, y, addrW, 16, 10, 50, 50, 50, false));
+          var addrCopyBtn = new lively.morphic.Button(lively.rect(contentX + addrW + 4, y - 2, 26, 22), '⧉︎');
+          addrCopyBtn.applyStyle({ fill: Color.rgb(240, 240, 240),
+            borderColor: Color.rgb(200, 200, 200), borderRadius: 4,
+            fontSize: 14, textColor: Color.rgb(80, 80, 80), borderWidth: 1 });
+          addrCopyBtn.setAppearanceStylingMode(false);
+          addrCopyBtn.setBorderStylingMode(false);
+          addrCopyBtn._copyText = payload.ethAddress;
+          addrCopyBtn.addScript(function doAction() {
+            var theText = this._copyText;
+            var btn     = this;
+            if (theText && navigator.clipboard) {
+              navigator.clipboard.writeText(theText).then(function () {
+                btn.setLabel('✓︎');
+                setTimeout(function () { btn.setLabel('⧉︎'); }, 1500);
+              });
+            }
+          });
+          lively.bindings.connect(addrCopyBtn, 'fire', addrCopyBtn, 'doAction');
+          pane.addMorph(addrCopyBtn);
+          addrCopyBtn.renderContext().morphNode.title = 'Copy ETH address';
+          y += 24;
+        }
 
         // device
         pane.addMorph(txt("Device", contentX, y, cw, 16, 10, 140, 140, 140, false)).applyStyle({ fixedWidth: false });
@@ -452,12 +676,56 @@ module("lively.identity.ProfileCard")
 
       // ── edit view ────────────────────────────────────────────────────────────
 
-      _renderEdit: function _renderEdit(handle, payload, did) {
+      _renderEdit: function _renderEdit(handle, payload, did, tab) {
         var self = this;
         var pane = this.targetMorph;
         if (!pane) return;
         pane.removeAllMorphs();
-        self._editMode = true;
+        self._editMode    = true;
+        self._editPayload = payload; // authoritative merged state across tab switches
+        tab = tab || 'profile';
+
+        // Local copy — see _renderView's identical block for why this can't
+        // be shared from outer module scope (evalJS closure loss).
+        var SOCIAL_PLATFORMS = [
+          { key: 'discord',     label: 'Discord' },
+          { key: 'spotify',     label: 'Spotify' },
+          { key: 'instagram',   label: 'Instagram' },
+          { key: 'github',      label: 'GitHub' },
+          { key: 'youtube',     label: 'YouTube' },
+          { key: 'tiktok',      label: 'TikTok' },
+          { key: 'twitch',      label: 'Twitch' },
+          { key: 'bluesky',     label: 'Bluesky' },
+          { key: 'blacksky',    label: 'Blacksky' },
+          { key: 'behance',     label: 'Behance' },
+          { key: 'steam',       label: 'Steam' },
+          { key: 'cashapp',     label: 'Cash App' },
+          { key: 'pinterest',   label: 'Pinterest' },
+          { key: 'arena',       label: 'Are.na' },
+          { key: 'goodreads',   label: 'Goodreads' },
+          { key: 'applemusic',  label: 'Apple Music' },
+          { key: 'ytmusic',     label: 'YT Music' },
+          { key: 'storygraph',  label: 'StoryGraph' },
+          { key: 'itch',        label: 'itch.io' },
+          { key: 'psn',         label: 'PlayStation Network' },
+          { key: 'mynintendo',  label: 'My Nintendo' },
+          { key: 'xbox',        label: 'Xbox' },
+          { key: 'epic',        label: 'Epic Games' },
+          { key: 'tumblr',      label: 'Tumblr' },
+          { key: 'threads',     label: 'Threads' },
+        ];
+        function socialPlatformInfo(key) {
+          for (var i = 0; i < SOCIAL_PLATFORMS.length; i++) {
+            if (SOCIAL_PLATFORMS[i].key === key) return SOCIAL_PLATFORMS[i];
+          }
+          return null;
+        }
+        function socialIconUrl(platformKey) {
+          // Absolute path (leading slash) — this card is normally viewed at
+          // a nested URL like /@handle/objId, where a relative path would
+          // resolve against that path instead of site root and 404.
+          return '/core/media/social-icons/' + platformKey + '.svg';
+        }
 
         // Store context on pane for button handlers (_win excluded from serialization)
         pane._win = self;
@@ -486,6 +754,41 @@ module("lively.identity.ProfileCard")
           pane.addMorph(inp);
           y += (h || 24) + 8;
         }
+
+        // Tab headers — switching tabs snapshots the currently-visible
+        // fields into self._editPayload first (via win._snapshotEditFields)
+        // so in-progress edits on the tab being left aren't lost, since each
+        // tab is a full pane rebuild rather than a show/hide of two
+        // pre-built panels (only one tab's fields exist in the pane at a time).
+        function addTabButton(label, tabName, x) {
+          var isActive = tab === tabName;
+          var tb = new lively.morphic.Button(lively.rect(x, y, 138, 26), label);
+          tb.applyStyle({
+            fill:       isActive ? PINK : Color.rgb(245, 245, 245),
+            borderColor: isActive ? PINK : Color.rgb(200, 200, 200),
+            borderRadius: 4, fontSize: 11,
+            textColor:  isActive ? Color.white : Color.rgb(60, 60, 60),
+            borderWidth: 1,
+          });
+          tb.setAppearanceStylingMode(false);
+          tb.setBorderStylingMode(false);
+          tb._targetTab = tabName;
+          tb.addScript(function doAction() {
+            var pane = this.owner;
+            var win  = pane && pane.owner;
+            if (!win) return;
+            win._editPayload = Object.assign({}, win._editPayload, win._snapshotEditFields(pane));
+            win._renderEdit(win._handle, win._editPayload, win._currentDid, this._targetTab);
+          });
+          lively.bindings.connect(tb, 'fire', tb, 'doAction');
+          pane.addMorph(tb);
+        }
+        addTabButton("Profile", "profile", 12);
+        addTabButton("Accounts", "accounts", 154);
+        addTabButton("Domain", "domains", 296);
+        y += 36;
+
+        if (tab === 'profile') {
 
         addField("Display name", "pcDisplayName", payload.displayName || "");
         addField("Pronouns",     "pcPronouns",    payload.pronouns    || "");
@@ -580,8 +883,6 @@ module("lively.identity.ProfileCard")
         pane.addMorph(bnUploadBtn);
         y += 32;
 
-        addField("Links (JSON)", "pcLinks", JSON.stringify(payload.links || []), 36);
-
         // astrological signs steppers
         var SIGNS  = ['Aries','Taurus','Gemini','Cancer','Leo','Virgo',
                       'Libra','Scorpio','Sagittarius','Capricorn','Aquarius','Pisces'];
@@ -659,8 +960,323 @@ module("lively.identity.ProfileCard")
 
         y += 6;
 
-        // Save — reads named inputs from pane, calls userSpace.saveProfile
-        var saveBtn = new lively.morphic.Button(lively.rect(12 + ew - 154, y, 74, 26), "Save");
+        } else if (tab === 'accounts') {
+
+        // ── Accounts tab ─────────────────────────────────────────────────
+
+        addField("ETH wallet address", "pcEthAddress", payload.ethAddress || "");
+        addField("Links (JSON)", "pcLinks", JSON.stringify(payload.links || []), 36);
+
+        // ── social accounts (up to 5 — rendered as circles on the read
+        // view, right column under the divider) ──────────────────────────
+        y += 8;
+        var saLbl = new lively.morphic.Text(lively.rect(12, y, ew, 16), "Social accounts (up to 5)");
+        saLbl.applyStyle({ allowInput: false, fontSize: 10,
+          textColor: Color.rgb(120, 120, 120),
+          fill: Color.rgb(255, 255, 255), borderWidth: 0 });
+        pane.addMorph(saLbl);
+        y += 20;
+
+        var socialAccounts = payload.socialAccounts || [];
+        if (socialAccounts.length === 0) {
+          var noneSA = new lively.morphic.Text(lively.rect(12, y, ew, 16), "No social accounts yet.");
+          noneSA.applyStyle({ allowInput: false, fontSize: 11,
+            textColor: Color.rgb(160, 160, 160),
+            fill: Color.rgb(255, 255, 255), borderWidth: 0 });
+          pane.addMorph(noneSA);
+          y += 22;
+        } else {
+          socialAccounts.forEach(function (acc, idx) {
+            var info = socialPlatformInfo(acc.platform);
+            var rowIcon = new lively.morphic.Image(lively.rect(12, y - 1, 20, 20));
+            rowIcon.setImageURL(socialIconUrl(acc.platform));
+            rowIcon.applyStyle({ borderWidth: 0, clipMode: 'hidden' });
+            pane.addMorph(rowIcon);
+            var rowM = new lively.morphic.Text(lively.rect(38, y, ew - 116, 18),
+              (info ? info.label : acc.platform) + "  —  " + acc.url);
+            rowM.applyStyle({ allowInput: false, fontSize: 12,
+              textColor: Color.rgb(60, 60, 60),
+              fill: Color.rgb(255, 255, 255), borderWidth: 0 });
+            pane.addMorph(rowM);
+            var rmSaBtn = new lively.morphic.Button(lively.rect(12 + ew - 80, y - 2, 80, 22), "Remove");
+            rmSaBtn.applyStyle({ fill: Color.rgb(245, 245, 245),
+              borderColor: Color.rgb(200, 200, 200), borderRadius: 4,
+              fontSize: 10, textColor: Color.rgb(150, 30, 30), borderWidth: 1 });
+            rmSaBtn.setAppearanceStylingMode(false);
+            rmSaBtn.setBorderStylingMode(false);
+            rmSaBtn._idx = idx;
+            rmSaBtn.addScript(function doAction() {
+              var pane = this.owner;
+              var win  = pane && pane.owner;
+              if (!win) return;
+              var current = ((win._editPayload && win._editPayload.socialAccounts) || []).slice();
+              current.splice(this._idx, 1);
+              win._editPayload = Object.assign({}, win._editPayload, win._snapshotEditFields(pane), { socialAccounts: current });
+              win._renderEdit(win._handle, win._editPayload, win._currentDid, 'accounts');
+            });
+            lively.bindings.connect(rmSaBtn, 'fire', rmSaBtn, 'doAction');
+            pane.addMorph(rmSaBtn);
+            y += 22;
+          });
+        }
+
+        y += 8;
+        if (socialAccounts.length < 5) {
+          var platLbl = new lively.morphic.Text(lively.rect(12, y, 200, 14), "Platform");
+          platLbl.applyStyle({ allowInput: false, fontSize: 9,
+            textColor: Color.rgb(140, 140, 140),
+            fill: Color.rgb(255, 255, 255), borderWidth: 0 });
+          pane.addMorph(platLbl);
+          y += 15;
+
+          // Icon preview swatch — a fixed-position container Box with a
+          // child Image (same two-morph structure as the read-view's
+          // circles, for the same reason: setImageURL's useNativeExtent
+          // callback repositions whatever morph it's called on to
+          // re-center it, so that morph can't also be the one carrying the
+          // container's own fixed (12, y) position — it would fight itself
+          // on every icon change). Kept in sync with the dropdown's
+          // selection via a 'selection' binding below, same connect+
+          // addScript pattern as every button's fire->doAction in this
+          // file. updateIcon is self-contained (no outer-scope refs) since
+          // addScript-attached methods lose their enclosing closure.
+          var platIconPreview = new lively.morphic.Box(lively.rect(12, y, 24, 24));
+          platIconPreview.name = 'pcNewSocialPlatformIcon';
+          platIconPreview.applyStyle({ fill: Color.rgb(255, 255, 255), borderWidth: 1,
+            borderColor: Color.rgb(225, 225, 231), borderRadius: 4 });
+          pane.addMorph(platIconPreview);
+          var platIconImg = new lively.morphic.Image(lively.rect(3, 3, 18, 18));
+          platIconImg.applyStyle({ borderWidth: 0 });
+          platIconPreview.addMorph(platIconImg);
+          platIconPreview.addScript(function updateIcon(platformKey) {
+            if (!platformKey) return;
+            var BOX = 24, ICON_BOX = 18;
+            var img = this.submorphs && this.submorphs[0];
+            if (!img) return;
+            img.setImageURL('/core/media/social-icons/' + platformKey + '.svg',
+              { useNativeExtent: true, maxWidth: ICON_BOX, maxHeight: ICON_BOX },
+              function (err, loadedIcon) {
+                if (err) return;
+                var ext = loadedIcon.getExtent();
+                loadedIcon.setPosition(lively.pt(
+                  Math.round((BOX - ext.x) / 2), Math.round((BOX - ext.y) / 2)));
+                var imgNode = loadedIcon.renderContext && loadedIcon.renderContext().imgNode;
+                if (imgNode) { imgNode.style.left = '0px'; imgNode.style.top = '0px'; }
+              });
+          });
+
+          // Custom combo box: a trigger button showing the current
+          // selection, which opens a genuine in-page scrollable list
+          // (lively.morphic.List) anchored below it. A native <select>
+          // (lively.morphic.DropDownList) can't be used here — its open
+          // popup is entirely OS/browser-controlled and always shows every
+          // option with no way to cap it at a handful of visible rows.
+          // This list is sized to show ~5-6 rows at once (its own default
+          // listItemHeight is 19px — matches VersionViewer.js's List
+          // usage elsewhere in this app) with a scrollbar for the rest of
+          // the 25 platforms, so the owner can browse without either
+          // guessing (the old ◀/▶ stepper) or facing an unstyleable wall
+          // of 25 native options at once.
+          var platTrigger = new lively.morphic.Button(
+            lively.rect(44, y, ew - 44, 24), SOCIAL_PLATFORMS[0].label + '  ▾');
+          platTrigger.name = 'pcNewSocialPlatform';
+          platTrigger.applyStyle({ fill: Color.rgb(252, 252, 252),
+            borderColor: Color.rgb(200, 200, 200), borderWidth: 1, borderRadius: 3,
+            fontSize: 12, textColor: Color.rgb(35, 35, 35) });
+          platTrigger.setAppearanceStylingMode(false);
+          platTrigger.setBorderStylingMode(false);
+          platTrigger._selectedKey = SOCIAL_PLATFORMS[0].key;
+          platTrigger.addScript(function getSelection() { return this._selectedKey; });
+          platTrigger.addScript(function doAction() {
+            var pane = this.owner;
+            if (!pane) return;
+            // Toggle closed if already open.
+            var existingPopup = pane.get('pcNewSocialPlatformPopup');
+            if (existingPopup) { existingPopup.remove(); return; }
+
+            var P = [
+              { key: 'discord', label: 'Discord' }, { key: 'spotify', label: 'Spotify' },
+              { key: 'instagram', label: 'Instagram' }, { key: 'github', label: 'GitHub' },
+              { key: 'youtube', label: 'YouTube' }, { key: 'tiktok', label: 'TikTok' },
+              { key: 'twitch', label: 'Twitch' }, { key: 'bluesky', label: 'Bluesky' },
+              { key: 'blacksky', label: 'Blacksky' },
+              { key: 'behance', label: 'Behance' }, { key: 'steam', label: 'Steam' },
+              { key: 'cashapp', label: 'Cash App' }, { key: 'pinterest', label: 'Pinterest' },
+              { key: 'arena', label: 'Are.na' }, { key: 'goodreads', label: 'Goodreads' },
+              { key: 'applemusic', label: 'Apple Music' }, { key: 'ytmusic', label: 'YT Music' },
+              { key: 'storygraph', label: 'StoryGraph' }, { key: 'itch', label: 'itch.io' },
+              { key: 'psn', label: 'PlayStation Network' }, { key: 'mynintendo', label: 'My Nintendo' },
+              { key: 'xbox', label: 'Xbox' }, { key: 'epic', label: 'Epic Games' },
+              { key: 'tumblr', label: 'Tumblr' }, { key: 'threads', label: 'Threads' },
+            ];
+            var items = P.map(function (p) { return { string: p.label, value: p.key }; });
+
+            var pos = this.getPosition();
+            var ext = this.getExtent();
+            var ROW_H = 19; // lively.morphic.List's own default row height
+            var ROWS_VISIBLE = 5.5; // .5 hints there's more to scroll to
+            var popup = new lively.morphic.List(
+              lively.rect(pos.x, pos.y + ext.y + 2, ext.x, Math.round(ROWS_VISIBLE * ROW_H)),
+              items);
+            popup.name = 'pcNewSocialPlatformPopup';
+            popup._platforms = P; // so onPlatformPicked below doesn't need its own copy
+            popup.applyStyle({ fontSize: 12, borderColor: Color.rgb(180, 180, 190), borderWidth: 1 });
+            pane.addMorph(popup);
+
+            popup.addScript(function onPlatformPicked(newVal) {
+              var pane = this.owner;
+              if (!newVal || !pane) return;
+              var trig    = pane.get('pcNewSocialPlatform');
+              var iconBox = pane.get('pcNewSocialPlatformIcon');
+              var picked  = (this._platforms || []).filter(function (p) { return p.key === newVal; })[0];
+              if (trig) {
+                trig._selectedKey = newVal;
+                trig.setLabel((picked ? picked.label : newVal) + '  ▾');
+              }
+              if (iconBox) iconBox.updateIcon(newVal);
+              this.remove();
+            });
+            lively.bindings.connect(popup, 'selection', popup, 'onPlatformPicked');
+          });
+          lively.bindings.connect(platTrigger, 'fire', platTrigger, 'doAction');
+          pane.addMorph(platTrigger);
+          platIconPreview.updateIcon(SOCIAL_PLATFORMS[0].key);
+          y += 32;
+
+          addField("Profile URL", "pcNewSocialUrl", "");
+
+          var addSaBtn = new lively.morphic.Button(lively.rect(12, y, 130, 28), "Add account");
+          addSaBtn.applyStyle({ fill: Color.rgb(240, 240, 240),
+            borderColor: Color.rgb(200, 200, 200), borderRadius: 4,
+            fontSize: 11, textColor: Color.rgb(50, 50, 50), borderWidth: 1 });
+          addSaBtn.setAppearanceStylingMode(false);
+          addSaBtn.setBorderStylingMode(false);
+          addSaBtn.addScript(function doAction() {
+            var pane = this.owner;
+            var win  = pane && pane.owner;
+            if (!win) return;
+            var platTrigger = pane.get('pcNewSocialPlatform');
+            var urlInp   = pane.get('pcNewSocialUrl');
+            var platKey  = (platTrigger && platTrigger.getSelection()) || 'discord';
+            var url = urlInp && urlInp.textString && urlInp.textString.trim();
+            if (!url) { alert('Enter a profile URL first.'); return; }
+            if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+            var current = ((win._editPayload && win._editPayload.socialAccounts) || []).slice();
+            if (current.length >= 5) { alert('Maximum 5 social accounts.'); return; }
+            current.push({ platform: platKey, url: url });
+            win._editPayload = Object.assign({}, win._editPayload, win._snapshotEditFields(pane), { socialAccounts: current });
+            win._renderEdit(win._handle, win._editPayload, win._currentDid, 'accounts');
+          });
+          lively.bindings.connect(addSaBtn, 'fire', addSaBtn, 'doAction');
+          pane.addMorph(addSaBtn);
+          y += 36;
+        } else {
+          var maxSA = new lively.morphic.Text(lively.rect(12, y, ew, 16), "Maximum of 5 social accounts reached.");
+          maxSA.applyStyle({ allowInput: false, fontSize: 11,
+            textColor: Color.rgb(160, 160, 160),
+            fill: Color.rgb(255, 255, 255), borderWidth: 0 });
+          pane.addMorph(maxSA);
+          y += 22;
+        }
+
+        } else {
+
+        // ── Domain Handles tab ──────────────────────────────────────────────
+
+        var dhLbl = new lively.morphic.Text(lively.rect(12, y, ew, 16), "Domain Handles");
+        dhLbl.applyStyle({ allowInput: false, fontSize: 10,
+          textColor: Color.rgb(120, 120, 120),
+          fill: Color.rgb(255, 255, 255), borderWidth: 0 });
+        pane.addMorph(dhLbl);
+        y += 20;
+
+        var domainRows = self._domains || [];
+        if (domainRows.length === 0) {
+          var noneM = new lively.morphic.Text(lively.rect(12, y, ew, 16), "No domain handles yet.");
+          noneM.applyStyle({ allowInput: false, fontSize: 11,
+            textColor: Color.rgb(160, 160, 160),
+            fill: Color.rgb(255, 255, 255), borderWidth: 0 });
+          pane.addMorph(noneM);
+          y += 22;
+        } else {
+          domainRows.forEach(function (d) {
+            var isVerified = d.status === 'verified';
+            var rowM = new lively.morphic.Text(lively.rect(12, y, ew - 90, 18),
+              d.domain + "  —  " + (isVerified ? "Verified" : "Invalid"));
+            rowM.applyStyle({ allowInput: false, fontSize: 12,
+              textColor: isVerified ? Color.rgb(34, 139, 34) : Color.rgb(190, 140, 20),
+              fill: Color.rgb(255, 255, 255), borderWidth: 0 });
+            pane.addMorph(rowM);
+            var rmBtn = new lively.morphic.Button(lively.rect(12 + ew - 80, y - 2, 80, 22), "Remove");
+            rmBtn.applyStyle({ fill: Color.rgb(245, 245, 245),
+              borderColor: Color.rgb(200, 200, 200), borderRadius: 4,
+              fontSize: 10, textColor: Color.rgb(150, 30, 30), borderWidth: 1 });
+            rmBtn.setAppearanceStylingMode(false);
+            rmBtn.setBorderStylingMode(false);
+            rmBtn._domain = d.domain;
+            rmBtn.addScript(function doAction() {
+              var pane = this.owner;
+              var win  = pane && pane.owner;
+              if (!win) return;
+              var domainName = this._domain;
+              var btn = this;
+              btn.setLabel('…');
+              btn.setActive(false);
+              win._editPayload = Object.assign({}, win._editPayload, win._snapshotEditFields(pane));
+              lively.identity.userSpace.removeDomain(domainName, function (err) {
+                if (err) {
+                  alert('Could not remove domain: ' + err.message);
+                  btn.setLabel('Remove');
+                  btn.setActive(true);
+                  return;
+                }
+                lively.identity.userSpace.listDomains(win._handle, function (err2, rows2) {
+                  win._domains = rows2 || [];
+                  win._renderEdit(win._handle, win._editPayload, win._currentDid, 'domains');
+                });
+              });
+            });
+            lively.bindings.connect(rmBtn, 'fire', rmBtn, 'doAction');
+            pane.addMorph(rmBtn);
+            y += 22;
+          });
+        }
+
+        y += 8;
+        addField("Add a domain (e.g. alice.com)", "pcNewDomain", "");
+
+        var addDomainBtn = new lively.morphic.Button(lively.rect(12, y, 130, 28), "Add domain");
+        addDomainBtn.applyStyle({ fill: Color.rgb(240, 240, 240),
+          borderColor: Color.rgb(200, 200, 200), borderRadius: 4,
+          fontSize: 11, textColor: Color.rgb(50, 50, 50), borderWidth: 1 });
+        addDomainBtn.setAppearanceStylingMode(false);
+        addDomainBtn.setBorderStylingMode(false);
+        addDomainBtn.addScript(function doAction() {
+          var pane = this.owner;
+          var win  = pane && pane.owner;
+          if (!win) return;
+          var domainInp = pane.get('pcNewDomain');
+          var domain = domainInp && domainInp.textString &&
+            domainInp.textString.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+          if (!domain) { alert('Enter a domain first.'); return; }
+          win._showDomainVerifyPanel(this, domain, win);
+        });
+        lively.bindings.connect(addDomainBtn, 'fire', addDomainBtn, 'doAction');
+        pane.addMorph(addDomainBtn);
+        y += 36;
+
+        }
+
+        // Save/Cancel are pinned to the bottom-right of the card (matching
+        // the read view's "Edit" button anchoring) rather than following
+        // wherever the current tab's content happens to end — the Account
+        // tab's content is much shorter than Profile's, which otherwise
+        // left them stranded near the top with a large dead area below.
+        var btnY = pane.getExtent().y - 36;
+
+        // Save — reads named inputs from pane, merges onto self._editPayload
+        // so fields from whichever tab isn't currently visible survive.
+        var saveBtn = new lively.morphic.Button(lively.rect(pw - 166, btnY, 74, 26), "Save");
         saveBtn.applyStyle({ fill: PINK, borderColor: PINK, borderRadius: 4,
           fontSize: 12, textColor: Color.white, borderWidth: 1 });
         saveBtn.setAppearanceStylingMode(false);
@@ -669,34 +1285,28 @@ module("lively.identity.ProfileCard")
           var win  = this.owner && this.owner.owner;
           var pane = this.owner;
           if (!win || !pane) return;
-          var nameInp     = pane.get("pcDisplayName");
-          var pronounsInp = pane.get("pcPronouns");
-          var bioInp      = pane.get("pcBio");
-          var avatarInp   = pane.get("pcAvatarUrl");
-          var bannerInp   = pane.get("pcBannerUrl");
-          var linksInp    = pane.get("pcLinks");
-          var sunInp      = pane.get("pcSunSign");
-          var moonInp     = pane.get("pcMoonSign");
-          var risingInp   = pane.get("pcRisingSign");
-          var newLinks;
-          try { newLinks = JSON.parse(linksInp && linksInp.textString || "[]"); }
-          catch (e) { newLinks = []; }
-          var SV = ['Aries','Taurus','Gemini','Cancer','Leo','Virgo',
-                    'Libra','Scorpio','Sagittarius','Capricorn','Aquarius','Pisces'];
+          var merged = Object.assign({}, win._editPayload, win._snapshotEditFields(pane));
+          if (merged.ethAddress && !/^0x[a-fA-F0-9]{40}$/.test(merged.ethAddress)) {
+            alert('ETH address must be a 42-character 0x-prefixed hex address (or left blank).');
+            return;
+          }
           var newPayload = {
-            displayName: nameInp     && nameInp.textString     || win._handle,
-            pronouns:    pronounsInp && pronounsInp.textString || "",
-            bio:         bioInp      && bioInp.textString      || "",
-            avatarUrl:   avatarInp   && avatarInp.textString   || null,
-            bannerUrl:   bannerInp   && bannerInp.textString   || null,
-            links:       newLinks,
-            sunSign:     sunInp    ? SV[sunInp._signIdx    || 0] : "",
-            moonSign:    moonInp   ? SV[moonInp._signIdx   || 0] : "",
-            risingSign:  risingInp ? SV[risingInp._signIdx || 0] : "",
+            displayName: merged.displayName || win._handle,
+            pronouns:    merged.pronouns    || "",
+            bio:         merged.bio         || "",
+            avatarUrl:   merged.avatarUrl   || null,
+            bannerUrl:   merged.bannerUrl   || null,
+            links:       merged.links       || [],
+            sunSign:     merged.sunSign     || "",
+            moonSign:    merged.moonSign    || "",
+            risingSign:  merged.risingSign  || "",
+            ethAddress:  merged.ethAddress  || "",
+            socialAccounts: merged.socialAccounts || [],
           };
           lively.identity.userSpace.saveProfile(newPayload, function (err) {
             if (err) { alert("Save failed: " + err.message); return; }
-            win._editMode = false;
+            win._editMode    = false;
+            win._editPayload = null;
             win.loadProfile(win._handle);
           });
         });
@@ -704,7 +1314,7 @@ module("lively.identity.ProfileCard")
         pane.addMorph(saveBtn);
 
         // Cancel — navigates to Window and reloads view
-        var cancelBtn = new lively.morphic.Button(lively.rect(12 + ew - 72, y, 72, 26), "Cancel");
+        var cancelBtn = new lively.morphic.Button(lively.rect(pw - 84, btnY, 72, 26), "Cancel");
         cancelBtn.applyStyle({ fill: Color.rgb(160, 160, 160),
           borderColor: Color.rgb(160, 160, 160), borderRadius: 4,
           fontSize: 12, textColor: Color.white, borderWidth: 1 });
@@ -713,11 +1323,379 @@ module("lively.identity.ProfileCard")
         cancelBtn.addScript(function doAction() {
           var win = this.owner && this.owner.owner;
           if (!win) return;
-          win._editMode = false;
+          win._editMode    = false;
+          win._editPayload = null;
           win.loadProfile(win._handle);
         });
         lively.bindings.connect(cancelBtn, 'fire', cancelBtn, 'doAction');
         pane.addMorph(cancelBtn);
+      },
+
+      // Reads whichever named inputs are currently present in `pane` (only
+      // one tab's worth exist at a time — see _renderEdit) into a partial
+      // payload object, for merging onto self._editPayload on tab switch
+      // or Save so fields from the tab not currently visible aren't lost.
+      _snapshotEditFields: function _snapshotEditFields(pane) {
+        var SV = ['Aries','Taurus','Gemini','Cancer','Leo','Virgo',
+                  'Libra','Scorpio','Sagittarius','Capricorn','Aquarius','Pisces'];
+        var partial = {};
+        var nameInp     = pane.get("pcDisplayName");
+        var pronounsInp = pane.get("pcPronouns");
+        var bioInp      = pane.get("pcBio");
+        var avatarInp   = pane.get("pcAvatarUrl");
+        var bannerInp   = pane.get("pcBannerUrl");
+        var linksInp    = pane.get("pcLinks");
+        var sunInp      = pane.get("pcSunSign");
+        var moonInp     = pane.get("pcMoonSign");
+        var risingInp   = pane.get("pcRisingSign");
+        var ethInp      = pane.get("pcEthAddress");
+        if (nameInp)     partial.displayName = nameInp.textString || "";
+        if (pronounsInp) partial.pronouns    = pronounsInp.textString || "";
+        if (bioInp)      partial.bio         = bioInp.textString || "";
+        if (avatarInp)   partial.avatarUrl   = avatarInp.textString || null;
+        if (bannerInp)   partial.bannerUrl   = bannerInp.textString || null;
+        if (linksInp) {
+          try { partial.links = JSON.parse(linksInp.textString || "[]"); }
+          catch (e) { partial.links = []; }
+        }
+        if (sunInp)    partial.sunSign    = SV[sunInp._signIdx    || 0];
+        if (moonInp)   partial.moonSign   = SV[moonInp._signIdx   || 0];
+        if (risingInp) partial.risingSign = SV[risingInp._signIdx || 0];
+        if (ethInp)    partial.ethAddress = (ethInp.textString || "").trim();
+        return partial;
+      },
+
+      // Resolve this device's soft signing private key (imported CryptoKey),
+      // deriving/caching the KEK via a passkey ceremony if not already
+      // cached this session — same recipe as UserSpace.js's
+      // _signProfileEnvelopeIfPossible, used here to sign the domain
+      // verification .well-known document.
+      // Calls thenDo(err, privateKey).
+      _getSoftSigningKey: function _getSoftSigningKey(thenDo) {
+        var didMod = lively.identity.did;
+        var user   = didMod.currentUser();
+        if (!user) return thenDo(new Error('Not logged in'));
+        var method = didMod.findMethodByCredentialId(user.document, user.credentialId);
+        var livelyMeta = method && method.lively;
+        if (!livelyMeta || !livelyMeta.softSigningKeyWrapped || !livelyMeta.delegationCert) {
+          return thenDo(new Error('This device has not set up signing yet — use "Enable encryption" on the profile first.'));
+        }
+        var wa = lively.identity.webAuthn;
+        var c  = lively.identity.crypto;
+
+        function withKek(kek) {
+          var wrapped;
+          try { wrapped = JSON.parse(livelyMeta.softSigningKeyWrapped); }
+          catch (e) { return thenDo(e); }
+          c.decryptPayload(wrapped.ciphertext, wrapped.nonce, kek, function (err, softPrivJwk) {
+            if (err) return thenDo(err);
+            c.importPrivateKeyJwk(softPrivJwk, thenDo);
+          });
+        }
+
+        if (wa._kekCache && wa._kekCache[user.credentialId]) {
+          return withKek(wa._kekCache[user.credentialId]);
+        }
+        var challenge = new Uint8Array(32);
+        crypto.getRandomValues(challenge);
+        wa.deriveKek({ credentialId: user.credentialId, challenge: challenge, rpId: user.rpId }, function (err, kek) {
+          if (err) return thenDo(err);
+          withKek(kek);
+        });
+      },
+
+      // Shows two ways to prove ownership of a domain the owner is trying
+      // to add, plus a "Verify now" button that asks the server to
+      // independently check whichever one was actually done:
+      //   1. A DNS TXT record — no signing, DNS control is the proof.
+      //   2. A signed .well-known/lively-did file — generated on demand
+      //      (the passkey ceremony only runs if this option is opened).
+      // Attached as a submorph of `pane` (in pane-local coordinates) so it
+      // stays anchored to the card — moves/scrolls with the window instead
+      // of floating at a fixed $world position like the old version did
+      // (same fix applied to the "Friends" panel in _renderView). Button
+      // handlers read data from `_prop` fields (never outer-scope closures)
+      // per this file's addScript convention.
+      _showDomainVerifyPanel: function _showDomainVerifyPanel(anchorMorph, domain, win) {
+        var pane = anchorMorph.owner;
+
+        // Anchored below the "Add domain" button, like a normal dropdown.
+        // This button sits fairly far down the Account tab, leaving little
+        // room before the pane's bottom edge — that used to be a problem
+        // (content spilling past the card's own bottom edge), but the DID/
+        // JSON boxes below are now fixed-height and internally scrollable
+        // (clipMode: 'auto', precedented in lively.morphic.Panel#newTextPane),
+        // and the panel itself falls back to the same scrolling if it's
+        // still taller than the room available, so however little space is
+        // left here, content stays contained rather than spilling out.
+        var paneW = pane ? pane.getExtent().x : 834;
+        var paneH = pane ? pane.getExtent().y : 595;
+        var FW = 420;
+        var anchorPos = anchorMorph.getPosition();
+        var panelX = pane ? Math.min(anchorPos.x, Math.max(0, paneW - FW - 8)) : anchorPos.x;
+        var panelY = anchorPos.y + anchorMorph.getExtent().y + 4;
+        // Leave room above the bottom-pinned Save/Cancel row (btnY = paneH - 36).
+        var maxPanelH = Math.max(120, (paneH - 36 - 10) - panelY);
+
+        var panel = new lively.morphic.Box(lively.rect(panelX, panelY, FW, 100));
+        panel.applyStyle({ fill: Color.white, borderRadius: 8,
+          borderColor: Color.rgb(218, 218, 224), borderWidth: 1 });
+        panel._win = win;
+        panel._domain = domain;
+        if (panel.doNotSerialize && panel.doNotSerialize.indexOf('_win') === -1)
+          panel.doNotSerialize.push('_win');
+
+        // Attached to `pane` (already in the world) before any content is
+        // added, not after — getTextExtent() below only reports genuine
+        // wrapped-line heights once a Text morph is actually rendered in
+        // the world (confirmed live, same requirement WalletSetupDialog.js's
+        // _fitTextHeight documents).
+        if (pane) pane.addMorph(panel);
+
+        // Resizes a just-added Text LABEL (short, plain-prose lines only)
+        // to its real wrapped height, so a label that happens to wrap to 2
+        // lines at this panel's modest width doesn't overlap what's next.
+        function fitTextHeight(t, w, minHeight) {
+          var textHeight = t.getTextExtent().y;
+          var h = Math.max(minHeight, textHeight || minHeight);
+          t.setExtent(lively.pt(w, h));
+          return h;
+        }
+
+        // Fixed-size, internally-scrollable box for a copyable value of
+        // unpredictable length (a DID, a signed-JSON blob) — clipMode
+        // 'auto' gives it a real scrollbar instead of growing the box (and
+        // therefore the panel) to fit, which is what let content spill
+        // past the panel/card in the first place. wordBreak: 'break-all'
+        // still matters even with scrolling on: these values are one
+        // unbroken token with no spaces, so without it the browser never
+        // finds a place to wrap and the text overflows sideways instead of
+        // filling the box vertically (same fix WalletSetupDialog.js's
+        // _addText uses for 0x... addresses).
+        function addScrollBox(x, boxY, w, h, text) {
+          var t = new lively.morphic.Text(lively.rect(x, boxY, w, h), text);
+          t.applyStyle({ allowInput: false, fixedWidth: true, fixedHeight: true,
+            wordBreak: 'break-all', clipMode: 'auto',
+            fontSize: 10, textColor: Color.rgb(40, 40, 40),
+            fill: Color.rgb(248, 248, 251), borderColor: Color.rgb(218, 218, 224),
+            borderWidth: 1, borderRadius: 3 });
+          panel.addMorph(t);
+          return t;
+        }
+
+        function addCopyButton(x, btnY, copyValue, w) {
+          var cpBtn = new lively.morphic.Button(lively.rect(x, btnY, w || 60, 22), 'Copy');
+          cpBtn.applyStyle({ fill: Color.rgb(245, 245, 245), borderColor: Color.rgb(200, 200, 200),
+            borderRadius: 4, fontSize: 10, textColor: Color.rgb(50, 50, 50), borderWidth: 1 });
+          cpBtn.setAppearanceStylingMode(false);
+          cpBtn.setBorderStylingMode(false);
+          cpBtn._copyText = copyValue;
+          cpBtn.addScript(function doAction() {
+            var btn = this;
+            if (navigator.clipboard) {
+              navigator.clipboard.writeText(this._copyText).then(function () {
+                btn.setLabel('✓');
+                setTimeout(function () { btn.setLabel('Copy'); }, 1200);
+              });
+            }
+          });
+          lively.bindings.connect(cpBtn, 'fire', cpBtn, 'doAction');
+          panel.addMorph(cpBtn);
+          return cpBtn;
+        }
+
+        var y = 10;
+
+        var titleM = new lively.morphic.Text(lively.rect(12, y, FW - 44, 18), 'Verify ' + domain);
+        titleM.applyStyle({ allowInput: false, fontSize: 13, fontWeight: 'bold',
+          fill: Color.rgba(0, 0, 0, 0), borderWidth: 0, textColor: Color.rgb(30, 30, 30) });
+        panel.addMorph(titleM);
+        y += fitTextHeight(titleM, FW - 44, 18) + 8;
+
+        var opt1Lbl = new lively.morphic.Text(lively.rect(12, y, FW - 24, 16),
+          'Option 1 — DNS TXT record (no extra steps)');
+        opt1Lbl.applyStyle({ allowInput: false, fontSize: 11, fontWeight: 'bold',
+          textColor: Color.rgb(90, 90, 90), fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
+        panel.addMorph(opt1Lbl);
+        y += fitTextHeight(opt1Lbl, FW - 24, 16) + 6;
+
+        var hostLbl = new lively.morphic.Text(lively.rect(12, y, FW - 24, 14), 'Host:');
+        hostLbl.applyStyle({ allowInput: false, fontSize: 10, textColor: Color.rgb(120, 120, 120),
+          fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
+        panel.addMorph(hostLbl);
+        y += 16;
+        var hostValue = '_lively-did.' + domain;
+        addScrollBox(12, y, FW - 24, 32, hostValue);
+        y += 32 + 6;
+        addCopyButton(12, y, hostValue);
+        y += 22 + 14;
+
+        var valueLbl = new lively.morphic.Text(lively.rect(12, y, FW - 24, 14), 'Value:');
+        valueLbl.applyStyle({ allowInput: false, fontSize: 10, textColor: Color.rgb(120, 120, 120),
+          fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
+        panel.addMorph(valueLbl);
+        y += 16;
+        var didValue = 'did=' + win._currentDid;
+        addScrollBox(12, y, FW - 24, 56, didValue);
+        y += 56 + 6;
+        addCopyButton(12, y, didValue);
+        y += 22 + 14;
+
+        var divider = new lively.morphic.Box(lively.rect(12, y, FW - 24, 1));
+        divider.applyStyle({ fill: Color.rgb(225, 225, 225), borderWidth: 0 });
+        panel.addMorph(divider);
+        y += 12;
+
+        var opt2Lbl = new lively.morphic.Text(lively.rect(12, y, FW - 24, 16),
+          'Option 2 — signed file (needs your passkey)');
+        opt2Lbl.applyStyle({ allowInput: false, fontSize: 11, fontWeight: 'bold',
+          textColor: Color.rgb(90, 90, 90), fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
+        panel.addMorph(opt2Lbl);
+        y += fitTextHeight(opt2Lbl, FW - 24, 16) + 6;
+
+        var instrM = new lively.morphic.Text(lively.rect(12, y, FW - 24, 16),
+          'Host the generated JSON at https://' + domain + '/.well-known/lively-did.');
+        instrM.applyStyle({ allowInput: false, fontSize: 10, textColor: Color.rgb(120, 120, 120),
+          fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
+        panel.addMorph(instrM);
+        y += fitTextHeight(instrM, FW - 24, 16) + 8;
+
+        // Reserved up-front, fixed-size scroll area for the signed JSON —
+        // "Generate signed file" occupies this space until clicked, then
+        // gets removed and the box (same position/size, so nothing below
+        // has to move) takes its place. No panel resize needed at generate
+        // time, unlike the previous version — the height was already
+        // budgeted into the panel's total from the start, which is what
+        // keeps the whole thing bounded regardless of how long the JSON
+        // (specifically the sig field) turns out to be.
+        var jsonAreaY = y;
+        var jsonAreaH = 130;
+        var genBtn = new lively.morphic.Button(lively.rect(12, jsonAreaY, 170, 26), 'Generate signed file');
+        genBtn.applyStyle({ fill: Color.rgb(245, 245, 245), borderColor: Color.rgb(200, 200, 200),
+          borderRadius: 4, fontSize: 11, textColor: Color.rgb(50, 50, 50), borderWidth: 1 });
+        genBtn.setAppearanceStylingMode(false);
+        genBtn.setBorderStylingMode(false);
+        genBtn.addScript(function doAction() {
+          var panel = this.owner;
+          var win2  = panel && panel._win;
+          var dom   = panel && panel._domain;
+          if (!win2 || !dom) return;
+          var btn = this;
+          btn.setLabel('Signing…');
+          btn.setActive(false);
+          win2._getSoftSigningKey(function (err, softPrivKey) {
+            if (err) {
+              alert('Could not sign — ' + err.message);
+              btn.setLabel('Generate signed file');
+              btn.setActive(true);
+              return;
+            }
+            var wellKnownPayload = lively.identity.webKey.buildWellKnownPayload({
+              did: win2._currentDid, handle: win2._handle, domain: dom,
+            });
+            lively.identity.webKey.signWellKnown(wellKnownPayload, softPrivKey, function (err2, signedDoc) {
+              if (err2) {
+                alert('Signing failed: ' + err2.message);
+                btn.setLabel('Generate signed file');
+                btn.setActive(true);
+                return;
+              }
+              var jy = btn.getPosition().y;
+              var jw = panel.getExtent().x - 24;
+              var jh = panel._jsonAreaH || 130;
+              var jsonStr = JSON.stringify(signedDoc, null, 2);
+              var jsonM = new lively.morphic.Text(lively.rect(12, jy, jw, jh), jsonStr);
+              jsonM.applyStyle({ allowInput: false, fixedWidth: true, fixedHeight: true,
+                wordBreak: 'break-all', clipMode: 'auto',
+                fontSize: 9, textColor: Color.rgb(40, 40, 40), fill: Color.rgb(248, 248, 251),
+                borderColor: Color.rgb(218, 218, 224), borderWidth: 1, borderRadius: 4 });
+              panel.addMorph(jsonM);
+              btn.remove();
+
+              var copyJsonBtn = panel.get('pcCopyJsonBtn');
+              if (copyJsonBtn) {
+                copyJsonBtn._copyText = jsonStr;
+                copyJsonBtn.setVisible(true);
+              }
+            });
+          });
+        });
+        lively.bindings.connect(genBtn, 'fire', genBtn, 'doAction');
+        panel.addMorph(genBtn);
+        panel._jsonAreaH = jsonAreaH;
+        y += jsonAreaH + 8;
+
+        // Present but hidden until "Generate signed file" succeeds — kept
+        // at a fixed position/name from the start (rather than being
+        // created inline after generating, which is what previously forced
+        // everything below it to shift down) so Verify now's position
+        // never has to move.
+        var copyJsonBtn = new lively.morphic.Button(lively.rect(12, y, 90, 24), 'Copy JSON');
+        copyJsonBtn.name = 'pcCopyJsonBtn';
+        copyJsonBtn.applyStyle({ fill: Color.rgb(245, 245, 245), borderColor: Color.rgb(200, 200, 200),
+          borderRadius: 4, fontSize: 10, textColor: Color.rgb(50, 50, 50), borderWidth: 1 });
+        copyJsonBtn.setAppearanceStylingMode(false);
+        copyJsonBtn.setBorderStylingMode(false);
+        copyJsonBtn.addScript(function doAction() {
+          var b = this;
+          if (navigator.clipboard && this._copyText) {
+            navigator.clipboard.writeText(this._copyText).then(function () {
+              b.setLabel('Copied!');
+              setTimeout(function () { b.setLabel('Copy JSON'); }, 1200);
+            });
+          }
+        });
+        lively.bindings.connect(copyJsonBtn, 'fire', copyJsonBtn, 'doAction');
+        panel.addMorph(copyJsonBtn);
+        copyJsonBtn.setVisible(false);
+        y += 24 + 14;
+
+        var verifyNowBtn = new lively.morphic.Button(lively.rect(12, y, 110, 28), 'Verify now');
+        verifyNowBtn.applyStyle({ fill: Color.rgb(240, 26, 105), borderColor: Color.rgb(240, 26, 105),
+          borderRadius: 4, fontSize: 11, textColor: Color.white, borderWidth: 1 });
+        verifyNowBtn.setAppearanceStylingMode(false);
+        verifyNowBtn.setBorderStylingMode(false);
+        verifyNowBtn.addScript(function doAction() {
+          var btn   = this;
+          var panel = this.owner;
+          var win2  = panel && panel._win;
+          var dom   = panel && panel._domain;
+          btn.setLabel('Verifying…');
+          btn.setActive(false);
+          lively.identity.userSpace.verifyDomain(dom, function (err) {
+            if (err) {
+              alert('Verification failed: ' + err.message);
+              btn.setLabel('Verify now');
+              btn.setActive(true);
+              return;
+            }
+            if (panel) panel.remove();
+            if (!win2) return;
+            lively.identity.userSpace.listDomains(win2._handle, function (err2, rows2) {
+              win2._domains = rows2 || [];
+              win2._renderEdit(win2._handle, win2._editPayload, win2._currentDid, 'domains');
+            });
+          });
+        });
+        lively.bindings.connect(verifyNowBtn, 'fire', verifyNowBtn, 'doAction');
+        panel.addMorph(verifyNowBtn);
+        y += 28 + 12;
+
+        var closeBtn = new lively.morphic.Button(lively.rect(FW - 28, 6, 22, 22), '✕');
+        closeBtn.applyStyle({ borderRadius: 11, fontSize: 11, borderWidth: 0,
+          fill: Color.rgba(0, 0, 0, 0), textColor: Color.rgb(100, 100, 100) });
+        closeBtn.addScript(function doAction() { this.owner.remove(); });
+        lively.bindings.connect(closeBtn, 'fire', closeBtn, 'doAction');
+        panel.addMorph(closeBtn);
+
+        // The panel's own content is now fully bounded/deterministic (no
+        // runtime growth from JSON/DID length), so clamp its final height
+        // to the space actually available above Save/Cancel as a hard
+        // backstop — with fixed scrollable value boxes this shouldn't ever
+        // bite, but it means a future content addition fails safe (an
+        // internal scrollbar) instead of spilling past the card again.
+        panel.setExtent(lively.pt(FW, Math.min(y, maxPanelH)));
+        if (y > maxPanelH) panel.applyStyle({ clipMode: 'auto' });
       },
 
       // ── avatar crop/upload ────────────────────────────────────────────────────

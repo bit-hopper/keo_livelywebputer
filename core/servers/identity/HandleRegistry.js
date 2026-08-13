@@ -19,9 +19,15 @@
  *                                                   (§3.2's postal invariant)
  *
  *   domains table:
- *     domain     TEXT PRIMARY KEY  — e.g. "alice.com"
- *     did        TEXT NOT NULL
- *     verified_at TEXT NOT NULL    — ISO 8601 of last successful verification
+ *     domain         TEXT PRIMARY KEY  — e.g. "alice.com"
+ *     did            TEXT NOT NULL
+ *     verified_at    TEXT NOT NULL    — ISO 8601 of last successful verification
+ *     status         TEXT NOT NULL DEFAULT 'verified'  — 'verified' | 'invalid',
+ *                                                          kept fresh by DomainVerifier's
+ *                                                          periodic recheck job
+ *     last_checked_at TEXT DEFAULT NULL — ISO 8601 of the last recheck (may be
+ *                                          later than verified_at if the most
+ *                                          recent check failed)
  *
  * The DB file is stored at <WORKSPACE_LK>/identity/handles.db.
  * Created automatically on first use. is_alias/primary_handle/revoked_at
@@ -104,15 +110,53 @@ function _ensureAliasColumns(db, thenDo) {
   });
 }
 
+// Idempotent migration: adds the status/last_checked_at columns to a domains
+// table that may predate them, same PRAGMA table_info approach as
+// _ensureAliasColumns.
+function _ensureDomainStatusColumns(db, thenDo) {
+  db.all('PRAGMA table_info(domains)', function(err, cols) {
+    if (err) return thenDo(err);
+    var names = (cols || []).map(function(c) { return c.name; });
+    var toAdd = [];
+    if (names.indexOf('status') === -1) {
+      toAdd.push("ALTER TABLE domains ADD COLUMN status TEXT NOT NULL DEFAULT 'verified'");
+    }
+    if (names.indexOf('last_checked_at') === -1) {
+      toAdd.push('ALTER TABLE domains ADD COLUMN last_checked_at TEXT DEFAULT NULL');
+    }
+    (function next(i) {
+      if (i >= toAdd.length) return thenDo(null);
+      db.run(toAdd[i], function(err) {
+        if (err) return thenDo(err);
+        next(i + 1);
+      });
+    })(0);
+  });
+}
+
 function _createRemainingTables(db, thenDo) {
   db.serialize(function() {
       db.run(
         'CREATE TABLE IF NOT EXISTS domains (' +
-        '  domain      TEXT PRIMARY KEY,' +
-        '  did         TEXT NOT NULL,' +
-        '  verified_at TEXT NOT NULL' +
-        ')'
+        '  domain          TEXT PRIMARY KEY,' +
+        '  did             TEXT NOT NULL,' +
+        "  verified_at     TEXT NOT NULL," +
+        "  status          TEXT NOT NULL DEFAULT 'verified'," +
+        '  last_checked_at TEXT DEFAULT NULL' +
+        ')',
+        function(err) {
+          if (err) return thenDo(err);
+          _ensureDomainStatusColumns(db, function(err) {
+            if (err) return thenDo(err);
+            _createCredentialAndDocTables(db, thenDo);
+          });
+        }
       );
+  });
+}
+
+function _createCredentialAndDocTables(db, thenDo) {
+  db.serialize(function() {
       // Stores the COSE-encoded public key and sign counter for each WebAuthn
       // credential. Required by verifyAuthenticationResponse and for replay
       // protection (counter must increase on every assertion).
@@ -169,7 +213,22 @@ function resolve(handle, thenDo) {
     db.get(
       'SELECT did FROM handles WHERE handle = ? AND revoked_at IS NULL',
       [handle],
-      function(err, row) { thenDo(err || null, row ? row.did : null); }
+      function(err, row) {
+        if (err) return thenDo(err);
+        if (row) return thenDo(null, row.did);
+        // Not a registered handle. If it looks like a domain (contains a
+        // "."), fall back to the domains table — regardless of `status`.
+        // Resolution must not depend on current verification state, or a
+        // domain whose hosted proof lapses would 404 every link to it that
+        // was ever shared; `status` only drives the profile card's badge
+        // and the add/verify UI (ProfileCard.js), not routing.
+        if (handle.indexOf('.') === -1) return thenDo(null, null);
+        db.get(
+          'SELECT did FROM domains WHERE domain = ?',
+          [handle],
+          function(err2, drow) { thenDo(err2 || null, drow ? drow.did : null); }
+        );
+      }
     );
   });
 }
@@ -324,22 +383,26 @@ function remove(handle, thenDo) {
 
 // Register a verified domain → DID mapping.
 // Called after domain verification succeeds (/.well-known/lively-did sig check).
+// Also used by DomainVerifier's periodic recheck to flip a previously-invalid
+// domain back to verified, so status is always reset to 'verified' here —
+// the only other writer of status is updateDomainStatus.
 // Calls thenDo(err).
 function registerDomain(domain, did, thenDo) {
   withDB(function(err, db) {
     if (err) return thenDo(err);
     var now = new Date().toISOString();
     db.run(
-      'INSERT INTO domains (domain, did, verified_at) VALUES (?, ?, ?)' +
-      ' ON CONFLICT(domain) DO UPDATE SET did=excluded.did, verified_at=excluded.verified_at',
-      [domain, did, now],
+      'INSERT INTO domains (domain, did, verified_at, status, last_checked_at) VALUES (?, ?, ?, \'verified\', ?)' +
+      ' ON CONFLICT(domain) DO UPDATE SET did=excluded.did, verified_at=excluded.verified_at,' +
+      "   status='verified', last_checked_at=excluded.last_checked_at",
+      [domain, did, now, now],
       function(err) { thenDo(err || null); }
     );
   });
 }
 
 // Resolve a domain to its DID (from the domains table).
-// Calls thenDo(null, did) or thenDo(null, null) if not registered/verified.
+// Calls thenDo(null, did) or thenDo(null, null) if not registered.
 function resolveDomain(domain, thenDo) {
   withDB(function(err, db) {
     if (err) return thenDo(err);
@@ -347,6 +410,64 @@ function resolveDomain(domain, thenDo) {
       'SELECT did FROM domains WHERE domain = ?',
       [domain],
       function(err, row) { thenDo(err || null, row ? row.did : null); }
+    );
+  });
+}
+
+// Domains registered to a DID, newest-verified first — for the profile
+// card's badge list (ProfileCard.js).
+// Calls thenDo(null, [{ domain, did, verified_at, status, last_checked_at }]).
+function listDomainsForDid(did, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.all(
+      'SELECT domain, did, verified_at, status, last_checked_at FROM domains' +
+      ' WHERE did = ? ORDER BY verified_at DESC',
+      [did],
+      function(err, rows) { thenDo(err || null, rows || []); }
+    );
+  });
+}
+
+// Every registered domain, for DomainVerifier's periodic recheck job.
+// Calls thenDo(null, [{ domain, did, verified_at, status, last_checked_at }]).
+function listAllDomains(thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.all(
+      'SELECT domain, did, verified_at, status, last_checked_at FROM domains ORDER BY domain',
+      function(err, rows) { thenDo(err || null, rows || []); }
+    );
+  });
+}
+
+// Remove a domain claim — scoped to `did` so one user can't remove another's
+// verified domain by guessing the domain string (same scoping idea as
+// revokeAlias's primaryHandle check).
+// Calls thenDo(err, changed) where changed is true iff a row was deleted.
+function removeDomain(domain, did, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.run(
+      'DELETE FROM domains WHERE domain = ? AND did = ?',
+      [domain, did],
+      function(err) {
+        if (err) return thenDo(err);
+        thenDo(null, this.changes > 0);
+      }
+    );
+  });
+}
+
+// Update a domain's verification status after a recheck (DomainVerifier).
+// status: 'verified' | 'invalid'. Calls thenDo(err).
+function updateDomainStatus(domain, status, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.run(
+      'UPDATE domains SET status = ?, last_checked_at = ? WHERE domain = ?',
+      [status, new Date().toISOString(), domain],
+      function(err) { thenDo(err || null); }
     );
   });
 }
@@ -453,6 +574,10 @@ module.exports = {
   remove:           remove,
   registerDomain:   registerDomain,
   resolveDomain:    resolveDomain,
+  listDomainsForDid: listDomainsForDid,
+  listAllDomains:   listAllDomains,
+  removeDomain:     removeDomain,
+  updateDomainStatus: updateDomainStatus,
   saveCredential:   saveCredential,
   getCredential:    getCredential,
   updateCounter:    updateCounter,

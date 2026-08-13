@@ -563,6 +563,69 @@ module("lively.identity.UserSpace")
           });
         },
       },
+
+      // ─── domain handles ──────────────────────────────────────────────────────
+
+      "domain handles",
+      {
+        // List the current user's (or `handle`'s) verified/invalid domain
+        // handles. Calls thenDo(null, [{ domain, status, verifiedAt, lastCheckedAt }]).
+        listDomains: function (handle, thenDo) {
+          var user = this.currentUser();
+          var target = handle || (user && user.handle);
+          if (!target) return thenDo(new Error("UserSpace: not logged in"));
+          fetch("/@" + target + "/domains", { credentials: "include" })
+            .then(function (res) {
+              if (!res.ok) throw new Error("UserSpace.listDomains: HTTP " + res.status);
+              return res.json().then(function (r) { thenDo(null, r.domains || []); });
+            })
+            .catch(thenDo);
+        },
+
+        // Ask the server to fetch and verify https://<domain>/.well-known/lively-did
+        // against the current user's DID, and register it on success.
+        // The caller is responsible for having already published the signed
+        // document at that URL (see ProfileCard.js's "Generate & Verify" flow,
+        // which builds it via lively.identity.webKey.signWellKnown).
+        // Calls thenDo(null, { domain }) on success, thenDo(err) otherwise
+        // (err.message carries the server's rejection reason, e.g. signature
+        // mismatch or the domain being unreachable).
+        verifyDomain: function (domain, thenDo) {
+          var user = this.currentUser();
+          if (!user) return thenDo(new Error("UserSpace: not logged in"));
+          fetch("/@" + user.handle + "/domains", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ domain: domain }),
+          })
+            .then(function (res) {
+              return res.json().then(function (body) {
+                if (!res.ok) throw new Error(body.error || "POST domains HTTP " + res.status);
+                thenDo(null, body);
+              });
+            })
+            .catch(thenDo);
+        },
+
+        // Remove a previously-verified domain handle. Calls thenDo(err).
+        removeDomain: function (domain, thenDo) {
+          var user = this.currentUser();
+          if (!user) return thenDo(new Error("UserSpace: not logged in"));
+          fetch("/@" + user.handle + "/domains/" + encodeURIComponent(domain), {
+            method: "DELETE",
+            credentials: "include",
+          })
+            .then(function (res) {
+              if (!res.ok)
+                return res.json().then(function (b) {
+                  throw new Error(b.error || "DELETE domains HTTP " + res.status);
+                });
+              thenDo(null);
+            })
+            .catch(thenDo);
+        },
+      },
     );
 
     lively.identity.userSpace = new lively.identity.UserSpace();

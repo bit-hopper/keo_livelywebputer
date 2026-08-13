@@ -65,6 +65,7 @@ var blobStore = require("./identity/BlobStore");
 var auth = require("./identity/AuthMiddleware");
 var constellationRegistry = require("./identity/ConstellationRegistry");
 var cryptoVerify = require("./identity/CryptoVerify");
+var domainVerifier = require("./identity/DomainVerifier");
 var constellationSpace = require("./identity/ConstellationSpace");
 var plusCode = require("./identity/PlusCode");
 
@@ -987,6 +988,14 @@ function _resolveHandlesForDids(dids, thenDo) {
 }
 
 module.exports = function (route, app) {
+  // Keep domain-handle verification status fresh (ProfileCard.js's green
+  // tick / yellow "?" badge) — a domain's hosted .well-known file can
+  // disappear or change without this server being told, so it's rechecked
+  // on a schedule rather than only at add-time. Same setInterval-based
+  // pattern as WebAuthnServer.js's cleanupExpiredChallenges.
+  domainVerifier.recheckAllDomains();
+  setInterval(function () { domainVerifier.recheckAllDomains(); }, 6 * 60 * 60 * 1000);
+
   // ─── challenge ─────────────────────────────────────────────────────────────
 
   app.get(route + "challenge", function (req, res) {
@@ -1185,8 +1194,18 @@ module.exports = function (route, app) {
 
     handleRegistry.resolve(handle, function (err, did) {
       if (err) return res.status(500).json({ error: String(err) });
-      if (!did)
+      if (!did) {
+        if (req.accepts(["html", "json"]) === "html") {
+          return res.status(404).send(
+            buildAccessDeniedPage({
+              title: "Handle not found",
+              heading: "@" + handle + " doesn't exist",
+              message: "No account is registered under this handle.",
+            }),
+          );
+        }
         return res.status(404).json({ error: "Handle not found: @" + handle });
+      }
 
       objectRepo.listForUser(did, function (err, envelopes) {
         if (err) return res.status(500).json({ error: String(err) });
@@ -1205,6 +1224,29 @@ module.exports = function (route, app) {
         var visible = envelopes
           .filter(function (e) { return _canReadEnvelope(e, req.identity); })
           .map(function (e) { return _trimRecipientsForNonOwner(e, req.identity); });
+
+        // A browser hitting the bare handle (e.g. a shared/typed profile
+        // link, including a verified domain handle) wants the handle's home
+        // world rendered, not the JSON manifest this route otherwise exists
+        // to serve API clients (LoginDialog.js etc.) — same content
+        // negotiation pattern as every /@:handle/:objId route below.
+        // Mirrors welcome.html's own-world redirect: earliest-created world
+        // wins, but scoped to only the worlds this caller can actually see.
+        if (req.accepts(["html", "json"]) === "html") {
+          var worlds = visible.filter(function (e) { return e.type === "world"; });
+          worlds.sort(function (a, b) { return a.created < b.created ? -1 : 1; });
+          if (worlds.length) {
+            return res.redirect("/@" + handle + "/" + worlds[0].objId);
+          }
+          return res.status(404).send(
+            buildAccessDeniedPage({
+              title: "No home world",
+              heading: "@" + handle + " has nothing public here yet",
+              message: "This account hasn't published a world visible to you.",
+            }),
+          );
+        }
+
         res.json({ handle: handle, did: did, objects: visible });
       });
     });
@@ -1317,6 +1359,62 @@ module.exports = function (route, app) {
     objectRepo.put(envelope, function (err, result) {
       if (err) return res.status(500).json({ error: String(err) });
       res.json({ ok: true, objId: result.objId, cid: result.cid, changed: result.changed });
+    });
+  });
+
+  // ─── domain handles ────────────────────────────────────────────────────────
+  // A verified domain (e.g. "alice.com") both resolves as an alternate
+  // /@alice.com URL for this account (see HandleRegistry.resolve's domain
+  // fallback) and is shown on ProfileCard.js with a verified/invalid badge.
+  // The server never trusts a client-submitted claim — it always fetches
+  // and checks the domain's own /.well-known/lively-did itself
+  // (DomainVerifier.verifyDomainClaim).
+
+  app.get("/@:handle/domains", auth.optionalAuth, function (req, res) {
+    var handle = req.params.handle;
+    handleRegistry.resolve(handle, function (err, did) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!did) return res.status(404).json({ error: "Handle not found: @" + handle });
+      handleRegistry.listDomainsForDid(did, function (err2, rows) {
+        if (err2) return res.status(500).json({ error: String(err2) });
+        res.json({
+          domains: rows.map(function (r) {
+            return { domain: r.domain, status: r.status, verifiedAt: r.verified_at, lastCheckedAt: r.last_checked_at };
+          }),
+        });
+      });
+    });
+  });
+
+  app.post("/@:handle/domains", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your account" });
+    var domain = req.body && req.body.domain;
+    if (!domain || typeof domain !== "string")
+      return res.status(400).json({ error: "domain is required" });
+    domain = domain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    if (!domain)
+      return res.status(400).json({ error: "domain is required" });
+
+    domainVerifier.verifyDomainClaim(domain, req.identity.did, function (err, result) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!result.valid) return res.status(400).json({ error: result.reason });
+      handleRegistry.registerDomain(domain, req.identity.did, function (regErr) {
+        if (regErr) return res.status(500).json({ error: String(regErr) });
+        res.json({ ok: true, domain: domain });
+      });
+    });
+  });
+
+  app.delete("/@:handle/domains/:domain", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your account" });
+    handleRegistry.removeDomain(req.params.domain, req.identity.did, function (err, changed) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!changed) return res.status(404).json({ error: "Domain not found: " + req.params.domain });
+      res.json({ ok: true });
     });
   });
 

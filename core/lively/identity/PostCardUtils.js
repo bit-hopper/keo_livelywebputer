@@ -24,6 +24,7 @@ module('lively.identity.PostCardUtils')
       escapeHtml:          escapeHtml,
       identiconDataUrl:    identiconDataUrl,
       truncateDid:         truncateDid,
+      truncateAddress:     truncateAddress,
       encodeLocation:      encodeLocation,
       sanitizeLocationCode: sanitizeLocationCode,
     };
@@ -211,6 +212,13 @@ module('lively.identity.PostCardUtils')
     function truncateDid(did) {
       var s = String(did || '');
       return s.length > 36 ? s.slice(0, 20) + '…' + s.slice(-12) : s;
+    }
+
+    // Shortened display form of a wallet address (e.g. "0x998b…c4a2"):
+    // first 6 + last 4 chars, same truncate-in-the-middle idea as truncateDid.
+    function truncateAddress(addr) {
+      var s = String(addr || '');
+      return s.length > 12 ? s.slice(0, 6) + '…' + s.slice(-4) : s;
     }
 
     function escapeHtml(str) {
