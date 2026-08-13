@@ -32,6 +32,7 @@
     "lively.ast": "^0.7.47",
     "lively.lang": "^0.7.9",
     "mysql": "^2.17.1",
+    "node-pty": "^1.0.0",
     "opencascade.js": "2.0.0-beta.b5ff984",
     "open-location-code": "^1.0.3",
     "optparse": "^1.0.5",

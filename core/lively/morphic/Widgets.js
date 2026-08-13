@@ -1837,6 +1837,15 @@ lively.morphic.World.addMethods(
         require('lively.ide.commands.default').toRun(function() {
             lively.ide.commands.exec('lively.ide.execShellCommandInWindow') });
     },
+    openXtermTerminal: function() {
+        var self = this;
+        lively.require('lively.ide.tools.XtermTerminal').toRun(function() {
+            var win = lively.BuildSpec('lively.ide.tools.XtermTerminalWindow').createMorph();
+            win.openInWorld(pt(0, 0));
+            win.align(win.bounds().center(), self.visibleBounds().center());
+            win.comeForward();
+        });
+    },
     openObjectEditorFor: function(morph, selector, whenDone) {
         if (typeof selector === "function") {
           whenDone = selector;
@@ -2192,6 +2201,7 @@ lively.morphic.World.addMethods(
                 ['Subserver Viewer', this.openSubserverViewer.bind(this)],
                 ['Server Workspace', this.openServerWorkspace.bind(this)],
                 ['Terminal', this.openTerminal.bind(this)],
+                ['Xterm Terminal', this.openXtermTerminal.bind(this)],
                 ['File tree', this.openFileTree.bind(this)],
                 ['Git Control', this.openGitControl.bind(this)]
             ]],
