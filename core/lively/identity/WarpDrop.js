@@ -104,7 +104,9 @@ module('lively.identity.WarpDrop')
       },
 
       _buildChrome: function () {
+        var self = this;
         this.setFill(Color.white);
+        this.setDroppingEnabled(false);
         var shapeNode = this.renderContext().shapeNode;
         shapeNode.style.borderRadius = '8px';
         shapeNode.style.boxShadow    = '0 4px 16px rgba(0,0,0,0.18)';
@@ -137,6 +139,9 @@ module('lively.identity.WarpDrop')
         titleBar.appendChild(selfEl);
         this._selfIconEl = selfIcon;
         this._selfNameEl = selfName;
+
+        var closeBtn = this._makeCloseButton(function () { self.remove(); });
+        titleBar.appendChild(closeBtn);
 
         shapeNode.appendChild(titleBar);
 
@@ -191,6 +196,24 @@ module('lively.identity.WarpDrop')
         ].join(';');
         shapeNode.appendChild(contentDiv);
         this._contentDiv = contentDiv;
+      },
+
+      // "x" close button for the black title bar -- this window has no
+      // standard Lively Window chrome (it's a bare Box positioned via
+      // openInWorldCenter), so without this there is no way to dismiss it
+      // short of the morph halo.
+      _makeCloseButton: function (onClick) {
+        var btn = document.createElement('span');
+        btn.textContent = '✕';
+        btn.title = 'Close';
+        btn.style.cssText = [
+          'color:#fff', 'font-size:13px', 'line-height:1', 'cursor:pointer',
+          'padding:3px 6px', 'border-radius:3px', 'flex-shrink:0',
+        ].join(';');
+        btn.addEventListener('mouseenter', function () { btn.style.background = 'rgba(255,255,255,0.15)'; });
+        btn.addEventListener('mouseleave', function () { btn.style.background = 'transparent'; });
+        btn.addEventListener('click', onClick);
+        return btn;
       },
 
       // explicitly tear down everything WebRTC/WebSocket -- neither is

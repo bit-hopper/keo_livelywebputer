@@ -106,8 +106,10 @@ module('lively.identity.Wallet')
       },
 
       _buildChrome: function () {
+        var self = this;
         this._ensureBaseStyles();
         this.setFill(Color.white);
+        this.setDroppingEnabled(false);
         var shapeNode = this.renderContext().shapeNode;
         shapeNode.classList.add('lively-wallet-dashboard');
         shapeNode.style.borderRadius = '8px';
@@ -117,13 +119,15 @@ module('lively.identity.Wallet')
         titleBar.style.cssText = [
           'position:absolute', 'top:0', 'left:0', 'right:0', 'height:36px',
           'background:#2c2c2e', 'border-radius:8px 8px 0 0',
-          'display:flex', 'align-items:center', 'padding:0 12px',
-          'box-sizing:border-box',
+          'display:flex', 'align-items:center', 'justify-content:space-between',
+          'padding:0 12px', 'box-sizing:border-box',
         ].join(';');
         var titleText = document.createElement('span');
         titleText.textContent = 'Wallet';
         titleText.style.cssText = 'color:#fff;font-size:13px;font-weight:600;font-family:sans-serif;';
         titleBar.appendChild(titleText);
+        var closeBtn = this._makeCloseButton(function () { self.remove(); });
+        titleBar.appendChild(closeBtn);
         shapeNode.appendChild(titleBar);
 
         var toolbarDiv = document.createElement('div');
@@ -146,6 +150,24 @@ module('lively.identity.Wallet')
         this._contentDiv = contentDiv;
 
         this._renderToolbar();
+      },
+
+      // "x" close button for the black title bar -- this window has no
+      // standard Lively Window chrome (it's a bare Box positioned via
+      // openInWorldCenter), so without this there is no way to dismiss it
+      // short of the morph halo.
+      _makeCloseButton: function (onClick) {
+        var btn = document.createElement('span');
+        btn.textContent = '✕';
+        btn.title = 'Close';
+        btn.style.cssText = [
+          'color:#fff', 'font-size:13px', 'line-height:1', 'cursor:pointer',
+          'padding:3px 6px', 'border-radius:3px', 'flex-shrink:0',
+        ].join(';');
+        btn.addEventListener('mouseenter', function () { btn.style.background = 'rgba(255,255,255,0.15)'; });
+        btn.addEventListener('mouseleave', function () { btn.style.background = 'transparent'; });
+        btn.addEventListener('click', onClick);
+        return btn;
       },
 
       _renderToolbar: function () {
