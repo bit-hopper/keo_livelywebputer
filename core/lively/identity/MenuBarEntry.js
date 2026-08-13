@@ -48,16 +48,19 @@ module("lively.identity.MenuBarEntry")
             ];
           }
           return [
-            ["Mailbox", [
-              ["New Postcard", function () { self.newPostcard(); }],
-              ["Received",  function () { self.openMailbox("received");  }],
-              ["Delivered", function () { self.openMailbox("delivered"); }],
-              ["Returned",  function () { self.openMailbox("returned");  }],
+            ["Compose", [
+              ["Postcard", function () { self.newPostcard(); }],
+              ["Wiki",     function () { self.newWiki(); }],
             ]],
             ["My profile",         function () { self.openMyProfile(); }],
             ["My worlds",          function () { self.openMyWorlds(); }],
             ["My Constellations",  function () { self.openMyConstellations(); }],
             ["Wallet",             function () { self.openWallet(); }],
+            ["Mailbox", [
+              ["Received",  function () { self.openMailbox("received");  }],
+              ["Delivered", function () { self.openMailbox("delivered"); }],
+              ["Returned",  function () { self.openMailbox("returned");  }],
+            ]],
             ["Files",              function () { self.openFiles(); }],
             ["Settings",           function () { self.openSettings(); }],
             ["Add device",         function () { self.openRegisterDialog(); }],
@@ -135,6 +138,13 @@ module("lively.identity.MenuBarEntry")
           });
         },
 
+        newWiki: function newWiki() {
+          var handle = lively.identity.did.currentUser().handle;
+          lively.require("lively.identity.WikiEditor").toRun(function () {
+            lively.identity.WikiEditor.newCard(handle);
+          });
+        },
+
         openMailbox: function openMailbox(tab) {
           lively.require("lively.identity.PostCardMailbox").toRun(function () {
             lively.identity.PostCardMailbox.open(tab);
@@ -153,12 +163,13 @@ module("lively.identity.MenuBarEntry")
           });
         },
 
-        // Opens Mailbox's Blocked tab — the only account setting that exists
-        // today. Not a dedicated Settings page yet; more settings (e.g.
-        // constellation preferences) are expected to land here later.
+        // Placeholder — no settings options exist yet. Opens a blank window
+        // titled "Settings" to be filled in later.
         openSettings: function openSettings() {
-          lively.require("lively.identity.PostCardMailbox").toRun(function () {
-            lively.identity.PostCardMailbox.open("blocked");
+          var box = new lively.morphic.Box(lively.rect(0, 0, 400, 300));
+          box.openInWindow({
+            title: "Settings",
+            pos: lively.morphic.World.current().visibleBounds().center(),
           });
         },
 
