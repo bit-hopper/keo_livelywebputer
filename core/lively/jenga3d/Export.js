@@ -18,6 +18,18 @@
  * only once something downstream needs it, and occt-worker-src.js's own
  * "exportIges" handler always errors for the same reason.
  *
+ * §14.2/§14.9 (multi-instance): every export function now takes an
+ * explicit `rootId` — "the tree's one root" no longer exists once a tree
+ * can hold several independently-visible instances (§14.9: "per-instance
+ * export (one FeatureTree root in, one file out) — accurate as
+ * originally built and still exactly how a single-instance export
+ * works"). `toSTLAssembly`/`toOBJAssembly`/`toSTEPAssembly` are the new
+ * whole-assembly counterparts, merging every current instance into one
+ * file (§14.9) — confirmed empirically (not assumed) that three's
+ * `STLExporter`/`OBJExporter` both call `object.traverse(...)` internally
+ * and so accept a `THREE.Group` of several meshes directly; no
+ * `BufferGeometryUtils.mergeGeometries` fallback is needed.
+ *
  * A plain utility object, not a class — matches `lively.jenga3d.Worker`/
  * `lively.jenga3d.PickIndex`'s "capitalized, used directly" shape, since
  * export has no per-instance state of its own.
@@ -35,9 +47,10 @@ module('lively.jenga3d.Export')
 
     lively.jenga3d.Export = {
 
-      // featureTree: a lively.jenga3d.FeatureTree instance. thenDo(err, text).
-      toSTL: function (featureTree, thenDo) {
-        this._buildExportMesh(featureTree, function (err, mesh) {
+      // featureTree: a lively.jenga3d.FeatureTree instance. rootId: the
+      // instance to export. thenDo(err, text).
+      toSTL: function (featureTree, rootId, thenDo) {
+        this._buildExportMesh(featureTree, rootId, function (err, mesh) {
           if (err) return thenDo(err);
           var exporter = new window.jenga3dDeps.STLExporter();
           var text = exporter.parse(mesh, { binary: false });
@@ -47,8 +60,8 @@ module('lively.jenga3d.Export')
         });
       },
 
-      toOBJ: function (featureTree, thenDo) {
-        this._buildExportMesh(featureTree, function (err, mesh) {
+      toOBJ: function (featureTree, rootId, thenDo) {
+        this._buildExportMesh(featureTree, rootId, function (err, mesh) {
           if (err) return thenDo(err);
           var exporter = new window.jenga3dDeps.OBJExporter();
           var text = exporter.parse(mesh);
@@ -58,16 +71,16 @@ module('lively.jenga3d.Export')
         });
       },
 
-      downloadSTL: function (featureTree, filename, thenDo) {
-        this.toSTL(featureTree, function (err, text) {
+      downloadSTL: function (featureTree, rootId, filename, thenDo) {
+        this.toSTL(featureTree, rootId, function (err, text) {
           if (err) { if (thenDo) thenDo(err); return; }
           lively.jenga3d.Export._triggerDownload(filename || 'model.stl', text, 'model/stl');
           if (thenDo) thenDo(null, text);
         });
       },
 
-      downloadOBJ: function (featureTree, filename, thenDo) {
-        this.toOBJ(featureTree, function (err, text) {
+      downloadOBJ: function (featureTree, rootId, filename, thenDo) {
+        this.toOBJ(featureTree, rootId, function (err, text) {
           if (err) { if (thenDo) thenDo(err); return; }
           lively.jenga3d.Export._triggerDownload(filename || 'model.obj', text, 'model/obj');
           if (thenDo) thenDo(null, text);
@@ -77,19 +90,19 @@ module('lively.jenga3d.Export')
       // §11.2, §13 step 12: real worker op, real B-Rep — no throwaway
       // THREE.Mesh involved at all, unlike toSTL/toOBJ. thenDo(err, bytes)
       // where bytes is a Uint8Array of the STEP file's ASCII/UTF-8 text.
-      toSTEP: function (featureTree, thenDo) {
-        if (!featureTree.root) { thenDo(new Error('lively.jenga3d.Export: feature tree has no root')); return; }
-        lively.jenga3d.Worker.request(featureTree.root, 'exportStep', {
-          featureTree: featureTree.toJSON(),
-          dirtyNodeId: featureTree.root,
+      toSTEP: function (featureTree, rootId, thenDo) {
+        if (!featureTree.getNode(rootId)) { thenDo(new Error('lively.jenga3d.Export: unknown rootId: ' + rootId)); return; }
+        lively.jenga3d.Worker.request(rootId, 'exportStep', {
+          featureTree: featureTree.toJSONForRoot(rootId),
+          dirtyNodeId: rootId,
         }, function (err, result) {
           if (err) return thenDo(err);
           thenDo(null, result.fileBytes);
         });
       },
 
-      downloadStep: function (featureTree, filename, thenDo) {
-        this.toSTEP(featureTree, function (err, bytes) {
+      downloadStep: function (featureTree, rootId, filename, thenDo) {
+        this.toSTEP(featureTree, rootId, function (err, bytes) {
           if (err) { if (thenDo) thenDo(err); return; }
           lively.jenga3d.Export._triggerDownload(filename || 'model.step', bytes, 'model/step');
           if (thenDo) thenDo(null, bytes);
@@ -100,12 +113,12 @@ module('lively.jenga3d.Export')
       // not whatever a Viewport happens to currently display, since a
       // fresh export should reflect the tree's current state exactly and
       // use the tighter export-quality deflection, matching §11.1.
-      _buildExportMesh: function (featureTree, thenDo) {
-        if (!featureTree.root) { thenDo(new Error('lively.jenga3d.Export: feature tree has no root')); return; }
+      _buildExportMesh: function (featureTree, rootId, thenDo) {
+        if (!featureTree.getNode(rootId)) { thenDo(new Error('lively.jenga3d.Export: unknown rootId: ' + rootId)); return; }
         this._ensureThreeRuntime(function () {
-          lively.jenga3d.Worker.request(featureTree.root, 'evaluate', {
-            featureTree: featureTree.toJSON(),
-            dirtyNodeId: featureTree.root,
+          lively.jenga3d.Worker.request(rootId, 'evaluate', {
+            featureTree: featureTree.toJSONForRoot(rootId),
+            dirtyNodeId: rootId,
             deflection: lively.jenga3d.Worker.DEFLECTION.export,
           }, function (err, meshData) {
             if (err) return thenDo(err);
@@ -117,6 +130,98 @@ module('lively.jenga3d.Export')
             var mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial());
             thenDo(null, mesh);
           });
+        });
+      },
+
+      // ─── Whole-assembly export (§14.9, §13 step 21) ──────────────────
+      // Merges every current instance's export-tier mesh into one
+      // THREE.Group before handing it to STLExporter/OBJExporter — both
+      // confirmed (see file doc) to traverse an arbitrary Object3D, so no
+      // separate geometry-merge step is needed.
+      toSTLAssembly: function (featureTree, thenDo) {
+        this._buildExportGroup(featureTree, function (err, group) {
+          if (err) return thenDo(err);
+          var exporter = new window.jenga3dDeps.STLExporter();
+          var text = exporter.parse(group, { binary: false });
+          lively.jenga3d.Export._disposeGroup(group);
+          thenDo(null, text);
+        });
+      },
+
+      toOBJAssembly: function (featureTree, thenDo) {
+        this._buildExportGroup(featureTree, function (err, group) {
+          if (err) return thenDo(err);
+          var exporter = new window.jenga3dDeps.OBJExporter();
+          var text = exporter.parse(group);
+          lively.jenga3d.Export._disposeGroup(group);
+          thenDo(null, text);
+        });
+      },
+
+      downloadSTLAssembly: function (featureTree, filename, thenDo) {
+        this.toSTLAssembly(featureTree, function (err, text) {
+          if (err) { if (thenDo) thenDo(err); return; }
+          lively.jenga3d.Export._triggerDownload(filename || 'assembly.stl', text, 'model/stl');
+          if (thenDo) thenDo(null, text);
+        });
+      },
+
+      downloadOBJAssembly: function (featureTree, filename, thenDo) {
+        this.toOBJAssembly(featureTree, function (err, text) {
+          if (err) { if (thenDo) thenDo(err); return; }
+          lively.jenga3d.Export._triggerDownload(filename || 'assembly.obj', text, 'model/obj');
+          if (thenDo) thenDo(null, text);
+        });
+      },
+
+      // §14.3/§14.9: the one op whose params.featureTree genuinely
+      // carries `roots` (plural) — the worker evaluates every root's
+      // final shape within one request-scoped Disposer and combines them
+      // into a single TopoDS_Compound before writing STEP (occt-worker-
+      // src.js's exportStepAssembly).
+      toSTEPAssembly: function (featureTree, thenDo) {
+        var roots = featureTree.getRoots();
+        if (roots.length === 0) { thenDo(new Error('lively.jenga3d.Export: feature tree has no instances')); return; }
+        lively.jenga3d.Worker.request('__assembly__', 'exportStepAssembly', {
+          featureTree: featureTree.toJSON(),
+        }, function (err, result) {
+          if (err) return thenDo(err);
+          thenDo(null, result.fileBytes);
+        });
+      },
+
+      downloadStepAssembly: function (featureTree, filename, thenDo) {
+        this.toSTEPAssembly(featureTree, function (err, bytes) {
+          if (err) { if (thenDo) thenDo(err); return; }
+          lively.jenga3d.Export._triggerDownload(filename || 'assembly.step', bytes, 'model/step');
+          if (thenDo) thenDo(null, bytes);
+        });
+      },
+
+      _buildExportGroup: function (featureTree, thenDo) {
+        var roots = featureTree.getRoots();
+        if (roots.length === 0) { thenDo(new Error('lively.jenga3d.Export: feature tree has no instances')); return; }
+        this._ensureThreeRuntime(function () {
+          var THREE = window.jenga3dDeps.THREE;
+          var group = new THREE.Group();
+          var remaining = roots.length;
+          var failed = null;
+          roots.forEach(function (rootId) {
+            lively.jenga3d.Export._buildExportMesh(featureTree, rootId, function (err, mesh) {
+              if (failed) return; // an earlier root already failed this batch
+              if (err) { failed = err; thenDo(err); return; }
+              group.add(mesh);
+              remaining--;
+              if (remaining === 0) thenDo(null, group);
+            });
+          });
+        });
+      },
+
+      _disposeGroup: function (group) {
+        group.children.forEach(function (mesh) {
+          mesh.geometry.dispose();
+          mesh.material.dispose();
         });
       },
 

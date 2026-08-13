@@ -36,6 +36,16 @@
  * work. Same reasoning NAMESPACE.md already applies to /files/ and
  * /settings.
  *
+ * §14.3/§14.9, §13 step 21: "exportStepAssembly" — the one op whose
+ * `params.featureTree` genuinely carries `roots` (plural) instead of a
+ * single `root`, for combined multi-instance STEP export. Evaluates every
+ * root's final shape within one request-scoped Disposer, combines them
+ * into a single `TopoDS_Compound` (`BRep_Builder.MakeCompound` + `.Add`
+ * per shape — confirmed empirically that no `BRepBuilderAPI_MakeCompound`
+ * class exists, unlike what an unverified reading of the spec's own
+ * wording would suggest), then writes STEP exactly as "exportStep" does
+ * for one shape.
+ *
  * §13 step 10 also adds `edges` to the evaluate response — straight-line
  * (start/end vertex only) approximations of every edge in the root
  * shape, 1-based indexed the same way occtFaceIndex is, for the
@@ -408,6 +418,63 @@ function handleExportStep(oc, msg) {
   }
 }
 
+// §14.9, §13 step 21: the one op whose params.featureTree genuinely
+// carries `roots` (plural, §14.3) — evaluates every root's final shape
+// within one request-scoped Disposer, combines them into a single
+// TopoDS_Compound, then feeds that to STEPControl_Writer exactly as
+// handleExportStep already does for one shape. No `BRepBuilderAPI_
+// MakeCompound` class exists (confirmed empirically, not assumed from
+// the .d.ts, same discipline as every other OCCT call in this file — it
+// doesn't even appear in opencascade.full.d.ts); the real API is
+// `BRep_Builder` (a `TopoDS_Builder` subclass)'s `MakeCompound(compound)`
+// + `Add(compound, shape)`.
+function handleExportStepAssembly(oc, msg) {
+  var disposer = new Disposer();
+  try {
+    var tree = msg.params.featureTree;
+    var roots = tree.roots || [];
+    if (roots.length === 0) throw new Error('exportStepAssembly: feature tree has no instances');
+
+    var cache = {};
+    var builder = disposer.track(new oc.BRep_Builder());
+    var compound = disposer.track(new oc.TopoDS_Compound());
+    builder.MakeCompound(compound);
+    roots.forEach(function (rootId) {
+      var shape = buildNode(oc, disposer, rootId, tree, cache);
+      builder.Add(compound, shape);
+    });
+
+    var writer = disposer.track(new oc.STEPControl_Writer_1());
+    var range = disposer.track(new oc.Message_ProgressRange_1());
+    var transferStatus = writer.Transfer(
+      compound, oc.STEPControl_StepModelType.STEPControl_AsIs, true, range
+    );
+    if (transferStatus.value !== oc.IFSelect_ReturnStatus.IFSelect_RetDone.value) {
+      throw new Error('STEP transfer did not complete');
+    }
+
+    var path = '/jenga3d-export-assembly-' + msg.id + '.step';
+    var writeStatus = writer.Write(path);
+    if (writeStatus.value !== oc.IFSelect_ReturnStatus.IFSelect_RetDone.value) {
+      throw new Error('STEP write did not complete');
+    }
+    var fileBytes = oc.FS.readFile(path);
+    try { oc.FS.unlink(path); } catch (e) { /* best-effort cleanup of the scratch file */ }
+
+    disposer.disposeAll();
+    return {
+      id: msg.id, nodeId: msg.nodeId, generation: msg.generation, ok: true,
+      fileBytes: fileBytes, mime: 'model/step'
+    };
+  } catch (e) {
+    disposer.disposeAll();
+    return {
+      id: msg.id, nodeId: msg.nodeId, generation: msg.generation, ok: false,
+      error: e && e.message || String(e)
+    };
+  }
+}
+
 self.onmessage = function (evt) {
   var msg = evt.data;
   ensureOcct().then(function (oc) {
@@ -416,6 +483,8 @@ self.onmessage = function (evt) {
       response = handleEvaluate(oc, msg);
     } else if (msg.op === 'exportStep') {
       response = handleExportStep(oc, msg);
+    } else if (msg.op === 'exportStepAssembly') {
+      response = handleExportStepAssembly(oc, msg);
     } else if (msg.op === 'exportIges') {
       response = {
         id: msg.id, nodeId: msg.nodeId, generation: msg.generation, ok: false,

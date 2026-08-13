@@ -38,6 +38,27 @@
  * `CreateBoxTool`/`EditHandleTool`/`CombineTool`'s existing pattern of
  * being driven directly rather than through an as-yet-nonexistent
  * toolbar/mode UI.
+ *
+ * §14.4 (multi-instance): `_mesh`/`_edgeLines` (singular) become
+ * `_meshes`, a Map from rootId to `{ mesh, edgeLines }`. `setMesh(rootId,
+ * meshData)`/`clearMesh(rootId)` touch only that instance. Framing moves
+ * from "every setMesh call" to "structural changes only" —
+ * `_frameAllMeshes()` is called explicitly by `Assembly` after add/
+ * remove/combine/fillet-commit, not from inside setMesh, so a different
+ * instance's throttled Complex-drag rebuild (§5.3) never yanks the
+ * camera; an instance's *first* setMesh still frames on its own so a
+ * freshly-dropped shape is immediately visible. Picking raycasts every
+ * current mesh and resolves `{ rootId, occtFaceIndex, groupIndex }` via
+ * `mesh.userData.rootId`; `highlightGroup`/multi-edge highlight are
+ * tracked per instance. Whole-instance "selected for combine/fillet"
+ * (§14.5's `selectInstance`) is a distinct visual — a wireframe
+ * `THREE.BoxHelper` outline per selected instance via `setSelected`, not
+ * a face-group highlight — since a materialIndex flip only lights up one
+ * triangle group, not "this whole object is selected"; spec'd in §14.5 as
+ * reusing `highlightGroup`'s "per-instance tracking" but a literal reuse
+ * of the per-face mechanism doesn't fit "select the whole object," so
+ * this is a deliberate, narrow deviation from that wording, recorded here
+ * per this doc's own convention for reinterpretations (§0).
  */
 
 module('lively.jenga3d.Viewport')
@@ -76,7 +97,7 @@ module('lively.jenga3d.Viewport')
     lively.morphic.Morph.subclass('lively.jenga3d.Viewport',
 
     'settings', {
-      doNotSerialize: ['_three', '_mesh', '_edgeLines'],
+      doNotSerialize: ['_three', '_meshes', '_selectionOutlines', '_gizmo'],
       style: { enableGrabbing: false, enableDropping: false },
     },
 
@@ -85,7 +106,8 @@ module('lively.jenga3d.Viewport')
         $super(this.defaultShape());
         this.setBounds(bounds || lively.rect(0, 0, 400, 300));
         this._three = null; // { THREE, scene, camera, renderer } once set up
-        this._mesh = null;  // current THREE.Mesh, if any
+        this._meshes = {};  // rootId -> { mesh, edgeLines, highlightedGroupIndex, highlightedEdgeGroupIndices: Set }
+        this._selectionOutlines = {}; // rootId -> THREE.BoxHelper (§14.4/§14.5 "selected instance" tint)
 
         var self = this;
         this.getShape().onResized = function (extent) { self._onResized(extent); };
@@ -141,15 +163,84 @@ module('lively.jenga3d.Viewport')
         node.appendChild(renderer.domElement);
 
         this._three = { THREE: THREE, scene: scene, camera: camera, renderer: renderer };
+        this._addGroundGrid();
+        this._setupGizmo();
         this._attachPicking();
 
-        if (this._pendingMesh) {
-          var pending = this._pendingMesh;
-          this._pendingMesh = null;
-          this.setMesh(pending); // also renders
+        var self = this;
+        if (this._pendingMeshes) {
+          var pending = this._pendingMeshes;
+          this._pendingMeshes = null;
+          Object.keys(pending).forEach(function (rootId) { self.setMesh(rootId, pending[rootId]); });
         } else {
           this._render();
         }
+      },
+
+      // TinkerCAD-style orientation reference — a static ground grid on
+      // the Y=0 plane (§9.1: 1 unit = 1mm; 1000mm/100 divisions = 10mm
+      // cells, matching CreateBoxTool's own 10mm default height) so a
+      // freshly-opened viewport reads as "an empty workspace," not a
+      // black void. Purely a visual reference, not part of the tree/mesh
+      // data — never touched by picking (its own geometry has no
+      // .groups, so PickIndex.resolve never matches it) or export.
+      _addGroundGrid: function () {
+        var THREE = this._three.THREE;
+        var grid = new THREE.GridHelper(1000, 100, 0x666666, 0x333333);
+        this._three.scene.add(grid);
+      },
+
+      // A small fixed-size XYZ axis indicator rendered into the canvas's
+      // bottom-left corner (red=X, green=Y, blue=Z) — the other half of
+      // "reads as TinkerCAD" alongside the ground grid. Deliberately a
+      // SEPARATE scene+orthographic-camera pair rendered into its own
+      // viewport/scissor rect each frame, not an AxesHelper dropped into
+      // the main scene: an in-scene gizmo would zoom/shrink with the
+      // model instead of staying a constant on-screen size, and would
+      // need picking/highlight/export to all know to ignore it.
+      _setupGizmo: function () {
+        var THREE = this._three.THREE;
+        var scene = new THREE.Scene();
+        var camera = new THREE.OrthographicCamera(-1.6, 1.6, 1.6, -1.6, 0.1, 10);
+
+        function addAxis(dir, color) {
+          scene.add(new THREE.ArrowHelper(dir, new THREE.Vector3(0, 0, 0), 1, color, 0.3, 0.18));
+        }
+        addAxis(new THREE.Vector3(1, 0, 0), 0xff4444); // X
+        addAxis(new THREE.Vector3(0, 1, 0), 0x44dd44); // Y
+        addAxis(new THREE.Vector3(0, 0, 1), 0x4488ff); // Z
+
+        this._gizmo = { scene: scene, camera: camera, sizeCss: 72, marginCss: 8 };
+      },
+
+      // Mirrors the main camera's current orientation (not its position/
+      // zoom, which don't apply to a fixed-distance orthographic gizmo):
+      // the gizmo camera is placed at a constant distance along the same
+      // "backward" direction the main camera currently has, so the arrows
+      // always show the world axes exactly as they're oriented in the
+      // main viewport right now.
+      _renderGizmo: function () {
+        var gizmo = this._gizmo;
+        if (!gizmo) return;
+        var THREE = this._three.THREE;
+        var renderer = this._three.renderer;
+        var mainCamera = this._three.camera;
+
+        gizmo.camera.quaternion.copy(mainCamera.quaternion);
+        gizmo.camera.position.copy(
+          new THREE.Vector3(0, 0, 1).applyQuaternion(gizmo.camera.quaternion).multiplyScalar(3)
+        );
+        gizmo.camera.lookAt(0, 0, 0);
+
+        var pixelRatio = renderer.getPixelRatio();
+        var s = Math.round(gizmo.sizeCss * pixelRatio);
+        var m = Math.round(gizmo.marginCss * pixelRatio);
+        renderer.setViewport(m, m, s, s);
+        renderer.setScissor(m, m, s, s);
+        renderer.setScissorTest(true);
+        renderer.render(gizmo.scene, gizmo.camera);
+        renderer.setScissorTest(false);
+        renderer.setViewport(0, 0, renderer.domElement.width, renderer.domElement.height);
       },
 
       _onResized: function (extent) {
@@ -164,30 +255,41 @@ module('lively.jenga3d.Viewport')
       _render: function () {
         if (!this._three) return;
         this._three.renderer.render(this._three.scene, this._three.camera);
+        this._renderGizmo();
       },
     },
 
-    'mesh', {
-      // mesh: { positions: Float32Array, normals: Float32Array, indices: Uint32Array,
-      //         groups: [{start, count, occtFaceIndex}] } — the exact shape
-      // lively.jenga3d.Worker's "evaluate" response carries (§4.3).
-      setMesh: function (mesh) {
-        if (!this._three) { this._pendingMesh = mesh; return; } // apply once three.js is ready
-        var THREE = this._three.THREE;
+    'mesh (§14.4 — multi-instance)', {
+      // Public accessor for a rootId's live THREE.Mesh — used by
+      // MoveTool (§14.7) to preview a rigid-translation drag by nudging
+      // the mesh's own .position directly (zero IPC — moving doesn't
+      // change geometry, only placement, so no worker round-trip is
+      // needed until the drag commits). Returns null if rootId isn't
+      // currently rendered.
+      getMesh: function (rootId) {
+        var entry = this._meshes[rootId];
+        return entry ? entry.mesh : null;
+      },
 
-        if (this._mesh) {
-          this._three.scene.remove(this._mesh);
-          this._mesh.geometry.dispose();
-          this._mesh.material.forEach(function (m) { m.dispose(); });
+      // rootId: which instance this mesh belongs to. mesh: { positions:
+      // Float32Array, normals: Float32Array, indices: Uint32Array,
+      // groups: [{start, count, occtFaceIndex}] } — the exact shape
+      // lively.jenga3d.Worker's "evaluate" response carries (§4.3).
+      // Creates or replaces only rootId's own mesh, without touching any
+      // other instance. An instance's first setMesh call frames the
+      // camera on its own bounding sphere so a freshly-dropped shape is
+      // immediately visible; subsequent calls (e.g. mid-drag rebuilds)
+      // deliberately do NOT re-frame — Assembly calls _frameAllMeshes()
+      // explicitly at structural-change points instead (file doc).
+      setMesh: function (rootId, mesh) {
+        if (!this._three) {
+          this._pendingMeshes = this._pendingMeshes || {};
+          this._pendingMeshes[rootId] = mesh;
+          return;
         }
-        this._highlightedGroupIndex = null;
-        if (this._edgeLines) {
-          this._three.scene.remove(this._edgeLines);
-          this._edgeLines.geometry.dispose();
-          this._edgeLines.material.forEach(function (m) { m.dispose(); });
-          this._edgeLines = null;
-        }
-        this._highlightedEdgeGroupIndex = null;
+        var THREE = this._three.THREE;
+        var isFirstMesh = !this._meshes[rootId];
+        this._disposeInstance(rootId);
 
         var geometry = new THREE.BufferGeometry();
         geometry.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
@@ -210,8 +312,12 @@ module('lively.jenga3d.Viewport')
 
         var material = new THREE.MeshNormalMaterial();
         var highlightMaterial = new THREE.MeshBasicMaterial({ color: 0xffee00 });
-        this._mesh = new THREE.Mesh(geometry, [material, highlightMaterial]);
-        this._three.scene.add(this._mesh);
+        var threeMesh = new THREE.Mesh(geometry, [material, highlightMaterial]);
+        threeMesh.userData.rootId = rootId; // §14.4: traces a raycaster hit back to its instance
+        this._three.scene.add(threeMesh);
+
+        var entry = { mesh: threeMesh, edgeLines: null, highlightedGroupIndex: null, highlightedEdgeGroupIndices: {} };
+        this._meshes[rootId] = entry;
 
         // §13 step 10, §7.3: straight-line edge overlay for edge
         // selection (fillet/chamfer). Same per-group materialIndex
@@ -230,46 +336,65 @@ module('lively.jenga3d.Viewport')
           });
           var edgeMaterial = new THREE.LineBasicMaterial({ color: 0x1a1a1a });
           var edgeHighlightMaterial = new THREE.LineBasicMaterial({ color: 0xff2222 });
-          this._edgeLines = new THREE.LineSegments(edgeGeometry, [edgeMaterial, edgeHighlightMaterial]);
-          this._three.scene.add(this._edgeLines);
+          var edgeLines = new THREE.LineSegments(edgeGeometry, [edgeMaterial, edgeHighlightMaterial]);
+          edgeLines.userData.rootId = rootId;
+          this._three.scene.add(edgeLines);
+          entry.edgeLines = edgeLines;
         }
 
-        this._frameMesh(geometry);
+        this._refreshSelectionOutline(rootId);
+        if (isFirstMesh) this._frameAllMeshes();
         this._render();
       },
 
-      // §13 step 14: undoing all the way back past a tree's first commit
-      // leaves featureTree.root null — nothing to rebuild/mesh, so the
-      // previously-displayed mesh needs to be explicitly torn down rather
-      // than left showing stale geometry for a now-empty tree.
-      clearMesh: function () {
-        if (!this._three) { this._pendingMesh = null; return; }
-        if (this._mesh) {
-          this._three.scene.remove(this._mesh);
-          this._mesh.geometry.dispose();
-          this._mesh.material.forEach(function (m) { m.dispose(); });
-          this._mesh = null;
+      // §13 step 14 / §14.5: reachable once undo/removeInstance/combine
+      // makes rootId stop being a visible instance — tears down just that
+      // instance rather than leaving it showing stale geometry.
+      clearMesh: function (rootId) {
+        if (!this._three) {
+          if (this._pendingMeshes) delete this._pendingMeshes[rootId];
+          return;
         }
-        this._highlightedGroupIndex = null;
-        if (this._edgeLines) {
-          this._three.scene.remove(this._edgeLines);
-          this._edgeLines.geometry.dispose();
-          this._edgeLines.material.forEach(function (m) { m.dispose(); });
-          this._edgeLines = null;
-        }
-        this._highlightedEdgeGroupIndex = null;
+        this._disposeInstance(rootId);
         this._render();
       },
 
-      // Points the camera at the mesh's bounding sphere so whatever gets
-      // handed to setMesh is actually visible regardless of its scale —
-      // real parts built via CreateBoxTool (§13 step 6) will be a handful
-      // of mm (§9.1), not the 100-unit defaults _setupThree starts with.
-      _frameMesh: function (geometry) {
-        geometry.computeBoundingSphere();
-        var sphere = geometry.boundingSphere;
-        if (!sphere || sphere.radius === 0) return;
+      _disposeInstance: function (rootId) {
+        var entry = this._meshes[rootId];
+        if (!entry) return;
+        this._three.scene.remove(entry.mesh);
+        entry.mesh.geometry.dispose();
+        entry.mesh.material.forEach(function (m) { m.dispose(); });
+        if (entry.edgeLines) {
+          this._three.scene.remove(entry.edgeLines);
+          entry.edgeLines.geometry.dispose();
+          entry.edgeLines.material.forEach(function (m) { m.dispose(); });
+        }
+        delete this._meshes[rootId];
+        this._clearSelectionOutline(rootId);
+      },
+
+      // Points the camera at the union of every current instance's
+      // bounding sphere so the whole scene stays visible regardless of
+      // how many instances exist or their individual scale (§9.1: real
+      // parts are a handful of mm, not the 100-unit defaults _setupThree
+      // starts with). Called explicitly by Assembly after structural
+      // changes (add/remove/combine/fillet-commit) — never from inside a
+      // per-instance setMesh, so one instance's throttled Complex-drag
+      // rebuild (§5.3) never jerks the camera around while someone drags it.
+      _frameAllMeshes: function () {
         var THREE = this._three.THREE, camera = this._three.camera;
+        var box = new THREE.Box3();
+        var any = false;
+        var self = this;
+        Object.keys(this._meshes).forEach(function (rootId) {
+          box.expandByObject(self._meshes[rootId].mesh);
+          any = true;
+        });
+        if (!any) return;
+        var sphere = new THREE.Sphere();
+        box.getBoundingSphere(sphere);
+        if (!sphere || sphere.radius === 0) return;
         var dir = new THREE.Vector3(1, 1, 1).normalize();
         var distance = Math.max(sphere.radius * 2.5, 0.01);
         camera.position.copy(sphere.center).addScaledVector(dir, distance);
@@ -280,19 +405,24 @@ module('lively.jenga3d.Viewport')
       },
     },
 
-    'picking (§10)', {
+    'picking (§10, §14.4 — multi-instance)', {
       _attachPicking: function () {
         var self = this;
         this._three.renderer.domElement.addEventListener('click', function (evt) {
+          if (self._pickMode === 'edge') return; // §14.6: edge-select mode uses pickEdgeAt explicitly, not this listener
           var pick = self.pickFaceAt(evt.clientX, evt.clientY);
-          self.highlightGroup(pick ? pick.groupIndex : null);
+          if (self.onPickFace) self.onPickFace(pick); // §14.6: object-select mode hook (Assembly.selectInstance)
+          self.highlightGroup(pick ? pick.rootId : null, pick ? pick.groupIndex : null);
         });
       },
 
-      // Returns { occtFaceIndex, groupIndex } for the face under
-      // (clientX, clientY), or null if nothing was hit.
+      // Returns { rootId, occtFaceIndex, groupIndex } for the face under
+      // (clientX, clientY) across every current instance (closest hit
+      // wins), or null if nothing was hit.
       pickFaceAt: function (clientX, clientY) {
-        if (!this._three || !this._mesh) return null;
+        if (!this._three) return null;
+        var meshes = this._allMeshes();
+        if (meshes.length === 0) return null;
         var THREE = this._three.THREE;
         var canvas = this._three.renderer.domElement;
         var rect = canvas.getBoundingClientRect();
@@ -302,37 +432,51 @@ module('lively.jenga3d.Viewport')
         );
         var raycaster = new THREE.Raycaster();
         raycaster.setFromCamera(ndc, this._three.camera);
-        var hits = raycaster.intersectObject(this._mesh);
+        var hits = raycaster.intersectObjects(meshes);
         if (hits.length === 0) return null;
-        return lively.jenga3d.PickIndex.resolve(this._mesh.geometry, hits[0].faceIndex);
+        var hit = hits[0];
+        var found = lively.jenga3d.PickIndex.resolve(hit.object.geometry, hit.faceIndex);
+        if (!found) return null;
+        return { rootId: hit.object.userData.rootId, occtFaceIndex: found.occtFaceIndex, groupIndex: found.groupIndex };
       },
 
-      // groupIndex: a BufferGeometry group index (as returned by
-      // pickFaceAt), or null/undefined to clear any current highlight.
-      highlightGroup: function (groupIndex) {
-        if (!this._mesh) return;
-        var groups = this._mesh.geometry.groups;
-        if (this._highlightedGroupIndex != null && groups[this._highlightedGroupIndex]) {
-          groups[this._highlightedGroupIndex].materialIndex = 0;
+      _allMeshes: function () {
+        var self = this;
+        return Object.keys(this._meshes).map(function (rootId) { return self._meshes[rootId].mesh; });
+      },
+
+      // rootId/groupIndex: as returned by pickFaceAt, or null/undefined
+      // to clear whichever instance was previously highlighted this way.
+      highlightGroup: function (rootId, groupIndex) {
+        if (this._highlightedFace) {
+          var prev = this._meshes[this._highlightedFace.rootId];
+          if (prev) {
+            var prevGroups = prev.mesh.geometry.groups;
+            if (prevGroups[this._highlightedFace.groupIndex]) prevGroups[this._highlightedFace.groupIndex].materialIndex = 0;
+          }
+          this._highlightedFace = null;
         }
-        this._highlightedGroupIndex = (groupIndex == null) ? null : groupIndex;
-        if (this._highlightedGroupIndex != null && groups[this._highlightedGroupIndex]) {
-          groups[this._highlightedGroupIndex].materialIndex = 1;
+        if (rootId != null && groupIndex != null && this._meshes[rootId]) {
+          this._meshes[rootId].mesh.geometry.groups[groupIndex].materialIndex = 1;
+          this._highlightedFace = { rootId: rootId, groupIndex: groupIndex };
         }
         this._render();
       },
 
       clearHighlight: function () {
-        this.highlightGroup(null);
+        this.highlightGroup(null, null);
       },
     },
 
-    'edge picking (§7.3, §13 step 10)', {
-      // Returns { occtEdgeIndex, groupIndex } for the edge under
-      // (clientX, clientY), or null if nothing was hit within the
-      // pick threshold. Not wired to the `click` listener — see file doc.
-      pickEdgeAt: function (clientX, clientY) {
-        if (!this._three || !this._edgeLines) return null;
+    'edge picking (§7.3, §13 step 10, §14.4 — per instance)', {
+      // Returns { rootId, occtEdgeIndex, groupIndex } for the edge under
+      // (clientX, clientY) *within instanceRootId's own edge overlay only*
+      // (§14.6: edge-select mode is only active against one selected
+      // instance at a time) — or null if nothing was hit within the pick
+      // threshold. Not wired to the `click` listener — see file doc.
+      pickEdgeAt: function (instanceRootId, clientX, clientY) {
+        var entry = this._meshes[instanceRootId];
+        if (!this._three || !entry || !entry.edgeLines) return null;
         var THREE = this._three.THREE;
         var canvas = this._three.renderer.domElement;
         var rect = canvas.getBoundingClientRect();
@@ -344,29 +488,86 @@ module('lively.jenga3d.Viewport')
         raycaster.params.Line = raycaster.params.Line || {};
         raycaster.params.Line.threshold = this._edgePickThreshold || 0.5;
         raycaster.setFromCamera(ndc, this._three.camera);
-        var hits = raycaster.intersectObject(this._edgeLines);
+        var hits = raycaster.intersectObject(entry.edgeLines);
         if (hits.length === 0) return null;
         var found = lively.jenga3d.PickIndex.resolveOffset(
-          this._edgeLines.geometry, hits[0].index, 'occtEdgeIndex'
+          entry.edgeLines.geometry, hits[0].index, 'occtEdgeIndex'
         );
-        return found ? { occtEdgeIndex: found.value, groupIndex: found.groupIndex } : null;
+        return found ? { rootId: instanceRootId, occtEdgeIndex: found.value, groupIndex: found.groupIndex } : null;
       },
 
-      highlightEdge: function (groupIndex) {
-        if (!this._edgeLines) return;
-        var groups = this._edgeLines.geometry.groups;
-        if (this._highlightedEdgeGroupIndex != null && groups[this._highlightedEdgeGroupIndex]) {
-          groups[this._highlightedEdgeGroupIndex].materialIndex = 0;
+      // §14.4/§14.6: multi-edge highlight — FilletTool.apply already takes
+      // an edgeIndices array, so the toolbar's edge-pick mode can toggle
+      // several edges on/off before Apply. toggle: true flips groupIndex's
+      // membership in the set; toggle: false (default) sets it exclusively
+      // (matches the old single-highlight call shape for callers that
+      // don't need multi-select, e.g. tests).
+      highlightEdge: function (rootId, groupIndex, toggle) {
+        var entry = this._meshes[rootId];
+        if (!entry) return;
+        var groups = entry.edgeLines.geometry.groups;
+        if (groupIndex == null) {
+          Object.keys(entry.highlightedEdgeGroupIndices).forEach(function (idx) { groups[idx].materialIndex = 0; });
+          entry.highlightedEdgeGroupIndices = {};
+          this._render();
+          return;
         }
-        this._highlightedEdgeGroupIndex = (groupIndex == null) ? null : groupIndex;
-        if (this._highlightedEdgeGroupIndex != null && groups[this._highlightedEdgeGroupIndex]) {
-          groups[this._highlightedEdgeGroupIndex].materialIndex = 1;
+        if (toggle) {
+          if (entry.highlightedEdgeGroupIndices[groupIndex]) {
+            delete entry.highlightedEdgeGroupIndices[groupIndex];
+            groups[groupIndex].materialIndex = 0;
+          } else {
+            entry.highlightedEdgeGroupIndices[groupIndex] = true;
+            groups[groupIndex].materialIndex = 1;
+          }
+        } else {
+          Object.keys(entry.highlightedEdgeGroupIndices).forEach(function (idx) { groups[idx].materialIndex = 0; });
+          entry.highlightedEdgeGroupIndices = {};
+          entry.highlightedEdgeGroupIndices[groupIndex] = true;
+          groups[groupIndex].materialIndex = 1;
         }
         this._render();
       },
 
-      clearEdgeHighlight: function () {
-        this.highlightEdge(null);
+      clearEdgeHighlight: function (rootId) {
+        this.highlightEdge(rootId, null);
+      },
+    },
+
+    'instance selection tint (§14.5 selectInstance — distinct from face-pick highlight)', {
+      // Applies/clears a wireframe outline around rootId's mesh — the
+      // "selected for combine/fillet" visual, kept deliberately distinct
+      // from highlightGroup's per-face pick highlight (file doc).
+      setSelected: function (rootId, selected) {
+        if (selected) this._addSelectionOutline(rootId);
+        else this._clearSelectionOutline(rootId);
+        this._render();
+      },
+
+      _addSelectionOutline: function (rootId) {
+        var entry = this._meshes[rootId];
+        if (!entry) return;
+        this._clearSelectionOutline(rootId);
+        var THREE = this._three.THREE;
+        var outline = new THREE.BoxHelper(entry.mesh, 0x00e5ff);
+        this._three.scene.add(outline);
+        this._selectionOutlines[rootId] = outline;
+      },
+
+      _clearSelectionOutline: function (rootId) {
+        var outline = this._selectionOutlines[rootId];
+        if (!outline) return;
+        this._three.scene.remove(outline);
+        outline.geometry.dispose();
+        outline.material.dispose();
+        delete this._selectionOutlines[rootId];
+      },
+
+      // Re-applies an existing selection outline after setMesh replaces
+      // rootId's underlying THREE.Mesh (a BoxHelper tracks the object it
+      // was constructed with, not a rootId, so it must be rebuilt).
+      _refreshSelectionOutline: function (rootId) {
+        if (this._selectionOutlines[rootId]) this._addSelectionOutline(rootId);
       },
     });
 

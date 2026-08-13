@@ -47,10 +47,15 @@ module('lively.jenga3d.tools.EditHandleTool')
     Object.subclass('lively.jenga3d.tools.EditHandleTool',
 
     'initializing', {
+      // sceneSync: the ONE instance (rootId) this handle edits — §14.2/
+      // §14.5: with several independently-visible instances, there's no
+      // tree-wide default to construct a SceneSync against, so the
+      // caller (Assembly's owner) must hand in the specific instance's
+      // own SceneSync rather than this tool defaulting one.
       initialize: function (viewport, featureTree, sceneSync) {
         this.viewport = viewport;
         this.featureTree = featureTree;
-        this.sceneSync = sceneSync || new lively.jenga3d.SceneSync(featureTree, viewport);
+        this.sceneSync = sceneSync;
         this._dragging = null;
       },
     },
@@ -72,7 +77,7 @@ module('lively.jenga3d.tools.EditHandleTool')
       // the root were classified the same way, which is why this didn't
       // surface until real booleans made it observable.
       startDrag: function (nodeId, paramField, initialValue) {
-        var isComplex = !this.featureTree.isPrimitiveEditable(this.featureTree.root);
+        var isComplex = !this.featureTree.isPrimitiveEditable(this.sceneSync.rootId);
         this._dragging = {
           nodeId: nodeId, paramField: paramField,
           isComplex: isComplex, lastSendTime: 0, pendingValue: null,
@@ -121,7 +126,7 @@ module('lively.jenga3d.tools.EditHandleTool')
           var params = {};
           params[d.paramField] = value;
           this.featureTree.updateParams(d.nodeId, params);
-          this.sceneSync.rebuild(d.nodeId);
+          this.sceneSync.rebuild();
         }
         requestAnimationFrame(this._rafTick.bind(this));
       },

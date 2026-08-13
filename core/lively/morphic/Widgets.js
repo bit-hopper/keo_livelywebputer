@@ -1812,17 +1812,9 @@ lively.morphic.World.addMethods(
     },
     
     openJenga3D: function() {
-        var self = this;
-        lively.require('lively.jenga3d.SolidMorph', 'lively.jenga3d.tools.CreateBoxTool').toRun(function() {
-            var solid = new lively.jenga3d.SolidMorph(lively.rect(0, 0, 700, 500));
-            solid.openInWorld(pt(0, 0));
-            solid.align(solid.bounds().center(), self.visibleBounds().center());
-            solid.comeForward();
-            // Jenga3Dspec_v0.md §14: no toolbar/Assembly yet (steps 15-21,
-            // not built) — attach CreateBoxTool directly against the
-            // morph's own featureTree/sceneSync so drag-to-create-a-box
-            // is reachable from this menu entry today.
-            solid._createBoxTool = new lively.jenga3d.tools.CreateBoxTool(solid, solid.featureTree, solid.sceneSync);
+        lively.require('lively.jenga3d.tools.Workspace').toRun(function() {
+            var workspace = lively.BuildSpec('lively.jenga3d.tools.Workspace').createMorph();
+            workspace.openInWorldCenter().comeForward();
         });
     },
 

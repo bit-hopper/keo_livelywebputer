@@ -8,6 +8,15 @@
  * `lively.jenga3d.Worker`, which is one per session, §4.4) — it just
  * holds a reference to one tree and one viewport and rebuilds on demand.
  *
+ * §14.2/§14.5: since a tree can now hold several independently-visible
+ * instances (`roots`, plural), a `SceneSync` is scoped to exactly one
+ * `rootId` — the constructor takes `(featureTree, viewport, rootId,
+ * thenDo)` instead of `(featureTree, viewport)`. `lively.jenga3d.Assembly`
+ * owns one `SceneSync` per currently-visible instance; `rootId` is also
+ * the generation-tracking key `Worker.request` uses (the same role
+ * `dirtyNodeId` played in the single-root model), since each `SceneSync`
+ * only ever rebuilds its own instance.
+ *
  * Not the drag path: §5.2's Proxy Mode mutates the viewport's mesh
  * directly without a worker round-trip, and §5.3's throttled Complex-drag
  * mode has its own rAF-gated request stream. Both of those (§13 step 7)
@@ -23,36 +32,34 @@ module('lively.jenga3d.SceneSync')
     Object.subclass('lively.jenga3d.SceneSync',
 
     'initializing', {
-      initialize: function (featureTree, viewport) {
+      initialize: function (featureTree, viewport, rootId, thenDo) {
         this.featureTree = featureTree;
         this.viewport = viewport;
-        if (this.featureTree.root) this.rebuild(this.featureTree.root);
+        this.rootId = rootId;
+        this.rebuild(thenDo);
       },
     },
 
     'syncing', {
-      // dirtyNodeId: which node changed — the staleness-tracking key
-      // lively.jenga3d.Worker.request keys generations on (§5.3).
-      // Defaults to the tree's root for a full/initial rebuild. Always
-      // meshes the tree's current root regardless of which node is
-      // named here (§4.5: the worker replays the whole tree bottom-up
-      // and meshes the root) — dirtyNodeId only decides which in-flight
-      // request a newer one is allowed to supersede.
-      rebuild: function (dirtyNodeId, thenDo) {
-        if (!this.featureTree.root) {
-          // §13 step 14: reachable now that undo can walk a tree back to
-          // empty — nothing to mesh, but the viewport's last mesh is
-          // stale and needs explicit teardown rather than being left on
-          // screen.
-          this.viewport.clearMesh();
+      // Always meshes this.rootId — §4.5: the worker replays the whole
+      // tree bottom-up from whatever `root` a request names and meshes
+      // that node, so a SceneSync scoped to one instance always sends
+      // the same rootId as both the request's `root` and its staleness-
+      // tracking generation key (§5.3, §14.5).
+      rebuild: function (thenDo) {
+        if (!this.featureTree.getNode(this.rootId)) {
+          // §13 step 14 / §14.5: reachable once undo/removeInstance can
+          // make this SceneSync's own rootId stop existing — nothing to
+          // mesh, but this instance's last mesh is stale and needs
+          // explicit teardown rather than being left on screen.
+          this.viewport.clearMesh(this.rootId);
           if (thenDo) thenDo(null, null);
           return;
         }
-        var nodeId = dirtyNodeId || this.featureTree.root;
         var self = this;
-        lively.jenga3d.Worker.request(nodeId, 'evaluate', {
-          featureTree: this.featureTree.toJSON(),
-          dirtyNodeId: nodeId,
+        lively.jenga3d.Worker.request(this.rootId, 'evaluate', {
+          featureTree: this.featureTree.toJSONForRoot(this.rootId),
+          dirtyNodeId: this.rootId,
           deflection: lively.jenga3d.Worker.DEFLECTION.interactive,
         }, function (err, mesh) {
           if (err) {
@@ -60,13 +67,13 @@ module('lively.jenga3d.SceneSync')
             if (thenDo) thenDo(err);
             return;
           }
-          self.viewport.setMesh(mesh);
+          self.viewport.setMesh(self.rootId, mesh);
           if (thenDo) thenDo(null, mesh);
         });
       },
 
-      // Convenience: update one node's params (§7.2), then rebuild keyed
-      // on that node. This is the whole "non-interactive path" this step
+      // Convenience: update one node's params (§7.2), then rebuild this
+      // instance. This is the whole "non-interactive path" this step
       // targets — a param change that isn't part of a drag stream. Also
       // exactly the "FeatureTree node's params are committed" point §5.2
       // names as the undo boundary (§6.2/§13 step 14) — the throttled
@@ -77,23 +84,7 @@ module('lively.jenga3d.SceneSync')
       updateParam: function (nodeId, params, thenDo) {
         this.featureTree.checkpoint();
         this.featureTree.updateParams(nodeId, params);
-        this.rebuild(nodeId, thenDo);
-      },
-    },
-
-    'undo/redo (§6.2, §13 step 14)', {
-      // thenDo(err, didChange, mesh) — didChange is false when the
-      // respective stack was empty (nothing to do, no rebuild fired).
-      undo: function (thenDo) {
-        if (!this.featureTree.undo()) { if (thenDo) thenDo(null, false); return false; }
-        this.rebuild(this.featureTree.root, function (err, mesh) { if (thenDo) thenDo(err, true, mesh); });
-        return true;
-      },
-
-      redo: function (thenDo) {
-        if (!this.featureTree.redo()) { if (thenDo) thenDo(null, false); return false; }
-        this.rebuild(this.featureTree.root, function (err, mesh) { if (thenDo) thenDo(err, true, mesh); });
-        return true;
+        this.rebuild(thenDo);
       },
     });
 

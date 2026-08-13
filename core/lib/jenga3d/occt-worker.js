@@ -15764,6 +15764,61 @@
       };
     }
   }
+  function handleExportStepAssembly(oc, msg) {
+    var disposer = new Disposer();
+    try {
+      var tree = msg.params.featureTree;
+      var roots = tree.roots || [];
+      if (roots.length === 0) throw new Error("exportStepAssembly: feature tree has no instances");
+      var cache = {};
+      var builder = disposer.track(new oc.BRep_Builder());
+      var compound = disposer.track(new oc.TopoDS_Compound());
+      builder.MakeCompound(compound);
+      roots.forEach(function(rootId) {
+        var shape = buildNode(oc, disposer, rootId, tree, cache);
+        builder.Add(compound, shape);
+      });
+      var writer = disposer.track(new oc.STEPControl_Writer_1());
+      var range = disposer.track(new oc.Message_ProgressRange_1());
+      var transferStatus = writer.Transfer(
+        compound,
+        oc.STEPControl_StepModelType.STEPControl_AsIs,
+        true,
+        range
+      );
+      if (transferStatus.value !== oc.IFSelect_ReturnStatus.IFSelect_RetDone.value) {
+        throw new Error("STEP transfer did not complete");
+      }
+      var path = "/jenga3d-export-assembly-" + msg.id + ".step";
+      var writeStatus = writer.Write(path);
+      if (writeStatus.value !== oc.IFSelect_ReturnStatus.IFSelect_RetDone.value) {
+        throw new Error("STEP write did not complete");
+      }
+      var fileBytes = oc.FS.readFile(path);
+      try {
+        oc.FS.unlink(path);
+      } catch (e) {
+      }
+      disposer.disposeAll();
+      return {
+        id: msg.id,
+        nodeId: msg.nodeId,
+        generation: msg.generation,
+        ok: true,
+        fileBytes,
+        mime: "model/step"
+      };
+    } catch (e) {
+      disposer.disposeAll();
+      return {
+        id: msg.id,
+        nodeId: msg.nodeId,
+        generation: msg.generation,
+        ok: false,
+        error: e && e.message || String(e)
+      };
+    }
+  }
   self.onmessage = function(evt) {
     var msg = evt.data;
     ensureOcct().then(function(oc) {
@@ -15772,6 +15827,8 @@
         response = handleEvaluate(oc, msg);
       } else if (msg.op === "exportStep") {
         response = handleExportStep(oc, msg);
+      } else if (msg.op === "exportStepAssembly") {
+        response = handleExportStepAssembly(oc, msg);
       } else if (msg.op === "exportIges") {
         response = {
           id: msg.id,

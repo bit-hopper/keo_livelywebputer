@@ -23,12 +23,17 @@
  * `THREE.BoxGeometry` proxy mesh is scaled/repositioned directly every
  * `pointermove` with zero worker calls (§5.2: "60fps, zero IPC"); on
  * `pointerup`, the proxy is discarded and the real feature-tree node is
- * committed through `SceneSync`, which is what actually calls the worker
- * and swaps in the real OCCT-built mesh.
+ * committed through `Assembly.createInstance` (§14.7), which is what
+ * actually calls the worker and swaps in the real OCCT-built mesh.
+ *
+ * §14.2/§14.7: on commit this now calls `Assembly.createInstance(...)`
+ * rather than reaching for a `SceneSync` directly — every drag creates a
+ * new, independently-visible instance rather than replacing whatever the
+ * viewport previously showed.
  */
 
 module('lively.jenga3d.tools.CreateBoxTool')
-  .requires('lively.jenga3d.FeatureTree', 'lively.jenga3d.SceneSync', 'lively.jenga3d.Viewport')
+  .requires('lively.jenga3d.Assembly', 'lively.jenga3d.Viewport')
   .toRun(function () {
 
     Object.subclass('lively.jenga3d.tools.CreateBoxTool',
@@ -39,13 +44,9 @@ module('lively.jenga3d.tools.CreateBoxTool')
     },
 
     'initializing', {
-      // featureTree/sceneSync are optional — omit them to have the tool
-      // manage its own fresh tree for this viewport (the common case
-      // before SolidMorph exists to own one, §13 step 13).
-      initialize: function (viewport, featureTree, sceneSync) {
+      initialize: function (viewport, assembly) {
         this.viewport = viewport;
-        this.featureTree = featureTree || new lively.jenga3d.FeatureTree();
-        this.sceneSync = sceneSync || new lively.jenga3d.SceneSync(this.featureTree, this.viewport);
+        this.assembly = assembly;
         this._dragProxy = null;
         this._dragStartPoint = null;
         this._dragActive = false;
@@ -148,7 +149,6 @@ module('lively.jenga3d.tools.CreateBoxTool')
         var width = Math.abs(end.x - start.x);
         var depth = Math.abs(end.z - start.z);
         if (width < this.MIN_DRAG || depth < this.MIN_DRAG) return; // discard near-zero/stray-click drags
-        this.featureTree.checkpoint(); // §6.2/§13 step 14 — one undo entry per completed drag-to-create
         var cx = (start.x + end.x) / 2, cz = (start.z + end.z) / 2;
 
         // createBox always builds from its own local origin outward
@@ -156,17 +156,9 @@ module('lively.jenga3d.tools.CreateBoxTool')
         // places the footprint where the user dragged it, corner-first
         // to (cx - width/2, 0, cz - depth/2) so it spans the same box the
         // proxy mesh (centered at (cx, height/2, cz)) already showed.
-        var boxId = this.featureTree.addNode('createBox', {
-          width: width, height: this.DEFAULT_HEIGHT, depth: depth,
-        });
-        var xfId = this.featureTree.addNode('transform', {
-          of: boxId,
-          translate: [cx - width / 2, 0, cz - depth / 2],
-          rotate: [0, 0, 0],
-          scale: [1, 1, 1],
-        });
-        this.featureTree.setRoot(xfId);
-        this.sceneSync.rebuild(xfId);
+        this.assembly.createInstance('createBox',
+          { width: width, height: this.DEFAULT_HEIGHT, depth: depth },
+          { translate: [cx - width / 2, 0, cz - depth / 2], rotate: [0, 0, 0], scale: [1, 1, 1] });
       },
     },
 

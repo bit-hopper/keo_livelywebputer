@@ -7,8 +7,11 @@
  * route, no new URL namespace segment. Subclasses `lively.jenga3d.Viewport`
  * (§13 step 4) rather than wrapping one — a solid IS its own rendering
  * surface — adding the one thing Viewport alone doesn't have: a persisted
- * `featureTree` (§7.1's Application State layer) plus the `SceneSync`
- * (§13 step 5) tying that tree to this morph's own rendering.
+ * `featureTree` (§7.1's Application State layer) plus, since §14.5/§13
+ * step 17, an `assembly` (`lively.jenga3d.Assembly`) tying that tree's
+ * (potentially several, §14.2) instances to this morph's own rendering —
+ * replacing the single `SceneSync` this class held directly before
+ * multi-instance support existed.
  *
  * §7.1: render state (the THREE scene/mesh) is never persisted, only
  * `featureTree` — a plain `lively.jenga3d.FeatureTree` instance, which
@@ -32,13 +35,13 @@
  */
 
 module('lively.jenga3d.SolidMorph')
-  .requires('lively.jenga3d.Viewport', 'lively.jenga3d.FeatureTree', 'lively.jenga3d.SceneSync')
+  .requires('lively.jenga3d.Viewport', 'lively.jenga3d.FeatureTree', 'lively.jenga3d.Assembly')
   .toRun(function () {
 
     lively.jenga3d.Viewport.subclass('lively.jenga3d.SolidMorph',
 
     'settings', {
-      doNotSerialize: ['_three', '_mesh', '_edgeLines', 'sceneSync'],
+      doNotSerialize: ['_three', '_meshes', '_selectionOutlines', 'assembly'],
     },
 
     'initializing', {
@@ -48,7 +51,7 @@ module('lively.jenga3d.SolidMorph')
       initialize: function ($super, bounds, featureTree) {
         $super(bounds);
         this.featureTree = featureTree || new lively.jenga3d.FeatureTree();
-        this.sceneSync = new lively.jenga3d.SceneSync(this.featureTree, this);
+        this.assembly = new lively.jenga3d.Assembly(this.featureTree, this);
       },
     },
 
@@ -57,10 +60,12 @@ module('lively.jenga3d.SolidMorph')
       // on restore (see file doc for why this isn't the "afterDeserialization"
       // hook name §8 originally described). featureTree itself is already
       // fully reconstructed by this point — only the doNotSerialize'd
-      // transient state (sceneSync, and everything Viewport itself
-      // already excludes) needs rebuilding.
+      // transient state (assembly, and everything Viewport itself already
+      // excludes) needs rebuilding. Assembly's own constructor resyncs a
+      // SceneSync per already-existing root (§13 step 17), so restoring
+      // a tree with several instances re-renders all of them, not just one.
       onrestore: function () {
-        this.sceneSync = new lively.jenga3d.SceneSync(this.featureTree, this);
+        this.assembly = new lively.jenga3d.Assembly(this.featureTree, this);
         var self = this;
         this.whenOpenedInWorld(function () { self._ensureThreeRuntime(function () { self._setupThree(); }); });
       },

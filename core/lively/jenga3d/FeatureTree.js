@@ -34,10 +34,13 @@ module('lively.jenga3d.FeatureTree')
     },
 
     'initializing', {
-      // json: optional { root, nodes } to restore from (undo/redo, load
+      // json: optional { roots, nodes } to restore from (undo/redo, load
       // from an envelope's payload, §6.2/§8). Omit for a fresh empty tree.
+      // §14.2: `roots` (plural) replaces the old singular `root` — an
+      // ordered array of independently-placed, independently-visible
+      // instance nodeIds, order matching creation/display order.
       initialize: function (json) {
-        this.root = json ? json.root : null;
+        this.roots = json ? json.roots.slice() : [];
         this.nodes = json ? json.nodes : {};
         this._classification = {}; // nodeId -> isPrimitiveEditable, cached per §5.1
         this._undoStack = []; // §6.2: stack of prior toJSON() snapshots
@@ -72,8 +75,8 @@ module('lively.jenga3d.FeatureTree')
       },
 
       removeNode: function (nodeId) {
-        if (nodeId === this.root) {
-          throw new Error('lively.jenga3d.FeatureTree: cannot remove the root node — call setRoot to point elsewhere first');
+        if (this.roots.indexOf(nodeId) !== -1) {
+          throw new Error('lively.jenga3d.FeatureTree: cannot remove a root node — call removeRoot/replaceRoot to point elsewhere first');
         }
         delete this.nodes[nodeId];
         this._invalidateClassification();
@@ -81,11 +84,6 @@ module('lively.jenga3d.FeatureTree')
 
       getNode: function (nodeId) {
         return this.nodes[nodeId];
-      },
-
-      setRoot: function (nodeId) {
-        if (!this.nodes[nodeId]) throw new Error('lively.jenga3d.FeatureTree: unknown nodeId: ' + nodeId);
-        this.root = nodeId;
       },
 
       // Param-only edits (e.g. every throttled frame of a drag, §5.2/§5.3)
@@ -108,6 +106,41 @@ module('lively.jenga3d.FeatureTree')
         if (!node) throw new Error('lively.jenga3d.FeatureTree: unknown nodeId: ' + nodeId);
         node.params[operandField] = newOperandNodeId;
         this._invalidateClassification();
+      },
+    },
+
+    'roots (§14.2 — multi-instance)', {
+      // Pushes nodeId onto roots as a new, independently-visible instance.
+      // Used by tools that create a fresh instance (CreateBoxTool et al,
+      // via Assembly.createInstance).
+      addRoot: function (nodeId) {
+        if (!this.nodes[nodeId]) throw new Error('lively.jenga3d.FeatureTree: unknown nodeId: ' + nodeId);
+        this.roots.push(nodeId);
+      },
+
+      // Splices nodeId out of roots. Does NOT delete the node from `nodes`
+      // — an operand a boolean/fillet still depends on must survive,
+      // exactly like the old single-root model already left a superseded
+      // root's nodes in place (§12 item 9: monotonic growth, accepted,
+      // inert gap).
+      removeRoot: function (nodeId) {
+        var idx = this.roots.indexOf(nodeId);
+        if (idx === -1) throw new Error('lively.jenga3d.FeatureTree: not a root: ' + nodeId);
+        this.roots.splice(idx, 1);
+      },
+
+      // Splices newId into roots at whatever index oldId held, so an
+      // instance's position in an Objects list doesn't jump to the end
+      // just because it was filleted/chamfered in place.
+      replaceRoot: function (oldId, newId) {
+        var idx = this.roots.indexOf(oldId);
+        if (idx === -1) throw new Error('lively.jenga3d.FeatureTree: not a root: ' + oldId);
+        if (!this.nodes[newId]) throw new Error('lively.jenga3d.FeatureTree: unknown nodeId: ' + newId);
+        this.roots[idx] = newId;
+      },
+
+      getRoots: function () {
+        return this.roots.slice(); // defensive copy
       },
     },
 
@@ -161,8 +194,17 @@ module('lively.jenga3d.FeatureTree')
     },
 
     'persistence', { // §6.2, §6.3, §8 — plain JSON, no OCCT/render state
+      // §14.2: what gets persisted (§8) and undo/redo-snapshotted (§6.2).
       toJSON: function () {
-        return { root: this.root, nodes: JSON.parse(JSON.stringify(this.nodes)) };
+        return { roots: this.roots.slice(), nodes: JSON.parse(JSON.stringify(this.nodes)) };
+      },
+
+      // §14.2/§4.3: the exact per-request { root, nodes } shape the worker
+      // protocol already expects, scoped to one instance — today's old
+      // toJSON() body, renamed and parameterized, so §4's protocol and
+      // occt-worker-src.js need zero changes for multi-instance support.
+      toJSONForRoot: function (rootId) {
+        return { root: rootId, nodes: JSON.parse(JSON.stringify(this.nodes)) };
       },
     },
 
@@ -204,7 +246,7 @@ module('lively.jenga3d.FeatureTree')
       },
 
       _restore: function (json) {
-        this.root = json.root;
+        this.roots = json.roots;
         this.nodes = json.nodes;
         this._invalidateClassification();
       },
