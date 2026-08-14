@@ -1,4 +1,4 @@
-module('lively.PartsBin').requires('lively.Traits', 'lively.store.Interface').toRun(function() {
+module('lively.PartsBin').requires('lively.Traits', 'lively.store.Interface', 'lively.persistence.Serializer').toRun(function() {
 
 Object.subclass('lively.PartsBin.PartItem',
 'initializing', {
@@ -47,10 +47,20 @@ Object.subclass('lively.PartsBin.PartItem',
     },
 
     setPartFromJSON: function(json, metaInfo, rev) {
-        var part = this.deserializePart(json, metaInfo);
-        part.partsBinMetaInfo.revisionOnLoad = rev;
-        part.partsBinMetaInfo.lastModifiedDate = metaInfo.lastModifiedDate;
-        this.setPart(part);
+        // Parts loaded at runtime (e.g. dragged out of PartsBin) aren't
+        // covered by the module auto-loading that world-boot does via
+        // Main.js's modulesBeforeDeserialization -- without this, a part
+        // whose class lives in a module the current page hasn't already
+        // loaded fails deserialization with "class cannot be found", even
+        // though __SourceModuleName__ correctly names the owning module.
+        var self = this,
+            modules = lively.persistence.Serializer.sourceModulesIn(json);
+        lively.require(modules).toRun(function() {
+            var part = self.deserializePart(json, metaInfo);
+            part.partsBinMetaInfo.revisionOnLoad = rev;
+            part.partsBinMetaInfo.lastModifiedDate = metaInfo.lastModifiedDate;
+            self.setPart(part);
+        });
     },
 
     setPart: function(part) {

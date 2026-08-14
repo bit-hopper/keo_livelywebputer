@@ -456,11 +456,23 @@ lively.morphic.Box.subclass('lively.morphic.PartsBinItem',
         partMorph.align(partMorph.bounds().center(), lively.morphic.World.current().visibleBounds().center())
     },
     startLoadingPart: function(actionOnLoad) {
+        // onDragStart can fire more than once for a single drag gesture
+        // (each qualifying mousemove past the drag threshold), and dragging
+        // a tile again before a slow part (e.g. one embedding a full app)
+        // finishes loading starts a second, overlapping load -- each one
+        // independently completes and fires the part connection below, so
+        // without this guard the hand ends up grabbing two morphs from one
+        // drag. Confirmed live: an un-guarded second startLoadingPart call
+        // while the first was still in flight produced two grabbed morphs.
+        if (this._isLoadingPart) return;
+        this._isLoadingPart = true;
+
         var waitRect = lively.morphic.Morph.makeRectangle(this.getExtent().extentAsRectangle());
         waitRect.applyStyle({fill: Color.gray, fillOpacity: 0.6})
         this.addMorph(waitRect);
         connect(this.partItem, 'part', waitRect, 'remove');
         connect(this.partItem, 'part', this, actionOnLoad);
+        connect(this.partItem, 'part', this, '_isLoadingPart', {converter: function() { return false; }});
 
         this.partItem.loadPart(true);
     }

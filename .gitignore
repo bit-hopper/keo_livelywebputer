@@ -21,6 +21,9 @@ localconfig.js
 !onedrive.html
 !dropbox.html
 
+# Vendored third-party apps that ship their own entry HTML #
+!apps/Snap/snap.html
+
 # Node #
 node_modules
 *.pid
