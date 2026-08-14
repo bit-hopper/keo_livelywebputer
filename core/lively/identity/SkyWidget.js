@@ -1,13 +1,23 @@
 /**
  * lively.identity.SkyWidget
  *
- * Attaches live sky/astronomy behavior to an existing morph (welcome.html's
- * "SkyMorph" placeholder box, found by name — see IdentityServer.js's
- * onStartWorld hook). Two things happen once attached:
+ * A plain `<div>` managed directly via DOM (no morph involved), mounted
+ * inside `$world.renderContext().originNode` at boot — see
+ * IdentityServer.js's onStartWorld hook, same mounting spot and reasoning
+ * as lively.identity.LocalMap. Originally this attached to a real morph
+ * ("SkyMorph", a placeholder box saved into welcome.html's own snapshot);
+ * moved off the morph tree entirely after repeated live-confirmed leaks —
+ * a Text morph turned out to keep its rendered content in at least four
+ * separate internal spots (textString, textChunks, undoRedoMarkup,
+ * _TextColor), and excluding each one from "Save World" via doNotSerialize
+ * was a whack-a-mole that kept missing spots, plus a doNotSerialize misuse
+ * once mutated a shape-class-wide *shared* array in place (see git history
+ * on this file). A plain DOM element has no serialization step to leak
+ * from in the first place. Two things happen once opened:
  *
- *   1. The morph's own fill color drifts across a day/night gradient,
+ *   1. The div's own background color drifts across a day/night gradient,
  *      driven by the real solar altitude at the viewer's location.
- *   2. A centered text label cycles through a handful of computed facts:
+ *   2. Its centered text cycles through a handful of computed facts:
  *      current moon phase + % illuminated, days to the next full/new moon,
  *      the Sun's zodiac sign, the zodiac constellation currently on the
  *      meridian (shown only after dark), and Venus/Saturn's current sign
@@ -37,7 +47,7 @@
  * boundaries aren't evenly spaced in reality the way this treats them, so
  * treat it as "roughly this part of the zodiac", not arcminute-precise.
  *
- * Entry point: lively.identity.SkyWidget.attachTo(morph)
+ * Entry point: lively.identity.SkyWidget.open(containerEl)
  */
 
 module("lively.identity.SkyWidget")
@@ -270,85 +280,56 @@ module("lively.identity.SkyWidget")
       return facts;
     }
 
-    // ─── morph attachment ───────────────────────────────────────────────────────
+    // ─── DOM widget ─────────────────────────────────────────────────────────────
 
     Object.subclass('lively.identity.SkyWidgetController',
 
     'initializing', {
       initialize: function () {
-        this._morph = null;
-        this._label = null;
+        this._el = null;
         this._lat = null;
         this._lon = null;
         this._facts = [];
         this._factIndex = 0;
+        this._tickTimer = null;
+        this._rotateTimer = null;
       },
     },
 
     'boot', {
-      // No "already attached" instance flag guarding this — confirmed live
-      // (lively.persistence.Serializer's default plugin set only strips
-      // *function*-valued properties, via IgnoreFunctionsPlugin; a plain
-      // boolean flag set directly on the morph has no such protection and
-      // would serialize into a "Save World" snapshot same as any other own
-      // property) that a flag here would deserialize back as true on the
-      // very next fresh page load and permanently skip _locate() — freezing
-      // the widget at whatever it last showed, forever. Re-running this on
-      // an already-set-up morph is safe without one: _buildLabel below finds
-      // and reuses the existing named label instead of duplicating it, and
-      // morph.startStepping() (see Core.js) already dedupes by selector via
-      // removeEqualScripts before adding a script.
-      attachTo: function (morph) {
-        this._morph = morph;
-        this._buildLabel(morph);
+      // Position/size match the original SkyMorph placeholder's saved
+      // extent (256.7x73.3 at 33.3,10.4) for visual continuity — now just
+      // hardcoded here instead of being draggable/resizable in the morph
+      // editor, the same placement-editing tradeoff LocalMap already makes
+      // for its own div. position:absolute (not LocalMap's position:relative
+      // in-flow layout) because this sits alongside the actual absolutely-
+      // positioned morph nodes inside originNode as a small floating corner
+      // box, not as a full-width in-flow section like the map.
+      buildInto: function (containerEl) {
+        this._el = containerEl;
+        containerEl.className = 'lively-skywidget';
+        // Keeps this div's transient, JS-driven text/color out of the
+        // static preview HTML Serialization.js embeds into a saved world
+        // for fast initial paint — see ScriptingSupport.js's
+        // logoHTMLString. Without this, "Save World" baked in whatever
+        // moon-phase fact happened to be showing at that exact moment
+        // (confirmed live).
+        containerEl.setAttribute('data-lively-exclude-from-preview', 'true');
+        containerEl.textContent = 'Reading the sky…';
+        containerEl.style.cssText = [
+          'position:absolute', 'left:33px', 'top:10px', 'width:257px', 'height:73px',
+          'box-sizing:border-box', 'border-radius:13px', 'padding:10px',
+          'display:flex', 'align-items:center', 'justify-content:center', 'text-align:center',
+          // No named font file (no Google Fonts CDN, no bundled webfont) —
+          // generic sans-serif + explicit weight, same convention every
+          // other identity/* widget uses (Wallet.js, PostCardMailbox.js,
+          // WarpDrop.js, etc. all do font-weight:600 on a plain
+          // sans-serif stack for anything that needs to read as bold).
+          // Named "Helvetica" specifically rendered visibly thin at the
+          // regular weight this had before.
+          'font:600 15px/1.3 sans-serif',
+        ].join(';');
         this._locate();
-      },
-
-      // Named lookup (not just morph.submorphs[0]) so a world saved *after*
-      // the label was added, then reloaded fresh, reuses the existing label
-      // instead of stacking a duplicate on top of it.
-      _buildLabel: function (morph) {
-        var label = morph.submorphs.filter(function (m) { return m.name === 'SkyWidgetLabel'; })[0];
-        if (!label) {
-          var pad = 10;
-          var extent = morph.getExtent();
-          label = new lively.morphic.Text(
-            lively.rect(pad, pad, extent.x - pad * 2, extent.y - pad * 2),
-            'Reading the sky…'
-          );
-          label.setName('SkyWidgetLabel');
-          morph.addMorph(label);
-        }
-        // Re-applied even when reusing an existing (e.g. previously-saved)
-        // label, not just on first creation — a style fix here would
-        // otherwise silently never reach any label that already existed in
-        // a saved snapshot. "textAlign" is not a key applyStyle recognizes
-        // (confirmed live — TextCore.js's applyStyle reads spec.align, not
-        // spec.textAlign, so that key was silently dropped and the label
-        // rendered left-aligned despite this call). "align"/"verticalAlign"
-        // are the real keys.
-        label.applyStyle({
-          allowInput: false, selectable: false, fill: null, borderWidth: 0,
-          fontSize: 15, align: 'center', verticalAlign: 'middle',
-        });
-        this._label = label;
-      },
-
-      // CSS vertical-align only affects inline/table-cell elements — Lively
-      // renders text morphs as a plain block div (confirmed live), so the
-      // verticalAlign style above is a no-op and text always sits top-
-      // aligned regardless. Recentered manually instead: measure the actual
-      // rendered content height (getTextExtent — a real DOM measurement,
-      // not the label's own fixed box extent) and pad the top by half the
-      // leftover space. Re-run after every text change since fact length
-      // varies between one and two lines.
-      _recenterLabel: function () {
-        var label = this._label;
-        if (!label) return;
-        var boxH = label.getExtent().y;
-        var contentH = label.getTextExtent().y;
-        var topPad = Math.max(0, (boxH - contentH) / 2);
-        label.setPadding(Rectangle.inset(0, topPad, 0, 0));
       },
     },
 
@@ -358,11 +339,27 @@ module("lively.identity.SkyWidget")
       // back to a longitude estimated from the browser's UTC offset (so
       // day/night at least roughly lines up with the visitor's own clock)
       // and an arbitrary mid-latitude default.
+      //
+      // Uses the STANDARD (non-DST) offset, not the current clock offset —
+      // confirmed live the hard way: during PDT (UTC-7), the current-offset
+      // estimate placed a real San Francisco afternoon (sun ~13° up, blue
+      // sky) at a computed longitude ~17° east of true, which put the
+      // estimated sun at ~0° altitude — horizon/dusk colors shown hours
+      // early. Standard time zones are nominally centered on multiples of
+      // 15° longitude (Pacific standard = UTC-8 = -120°, matching real
+      // Pacific-coast longitude almost exactly); DST shifts the clock by an
+      // hour without moving that meridian, so using the DST-shifted offset
+      // directly skews the estimate by one full timezone-width. Comparing
+      // January vs. July offsets and taking whichever is larger recovers
+      // the standard-time offset regardless of which one is currently active.
       _locate: function () {
         var self = this;
         var fallback = function () {
-          var offsetHours = -(new Date().getTimezoneOffset()) / 60;
-          self._onLocated(40, offsetHours * 15);
+          var now = new Date();
+          var janOffset = new Date(now.getFullYear(), 0, 1).getTimezoneOffset();
+          var julOffset = new Date(now.getFullYear(), 6, 1).getTimezoneOffset();
+          var standardOffsetHours = -Math.max(janOffset, julOffset) / 60;
+          self._onLocated(40, standardOffsetHours * 15);
         };
         if (!navigator.geolocation) return fallback();
         navigator.geolocation.getCurrentPosition(function (pos) {
@@ -373,42 +370,42 @@ module("lively.identity.SkyWidget")
       _onLocated: function (lat, lon) {
         this._lat = lat;
         this._lon = lon;
-        var morph = this._morph;
-        var self = this;
-        morph.skyWidgetTick = function () { self.tick(); };
-        morph.skyWidgetRotate = function () { self.rotate(); };
         this.tick();
         this.rotate();
-        morph.startStepping(60000, 'skyWidgetTick');
-        morph.startStepping(30000, 'skyWidgetRotate');
+        this._tickTimer = setInterval(this.tick.bind(this), 60000);
+        this._rotateTimer = setInterval(this.rotate.bind(this), 30000);
       },
     },
 
     'updating', {
       tick: function () {
-        if (this._lat === null || !this._morph) return;
+        if (this._lat === null || !this._el) return;
         var sky = computeSky(new Date(), this._lat, this._lon);
         var rgb = colorForSunAltitude(sky.sunAltitude);
-        this._morph.setFill(Color.rgb(rgb[0], rgb[1], rgb[2]));
-        if (this._label) this._label.setTextColor(readableTextColor(rgb));
+        this._el.style.backgroundColor = 'rgb(' + rgb.join(',') + ')';
+        this._el.style.color = String(readableTextColor(rgb));
         this._facts = factsFor(sky);
         this._factIndex = 0;
       },
 
+      // Plain flexbox centering (align-items/justify-content, set once in
+      // buildInto) handles vertical centering for real here — unlike the
+      // old morph version, which needed a manual DOM-measurement recenter
+      // hack because Lively's Text morph renders as a plain block div with
+      // no working vertical-align.
       rotate: function () {
-        if (!this._label || this._facts.length === 0) return;
-        this._label.setTextString(this._facts[this._factIndex % this._facts.length]);
+        if (!this._el || this._facts.length === 0) return;
+        this._el.textContent = this._facts[this._factIndex % this._facts.length];
         this._factIndex++;
-        this._recenterLabel();
       },
     });
 
     // ─── class-side entry point ─────────────────────────────────────────────────
 
     lively.identity.SkyWidget = {
-      attachTo: function (morph) {
+      open: function (containerEl) {
         var controller = new lively.identity.SkyWidgetController();
-        controller.attachTo(morph);
+        controller.buildInto(containerEl);
         return controller;
       },
       // exposed for debugging/testing from a JS workspace

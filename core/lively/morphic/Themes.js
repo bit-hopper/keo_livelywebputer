@@ -54,7 +54,19 @@ Object.extend(lively.morphic, { Themes: {
 }});
 
 (function definePantheress() {
-    var tileURL = lively.Config.codeBase + 'styles/themes/pantheress_tile.svg';
+    // Root-relative, not lively.Config.codeBase — codeBase is always made
+    // absolute with the current protocol+host (confirmed live: it baked in
+    // "http://localhost:9001/..." here), and this string gets saved verbatim
+    // into the world's persisted CSS.Fill. A world saved from one domain
+    // (e.g. localhost during dev) then served from another (e.g.
+    // dev.tinylil.world) tried to fetch the first domain's tile URL, which
+    // is unreachable from anyone else's browser — confirmed live: the theme
+    // rendered as a flat cream overlay with no tile pattern on the second
+    // domain, full pattern only on the domain it was saved from. A
+    // root-relative path is resolved fresh against whichever domain is
+    // actually serving the page, on every load, same convention already
+    // used by lively.identity.LocalMap for its own runtime assets.
+    var tileURL = '/core/styles/themes/pantheress_tile.svg';
     // CSS.Fill sets node.style.background directly (inline), so it wins over
     // any stylesheet rules and survives world save/reload via serialization.
     // The background shorthand includes position/size so background-size is set.
@@ -69,7 +81,7 @@ Object.extend(lively.morphic, { Themes: {
 })();
 
 (function defineSavanna() {
-    var tileURL = lively.Config.codeBase + 'styles/themes/savanna_tile.svg';
+    var tileURL = '/core/styles/themes/savanna_tile.svg';
     var bgString = 'linear-gradient(rgba(233,237,228,0.75),rgba(233,237,228,0.75)),' +
                    'rgb(233,237,228) url("' + tileURL + '") 0 0/440px 440px repeat';
     lively.morphic.Themes.register('savanna', {

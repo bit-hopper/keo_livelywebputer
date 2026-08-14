@@ -136,7 +136,14 @@ function getWelcomeHtmlWithMap() {
     // real viewport (sub-pixel rounding, scrollbar-width timing, etc.) —
     // paints the World's actual current theme there instead of leaving the
     // browser's default white showing through at the edges.
-    "document.documentElement.style.background=$world.getFill().cssBackgroundString;" +
+    // $world.getFill() can be null (confirmed live: the currently-saved
+    // welcome.html has a World shape with no persisted _Fill at all) and a
+    // plain Color fill has no .cssBackgroundString either — both silently
+    // skip this fallback-background line rather than throwing. This used to
+    // be an unguarded read that threw and aborted onStartWorld entirely,
+    // which meant everything after it in this same function (the mobile
+    // banner check, LocalMap.open, SkyWidget.attachTo) never ran either.
+    "var f=$world.getFill();if(f&&f.cssBackgroundString)document.documentElement.style.background=f.cssBackgroundString;" +
     "})();" +
     // The system (menu bar, halos, code tools, drag-to-resize windows...) is
     // built for a mouse+keyboard desktop session, not a phone/tablet — the
@@ -189,13 +196,16 @@ function getWelcomeHtmlWithMap() {
     // would otherwise collapse to 0 once nested here.
     "$world.renderContext().originNode.appendChild(el);lively.identity.LocalMap.open(el);" +
     "});" +
-    // SkyMorph is a plain placeholder box saved directly into welcome.html's
-    // own snapshot (not server-injected like the map div above) — found by
-    // name at boot and handed to SkyWidget, which owns its fill color and
-    // adds its own text submorph from here on.
-    "var sky=$world.get('SkyMorph');if(sky){lively.require('lively.identity.SkyWidget').toRun(function(){" +
-    "lively.identity.SkyWidget.attachTo(sky);" +
-    "});}" +
+    // Same server-injected plain-DOM-div pattern as LocalMap just above
+    // (not a morph saved into welcome.html's own snapshot, unlike the old
+    // "SkyMorph" placeholder this replaced) — see SkyWidget.js's module doc
+    // comment for why: a real Text-morph child kept leaking its rendered
+    // content into "Save World" snapshots through multiple separate
+    // internal properties, so the whole widget moved off the morph tree.
+    "lively.require('lively.identity.SkyWidget').toRun(function(){" +
+    'var skyEl=document.createElement("div");skyEl.id="sky-widget";' +
+    "$world.renderContext().originNode.appendChild(skyEl);lively.identity.SkyWidget.open(skyEl);" +
+    "});" +
     "};</script>";
   return html.slice(0, idx) + mountScript + html.slice(idx);
 }

@@ -183,8 +183,22 @@ lively.morphic.Morph.addMethods(
         '</svg>';
     },
 
+    // Stringifies a clone, not the live morphNode — elements marked
+    // data-lively-exclude-from-preview (e.g. lively.identity.LocalMap/
+    // SkyWidget's plain-DOM overlay divs) are stripped from the clone
+    // first. This snapshot is used both as the PartsBin thumbnail/icon
+    // preview and, via Serialization.js's saveWorldAs, as $world's
+    // fast-initial-paint HTML embedded directly into a saved world file —
+    // confirmed live that a save otherwise baked in whatever transient text
+    // those DOM overlays happened to be showing at that exact moment
+    // (their real state is JS-driven and gets overwritten within moments
+    // of boot regardless, so the baked snapshot was never anything more
+    // than stale window dressing, not restored state).
     logoHTMLString: function () {
-        return Exporter.stringify(this.renderContext().morphNode);
+        var node = this.renderContext().morphNode.cloneNode(true);
+        Array.prototype.slice.call(node.querySelectorAll('[data-lively-exclude-from-preview]'))
+          .forEach(function (el) { el.parentNode.removeChild(el); });
+        return Exporter.stringify(node);
     },
 
     asHTMLLogo: function (options) {

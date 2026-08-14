@@ -77,6 +77,11 @@ module("lively.identity.LocalMap")
       buildInto: function (containerEl) {
         this._containerEl = containerEl;
         containerEl.className = 'lively-localmap';
+        // Keeps this div (Leaflet map, fallback prompt, or whatever it's
+        // showing at save time) out of the static preview HTML
+        // Serialization.js embeds into a saved world for fast initial
+        // paint — see ScriptingSupport.js's logoHTMLString.
+        containerEl.setAttribute('data-lively-exclude-from-preview', 'true');
         containerEl.style.cssText = [
           // width kept explicit (computed, not just dropped in favor of
           // margin-only auto-width) — this container is appended inside

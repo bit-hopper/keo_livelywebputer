@@ -83,8 +83,22 @@ module("lively.data.ImageUpload")
             var uploaded = report.uploadedFiles[0],
               relPath = uploaded && uploaded.relativePath;
             if (!relPath) return n(new Error("no file uploaded?"));
+            // Root-relative, not URL.root.withPath(...) (which bakes in the
+            // current domain's full absolute origin) — this string ends up
+            // as the image morph's persisted imageURL via setImageURL, so an
+            // absolute URL here permanently pins the image to whichever
+            // domain happened to be serving the page at drop time.
+            // Confirmed live: images dropped this way while browsing from
+            // dev.tinylil.world came back with
+            // "https://dev.tinylil.world/users/.../uploads/..." baked in,
+            // which then failed to load entirely (fetch: "Failed to fetch")
+            // from localhost — even though the identical file exists locally
+            // and loads fine at the equivalent root-relative path. Same fix
+            // as Themes.js's tile URL and lively.identity.LocalMap's own
+            // runtime asset paths: resolve fresh against whichever domain is
+            // actually serving the page, on every load.
             var img = self.openImage(
-              URL.root.withPath("/" + relPath).toString(),
+              "/" + relPath,
               uploaded.type, self.pos, file.name, n);
           },
           function (img, n) {
