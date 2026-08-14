@@ -26,6 +26,30 @@ module('lively.morphic.StyleSheets').requires('lively.morphic.Core', 'apps.cssPa
         document.getElementsByTagName('head')[0].appendChild(el);
         // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
         world.loadBaseTheme(Config.baseThemeStyleSheetURL, '');
+        // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+        // Material Symbols icon font, vendored under core/lib/material-symbols/
+        // (see core/styles/material-symbols.css for the @font-face rule and
+        // .material-symbols-rounded utility class, and core/media/material-icons/
+        // for the equivalent icons as individual SVGs, used the same way the
+        // halo icons in core/media/halos/ are).
+        //
+        // This is deliberately a plain <link> append, NOT routed through
+        // world.loadBaseTheme()/loadStyleSheetFromFile() like the base theme
+        // above. Those two feed the stylesheet through apps.cssParser /
+        // lively.morphic.Sizzle so its rules can be mapped onto the morphic
+        // scene graph (selector -> morph styling). material-symbols.css has no
+        // morph-targeting selectors at all — just a global @font-face at-rule
+        // (which the browser needs to see via a real stylesheet link to start
+        // fetching/parsing the font) and one plain CSS class. Running that
+        // through the morphic rule parser would be pointless at best and risks
+        // the parser choking on an at-rule it has no reason to understand, so
+        // it's appended straight to <head> like every other vendored-library
+        // stylesheet in this codebase (see e.g. XtermRuntime.js, PostCardEditor.js).
+        var iconFontEl = document.createElement('link');
+        iconFontEl.setAttribute('rel', "stylesheet")
+        iconFontEl.setAttribute('type', "text/css")
+        iconFontEl.setAttribute('href', Config.codeBase + 'styles/material-symbols.css')
+        document.getElementsByTagName('head')[0].appendChild(iconFontEl);
     });
     if (!UserAgent.isTouch) return;
     lively.whenLoaded(function(world) {
