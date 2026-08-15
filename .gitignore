@@ -26,6 +26,7 @@ localconfig.js
 !apps/MicroBlocks/microblocks.html
 !apps/MicroBlocks/boardie/boardie.html
 !apps/MicroBlocks/boardie/vm.html
+!apps/femtoBoy/femtoBoy.html
 
 # Node #
 node_modules

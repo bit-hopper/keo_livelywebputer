@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>femtoBoy</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #e8ead9;
+    color: #0f380f;
+    font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    height: 100%;
+    overflow: hidden;
+  }
+  #root {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    height: 100%;
+    gap: 8px;
+    box-sizing: border-box;
+    padding: 14px 8px 8px 8px;
+  }
+  #screenWrap {
+    position: relative;
+    border: 4px solid #8a8a5a;
+    border-radius: 4px;
+    background: #9bbc0f;
+    line-height: 0;
+  }
+  #screen {
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+    display: block;
+  }
+  #dropHint {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    text-align: center;
+    padding: 12px;
+    box-sizing: border-box;
+    font-size: 13px;
+    line-height: 1.4;
+    color: #0f380f;
+    background: rgba(139,172,15,0.6);
+    pointer-events: none;
+  }
+  #dropHint.hidden { display: none; }
+  #controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  #gamesWrap { position: relative; }
+  #gamesMenu {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    display: inline-flex;
+    flex-direction: column;
+    background: #e8ead9;
+    border: 1.5px solid #8a8a5a;
+    border-radius: 5px;
+    padding: 4px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    z-index: 10;
+  }
+  #gamesMenu.hidden { display: none; }
+  #gamesMenu button {
+    display: block;
+    width: auto;
+    white-space: nowrap;
+    box-sizing: border-box;
+    border: none;
+    background: transparent;
+    text-align: left;
+    padding: 6px 10px;
+    border-radius: 3px;
+  }
+  #gamesMenu button:hover { background: #cfd2b4; }
+  button, label.fileBtn {
+    background: #e8ead9;
+    color: #0f380f;
+    border: 1.5px solid #8a8a5a;
+    border-radius: 5px;
+    padding: 7px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    transition: background 0.1s, transform 0.05s;
+  }
+  button:hover, label.fileBtn:hover { background: #dbdec6; }
+  button:active, label.fileBtn:active { transform: translateY(1px); }
+  button:disabled { opacity: 0.35; cursor: default; transform: none; }
+  #muteBtn { background: #7a1f3d; color: #e8ead9; border-color: #b8935a; }
+  #muteBtn:hover { background: #922549; }
+  input[type=file] { display: none; }
+  #status {
+    font-size: 12px;
+    color: #4a5a1a;
+    min-height: 15px;
+  }
+  #footer {
+    font-size: 13px;
+    color: #4a5a1a;
+    text-align: center;
+    max-width: 420px;
+    line-height: 1.6;
+    margin-top: 10px;
+  }
+  #footerControls { margin-bottom: 10px; }
+  #footer a { color: #5c7020; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div id="screenWrap">
+    <canvas id="screen" width="160" height="144" style="width:480px;height:432px;"></canvas>
+    <div id="dropHint">
+      <div>Drop ROM here, or "Load ROM" below</div>
+    </div>
+  </div>
+  <div id="controls">
+    <label class="fileBtn">Load ROM<input id="romInput" type="file" accept=".gb,.gbc"></label>
+    <div id="gamesWrap">
+      <button id="gamesBtn">Games</button>
+      <div id="gamesMenu" class="hidden"></div>
+    </div>
+    <button id="saveStateBtn" disabled>Save State</button>
+    <button id="loadStateBtn" disabled>Load State</button>
+    <button id="muteBtn">Mute</button>
+  </div>
+  <div id="status"></div>
+  <div id="footer">
+    <div id="footerControls">Controls: Arrows = D-Pad, X = A, Z = B, Enter = Start, Tab = Select.</div>
+    <div id="footerLicense">
+      femtoBoy<br>
+      Available under <a href="https://github.com/EmulationOnline/gambatte-core" target="_blank" rel="noopener">GPLv2</a>.
+    </div>
+  </div>
+</div>
+<script src="wasm/gambatte.js"></script>
+<script src="femtoBoy.js"></script>
+</body>
+</html>
