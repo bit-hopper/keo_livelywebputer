@@ -275,6 +275,20 @@ function downloadPartsBin(thenDo) {
 }
 
 function startServer(callback) {
+  // life_star only actually turns on HTTPS when sslServerKey, sslServerCert,
+  // AND sslCACert are all present (it ANDs all three together internally) --
+  // sslCACert is only ever used for optional client-cert auth, but its file
+  // still has to exist or that AND short-circuits to false and life_star
+  // silently falls back to plain http. Default it to the server cert (a
+  // self-signed leaf is a fine no-op "CA" when client-cert auth is off) so
+  // --enable-ssl works with just a key and a cert, as its help text implies.
+  var sslServerKey = options.defined("enableSsl") ? options.sslServerKey : null,
+    sslServerCert = options.defined("enableSsl") ? options.sslServerCert : null,
+    sslCACert = options.defined("enableSsl")
+      ? options.sslCaCert || options.sslServerCert
+      : null,
+    sslActuallyEnabled = options.defined("enableSsl") && !!sslServerKey && !!sslServerCert && !!sslCACert;
+
   require("life_star")({
     host: host,
     port: port,
@@ -289,14 +303,20 @@ function startServer(callback) {
     enableSSLClientAuth: options.defined("enableSsl")
       ? options.defined("enableSslClientAuth")
       : false,
-    sslServerKey: options.defined("enableSsl") ? options.sslServerKey : null,
-    sslServerCert: options.defined("enableSsl") ? options.sslServerCert : null,
-    sslCACert: options.defined("enableSsl") ? options.sslCaCert : null,
+    sslServerKey: sslServerKey,
+    sslServerCert: sslServerCert,
+    sslCACert: sslCACert,
   });
+  if (options.defined("enableSsl") && !sslActuallyEnabled) {
+    console.error(
+      "--enable-ssl was passed but --ssl-server-key/--ssl-server-cert " +
+        "are missing -- falling back to plain http.",
+    );
+  }
   console.log(
     "Server with pid %s is now running at %s://%s:%s",
     process.pid,
-    options.defined("enableSsl") ? "https" : "http",
+    sslActuallyEnabled ? "https" : "http",
     host,
     port,
   );

@@ -471,7 +471,14 @@ Object.extend(lively.morphic.World, {
     },
 
     loadInIFrame: function(url, bounds) {
-        url = new URL(url); //.withQuery({dontBootstrap: true});
+        // A root-relative path (e.g. "/apps/Snap/snap.html") is kept as a
+        // plain string rather than wrapped in URL (which requires an
+        // absolute scheme+host and would force baking one in). Browsers
+        // resolve a relative iframe src against whatever origin the
+        // containing page was loaded from, so the part then works
+        // unmodified from any origin (http/https, any host or port)
+        // instead of only the one origin it happened to be published from.
+        url = (Object.isString(url) && url.charAt(0) === '/') ? url : new URL(url);
         function createIFrame(url, bounds) {
             // document.body.style.position = 'absolute'
             var iframe = document.createElement('iframe');

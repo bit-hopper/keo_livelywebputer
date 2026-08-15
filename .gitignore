@@ -23,6 +23,9 @@ localconfig.js
 
 # Vendored third-party apps that ship their own entry HTML #
 !apps/Snap/snap.html
+!apps/MicroBlocks/microblocks.html
+!apps/MicroBlocks/boardie/boardie.html
+!apps/MicroBlocks/boardie/vm.html
 
 # Node #
 node_modules
@@ -79,6 +82,7 @@ core/apis/github-api.json
 # HTTP / server #
 htpasswd
 .htpasswd
+local-ssl/
 
 # Documentation files
 *.md
