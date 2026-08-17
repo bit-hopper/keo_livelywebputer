@@ -6,8 +6,6 @@ var path = require("path"),
   fs = require("fs"),
   zlib = require("zlib"),
   crypto = require("crypto"),
-  concat = require("source-map-concat"),
-  babel = require("babel-core"),
   lang = require("lively.lang"),
   rootDir = process.env.WORKSPACE_LK || path.resolve(__dirname, "../.."),
   relWorkDir = ".optimized-loading-cache",
@@ -15,7 +13,24 @@ var path = require("path"),
   combinedFile = path.join(workDir, "combined.js"),
   combinedHashFile = path.join(workDir, "combined.js.hash"),
   _combinedFileAndHashCached = null,
-  _combinedFileAndHashCachedTimeout = 1000; /*ms*/
+  _combinedFileAndHashCachedTimeout = 1000, /*ms*/
+  _concat = null,
+  _babel = null;
+
+// source-map-concat and (especially) babel-core are only needed once we
+// actually rebuild combined.js, deep inside the async chain below -- not at
+// module load time. babel-core alone has a large enough dependency tree that
+// requiring it eagerly here added ~8s to every server boot (measured on this
+// repo's WSL/9p-mounted filesystem), blocking this subserver's own
+// require() and, with it, every later subserver waiting behind it in the
+// startup loop. Requiring lazily on first actual use lets that cost happen
+// off the boot-critical path instead.
+function concatModule() {
+  return _concat || (_concat = require("source-map-concat"));
+}
+function babelModule() {
+  return _babel || (_babel = require("babel-core"));
+}
 
 (function onStartup() {
   if (typeof lively === "undefined" || !lively.Config) {
@@ -58,8 +73,7 @@ function combinedFileAndHash() {
   // require("child_process").exec("rm -rf $WORKSPACE_LK/.optimized-loading-cache/combined.js*")
   // require("child_process").exec("rm -rf $WORKSPACE_LK/.optimized-loading-cache/*")
   // combinedFileAndHash().then(x => console.log(x)).catch(err => console.error(err))
-  var files = coreFiles(process.env.WORKSPACE_LK);
-  return lang.promise.chain([
+  return coreFiles(process.env.WORKSPACE_LK).then((files) => lang.promise.chain([
     () =>
       lang
         .promise(fs.mkdir)(workDir)
@@ -70,7 +84,7 @@ function combinedFileAndHash() {
         ? computeHash(combinedFile)
         : String(fs.readFileSync(combinedHashFile)),
     (hash) => ({ hash: hash, file: combinedFile }),
-  ]);
+  ]));
 }
 
 function prepareFileForConcat(rootDir, cacheDir, file) {
@@ -117,7 +131,7 @@ function prepareFileForConcat(rootDir, cacheDir, file) {
         source =
           babelExceptions.indexOf(file) > -1
             ? fs.readFileSync(fullFilePath)
-            : babel.transformFileSync(fullFilePath, { presets: ["es2015"] })
+            : babelModule().transformFileSync(fullFilePath, { presets: ["es2015"] })
                 .code;
         fs.writeFileSync(cacheFile, source);
         fs.writeFileSync(mtimeFile, mtime);
@@ -170,7 +184,7 @@ function concatAndWrite(files, rootDir, workDir, targetFilePath, time) {
           ),
         ),
       (filesForConcat) =>
-        concat(filesForConcat, {
+        concatModule()(filesForConcat, {
           delimiter: "\n",
           mapPath: targetFilePath + ".jsm",
         }),
@@ -212,7 +226,7 @@ function computeHash(combinedFile) {
   });
 }
 
-function coreFiles(baseDir) {
+async function coreFiles(baseDir) {
   var cfg = lively.Config,
     libsFile = path.join(baseDir, "core/lib/lively-libs-debug.js"),
     // Convert bootstrap files to absolute paths by resolving them relative to baseDir
@@ -224,9 +238,8 @@ function coreFiles(baseDir) {
       .concat(cfg.get("modulesBeforeWorldLoad"))
       .concat(cfg.get("modulesOnWorldLoad"));
 
-  var coreFiles = spliceInDependencies(
-    modulesToInclude.map(moduleToFile).reverse(),
-  );
+  var initialFiles = await Promise.all(modulesToInclude.map(moduleToFile));
+  var coreFiles = await spliceInDependencies(initialFiles.reverse());
   coreFiles = [libsFile].concat(bootstrapFiles).concat(coreFiles);
 
   // Convert all absolute paths back to relative paths for the module loading system
@@ -240,17 +253,31 @@ function coreFiles(baseDir) {
 
   // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 
-  function moduleToFile(module) {
+  async function fileExists(file) {
+    return fs.promises.access(file, fs.constants.F_OK).then(
+      () => true,
+      () => false,
+    );
+  }
+
+  async function moduleToFile(module) {
     // TODO: Adapt module load logic
     var relFile = "core/" + module.replace(/\./g, "/") + ".js",
       absFile = path.join(baseDir, relFile);
-    if (fs.existsSync(absFile)) return absFile;
+    if (await fileExists(absFile)) return absFile;
     relFile = module.replace(/\./g, "/") + ".js";
     absFile = path.join(baseDir, relFile);
     return absFile;
   }
 
-  function spliceInDependencies(files) {
+  // Walks the module dependency graph declared via module(...).requires(...)
+  // calls at the top of each core file. This used to do this with
+  // fs.readFileSync in a tight synchronous loop, which -- across the
+  // hundred-plus core files -- blocked the Node event loop for the whole
+  // walk (visibly stalling all other subserver startup during boot).
+  // fs.promises.readFile here lets the walk interleave with everything else
+  // that's starting up concurrently instead of monopolizing the thread.
+  async function spliceInDependencies(files) {
     // rk 2014-10-25: Uuhhh ha, this looks like an ad-hoc parsing adventure...
     var i = 0,
       dependencies = {};
@@ -265,18 +292,18 @@ function coreFiles(baseDir) {
       }
       dependencies[filename] = [];
       try {
-        var content = fs.readFileSync(filename).toString();
+        var content = (await fs.promises.readFile(filename)).toString();
         // FIXME: do real parsing, evil eval
         var modRegEx = /module\((.*?)\)\.requires\((.*?)\)./g;
         var moduleDefs = modRegEx.exec(content);
         if (moduleDefs) {
           var req = eval("[" + moduleDefs[2] + "]");
           var deps = dependencies[filename];
-          req.forEach(function (module) {
-            var filename = moduleToFile(module);
-            files.splice(i + 1, 0, filename);
-            deps.push(filename);
-          });
+          for (var module of req) {
+            var depFile = await moduleToFile(module);
+            files.splice(i + 1, 0, depFile);
+            deps.push(depFile);
+          }
         }
       } catch (e) {
         console.log("Problems processing: " + filename);
