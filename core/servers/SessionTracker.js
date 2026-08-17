@@ -39,7 +39,7 @@ var events = global.l2lEvents || (global.l2lEvents = {
     log: []
 });
 
-util._extend(events, {
+Object.assign(events, {
 
     add: function(/*logMessage args*/) {
         var msg = util.format.apply(util, arguments);
@@ -91,8 +91,8 @@ var sessionActions = {
             session = sessions[msg.sender] = {}
         }
 
-        util._extend(session, msg.data);
-        util._extend(session, {
+        Object.assign(session, msg.data);
+        Object.assign(session, {
             remoteAddress: connection.remoteAddress,
             timeOfRegistration: new Date().getTime()
         });
@@ -317,7 +317,7 @@ var sessionActions = {
 }
 
 var services = require("./LivelyServices").services;
-util._extend(services, sessionActions);
+Object.assign(services, sessionActions);
 
 // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 // SessionTracker
@@ -737,7 +737,7 @@ var SessionTracker = module.exports.SessionTracker || function SessionTracker(op
             con.send({
                 action: 'reportSessions',
                 target: con.connection && con.connection.id,
-                data: util._extend(sessions, {trackerId: tracker.id()})
+                data: Object.assign(sessions, {trackerId: tracker.id()})
             },function(msg) { next(null, msg.data); });
         }
         function whenDone(err, reportResult) {
@@ -912,7 +912,12 @@ lively.userData = (function setupUserDataExpt() {
             if (!data) { res.status(400).end('no data'); return; }
             if (!stored) { res.status(400).end('cannot access stored data'); return; }
             // only change credentials if there is no login system in place:
-            var authUser = req.auth && req.auth.username;
+            // (req.auth was Express's old deprecated HTTP Basic-Auth getter;
+            // decode the Authorization header ourselves instead of touching it)
+            var authHeader = req.get('authorization'),
+                authUser = authHeader && authHeader.indexOf('Basic ') === 0
+                  ? Buffer.from(authHeader.slice(6), 'base64').toString().split(':')[0]
+                  : undefined;
             if (!lively.Config || !lively.Config.get('userAuthEnabled')) {
                 stored.username = authUser || data.username || stored.username || 'unknown user';
                 stored.email = data.email || stored.email || null;

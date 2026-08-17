@@ -10,10 +10,17 @@ new mode 100755
 diff --git a/node_modules/lively-davfs/VersionedFileSystem.js b/node_modules/lively-davfs/VersionedFileSystem.js
 old mode 100644
 new mode 100755
-index 129e6a6..d7e3c61
+index 129e6a6..9edc928
 --- a/node_modules/lively-davfs/VersionedFileSystem.js
 +++ b/node_modules/lively-davfs/VersionedFileSystem.js
-@@ -18,7 +18,7 @@ var lkLoader = require('lively-loader');
+@@ -1,6 +1,5 @@
+ "use strict"
+ 
+-var util = require("util");
+ var EventEmitter = require("events").EventEmitter;
+ var async = require("async");
+ var path = require("path");
+@@ -18,7 +17,7 @@ var lkLoader = require('lively-loader');
  // helper
  function matches(reOrString, pathPart) {
      if (typeof reOrString === 'string' && reOrString === pathPart) return true;
@@ -22,7 +29,19 @@ index 129e6a6..d7e3c61
      return false;
  }
  
-@@ -79,7 +79,23 @@ util._extend(VersionedFileSystem.prototype, d.bindMethods({
+@@ -46,9 +45,9 @@ function VersionedFileSystem(options) {
+     } catch(e) { this.emit('error', e); }
+ }
+ 
+-util._extend(VersionedFileSystem.prototype, EventEmitter.prototype);
++Object.assign(VersionedFileSystem.prototype, EventEmitter.prototype);
+ 
+-util._extend(VersionedFileSystem.prototype, d.bindMethods({
++Object.assign(VersionedFileSystem.prototype, d.bindMethods({
+ 
+     // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+     // initializing
+@@ -79,7 +78,23 @@ util._extend(VersionedFileSystem.prototype, d.bindMethods({
          // as a new version (change = "initial") to the storage
          async.series([
              storage.reset.bind(storage, resetDb/*drop tables?*/),
@@ -47,12 +66,40 @@ index 129e6a6..d7e3c61
          ], function(err) {
              if (err) console.error('Error initializing versioned fs: %s', err);
              else self.emit('initialized');
+@@ -219,7 +234,7 @@ util._extend(VersionedFileSystem.prototype, d.bindMethods({
+         this.storage.getRecords(options, thenDo); },
+     getFiles: function(thenDo) { this.storage.getRecords({newest: true}, thenDo); },
+     getFileRecord: function(options, thenDo) {
+-        options = util._extend({paths: [options.path], newest: true}, options);
++        options = Object.assign({paths: [options.path], newest: true}, options);
+         this.storage.getRecords(options, function(err, rows) {
+             thenDo(err, rows && rows[0]); }); 
+     },
 diff --git a/node_modules/lively-davfs/domain.js b/node_modules/lively-davfs/domain.js
 old mode 100644
 new mode 100755
 diff --git a/node_modules/lively-davfs/file-import-task.js b/node_modules/lively-davfs/file-import-task.js
 old mode 100644
 new mode 100755
+index 07fb279..a366bce
+--- a/node_modules/lively-davfs/file-import-task.js
++++ b/node_modules/lively-davfs/file-import-task.js
+@@ -1,6 +1,5 @@
+ "use strict";
+ 
+-var util = require("util");
+ var EventEmitter = require("events").EventEmitter;
+ var async = require("async");
+ var path = require("path");
+@@ -127,7 +126,7 @@ function runTask(lvfs, thenDo) {
+     // 3) when storage done: rinse and repeat
+     var totalFiles = 0, filesProcessed = 0,
+         emitter = {};
+-    util._extend(emitter, EventEmitter.prototype);
++    Object.assign(emitter, EventEmitter.prototype);
+     EventEmitter.call(emitter);
+     async.waterfall([
+         function(next) { lvfs.walkFiles(next); },
 diff --git a/node_modules/lively-davfs/flake.lock b/node_modules/lively-davfs/flake.lock
 old mode 100644
 new mode 100755
@@ -65,28 +112,156 @@ new mode 100755
 diff --git a/node_modules/lively-davfs/repository.js b/node_modules/lively-davfs/repository.js
 old mode 100644
 new mode 100755
+index 14e516c..9c359f4
+--- a/node_modules/lively-davfs/repository.js
++++ b/node_modules/lively-davfs/repository.js
+@@ -1,6 +1,5 @@
+ "use strict"
+ 
+-var util = require("util");
+ var fs = require("fs");
+ var path = require("path");
+ var EventEmitter = require("events").EventEmitter;
+@@ -21,9 +20,9 @@ function Repository(options) {
+     } catch(e) { this.emit('error', e); }
+ }
+ 
+-util._extend(Repository.prototype, EventEmitter.prototype);
++Object.assign(Repository.prototype, EventEmitter.prototype);
+ 
+-util._extend(Repository.prototype, d.bindMethods({
++Object.assign(Repository.prototype, d.bindMethods({
+ 
+     // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+     // intialize-release
 diff --git a/node_modules/lively-davfs/request-handler.js b/node_modules/lively-davfs/request-handler.js
 old mode 100644
 new mode 100755
+index 19f84ab..4ac4ace
+--- a/node_modules/lively-davfs/request-handler.js
++++ b/node_modules/lively-davfs/request-handler.js
+@@ -20,9 +20,9 @@ function LivelyFsHandler(options) {
+     this.initialize(options);
+ }
+ 
+-util._extend(LivelyFsHandler.prototype, EventEmitter.prototype);
++Object.assign(LivelyFsHandler.prototype, EventEmitter.prototype);
+ 
+-util._extend(LivelyFsHandler.prototype, d.bindMethods({
++Object.assign(LivelyFsHandler.prototype, d.bindMethods({
+ 
+     initialize: function(options) {
+         options = options || {};
+@@ -34,6 +34,7 @@ util._extend(LivelyFsHandler.prototype, d.bindMethods({
+         this.enableRewriting = this.enableVersioning && !!options.enableRewriting; // default: false
+         this.bootstrapRewriteFiles = options.bootstrapRewriteFiles || [];
+         this.resetDatabase = !!options.resetDatabase;
++        this.excludePaths = options.excludePaths || []; // paths that should not be handled by DAV
+         this.repository = new Repository(options);
+         this.timemachineSettings = (function tmSetup(tmOptions) {
+             var allowFileSystemFallback = tmOptions.hasOwnProperty("allowFileSystemFallback") ?
+@@ -46,6 +47,18 @@ util._extend(LivelyFsHandler.prototype, d.bindMethods({
+         })(options.timemachine || {path: '/timemachine/'});
+     },
+ 
++    isExcludedPath: function(url) {
++        var self = this;
++        return this.excludePaths.some(function(pattern) {
++            if (typeof pattern === 'string') {
++                return url.indexOf(pattern) === 0;
++            } else if (pattern instanceof RegExp) {
++                return pattern.test(url);
++            }
++            return false;
++        });
++    },
++
+     registerWith: function(app, server, thenDo) {
+         if (!server) this.emit('error', new Error('livelydavfs request handler needs server!'));
+         this.server = server;
+@@ -91,6 +104,13 @@ util._extend(LivelyFsHandler.prototype, d.bindMethods({
+     },
+ 
+     handleRequest: function(req, res, next) {
++        // Check if this path should be excluded from DAV handling (e.g., API endpoints)
++        if (this.isExcludedPath(req.url)) {
++            // Let Express middleware handle this request
++            if (typeof next === 'function') next();
++            return;
++        }
++        
+         if (this.isTimemachineRequest(req)) {
+             this.handleTimemachineRequest(req, res, next);
+         } else if (this.isRewrittenCodeRequest(req)) {
 diff --git a/node_modules/lively-davfs/sqlite-storage.js b/node_modules/lively-davfs/sqlite-storage.js
 old mode 100644
 new mode 100755
+index 7752faa..0154b82
+--- a/node_modules/lively-davfs/sqlite-storage.js
++++ b/node_modules/lively-davfs/sqlite-storage.js
+@@ -185,9 +185,9 @@ function SQLiteStore(options) {
+     // Object.freeze(this);
+ }
+ 
+-util._extend(SQLiteStore.prototype, EventEmitter.prototype);
++Object.assign(SQLiteStore.prototype, EventEmitter.prototype);
+ 
+-util._extend(SQLiteStore.prototype, d.bindMethods({
++Object.assign(SQLiteStore.prototype, d.bindMethods({
+ 
+     reset: function(emptyTables, thenDo) {
+         this.db = new sqlite3.Database(this.dbFile);
 diff --git a/node_modules/lively-davfs/test-server.js b/node_modules/lively-davfs/test-server.js
 old mode 100644
 new mode 100755
 diff --git a/node_modules/lively-davfs/tests/fs-versioning-tests.js b/node_modules/lively-davfs/tests/fs-versioning-tests.js
 old mode 100644
 new mode 100755
+index 87a8082..7b57555
+--- a/node_modules/lively-davfs/tests/fs-versioning-tests.js
++++ b/node_modules/lively-davfs/tests/fs-versioning-tests.js
+@@ -24,12 +24,12 @@ function createDB(dbLocation, thenDo) {
+ }
+ 
+ function fakeDAVChange(relPath, content, author, date) {
+-    var request = util._extend({}, EventEmitter.prototype);
++    var request = Object.assign({}, EventEmitter.prototype);
+     EventEmitter.call(request);
+     fakeDAVPlugin.emit('fileChanged', {
+         uri: relPath,
+         req: request,
+-        content: {isDone: true, buffer: new Buffer(content)}});
++        content: {isDone: true, buffer: Buffer.from(content)}});
+     fs.writeFileSync(path.join(testDirectory, relPath), content);
+     fakeDAVPlugin.emit('afterFileChanged', {uri: relPath});
+ }
+@@ -62,7 +62,7 @@ var versionedFilesystemTests = {
+             },
+             logProgress('test files created'),
+             function(next) {
+-                fakeDAVPlugin = util._extend({}, EventEmitter.prototype);
++                fakeDAVPlugin = Object.assign({}, EventEmitter.prototype);
+                 EventEmitter.call(fakeDAVPlugin);
+                 testRepo = new Repository({fs: testDirectory});
+                 testRepo.attachToDAVPlugin(fakeDAVPlugin);
 diff --git a/node_modules/lively-davfs/tests/tests.js b/node_modules/lively-davfs/tests/tests.js
 old mode 100644
 new mode 100755
 diff --git a/node_modules/lively-davfs/util.js b/node_modules/lively-davfs/util.js
 old mode 100644
 new mode 100755
-index 49cbca1..0876c04
+index 49cbca1..156a8a5
 --- a/node_modules/lively-davfs/util.js
 +++ b/node_modules/lively-davfs/util.js
-@@ -10,17 +10,17 @@ function batchify(list, constrainedFunc, context) {
+@@ -1,7 +1,6 @@
+ "use strict"
+ 
+ var debug = false;
+-var util = require("util");
+ 
+ function batchify(list, constrainedFunc, context) {
+     // takes elements and fits them into subarrays (=batches) so that for
+@@ -10,17 +9,17 @@ function batchify(list, constrainedFunc, context) {
      // see [$world.browseCode("lively.lang.tests.ExtensionTests.ArrayTest", "testBatchify", "lively.lang.tests.ExtensionTests")]
      // for an example
      function extractBatch(batch, sizes) {
@@ -115,3 +290,12 @@ index 49cbca1..0876c04
      }
      function findBatches(batches, sizes) {
          if (!sizes.length) return batches;
+@@ -58,7 +57,7 @@ function humanReadableByteSize(n) {
+ 
+ function stringOrRegExp(s) {
+     // allows to encode REs in a string like "/\\.css$/i",
+-    if (util.isArray(s)) return s.map(stringOrRegExp);
++    if (Array.isArray(s)) return s.map(stringOrRegExp);
+     if (typeof s !== 'string') return s;
+     if (s[0] !== '/') return s;
+     var endMatch = s.match(/\/([a-z]?)$/);

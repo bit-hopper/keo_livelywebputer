@@ -13,7 +13,7 @@ d.on('error', function(err) {
 // delete global.lively
 if (typeof lively === "undefined") global.lively = {}
 global.lv = lively;
-util._extend(lively, {
+Object.assign(lively, {
     i: function(obj, depth, showAll) { return util.inspect(obj, showAll, typeof depth === 'number' ? depth : 0); },
     show: function(obj, depth, showAll) { console.log(lv.i(obj,depth,showAll)); },
     path: path,

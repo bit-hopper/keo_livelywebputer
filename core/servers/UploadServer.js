@@ -1,6 +1,5 @@
 var lang = require("lively.lang");
 var fs = require("fs");
-var util = require("util");
 var async = require("async");
 var path = require("path");
 var exec = require("child_process").exec;
@@ -38,7 +37,7 @@ function findUnusedFileName(filePath) {
 function gatherFormFiles(formFiles, location) {
   var files = Object.keys(formFiles).reduce(function (allFiles, key) {
     var files = formFiles[key];
-    if (!util.isArray(files)) files = [files];
+    if (!Array.isArray(files)) files = [files];
     return allFiles.concat(files);
   }, []);
   files.forEach(function (file) {

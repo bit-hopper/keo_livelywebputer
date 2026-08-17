@@ -26,8 +26,8 @@ function ensurePythonProcess(state, thenDo) {
 
     module.exports.pythonState = pythonState = {
         proc: spawn('python', ['-i', '-']),
-        stdout: new Buffer(""),
-        stderr: new Buffer(""),
+        stdout: Buffer.from(""),
+        stderr: Buffer.from(""),
         status: "not started",
         error: null
     }

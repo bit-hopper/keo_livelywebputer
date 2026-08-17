@@ -1,0 +1,64 @@
+diff --git a/node_modules/lively-loader/.npmignore b/node_modules/lively-loader/.npmignore
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-loader/.travis.yml b/node_modules/lively-loader/.travis.yml
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-loader/LICENSE b/node_modules/lively-loader/LICENSE
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-loader/README.md b/node_modules/lively-loader/README.md
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-loader/index.js b/node_modules/lively-loader/index.js
+old mode 100644
+new mode 100755
+index 8b46d38..5c61749
+--- a/node_modules/lively-loader/index.js
++++ b/node_modules/lively-loader/index.js
+@@ -1,6 +1,5 @@
+ /*global require,console,global,module,process*/
+ 
+-var util       = require("util");
+ var path       = require("path");
+ var fs         = require("fs");
+ var async      = require("async");
+@@ -178,7 +177,7 @@ function start(options, thenDo) {
+ 
+     livelyLang.deprecatedLivelyPatches();
+ 
+-    options = options ? util._extend(defaultOptions, options) : defaultOptions;
++    options = options ? Object.assign(defaultOptions, options) : defaultOptions;
+     require('./lib/bootstrap')(defaultOptions, function(err, lively) {
+         if (err) console.error("Error in lively-loader: ", err);
+         started = true;
+diff --git a/node_modules/lively-loader/lib/bootstrap.js b/node_modules/lively-loader/lib/bootstrap.js
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-loader/load-lively-core.js b/node_modules/lively-loader/load-lively-core.js
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-loader/tests/test-modules/a.js b/node_modules/lively-loader/tests/test-modules/a.js
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-loader/tests/test-modules/b.js b/node_modules/lively-loader/tests/test-modules/b.js
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-loader/tests/test-modules/c.js b/node_modules/lively-loader/tests/test-modules/c.js
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-loader/tests/test-modules/d.js b/node_modules/lively-loader/tests/test-modules/d.js
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-loader/tests/test-modules/dir1/c.js b/node_modules/lively-loader/tests/test-modules/dir1/c.js
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-loader/tests/test-modules/dir1/d.js b/node_modules/lively-loader/tests/test-modules/dir1/d.js
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-loader/tests/test-modules/dir1/moduleWithError.js b/node_modules/lively-loader/tests/test-modules/dir1/moduleWithError.js
+old mode 100644
+new mode 100755
+diff --git a/node_modules/lively-loader/tests/test.js b/node_modules/lively-loader/tests/test.js
+old mode 100644
+new mode 100755

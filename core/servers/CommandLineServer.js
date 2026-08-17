@@ -86,7 +86,7 @@ function startSpawn(cmdInstructions) {
     var options = {env: commandEnv, cwd: cmdInstructions.cwd || dir, stdio: 'pipe', detached: true},
         commandString = cmdInstructions.command,
         stdin = cmdInstructions.stdin;
-    if (util.isArray(command)) {
+    if (Array.isArray(command)) {
         commandString = commandString.join(" ");
     } else {
         commandString = String(commandString);
@@ -143,7 +143,7 @@ function runShellCommand(cmdInstructions) {
             stdout: '', stderr: '',
             lastExitCode: null};
     shellCommands.push(shellCommand);
-    util._extend(shellCommand, require('events').EventEmitter.prototype);
+    Object.assign(shellCommand, require('events').EventEmitter.prototype);
 
     shellCommand.process.stdout.on('data', function (data) {
         debug && console.log('STDOUT: ' + data);
@@ -278,7 +278,7 @@ var shellServices = {
 }
 
 var services = require("./LivelyServices").services;
-util._extend(services, shellServices);
+Object.assign(services, shellServices);
 
 // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 

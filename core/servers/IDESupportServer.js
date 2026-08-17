@@ -1,5 +1,4 @@
 var async = require("async");
-var util = require("util");
 var fs = require("fs");
 var stream = require('stream');
 
@@ -183,7 +182,7 @@ function getCachedGatherWordsFunction(dir, freshnessTimeout) {
 // tests
 
 false && (function testWordCounter() {
-    var pipeline = util._extend(new stream.Readable(), {
+    var pipeline = Object.assign(new stream.Readable(), {
         _read: function(size) {
             this.push("hello world, this is a test\n   a test is this\n ohhh fun!\n");
             this.push(null);

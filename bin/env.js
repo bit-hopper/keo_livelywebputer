@@ -56,7 +56,7 @@ function lkCoreDir(dirInRoot) {
 }
 
 function set(varName, choices, options) {
-    var isValid = options && options.notFs ? function(c) { return !!c; } : fs.existsSync;
+    var isValid = options && options.notFs ? function(c) { return !!c; } : function(c) { return !!c && fs.existsSync(c); };
     if (env[varName]) choices.unshift(env[varName]); // already set?
     for (var i = 0; i < choices.length; i++) {
         if (isValid(choices[i])) { return env[varName] = choices[i]; }

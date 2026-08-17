@@ -231,7 +231,7 @@ global.haskellEval = function haskellEval(evalState, thenDo) {
     
     var prompt    = evalState._options.prompt || '',
         expr      = evalState._options.expr || "error \"Lively Haskell received no expression\"",
-        output    = new Buffer(''),
+        output    = Buffer.from(''),
         timeout   = 30*1000, // ms
         startTime = evalState.startTime = Date.now(),
         sentinel, error,

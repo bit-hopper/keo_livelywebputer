@@ -1,4 +1,3 @@
-var util = require("util");
 var path = require("path");
 var async = require("async");
 var sqlite3 = require('sqlite3').verbose();
@@ -114,7 +113,7 @@ module.exports = function(route, app) {
         // }
 
         var statements = req.body.statements;
-        if (!util.isArray(statements)) {
+        if (!Array.isArray(statements)) {
             res.status(400).json({error: 'statements is not an array! ' + JSON.stringify(req.body)});
             return;
         }

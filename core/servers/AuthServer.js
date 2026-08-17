@@ -1,5 +1,4 @@
 var async = require("async");
-var util = require("util");
 var path = require("path");
 var fs = require("fs");
 var repoServer = require("./ObjectRepositoryServer");
@@ -7,7 +6,7 @@ var repoServer = require("./ObjectRepositoryServer");
 function getGroups(userDB, cb) {
     var groups = userDB.users.reduce(function(allGroups, user) {
         var groups = user.custom.groups || [];
-        if (!util.isArray(groups)) groups = [groups];
+        if (!Array.isArray(groups)) groups = [groups];
         groups.forEach(function(g) { if (!allGroups[g]) allGroups[g] = []; allGroups[g].push(user.name); });
         return allGroups;
     }, {});

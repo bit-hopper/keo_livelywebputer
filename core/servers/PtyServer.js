@@ -1,5 +1,4 @@
-var util = require('util'),
-    dir  = process.env.WORKSPACE_LK,
+var dir  = process.env.WORKSPACE_LK,
     pty;
 
 try { pty = require('node-pty'); } catch (e) {
@@ -100,7 +99,7 @@ var ptyServices = {
 };
 
 var services = require("./LivelyServices").services;
-util._extend(services, ptyServices);
+Object.assign(services, ptyServices);
 
 // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 

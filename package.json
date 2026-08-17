@@ -33,8 +33,8 @@
     "lively.lang": "^0.7.9",
     "mysql": "^2.17.1",
     "node-pty": "^1.0.0",
-    "opencascade.js": "2.0.0-beta.b5ff984",
     "open-location-code": "^1.0.3",
+    "opencascade.js": "2.0.0-beta.b5ff984",
     "optparse": "^1.0.5",
     "process": "^0.11.10",
     "shelljs": "^0.8.5",
@@ -54,6 +54,7 @@
   "devDependencies": {
     "esbuild": "^0.24.0",
     "forever": "^3.0.0",
+    "patch-package": "^8.0.1",
     "prosemirror-commands": "^1.6.2",
     "prosemirror-history": "^1.4.1",
     "prosemirror-keymap": "^1.2.2",
@@ -67,6 +68,6 @@
     "test": "$npm_node_execpath bin/lk-test.js",
     "start": "$npm_node_execpath bin/lk-server.js",
     "build:postcard": "esbuild build/postcard-deps-entry.js --bundle --outfile=core/lib/postcard/postcard-deps.js --format=iife --platform=browser",
-    "postinstall": "node scripts/build-postcard-libs.js && node scripts/build-libsodium.js && node scripts/build-geo-libs.js && node scripts/build-wallet-crypto-libs.js && node scripts/build-wallet-vault-libs.js && node scripts/build-wallet-vault-sodium.js && node scripts/build-privacy-pool-client-libs.js && node scripts/fetch-privacy-pools-circuits.js && node scripts/build-wallet-vault-prover-libs.js && node scripts/build-jenga3d-libs.js"
+    "postinstall": "patch-package && node scripts/build-postcard-libs.js && node scripts/build-libsodium.js && node scripts/build-geo-libs.js && node scripts/build-wallet-crypto-libs.js && node scripts/build-wallet-vault-libs.js && node scripts/build-wallet-vault-sodium.js && node scripts/build-privacy-pool-client-libs.js && node scripts/fetch-privacy-pools-circuits.js && node scripts/build-wallet-vault-prover-libs.js && node scripts/build-jenga3d-libs.js"
   }
 }

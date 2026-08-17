@@ -235,7 +235,7 @@ module.exports = domain.bind(function(route, app, subserver) {
 
     });
 
-    app.del(route + 'evalAsync', function(req,res) {
+    app.delete(route + 'evalAsync', function(req,res) {
         var query = require('url').parse(req.url, true).query;
         var id = query.id,
             timeout = query.timeout;

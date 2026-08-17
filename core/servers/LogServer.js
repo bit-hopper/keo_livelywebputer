@@ -2,8 +2,6 @@
  * records what is written by process.stdout and process.stderr
  */
 
-var util = require('util');
-
 function safeLog(msg) {
     var log = process.stderr.write.originalFunction.bind(process.stderr);
     log(msg);
@@ -12,7 +10,7 @@ function safeLog(msg) {
 function writeLog(logger, type, chunk) {
     if (!chunk) return logger;
     logger[type + 'Index'] += chunk.length;
-    if (typeof chunk === 'string') chunk = new Buffer(chunk);
+    if (typeof chunk === 'string') chunk = Buffer.from(chunk);
     logger[type] = Buffer.concat([logger[type], chunk]).slice(-logger.maxLength);
     return logger;
 }
@@ -36,7 +34,7 @@ global.ensureLivelyLogger = function ensureLivelyLogger() {
     return global.livelyLog = {
         activated: true,
         maxLength: Math.pow(2,20), // 1MB
-        stdout: new Buffer(''), stderr: new Buffer(''),
+        stdout: Buffer.from(''), stderr: Buffer.from(''),
          // complete length, not just buffer length to know where we are
         stdoutIndex: 0, stderrIndex: 0,
     }
@@ -76,7 +74,7 @@ function installLivelyLogger(type, logger) {
     var assert = require('assert');
 
     // test data
-    var buf = new Buffer('some long string'),
+    var buf = Buffer.from('some long string'),
         logIndex = buf.length,
         logger = {
             maxLength: 16,
@@ -93,9 +91,9 @@ function installLivelyLogger(type, logger) {
     assert.deepEqual(result, {stdout: ' long string', stdoutIndex: buf.length});
     
     // write test 1: simple
-    result = writeLog(logger, 'stdout', new Buffer(' doing'));
+    result = writeLog(logger, 'stdout', Buffer.from(' doing'));
     assert.deepEqual(result, {
-        stdout: new Buffer('ong string doing'),
+        stdout: Buffer.from('ong string doing'),
         stdoutIndex: logIndex + ' doing'.length,
         maxLength: 16
     });

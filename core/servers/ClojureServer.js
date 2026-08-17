@@ -4,7 +4,6 @@ var debug = true;
 var exec  = require("child_process").exec;
 var async = require("async");
 var path  = require("path");
-var util  = require("util");
 var fs    = require("fs");
 
 // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
@@ -124,7 +123,7 @@ function l2lActionWithNREPLConnection(l2lConnection, msg, nreplConFunc) {
         });
 }
 
-util._extend(require("./LivelyServices").services, {
+Object.assign(require("./LivelyServices").services, {
 
     clojureClone: function(sessionServer, c, msg) {
         l2lActionWithNREPLConnection(c, msg, function(con, whenDone) { con.clone(msg.data.session, whenDone); });
@@ -192,7 +191,7 @@ util._extend(require("./LivelyServices").services, {
                 }
 
                 function onMessageSequence(messages) {
-                    var done = util.isArray(messages) && messages.any(function(msg) {
+                    var done = Array.isArray(messages) && messages.any(function(msg) {
                         return msg.status && msg.status.indexOf("done") > -1; });
                     if (!done) l2lAnswer(c, msg, true, messages);
                     else { cleanup(); next(null, messages); }
