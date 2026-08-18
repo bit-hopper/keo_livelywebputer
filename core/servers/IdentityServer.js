@@ -164,12 +164,9 @@ function getWelcomeHtmlWithMap() {
     "var n=document.createElement('div');" +
     "n.textContent='Lively is designed for larger screens. Some things here may not work well on a small screen. WarpDrop, used for quick file transfers, works fine on mobile.';" +
     "n.style.cssText='position:fixed;top:12px;left:16px;width:'+(vw-32)+'px;z-index:99999;" +
-    "box-sizing:border-box;background:#fff;color:#333;padding:12px 36px 12px 16px;" +
+    "box-sizing:border-box;background:#fff;color:#333;padding:12px 16px;" +
     "border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.25);font:14px/1.4 sans-serif;text-align:center';" +
-    "var c=document.createElement('button');c.textContent='\\u00d7';c.setAttribute('aria-label','Dismiss');" +
-    "c.style.cssText='position:absolute;top:4px;right:8px;border:none;background:none;" +
-    "font-size:20px;line-height:1;cursor:pointer;color:#666;padding:4px';" +
-    "c.onclick=function(){n.remove()};n.appendChild(c);document.body.appendChild(n);" +
+    "document.body.appendChild(n);" +
     "})();}" +
     "lively.require('lively.identity.LocalMap').toRun(function(){" +
     'var el=document.createElement("div");el.id="lofi-social-map";' +
