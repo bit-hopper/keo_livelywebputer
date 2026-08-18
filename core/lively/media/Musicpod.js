@@ -127,7 +127,7 @@ module("lively.media.Musicpod")
         menuLabels: ["Now Playing", "Queue"],
         // Fixed at build time per design — there is no in-UI way to
         // change it; swap this ID to point at a different playlist.
-        defaultPlaylistId: "PLlqIIhYPFiUqnWGnZILr2wU5OxT-CltvX",
+        defaultPlaylistId: "PLYlXSzA7olbI",
       },
 
       "dom helpers",
