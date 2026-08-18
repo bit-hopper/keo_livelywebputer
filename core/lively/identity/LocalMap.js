@@ -82,6 +82,19 @@ module("lively.identity.LocalMap")
         // Serialization.js embeds into a saved world for fast initial
         // paint — see ScriptingSupport.js's logoHTMLString.
         containerEl.setAttribute('data-lively-exclude-from-preview', 'true');
+        // Explicit px width via clientWidth, not CSS `vw` — confirmed live
+        // (matches IdentityServer.js's onStartWorld comment about
+        // innerWidth/vw vs clientWidth on the mobile warning banner): on
+        // any page with a vertical scrollbar, `100vw` resolves like
+        // window.innerWidth (includes the scrollbar's own width) while
+        // clientWidth/visualViewport.width exclude it. welcome.html is
+        // tall enough to always have a scrollbar, so `calc(100vw - 48px)`
+        // came out ~15px too wide, pushing this box's right edge under the
+        // scrollbar while its left edge stayed at the real 24px margin —
+        // the whole box read as shifted left relative to the actually
+        // visible content area. clientWidth is the one that agrees with
+        // what's really on screen.
+        var vw = document.documentElement.clientWidth;
         containerEl.style.cssText = [
           // width kept explicit (computed, not just dropped in favor of
           // margin-only auto-width) — this container is appended inside
@@ -91,9 +104,8 @@ module("lively.identity.LocalMap")
           // window/dialog), and that node reports 0 width itself (Lively
           // morphs are always explicitly sized, never rely on parent
           // auto-width). A `%`-based width would resolve against that 0
-          // and collapse to nothing — confirmed live — so this uses `vw`
-          // instead, which resolves against the real viewport regardless
-          // of parent.
+          // and collapse to nothing — confirmed live — so this computes an
+          // explicit px width from clientWidth instead.
           //
           // top offset uses `top` (relative positioning), not margin-top:
           // this div ends up its parent's only in-flow child — a
@@ -124,7 +136,7 @@ module("lively.identity.LocalMap")
           // gives this element its own stacking context, so every
           // Leaflet-internal z-index stays trapped inside it and can never
           // compete with anything outside again.
-          'position:relative', 'top:100px', 'z-index:0', 'width:calc(100vw - 48px)', 'margin:24px', 'height:360px',
+          'position:relative', 'top:100px', 'z-index:0', 'width:' + (vw - 48) + 'px', 'margin:24px', 'height:360px',
           'border-radius:10px', 'overflow:hidden',
           'box-shadow:0 4px 14px rgba(0,0,0,0.15)',
           'background:#eef0f2', 'font-family:sans-serif', 'box-sizing:border-box',
