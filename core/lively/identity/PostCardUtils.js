@@ -29,6 +29,35 @@ module('lively.identity.PostCardUtils')
       sanitizeLocationCode: sanitizeLocationCode,
     };
 
+    // BUG FIX: the .lively-postcard-image/.lively-postcard-video max-width/
+    // max-height sizing rules used to live ONLY inside PostCardEditor.js's
+    // and WikiEditor.js's own instance-level style injection (guarded by
+    // document.getElementById('lively-postcard-editor-style')) — which never
+    // runs unless a PostCardEditor/WikiEditor is actually instantiated. Every
+    // read-only render path (PostCardView, PostCardFeed, WikiView,
+    // WikiPlayback — none of which instantiate the editor just to display a
+    // card) never got this CSS at all, so images/videos rendered at full
+    // native pixel size, uncropped by their container. Harmless-looking for
+    // a modest-sized photo, but a full-resolution video rendered many times
+    // its intended embed size — confirmed live via a permalink page
+    // (/@handle/objId) that never touches the editor. This module is
+    // required (transitively or directly) by every one of those read paths,
+    // so injecting it here — independently of whether the editor ever loads
+    // — is the actual fix. The editors keep their own (now redundant, still
+    // harmless — identical values) copy of the same rules; see this
+    // function's values if the two ever need to be kept in sync.
+    _ensureMediaStyle();
+
+    function _ensureMediaStyle() {
+      if (document.getElementById('lively-postcard-media-style')) return;
+      var styleEl = document.createElement('style');
+      styleEl.id = 'lively-postcard-media-style';
+      styleEl.textContent =
+        '.lively-postcard-image{max-width:100%;max-height:320px;vertical-align:middle;border-radius:4px;}' +
+        '.lively-postcard-video{max-width:100%;max-height:400px;display:block;border-radius:4px;}';
+      document.head.appendChild(styleEl);
+    }
+
     function snapshotToHtml(snapshot) {
       if (!snapshot || !snapshot.content) return '';
       return snapshot.content.map(pmNodeToHtml).join('');
@@ -61,6 +90,11 @@ module('lively.identity.PostCardUtils')
           var imgTitle = node.attrs && node.attrs.title;
           return '<img class="lively-postcard-image" src="' + escapeAttr(src) + '" alt="' + escapeAttr(alt) + '"' +
                  (imgTitle ? ' title="' + escapeAttr(imgTitle) + '"' : '') + '>';
+        }
+        case 'video': {
+          var vsrc = (node.attrs && node.attrs.src) || '';
+          if (!vsrc) return '';
+          return '<video class="lively-postcard-video" controls preload="metadata" src="' + escapeAttr(vsrc) + '"></video>';
         }
         case 'math_inline':
           return renderKatex((node.attrs && node.attrs.value) || '', false);

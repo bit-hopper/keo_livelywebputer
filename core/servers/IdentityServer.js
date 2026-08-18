@@ -879,6 +879,10 @@ function _pmNodeToHtml(node) {
       var imgTitle = node.attrs && node.attrs.title;
       return '<img class="lively-postcard-image" src="' + escapeHtml(src) + '" alt="' + escapeHtml(alt) + '"' +
              (imgTitle ? ' title="' + escapeHtml(imgTitle) + '"' : '') + '>';
+    case 'video':
+      var vsrc = (node.attrs && node.attrs.src) || '';
+      if (!vsrc) return '';
+      return '<video class="lively-postcard-video" controls preload="metadata" src="' + escapeHtml(vsrc) + '"></video>';
     case 'math_inline': return _renderKatex((node.attrs && node.attrs.value) || '', false);
     case 'math_display': return _renderKatex((node.attrs && node.attrs.value) || '', true);
     case 'embeddedPart':

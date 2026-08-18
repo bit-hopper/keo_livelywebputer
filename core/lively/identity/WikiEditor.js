@@ -216,6 +216,7 @@ module('lively.identity.WikiEditor')
             '}' +
             '.lively-postcard-image{max-width:100%;max-height:320px;vertical-align:middle;' +
             'border-radius:4px;}' +
+            '.lively-postcard-video{max-width:100%;max-height:400px;display:block;border-radius:4px;}' +
             '.lively-math-node{cursor:pointer;border-radius:3px;}' +
             '.lively-math-node.lively-math-selected,' +
             '.lively-math-node.ProseMirror-selectednode{outline:2px solid #8cf;}' +
@@ -812,6 +813,7 @@ module('lively.identity.WikiEditor')
             math_display: function (node, view, getPos) { return self._mathNodeView(node, view, getPos); },
             embeddedPart: function (node, view, getPos) { return self._embeddedPartNodeView(node, view, getPos); },
             image:        function (node, view, getPos) { return self._attachmentImageNodeView(node, view, getPos); },
+            video:        function (node, view, getPos) { return self._attachmentVideoNodeView(node, view, getPos); },
           },
           handleDOMEvents: {
             blur: function () { self._hideLinkPreview(); return false; },
@@ -1223,6 +1225,9 @@ module('lively.identity.WikiEditor')
           handle: user && user.handle,
           embedId: this._generateEmbedId(),
         });
+        // See the KNOWN BUG note on _insertAttachmentVideo: if this embed
+        // ends up as the doc's last node, the next block-atom insert can
+        // silently replace it (shared replaceSelectionWith exposure).
         view.dispatch(state.tr.replaceSelectionWith(node));
         view.focus();
       },
@@ -1370,6 +1375,63 @@ module('lively.identity.WikiEditor')
         };
       },
 
+      // NodeView for the video node — same reasoning as _attachmentImageNodeView
+      // above (private/shared attachments resolve to a session-local blob:
+      // URL asynchronously, swapped into the DOM directly without ever
+      // touching node.attrs/dispatching a transaction).
+      _attachmentVideoNodeView: function (node, view, getPos) {
+        var self = this;
+        var destroyed = false;
+        var video = document.createElement('video');
+        video.className = 'lively-postcard-video';
+        video.controls = true;
+        video.preload = 'metadata';
+
+        function render(currentNode) {
+          if (currentNode.attrs.name) video.title = currentNode.attrs.name;
+          video.classList.remove('lively-attachment-loading', 'lively-attachment-error');
+
+          if (currentNode.attrs.src) {
+            video.src = currentNode.attrs.src;
+            return;
+          }
+          if (!currentNode.attrs.objId) return;
+
+          video.classList.add('lively-attachment-loading');
+          var entry = (self._attachments || []).find(function (a) { return a.objId === currentNode.attrs.objId; });
+          if (!entry) {
+            video.classList.remove('lively-attachment-loading');
+            video.classList.add('lively-attachment-error');
+            return;
+          }
+          lively.identity.fileCrypto.resolveAttachmentUrl(self._handle, entry, function (err, url) {
+            if (destroyed) return;
+            video.classList.remove('lively-attachment-loading');
+            if (err) {
+              video.classList.add('lively-attachment-error');
+              console.error('[WikiEditor] attachment video resolve failed:', err);
+              return;
+            }
+            video.src = url;
+          });
+        }
+
+        render(node);
+
+        return {
+          dom: video,
+          update: function (newNode) {
+            if (newNode.type !== node.type) return false;
+            var changed = newNode.attrs.objId !== node.attrs.objId || newNode.attrs.src !== node.attrs.src;
+            node = newNode;
+            if (changed) render(node);
+            return true;
+          },
+          destroy: function () { destroyed = true; },
+          ignoreMutation: function () { return true; },
+        };
+      },
+
       _showEmbedOverlay: function (dom, node, view, getPos) {
         this._hideEmbedOverlay(dom);
         var self = this;
@@ -1505,6 +1567,8 @@ module('lively.identity.WikiEditor')
               : state.schema.nodes.math_inline;
             if (!mathNodeType) return;
             var mathNode = mathNodeType.create({ value: '' });
+            // See the KNOWN BUG note on _insertAttachmentVideo — applies to
+            // math_display (block atom), not math_inline.
             dispatch(state.tr.replaceSelectionWith(mathNode));
             break;
           }
@@ -1602,6 +1666,7 @@ module('lively.identity.WikiEditor')
         var self = this;
         if (!this._handle) return;
         var isImage = /^image\//.test(file.type || '');
+        var isVideo = /^video\//.test(file.type || '');
 
         this._setStatus('Uploading…');
         lively.identity.fileCrypto.encryptAndUpload(file, {
@@ -1625,6 +1690,7 @@ module('lively.identity.WikiEditor')
           if (!self._attachments) self._attachments = [];
           self._attachments.push(entry);
           if (isImage) self._insertAttachmentImage(entry);
+          else if (isVideo) self._insertAttachmentVideo(entry);
           else self._insertAttachmentLink(entry);
           self._setStatus('Uploaded');
         });
@@ -1638,6 +1704,26 @@ module('lively.identity.WikiEditor')
         if (!imageType) return;
         var src = entry.dek ? '' : this._publicBlobUrl(entry.blobCid);
         var node = imageType.create({ src: src, alt: entry.name, title: entry.name, objId: entry.objId });
+        view.dispatch(state.tr.replaceSelectionWith(node));
+        view.focus();
+      },
+
+      // KNOWN BUG (README.md "Fix before Deploying"): if this video ends up
+      // as the doc's last node, replaceSelectionWith below leaves a
+      // NodeSelection on it (ProseMirror's Selection.atEnd can't find a
+      // trailing text cursor after a block atom with no following
+      // paragraph) — the next attachment/embed insert then silently
+      // replaces this video instead of adding alongside it. Not specific to
+      // video: embeddedPart/math_display share the same replaceSelectionWith
+      // pattern and the same exposure.
+      _insertAttachmentVideo: function (entry) {
+        if (!this.editorView) return;
+        var view = this.editorView;
+        var state = view.state;
+        var videoType = state.schema.nodes.video;
+        if (!videoType) return;
+        var src = entry.dek ? '' : this._publicBlobUrl(entry.blobCid);
+        var node = videoType.create({ src: src, name: entry.name, objId: entry.objId });
         view.dispatch(state.tr.replaceSelectionWith(node));
         view.focus();
       },
@@ -1791,6 +1877,17 @@ module('lively.identity.WikiEditor')
                             toDOM: function(n) {
                               return ['img', { src: n.attrs.src, alt: n.attrs.alt, title: n.attrs.title,
                                 'data-obj-id': n.attrs.objId || '', 'class': 'lively-postcard-image' }];
+                            } },
+            video:        { group: 'block', atom: true,
+                            attrs: { src: { default: '' }, name: { default: '' }, objId: { default: null } },
+                            parseDOM: [{ tag: 'video[src]', getAttrs: function(d) {
+                              return { src: d.getAttribute('src'), name: d.getAttribute('data-name') || '',
+                                       objId: d.getAttribute('data-obj-id') || null };
+                            }}],
+                            toDOM: function(n) {
+                              return ['video', { src: n.attrs.src, controls: 'true', preload: 'metadata',
+                                'data-name': n.attrs.name || '', 'data-obj-id': n.attrs.objId || '',
+                                'class': 'lively-postcard-video' }];
                             } },
             text:         { group: 'inline' },
             hard_break:   { group: 'inline', inline: true, selectable: false,
