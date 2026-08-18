@@ -300,7 +300,7 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
             droppingEnabled: false,
             _ClipMode: "hidden",
             isCopyMorphRef: true,
-            layout: {adjustForNewBounds: true, resizeHeight: true},
+            layout: {adjustForNewBounds: true, resizeHeight: true, resizeWidth: true},
             morphRefId: 2,
             name: "CategorieContainer",
             sourceModule: "lively.morphic.Core",
@@ -1064,7 +1064,7 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
         if (this.categoryName === '*myparts*' || (this.categoryName && this.categoryName.charAt(0) === '#')) {
             var item = this.selectedPartItem;
             if (!item || !item.envelope) {
-                world.alert('Select one of your published parts first, then create a category to file it under.');
+                world.alert('Select one of your published items first, then create a category to file it under.');
                 return;
             }
             world.prompt('Name of new identity category?', function(tagName) {
@@ -1090,7 +1090,7 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
         // category shows up immediately.
         addTagToSelectedPart: function addTagToSelectedPart(tagName) {
         var item = this.selectedPartItem;
-        if (!item || !item.envelope) { alert('Select an identity-published part first.'); return; }
+        if (!item || !item.envelope) { alert('Select an identity-published item first.'); return; }
         var envelope = item.envelope;
         var tags = (envelope.state && envelope.state.tags) || [];
         if (tags.indexOf(tagName) !== -1) { alert('Already tagged "' + tagName + '".'); return; }
@@ -1208,7 +1208,25 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
         // find parts via cmdline
         var partsBinPath = this.partsBinURL().relativePathFrom(serverRoot),
             findPath = "$WORKSPACE_LK/" + partsBinPath.replace(/\/\//g, '\/');
+
+        // The WebDAV filename search below and the identity-space ObjID
+        // search run concurrently and both feed into one merged render —
+        // addMorphsForPartItems clears the grid on every call, so rendering
+        // each source separately would let whichever finishes last wipe out
+        // the other's matches.
+        var webDavResults = null, identityResults = null;
+        function tryRender() {
+            if (webDavResults === null || identityResults === null) return;
+            if (pb.get('searchText').getInput() !== searchString) return; // stale: search text changed while we were waiting
+            pb.addMorphsForPartItems(webDavResults.concat(identityResults), true);
+            pb.get('searchText').focus();
+        }
+
         doCommandLineSearch(processResult.curry(listPartItems), searchString);
+        this.searchIdentityItemsByObjId(searchString, function(items) {
+            identityResults = items;
+            tryRender();
+        });
 
         // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 
@@ -1234,10 +1252,42 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
                 return pb.partsBinURL().withFilename(partPath);
             });
             next(partItemURLs);
-            pb.get('searchText').focus();
         }
 
-        function listPartItems(partItemURLs) { pb.addPartsFromURLs(partItemURLs); }
+        function listPartItems(partItemURLs) {
+            var partItems = [];
+            partItemURLs.forEach(function(ea) {
+                var partPath = ea.saveRelativePathFrom(Global.URL.root),
+                    match = partPath.match(/(.*\/)(.*).json/);
+                if (match) partItems.push(lively.PartsBin.getPartItem(match[2], match[1]));
+            });
+            webDavResults = partItems;
+            tryRender();
+        }
+    },
+        // Runs alongside the WebDAV filename search in doSearch so typing an
+        // ObjID into the same search box also finds identity-published
+        // items in the user's own space — those aren't WebDAV files and
+        // wouldn't otherwise show up in a PartsBin search. Substring match
+        // (not exact) so a partial/copied ID still finds the item. Yields no
+        // matches when signed out or on error; the WebDAV results still
+        // render on their own via doSearch's merge.
+        searchIdentityItemsByObjId: function searchIdentityItemsByObjId(searchString, thenDo) {
+        if (typeof lively === 'undefined' || !lively.require) { thenDo([]); return; }
+        lively.require('lively.identity.UserSpace').toRun(function () {
+            lively.identity.userSpace.getPersonalPartsSpace(function (err, space) {
+                if (err) { thenDo([]); return; }
+                space.load(function (loadErr) {
+                    if (loadErr) { thenDo([]); return; }
+                    var needle = searchString.toLowerCase();
+                    var matches = space.getPartItems().filter(function (item) {
+                        var objId = item.envelope && item.envelope.objId;
+                        return objId && objId.toLowerCase().indexOf(needle) !== -1;
+                    });
+                    thenDo(matches);
+                });
+            });
+        });
     },
         ensureCategories: function ensureCategories() {
         if (!this.categories)
@@ -1307,7 +1357,7 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
         interactivelyRemoveSelectedPartItem: function interactivelyRemoveSelectedPartItem(partMorph) {
         var item = this.selectedPartItem;
         if (!item) return;
-        this.world().confirm("really delete " + item.name + " in PartsBin?", function(answer) {
+        this.world().confirm("really delete " + item.name + " in Inventory?", function(answer) {
         if (!answer) return;
         item.del();
         this.reloadEverything();
@@ -1318,7 +1368,7 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
         var version = this.get("selectedPartVersions").getSelectedItem();
         if (!version) return $world.alert("No version selected!");
         var item = this.selectedPartItem;
-        if (!item) return $world.alert("No part selected!");
+        if (!item) return $world.alert("No item selected!");
 
         var urls = [item.getFileURL(),
                     item.getHTMLLogoURL(),
@@ -1635,7 +1685,7 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
     },
         saveCommentForSelectedPartItem: function saveCommentForSelectedPartItem(comment) {
         if (!this.selectedPartItem) {
-        alert('no part item selected!')
+        alert('no item selected!')
         return;
         }
         var metaInfo = this.selectedPartItem.getMetaInfo();
@@ -1891,7 +1941,7 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
         this.get("PartsBinURLChooser").setList(lively.PartsBin.getPartsBinURLs());
     }
     }],
-    titleBar: "PartsBinBrowser",
+    titleBar: "Inventory",
     onFromBuildSpecCreated: function onFromBuildSpecCreated() {
         $super();
         this.targetMorph.onLoad();

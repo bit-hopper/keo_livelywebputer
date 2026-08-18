@@ -376,7 +376,7 @@ Object.subclass('lively.PartsBin.PartItem',
 
     uploadPart: function(checkForOverwrite, isSync) {
         if (!this.part) {
-            alert('Cannot upload part item ' + this.name + ' because there is no part!')
+            alert('Cannot upload item ' + this.name + ' because there is no item!')
             return;
         }
 
@@ -432,7 +432,7 @@ Object.subclass('lively.PartsBin.PartItem',
     uploadMetaInfoOnly: function(isAsync) {
         var metaInfo = this.getMetaInfo();
         if (!metaInfo) {
-            alert('Cannot access metaInfo for uploading if part item ' + this.name)
+            alert('Cannot access metaInfo for uploading if item ' + this.name)
             return;
         }
         var json = this.serializeMetaInfo(metaInfo)
@@ -457,14 +457,14 @@ Object.subclass('lively.PartsBin.PartItem',
             if (status.url.asWebResource().noProxy().exists()) {
                 this.askToOverwrite(status.url);
             } else {
-                alertOK("New part " + status.url + " is being stored.");
+                alertOK("New item " + status.url + " is being stored.");
                 this.uploadPart();
             }
             return;
         }
         if (status.isSuccess()) {
             var metaInfo = this.part.getPartsBinMetaInfo();
-            world.alertOK("Successfully saved "+status.url+" in PartsBin.")
+            world.alertOK("Successfully saved "+status.url+" in Inventory.")
             metaInfo.lastModifiedDate = webR.lastModified;
             this.updateRevisionOnLoad();
             if (world.publishPartDialog) {
@@ -568,7 +568,7 @@ Object.subclass('lively.PartsBin.PartsSpace',
         if (!this.partItems[name])
             this.partItems[name] = this.createPartItemNamed(name);
         if (this.partItems[name].getPartsSpace().getName() !== this.getName())
-            alert('Part item points to another PartsSpace it is actually in!')
+            alert('Item points to another PartsSpace it is actually in!')
         return this.partItems[name]
     },
     setPartItem: function(partItem) {
@@ -782,7 +782,7 @@ Object.extend(lively.PartsBin, {
 Trait('lively.PartsBin.PartTrait', {
     copyToPartsBin: function(optPartsSpaceNamed) {
         if (!this.name) {
-            alert('cannot copy to partsBin without a name');
+            alert('cannot copy to Inventory without a name');
             return;
         }
 

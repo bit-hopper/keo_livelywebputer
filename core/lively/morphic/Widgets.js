@@ -2234,7 +2234,7 @@ lively.morphic.World.addMethods(
             ['Spellbook', [
                 ["On short cuts", this.openShortcutDocumentation.bind(this)],
                 ["On connect data bindings", this.openConnectDocumentation.bind(this)],
-                ["On Lively's PartsBin", this.openPartsBinDocumentation.bind(this)],
+                ["On Lively's Inventory", this.openPartsBinDocumentation.bind(this)],
                 ["More ...", function() { window.open('https://spell.tinylil.world'); }]
             ]],
             ['Report a bug', this.bugReport.bind(this)],

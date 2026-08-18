@@ -2898,7 +2898,7 @@ module("lively.ide.commands.default")
       },
 
       "lively.PartsBin.open": {
-        description: "open PartsBin",
+        description: "open Inventory",
         isActive: lively.ide.commands.helper.noCodeEditorActive,
         exec: function () {
           $world.openPartsBin();

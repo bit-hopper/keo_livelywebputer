@@ -435,7 +435,7 @@ lively.morphic.Box.subclass('lively.morphic.PartsBinItem',
         else alert('Cannot delete')
     },
     interactiveDeleteOnServer: function() {
-        this.world().confirm("really delete " + this.targetName + " in PartsBin?", function(answer) {
+        this.world().confirm("really delete " + this.targetName + " in Inventory?", function(answer) {
             if (answer) {
                 this.deleteOnServer();
                 this.remove();

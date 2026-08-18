@@ -395,7 +395,7 @@ lively.BuildSpec("lively.morphic.tools.PublishPartDialog", {
             }
         }
         else 
-            alertOK("Part does not exist in PartsBin.");
+            alertOK("Item does not exist in Inventory.");
     },
         copyToPartsBin: function copyToPartsBin(morph) {
         var url = this.get('PartsBinURLChooser').selection,
@@ -472,7 +472,7 @@ lively.BuildSpec("lively.morphic.tools.PublishPartDialog", {
         }
     }
     }],
-    titleBar: "Publish in PartsBin",
+    titleBar: "Publish in Inventory",
     connectionRebuilder: function connectionRebuilder() {
     lively.bindings.connect(this, "remove", this.get("PublishPartPanePane"), "onRemove", {});
 }
