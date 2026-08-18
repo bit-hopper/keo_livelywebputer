@@ -1853,7 +1853,30 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
             url = Global.URL.root + 'viral.html?part='
                 + partItem.name + '&path=' + partItem.partsSpaceName.replace(/\//g, '%2F');
         }
-        linkText.emphasizeAll({uri: url});
+        // Copies to the clipboard instead of navigating (same doit-emphasis
+        // mechanism as the DID-copy icon in renderIdentityPartMeta above)
+        // since a share link is meant to be pasted elsewhere, not opened —
+        // opening it here just reloaded this same PartsBin/Inventory view
+        // in a new tab instead of showing anything useful.
+        linkText._shareUrl = url;
+        linkText.emphasizeAll({
+            color: Color.blue,
+            doit: {
+                // Reverts by re-running setShareLink (rather than just
+                // setTextString('Share Link')) since setTextString may
+                // drop the chunk-level doit/emphasis along with the old
+                // text, which would leave the label unclickable after the
+                // first copy. Re-running also self-corrects if the
+                // selected item changed during the timeout.
+                code: "var m = evt.getTargetMorph();" +
+                    "if (!m._shareUrl || !navigator.clipboard) return;" +
+                    "navigator.clipboard.writeText(m._shareUrl);" +
+                    "m.setTextString('Copied!');" +
+                    "var pb = m.get('PartsBinBrowser');" +
+                    "setTimeout(function() { pb ? pb.setShareLink(pb.selectedPartItem) : m.setTextString('Share Link'); }, 1200);",
+                context: null
+            }
+        });
     },
         setupConnections: function setupConnections() {
         Global.connect(this.closeButton, 'fire', this, 'remove')
