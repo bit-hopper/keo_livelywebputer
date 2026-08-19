@@ -28,6 +28,7 @@ module('lively.identity.PostCardUtils')
       encodeLocation:      encodeLocation,
       sanitizeLocationCode: sanitizeLocationCode,
       hydrateEmbeddedParts: hydrateEmbeddedParts,
+      hydrateAttachments:  hydrateAttachments,
     };
 
     // BUG FIX: the .lively-postcard-image/.lively-postcard-video max-width/
@@ -58,7 +59,9 @@ module('lively.identity.PostCardUtils')
         '.lively-postcard-video{max-width:100%;max-height:400px;display:block;border-radius:4px;}' +
         '.lively-postcard-audio{max-width:100%;width:320px;display:block;}' +
         '.lively-embedded-part{position:relative;min-height:32px;margin:4px 0;padding:4px;}' +
-        '.lively-embedded-part.lively-embed-error{color:#c33;font-style:italic;padding:8px;}';
+        '.lively-embedded-part.lively-embed-error{color:#c33;font-style:italic;padding:8px;}' +
+        '.lively-attachment-loading{opacity:0.35;}' +
+        '.lively-attachment-error{opacity:0.5;filter:grayscale(1);}';
       document.head.appendChild(styleEl);
     }
 
@@ -141,6 +144,59 @@ module('lively.identity.PostCardUtils')
       });
     }
 
+    // Post-processes rendered HTML from snapshotToHtml to resolve private/
+    // shared attachment placeholders (img/video/audio with no src, emitted
+    // by pmNodeToHtml when node.attrs.objId is set) into session-local
+    // blob: URLs — the same decrypt-once-per-blobCid logic
+    // PostCardEditor.js's NodeViews (_attachmentImageNodeView etc.) already
+    // use live in the editor. attachments: array of
+    // { objId, dek, blobCid, blobNonce, name, mime } — payload.attachments
+    // from deserializeEncryptedAuto (dek/blobNonce absent for a public
+    // attachment, present for private/shared). Call after
+    // hydrateEmbeddedParts, once per decrypt-in-place render.
+    function hydrateAttachments(containerEl, handle, attachments) {
+      if (!containerEl || typeof document === 'undefined') return;
+      var placeholders = containerEl.querySelectorAll('.lively-attachment-placeholder[data-obj-id]');
+      Array.prototype.forEach.call(placeholders, function (el) {
+        _hydrateOneAttachment(el, handle, attachments || []);
+      });
+    }
+
+    function _hydrateOneAttachment(el, handle, attachments) {
+      var objId = el.getAttribute('data-obj-id');
+      if (!objId) return;
+      if (typeof lively === 'undefined' || !lively.require) return;
+
+      function showError() {
+        el.classList.remove('lively-attachment-loading');
+        el.classList.add('lively-attachment-error');
+      }
+
+      var entry = attachments.filter(function (a) { return a.objId === objId; })[0];
+      if (!entry) { showError(); return; }
+
+      lively.require('lively.identity.FileCrypto').toRun(function () {
+        lively.identity.fileCrypto.resolveAttachmentUrl(handle, entry, function (err, url) {
+          if (err) { showError(); return; }
+          el.classList.remove('lively-attachment-loading');
+          el.src = url; // valid IDL attribute for img/video/audio alike
+        });
+      });
+    }
+
+    // A private/shared attachment's src is only known once decrypted (see
+    // FileCrypto.resolveAttachmentUrl) — a snapshot rendered before that
+    // has objId set and src empty. These two helpers emit a placeholder
+    // hydrateAttachments can find and resolve in place, mirroring the
+    // .lively-embedded-part[data-obj-id] convention below.
+    function attachmentPlaceholderClass() {
+      return ' lively-attachment-placeholder lively-attachment-loading';
+    }
+    function attachmentPlaceholderAttrs(node) {
+      var objId = (node.attrs && node.attrs.objId) || '';
+      return ' data-obj-id="' + escapeAttr(objId) + '"';
+    }
+
     function pmNodeToHtml(node) {
       if (!node) return '';
       switch (node.type) {
@@ -166,17 +222,33 @@ module('lively.identity.PostCardUtils')
           var src = (node.attrs && node.attrs.src) || '';
           var alt = (node.attrs && node.attrs.alt) || '';
           var imgTitle = node.attrs && node.attrs.title;
+          if (!src && node.attrs && node.attrs.objId) {
+            return '<img class="lively-postcard-image' + attachmentPlaceholderClass() + '"' +
+                   attachmentPlaceholderAttrs(node) + ' alt="' + escapeAttr(alt) + '">';
+          }
           return '<img class="lively-postcard-image" src="' + escapeAttr(src) + '" alt="' + escapeAttr(alt) + '"' +
                  (imgTitle ? ' title="' + escapeAttr(imgTitle) + '"' : '') + '>';
         }
         case 'video': {
           var vsrc = (node.attrs && node.attrs.src) || '';
-          if (!vsrc) return '';
+          if (!vsrc) {
+            if (node.attrs && node.attrs.objId) {
+              return '<video class="lively-postcard-video' + attachmentPlaceholderClass() + '"' +
+                     attachmentPlaceholderAttrs(node) + ' controls preload="metadata"></video>';
+            }
+            return '';
+          }
           return '<video class="lively-postcard-video" controls preload="metadata" src="' + escapeAttr(vsrc) + '"></video>';
         }
         case 'audio': {
           var asrc = (node.attrs && node.attrs.src) || '';
-          if (!asrc) return '';
+          if (!asrc) {
+            if (node.attrs && node.attrs.objId) {
+              return '<audio class="lively-postcard-audio' + attachmentPlaceholderClass() + '"' +
+                     attachmentPlaceholderAttrs(node) + ' controls preload="metadata"></audio>';
+            }
+            return '';
+          }
           return '<audio class="lively-postcard-audio" controls preload="metadata" src="' + escapeAttr(asrc) + '"></audio>';
         }
         case 'math_inline':

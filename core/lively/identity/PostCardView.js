@@ -8,24 +8,25 @@
  * signature-verification badge), joined by a CSS 3D flip triggered by a
  * dedicated flip-icon button.
  *
- * Content rendering has two paths:
- *   - Public envelopes: rendered directly via
- *     lively.identity.postCardUtils.snapshotToHtml — no Yjs/ProseMirror
- *     dependency, matching the read-only rendering PostCardFeed/
- *     WikiPlayback/ConstellationCanvas already used before this file
- *     existed.
+ * Content rendering has two paths, both landing in the same
+ * lively.identity.postCardUtils.snapshotToHtml/hydrateEmbeddedParts
+ * rendering — no Yjs/ProseMirror dependency either way:
+ *   - Public envelopes: the plaintext ProseMirror-doc snapshot is already
+ *     in the envelope, rendered directly.
  *   - Private/shared envelopes: there is no plaintext snapshot in an
- *     encrypted envelope (by design — that's what makes it encrypted), so
- *     content can only be recovered by actually decrypting via
- *     PostCardSerializer.deserializeEncrypted, which today only happens
- *     inside PostCardEditor's ProseMirror/Yjs pipeline. Rather than
- *     duplicate that pipeline here, PostCardView's front face shows a
- *     "locked" placeholder with a "View content" action that opens a
- *     PostCardEditor window in forced-read-only mode (see
- *     PostCardEditor.js's `forceReadOnly` option) — a separate window
- *     rather than an embedded morph, since nesting a live morph (with its
- *     own WebSocket sync / focus handling) inside this card's
- *     `transform: rotateY(...)` front face would be fragile.
+ *     encrypted envelope (by design), so the front face first shows a
+ *     "locked" placeholder; its "View content" action calls
+ *     PostCardSerializer.deserializeEncryptedAuto (_decryptAndRenderContent)
+ *     to decrypt in place — a legacy pre-plain/wiki-split ('wiki' mode)
+ *     envelope's Y.Doc is turned into the same snapshot shape via
+ *     PostCardSerializer._extractSnapshot first. Any attachment referenced
+ *     only by objId (unresolved until decrypted) renders as a placeholder
+ *     hydrateAttachments then resolves to a session-local blob: URL via
+ *     FileCrypto.resolveAttachmentUrl. No separate editor window is
+ *     involved at all — this used to open PostCardEditor in a forced-
+ *     read-only mode purely as a decrypt engine, which pulled in the
+ *     entire ProseMirror/Yjs/autosave/toolbar/send-flow editor just to
+ *     show static content.
  *
  * Entry point:
  *   lively.identity.PostCardView.open(handle, objId, options)
@@ -46,6 +47,8 @@ module("lively.identity.PostCardView")
     "lively.identity.DID",
     "lively.identity.Crypto",
     "lively.identity.PostCardEditor",
+    "lively.identity.PostCardSerializer",
+    "lively.identity.FileCrypto",
   )
   .toRun(function () {
     var PostCardViewClass = lively.morphic.Box.subclass(
@@ -75,6 +78,7 @@ module("lively.identity.PostCardView")
           "_reactionPickerEl",
           "_pickerCloseHandler",
           "_contentLoadStarted",
+          "_decryptInFlight",
         ],
       },
 
@@ -749,7 +753,9 @@ module("lively.identity.PostCardView")
           }
 
           // Encrypted content — see file-level comment. Show a locked
-          // placeholder rather than attempting to decrypt inline.
+          // placeholder; "View content" decrypts and renders in place
+          // (_decryptAndRenderContent) rather than opening a separate
+          // editor window.
           this._contentEl.innerHTML = "";
           var lock = document.createElement("div");
           lock.style.cssText =
@@ -772,19 +778,71 @@ module("lively.identity.PostCardView")
             viewBtn.addEventListener(t, function (e) {
               e.preventDefault();
               e.stopPropagation();
-              // forceReadOnly: this is a viewer, never an editor — even for
-              // the card's own owner (see PostCardEditor.js's forceReadOnly).
-              if (t === "click") {
-                lively.identity.PostCardEditor.openCard(
-                  self._handle,
-                  self._objId,
-                  { forceReadOnly: true },
-                );
-              }
+              if (t === "click") self._decryptAndRenderContent(envelope, lock, viewBtn);
             });
           });
           lock.appendChild(viewBtn);
           this._contentEl.appendChild(lock);
+        },
+
+        // Decrypts envelope.record.payload in place and renders it into
+        // this._contentEl, replacing the locked placeholder — the WebAuthn
+        // ceremony (deriveKek for the owner, deriveX25519KeyPair for a
+        // recipient) happens inside deserializeEncryptedAuto; this method
+        // only handles the loading/success/error UI around that call and
+        // the render step afterward. Re-entrant-safe: a second click while
+        // a decrypt is already in flight for this same viewBtn is a no-op.
+        _decryptAndRenderContent: function (envelope, lockEl, viewBtn) {
+          var self = this;
+          if (this._decryptInFlight) return;
+          this._decryptInFlight = true;
+
+          viewBtn.disabled = true;
+          viewBtn.textContent = "Decrypting…";
+
+          lively.identity.postCardSerializer.deserializeEncryptedAuto(envelope, function (err, mode, content, payload) {
+            self._decryptInFlight = false;
+            // Guard against a slow decrypt (WebAuthn prompt sat open a
+            // while) resolving after this morph moved on to a different
+            // card/objId — same pattern as _loadAvatar's handle check.
+            if (self._envelope !== envelope) return;
+
+            if (err) {
+              self._renderDecryptError(err, lockEl, viewBtn);
+              return;
+            }
+
+            var snapshot = mode === "wiki"
+              ? lively.identity.postCardSerializer._extractSnapshot(content)
+              : content;
+            if (!snapshot) {
+              self._renderDecryptError(new Error("Could not read decrypted content"), lockEl, viewBtn);
+              return;
+            }
+
+            self._contentEl.innerHTML = lively.identity.postCardUtils.snapshotToHtml(snapshot);
+            lively.identity.postCardUtils.hydrateEmbeddedParts(self._contentEl);
+            lively.identity.postCardUtils.hydrateAttachments(
+              self._contentEl, self._handle, (payload && payload.attachments) || [],
+            );
+          });
+        },
+
+        // Inline error UI, not a whole-morph error — only the content area
+        // failed, the rest of the card (avatar, title, back/verify badge)
+        // already rendered fine.
+        _renderDecryptError: function (err, lockEl, viewBtn) {
+          console.error("[PostCardView] decrypt failed:", err && err.message);
+          viewBtn.disabled = false;
+          viewBtn.textContent = "Retry";
+          var msgEl = lockEl.querySelector(".lively-postcard-view-decrypt-error");
+          if (!msgEl) {
+            msgEl = document.createElement("div");
+            msgEl.className = "lively-postcard-view-decrypt-error";
+            msgEl.style.cssText = "font-size:10px;color:#c33;max-width:180px;text-align:center;";
+            lockEl.appendChild(msgEl);
+          }
+          msgEl.textContent = (err && err.message) || "Failed to decrypt";
         },
 
         _renderBackMeta: function (envelope) {

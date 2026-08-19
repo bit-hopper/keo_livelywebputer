@@ -163,17 +163,6 @@ module('lively.identity.PostCardEditor')
         // server-side PUT route (IdentityServer.js) would actually accept
         // a write from.
         this._canEdit = true;
-        // Set by PostCardEditor.openCard's forceReadOnly option — used only
-        // by PostCardView, which embeds a target-mode editor purely to
-        // decrypt+render private-card content (no plaintext snapshot exists
-        // for encrypted envelopes, unlike public ones) and must never let
-        // that embed become editable/autosaving, even for the card's own
-        // owner. See _applyReadOnlyMode and _markEdited.
-        // Preserved (not reset to false) across a restore-triggered re-run
-        // of _setup() — openCard already set it correctly before the first
-        // run, and a world reload must not silently turn a forced-read-only
-        // content viewer back into an editable instance.
-        this._forceReadOnly = !!this._forceReadOnly;
         // _isWikiMode no longer means "this is a wiki page" — wiki pages
         // are type:'wikipage' now and never reach this editor at all (see
         // WikiEditor.js). It's kept purely as a legacy-payload-format flag:
@@ -218,7 +207,7 @@ module('lively.identity.PostCardEditor')
       // factories call _setup() themselves once configured). Fires again,
       // recursively for every submorph in the world, whenever a saved world
       // is reloaded (see Rendering.js's prepareForNewRenderContext) or this
-      // morph is copied — _handle/_objId/_isNew/_forceReadOnly are plain
+      // morph is copied — _handle/_objId/_isNew are plain
       // fields and survive serialization fine, but the DOM _buildChrome
       // builds does not, so without this a restored editor comes back
       // blank. Matches the identical fix in PostCardView.js. Also fires as
@@ -551,59 +540,37 @@ module('lively.identity.PostCardEditor')
         var self = this;
 
         var statusSpan = document.createElement('span');
-        statusSpan.style.cssText = 'position:absolute;top:7px;right:252px;font-size:10px;color:#888;pointer-events:none;';
+        statusSpan.style.cssText = 'position:absolute;top:7px;right:196px;font-size:10px;color:#888;pointer-events:none;';
         footerDiv.appendChild(statusSpan);
         this._statusEl = statusSpan;
 
         var saveBtn = document.createElement('button');
         saveBtn.textContent = 'Save';
         saveBtn.title = 'Save now';
-        saveBtn.style.cssText = 'position:absolute;top:6px;right:80px;width:48px;height:24px;padding:0;font-size:12px;cursor:pointer;border:1px solid #5a5;border-radius:3px;background:#efe;';
+        saveBtn.style.cssText = 'position:absolute;top:6px;right:80px;width:48px;height:24px;padding:0;font-size:12px;cursor:pointer;border:1px solid #E31361;border-radius:3px;background:#fde6ee;';
         saveBtn.addEventListener('mousedown', function (e) {
           e.preventDefault(); e.stopPropagation();
           self._saveNow();
         });
         footerDiv.appendChild(saveBtn);
 
-        // Visibility toggle (Public ⇄ Private). 'shared' is not a state this
-        // button sets — it's derived automatically once a card has recipients.
-        var visBtn = document.createElement('button');
-        visBtn.style.cssText = 'position:absolute;top:6px;right:132px;width:52px;height:24px;padding:0;font-size:11px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
-        visBtn.addEventListener('mousedown', function (e) {
-          e.preventDefault(); e.stopPropagation();
-          self._visibility = self._visibility === 'public' ? 'private' : 'public';
-          self._updateVisibilityBtn();
-          self._markEdited();
-        });
-        footerDiv.appendChild(visBtn);
-        this._visibilityBtn = visBtn;
-        this._updateVisibilityBtn();
-
+        // Visibility (Public/Private) is now chosen as the first step of the
+        // Send flow itself (_renderVisibilityStep) rather than pre-set here.
         var sendBtn = document.createElement('button');
         sendBtn.textContent = 'Send';
         sendBtn.title = 'Send to a handle';
-        sendBtn.style.cssText = 'position:absolute;top:6px;right:188px;width:52px;height:24px;padding:0;font-size:12px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
+        sendBtn.style.cssText = 'position:absolute;top:6px;right:136px;width:52px;height:24px;padding:0;font-size:12px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
         sendBtn.addEventListener('mousedown', function (e) {
           e.preventDefault(); e.stopPropagation();
           self._promptAndSend();
         });
         footerDiv.appendChild(sendBtn);
 
-        var postBtn = document.createElement('button');
-        postBtn.textContent = 'Post to…';
-        postBtn.title = 'Post this card to a constellation you are a member of';
-        postBtn.style.cssText = 'position:absolute;top:6px;right:320px;width:80px;height:24px;padding:0;font-size:11px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
-        postBtn.addEventListener('mousedown', function (e) {
-          e.preventDefault(); e.stopPropagation();
-          self._promptPostToConstellation();
-        });
-        footerDiv.appendChild(postBtn);
-
         // Opt-in coarse location tag (~5.5km cell, never more precise —
         // see PostCardUtils.js's encodeLocation) — click attaches your
         // current location, click again (once attached) to remove it.
         var locationBtn = document.createElement('button');
-        locationBtn.style.cssText = 'position:absolute;top:6px;right:410px;width:110px;height:24px;padding:0;font-size:11px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
+        locationBtn.style.cssText = 'position:absolute;top:6px;right:290px;width:110px;height:24px;padding:0;font-size:11px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
         locationBtn.addEventListener('mousedown', function (e) {
           e.preventDefault(); e.stopPropagation();
           if (self._locationCode) self._removeLocation();
@@ -664,6 +631,13 @@ module('lively.identity.PostCardEditor')
           var sMark = markOfType('fontSize');
           this._fontSizeInput.value = (sMark && sMark.attrs.size) ? parseInt(sMark.attrs.size, 10) : '';
         }
+      },
+
+      _setVisibility: function (value) {
+        if (this._visibility === value) return;
+        this._visibility = value;
+        this._updateVisibilityBtn();
+        this._markEdited();
       },
 
       _updateVisibilityBtn: function () {
@@ -1426,7 +1400,7 @@ module('lively.identity.PostCardEditor')
       // rather than leaving Save/Send/visibility controls that would just
       // 403 or make no sense for someone who isn't the owner.
       _applyReadOnlyMode: function () {
-        if (this._canEdit && !this._forceReadOnly) return;
+        if (this._canEdit) return;
         if (this.editorView) {
           this.editorView.setProps({ editable: function () { return false; } });
         }
@@ -1508,7 +1482,7 @@ module('lively.identity.PostCardEditor')
         // (§16.6), so this check has to mirror _canEdit's fuller condition,
         // not just ownership, or it would block a save the server would
         // actually accept.
-        if (!this._canEdit || this._forceReadOnly) return;
+        if (!this._canEdit) return;
         this._userHasEdited = true;
         this._scheduleSave();
       },
@@ -1750,15 +1724,13 @@ module('lively.identity.PostCardEditor')
 
     'constellation', {
 
-      _promptPostToConstellation: function () {
-        var self = this;
-        if (!this._objId) {
-          this._setStatus('Save first');
-          return;
-        }
-        var name = window.prompt('Post to which constellation? (must be a member)');
-        if (!name) return;
-
+      // thenDo(err) — mirrors _doSend's shape. Posts the card to the named
+      // constellation (server requires membership) and, on success, remembers
+      // it in the same localStorage list ConstellationsBrowser.js reads
+      // (lively.identity.knownConstellations), so it shows up there too and
+      // in this panel's datalist next time.
+      _doSendToConstellation: function (name, thenDo) {
+        if (!this._objId) return thenDo(new Error('Save the card before sending'));
         var objId = this._objId;
         var base = lively.identity.did.baseUrl();
         var xhr = new XMLHttpRequest();
@@ -1766,20 +1738,57 @@ module('lively.identity.PostCardEditor')
         xhr.withCredentials = true;
         xhr.setRequestHeader('Content-Type', 'application/json');
         xhr.onload = function () {
-          if (xhr.status === 200) {
-            self._setStatus('Posted to ' + name);
-            return;
+          if (xhr.status !== 200) {
+            var msg = 'Post failed (' + xhr.status + ')';
+            try {
+              var body = JSON.parse(xhr.responseText);
+              if (body && body.error) msg = body.error;
+            } catch (e) {}
+            return thenDo(new Error(msg));
           }
-          var msg = 'Post failed (' + xhr.status + ')';
           try {
-            var body = JSON.parse(xhr.responseText);
-            if (body && body.error) msg = body.error;
+            var key = 'lively.identity.knownConstellations';
+            var known = JSON.parse(localStorage.getItem(key) || '[]').filter(function (k) { return k.name !== name; });
+            known.unshift({ name: name, at: new Date().toISOString() });
+            localStorage.setItem(key, JSON.stringify(known.slice(0, 30)));
           } catch (e) {}
-          self._setStatus(msg);
-          console.error('[PostCardEditor] post-to-constellation failed:', msg);
+          thenDo(null);
         };
-        xhr.onerror = function () { self._setStatus('Network error'); };
+        xhr.onerror = function () { thenDo(new Error('Network error')); };
         xhr.send(JSON.stringify({ objId: objId }));
+      },
+
+      // Best-effort fill of the "c/constellation" tab's autocomplete: the
+      // locally-remembered list (same source ConstellationsBrowser.js uses)
+      // synchronously, plus the server's public directory merged in async —
+      // never blocks opening the panel.
+      _populateKnownConstellations: function (datalistEl) {
+        var seen = {};
+        function addOption(name) {
+          if (!name || seen[name]) return;
+          seen[name] = true;
+          var opt = document.createElement('option');
+          opt.value = name;
+          datalistEl.appendChild(opt);
+        }
+        try {
+          JSON.parse(localStorage.getItem('lively.identity.knownConstellations') || '[]')
+            .forEach(function (k) { addOption(k.name); });
+        } catch (e) {}
+
+        var base = lively.identity.did.baseUrl();
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', base + '/c', true);
+        xhr.withCredentials = true;
+        xhr.setRequestHeader('Accept', 'application/json');
+        xhr.onload = function () {
+          if (xhr.status !== 200) return;
+          try {
+            var data = JSON.parse(xhr.responseText);
+            (data.constellations || []).forEach(function (c) { addOption(c.name); });
+          } catch (e) {}
+        };
+        xhr.send();
       },
 
     },
@@ -1791,46 +1800,200 @@ module('lively.identity.PostCardEditor')
 
     'send', {
 
-      _promptAndSend: function () {
-        if (this._sendPanel) { this._sendPanel.remove(); this._sendPanel = null; return; }
+      // initialTab: 'handle' (default) or 'constellation' — which Send-to
+      // tab to land on once visibility is chosen. If the panel is already
+      // open on the Send-to step: re-requesting its current tab toggles the
+      // whole flow closed (mirrors the old single-purpose panel's toggle
+      // behavior); requesting the other tab just switches to it. Any other
+      // state (still on the visibility step, or a repeat click) closes it.
+      _promptAndSend: function (initialTab) {
+        var tab = initialTab === 'constellation' ? 'constellation' : 'handle';
+        if (this._sendPanel) {
+          if (this._sendStep === 'sendto' && this._sendPanelTab !== tab) {
+            this._selectSendTab(tab);
+            return;
+          }
+          this._closeSendPanel();
+          return;
+        }
+        this._sendPendingTab = tab;
+        this._openSendModal();
+        this._renderVisibilityStep();
+      },
+
+      // Native overlay on top of a Lively world: must live outside any
+      // morph's own DOM subtree (shapeNode) or typing into its inputs
+      // silently fails — see CLAUDE.md. One backdrop+panel shell is reused
+      // across the flow's two steps (_renderVisibilityStep, then
+      // _renderSendToStep) — only the panel's contents are swapped, so
+      // listeners bound to the panel itself (stopPropagation, Escape) are
+      // attached once here rather than per step.
+      _openSendModal: function () {
         var self = this;
-        var shapeNode = this.renderContext().shapeNode;
+        var backdrop = document.createElement('div');
+        backdrop.style.cssText = [
+          'position:fixed', 'top:0', 'left:0', 'right:0', 'bottom:0',
+          'background:rgba(0,0,0,0.25)', 'z-index:9998',
+        ].join(';');
+        backdrop.addEventListener('mousedown', function (e) {
+          if (e.target === backdrop) self._closeSendPanel();
+        });
 
         var panel = document.createElement('div');
         panel.style.cssText = [
-          'position:absolute', 'top:40px', 'right:4px', 'width:220px',
-          'background:#fff', 'border:1px solid #ccc', 'border-radius:6px',
-          'box-shadow:0 4px 12px rgba(0,0,0,0.18)', 'padding:10px',
-          'z-index:1000', 'box-sizing:border-box', 'font-family:sans-serif',
+          'position:fixed', 'top:50%', 'left:50%', 'transform:translate(-50%,-50%)',
+          'width:280px', 'background:#fff', 'border:1px solid #ccc', 'border-radius:8px',
+          'box-shadow:0 8px 28px rgba(0,0,0,0.28)', 'padding:14px',
+          'z-index:9999', 'box-sizing:border-box', 'font-family:sans-serif',
         ].join(';');
+        ['keydown', 'keyup', 'keypress', 'mousedown', 'mousemove', 'mouseup', 'click'].forEach(function (t) {
+          panel.addEventListener(t, function (e) { e.stopPropagation(); });
+        });
+        panel.addEventListener('keydown', function (e) {
+          if (e.key === 'Escape') self._closeSendPanel();
+        });
 
-        var label = document.createElement('div');
-        label.textContent = this._visibility === 'public' ? 'Send to @handle' : 'Share & send to @handle';
-        label.style.cssText = 'font-size:12px;font-weight:600;margin-bottom:6px;color:#333;';
-        panel.appendChild(label);
+        document.body.appendChild(backdrop);
+        document.body.appendChild(panel);
+        this._sendPanel = panel;
+        this._sendBackdrop = backdrop;
+      },
 
-        var input = document.createElement('input');
-        input.type = 'text';
-        input.placeholder = 'handle (no @)';
-        input.style.cssText = 'width:100%;box-sizing:border-box;font-size:12px;padding:4px 6px;border:1px solid #ccc;border-radius:3px;margin-bottom:6px;';
-        panel.appendChild(input);
+      // Step 1 of 2: pick Public or Private before choosing a destination —
+      // makes the encryption decision explicit up front rather than relying
+      // on whatever the toolbar's visibility toggle happened to be left at.
+      _renderVisibilityStep: function () {
+        var self = this;
+        var panel = this._sendPanel;
+        this._sendStep = 'visibility';
+        while (panel.firstChild) panel.removeChild(panel.firstChild);
 
-        var msg = document.createElement('div');
-        msg.style.cssText = 'font-size:11px;color:#999;min-height:14px;margin-bottom:6px;';
-        panel.appendChild(msg);
+        var title = document.createElement('div');
+        title.textContent = 'Visibility';
+        title.style.cssText = 'font-size:13px;font-weight:700;margin-bottom:4px;color:#222;';
+        panel.appendChild(title);
 
-        var btnRow = document.createElement('div');
-        btnRow.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;';
+        var subtitle = document.createElement('div');
+        subtitle.textContent = 'Choose who can read this card';
+        subtitle.style.cssText = 'font-size:11px;color:#666;margin-bottom:10px;';
+        panel.appendChild(subtitle);
 
+        function makeOption(value, icon, label, desc) {
+          var selected = self._visibility === value;
+          var btn = document.createElement('button');
+          btn.style.cssText = [
+            'display:block', 'width:100%', 'text-align:left', 'cursor:pointer',
+            'box-sizing:border-box', 'padding:8px 10px', 'margin-bottom:8px',
+            'border-radius:6px', 'font-family:sans-serif',
+            'border:1px solid ' + (selected ? '#E31361' : '#ccc'),
+            'background:' + (selected ? '#fde6ee' : '#fff'),
+          ].join(';');
+          var labelEl = document.createElement('div');
+          labelEl.textContent = icon + ' ' + label;
+          labelEl.style.cssText = 'font-size:12px;font-weight:600;color:#222;';
+          var descEl = document.createElement('div');
+          descEl.textContent = desc;
+          descEl.style.cssText = 'font-size:11px;color:#666;margin-top:2px;';
+          btn.appendChild(labelEl);
+          btn.appendChild(descEl);
+          btn.addEventListener('mousedown', function (e) {
+            e.preventDefault(); e.stopPropagation();
+            self._setVisibility(value);
+            self._renderSendToStep(self._sendPendingTab);
+          });
+          return btn;
+        }
+
+        panel.appendChild(makeOption('public', '🌐', 'Public', 'Anyone can read this card.'));
+        panel.appendChild(makeOption('private', '🔒', 'Private', 'Encrypted — only chosen recipients can read it.'));
+
+        var cancelRow = document.createElement('div');
+        cancelRow.style.cssText = 'display:flex;justify-content:flex-end;';
         var cancelBtn = document.createElement('button');
         cancelBtn.textContent = 'Cancel';
         cancelBtn.style.cssText = 'font-size:11px;padding:4px 10px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
         cancelBtn.addEventListener('mousedown', function (e) {
           e.preventDefault(); e.stopPropagation();
-          panel.remove();
-          self._sendPanel = null;
+          self._closeSendPanel();
         });
-        btnRow.appendChild(cancelBtn);
+        cancelRow.appendChild(cancelBtn);
+        panel.appendChild(cancelRow);
+      },
+
+      // Step 2 of 2: @handle / c/constellation destination tabs — the panel
+      // this replaced in full before the visibility step was split out.
+      _renderSendToStep: function (tab) {
+        var self = this;
+        var panel = this._sendPanel;
+        this._sendStep = 'sendto';
+        while (panel.firstChild) panel.removeChild(panel.firstChild);
+
+        var backLink = document.createElement('div');
+        backLink.textContent = '← ' + (this._visibility === 'public' ? 'Public' : 'Private') + ', change';
+        backLink.style.cssText = 'font-size:10px;color:#888;cursor:pointer;margin-bottom:8px;';
+        backLink.addEventListener('mousedown', function (e) {
+          e.preventDefault(); e.stopPropagation();
+          self._renderVisibilityStep();
+        });
+        panel.appendChild(backLink);
+
+        var title = document.createElement('div');
+        title.textContent = 'Send to';
+        title.style.cssText = 'font-size:13px;font-weight:700;margin-bottom:10px;color:#222;';
+        panel.appendChild(title);
+
+        var tabBar = document.createElement('div');
+        tabBar.style.cssText = 'display:flex;gap:4px;margin-bottom:10px;border-bottom:1px solid #eee;';
+        var handleTab = document.createElement('button');
+        handleTab.textContent = '@handle';
+        var constTab = document.createElement('button');
+        constTab.textContent = 'c/constellation';
+        [handleTab, constTab].forEach(function (t) {
+          t.style.cssText = 'flex:1;font-size:11px;padding:6px 4px;cursor:pointer;border:none;border-bottom:2px solid transparent;background:transparent;color:#888;';
+        });
+        handleTab.addEventListener('mousedown', function (e) {
+          e.preventDefault(); e.stopPropagation();
+          self._selectSendTab('handle');
+        });
+        constTab.addEventListener('mousedown', function (e) {
+          e.preventDefault(); e.stopPropagation();
+          self._selectSendTab('constellation');
+        });
+        tabBar.appendChild(handleTab);
+        tabBar.appendChild(constTab);
+        panel.appendChild(tabBar);
+
+        var handleSection = document.createElement('div');
+        var constSection = document.createElement('div');
+        panel.appendChild(handleSection);
+        panel.appendChild(constSection);
+
+        // ── @handle tab ──
+        var handleLabel = document.createElement('div');
+        handleLabel.textContent = this._visibility === 'public' ? 'Send to @handle' : 'Share & send to @handle';
+        handleLabel.style.cssText = 'font-size:11px;color:#666;margin-bottom:6px;';
+        handleSection.appendChild(handleLabel);
+
+        var handleInput = document.createElement('input');
+        handleInput.type = 'text';
+        handleInput.placeholder = 'handle (no @)';
+        handleInput.style.cssText = 'width:100%;box-sizing:border-box;font-size:12px;padding:5px 7px;border:1px solid #ccc;border-radius:3px;margin-bottom:6px;';
+        handleSection.appendChild(handleInput);
+
+        var handleMsg = document.createElement('div');
+        handleMsg.style.cssText = 'font-size:11px;color:#999;min-height:14px;margin-bottom:6px;';
+        handleSection.appendChild(handleMsg);
+
+        var handleBtnRow = document.createElement('div');
+        handleBtnRow.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;';
+        var handleCancelBtn = document.createElement('button');
+        handleCancelBtn.textContent = 'Cancel';
+        handleCancelBtn.style.cssText = 'font-size:11px;padding:4px 10px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
+        handleCancelBtn.addEventListener('mousedown', function (e) {
+          e.preventDefault(); e.stopPropagation();
+          self._closeSendPanel();
+        });
+        handleBtnRow.appendChild(handleCancelBtn);
 
         // Live encryption-status hint as the handle is typed, for private/shared
         // cards only — surfaces "hasn't set up encryption yet" up front rather
@@ -1839,28 +2002,28 @@ module('lively.identity.PostCardEditor')
         // block clicking Send).
         var checkTimer = null;
         if (this._visibility !== 'public') {
-          input.addEventListener('input', function () {
+          handleInput.addEventListener('input', function () {
             clearTimeout(checkTimer);
-            var handle = input.value.trim().replace(/^@/, '');
-            if (!handle) { msg.textContent = ''; return; }
-            msg.textContent = 'Checking…';
-            msg.style.color = '#999';
+            var handle = handleInput.value.trim().replace(/^@/, '');
+            if (!handle) { handleMsg.textContent = ''; return; }
+            handleMsg.textContent = 'Checking…';
+            handleMsg.style.color = '#999';
             checkTimer = setTimeout(function () {
               lively.identity.webKey.resolveHandle(handle, function (err, info) {
-                if (input.value.trim().replace(/^@/, '') !== handle) return; // stale — input changed since
+                if (handleInput.value.trim().replace(/^@/, '') !== handle) return; // stale — input changed since
                 if (err || !info || !info.did) {
-                  msg.textContent = 'Handle not found';
-                  msg.style.color = '#c33';
+                  handleMsg.textContent = 'Handle not found';
+                  handleMsg.style.color = '#c33';
                   return;
                 }
                 self._resolveRecipientPubKeys([handle], function (_e, result) {
-                  if (input.value.trim().replace(/^@/, '') !== handle) return; // stale
+                  if (handleInput.value.trim().replace(/^@/, '') !== handle) return; // stale
                   if (result.resolved.length) {
-                    msg.textContent = '🔒 can receive encrypted cards';
-                    msg.style.color = '#2a2';
+                    handleMsg.textContent = '🔒 can receive encrypted cards';
+                    handleMsg.style.color = '#2a2';
                   } else {
-                    msg.textContent = "🔓 hasn't set up encryption yet";
-                    msg.style.color = '#c60';
+                    handleMsg.textContent = "🔓 hasn't set up encryption yet";
+                    handleMsg.style.color = '#c60';
                   }
                 });
               });
@@ -1870,46 +2033,147 @@ module('lively.identity.PostCardEditor')
 
         var sendBtn = document.createElement('button');
         sendBtn.textContent = 'Send';
-        sendBtn.style.cssText = 'font-size:11px;padding:4px 10px;cursor:pointer;border:1px solid #5a5;border-radius:3px;background:#efe;';
-        function submit() {
-          var handle = input.value.trim().replace(/^@/, '');
-          if (!handle) { msg.textContent = 'Enter a handle'; msg.style.color = '#c33'; return; }
+        sendBtn.style.cssText = 'font-size:11px;padding:4px 10px;cursor:pointer;border:1px solid #E31361;border-radius:3px;background:#fde6ee;';
+        function submitHandle() {
+          var handle = handleInput.value.trim().replace(/^@/, '');
+          if (!handle) { handleMsg.textContent = 'Enter a handle'; handleMsg.style.color = '#c33'; return; }
           sendBtn.disabled = true;
-          msg.textContent = 'Sending…';
-          msg.style.color = '#888';
+          handleMsg.textContent = 'Sending…';
+          handleMsg.style.color = '#888';
           self._doSend(handle, function (err, result) {
             sendBtn.disabled = false;
-            if (err) { msg.textContent = err.message || 'Failed'; msg.style.color = '#c33'; return; }
+            if (err) { handleMsg.textContent = err.message || 'Failed'; handleMsg.style.color = '#c33'; return; }
             if (result && result.returned) {
-              msg.textContent = 'Not delivered (blocked, or handle unknown)';
-              msg.style.color = '#c33';
+              handleMsg.textContent = 'Not delivered (blocked, or handle unknown)';
+              handleMsg.style.color = '#c33';
               return;
             }
-            msg.textContent = 'Sent to @' + handle;
-            msg.style.color = '#2a2';
+            handleMsg.textContent = 'Sent to @' + handle;
+            handleMsg.style.color = '#2a2';
             self._updateVisibilityBtn();
-            setTimeout(function () {
-              if (self._sendPanel === panel) { panel.remove(); self._sendPanel = null; }
-            }, 1200);
+            setTimeout(function () { self._closeEditor(); }, 800);
           });
         }
         sendBtn.addEventListener('mousedown', function (e) {
           e.preventDefault(); e.stopPropagation();
-          submit();
+          submitHandle();
         });
-        btnRow.appendChild(sendBtn);
-        panel.appendChild(btnRow);
-
-        ['keydown', 'keyup', 'keypress', 'mousedown', 'mousemove', 'mouseup', 'click'].forEach(function (t) {
-          panel.addEventListener(t, function (e) { e.stopPropagation(); });
-        });
-        input.addEventListener('keydown', function (e) {
-          if (e.key === 'Enter') submit();
+        handleBtnRow.appendChild(sendBtn);
+        handleSection.appendChild(handleBtnRow);
+        handleInput.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') submitHandle();
         });
 
-        shapeNode.appendChild(panel);
-        this._sendPanel = panel;
-        input.focus();
+        // ── c/constellation tab ──
+        var constLabel = document.createElement('div');
+        constLabel.textContent = 'Post to a constellation you’re a member of';
+        constLabel.style.cssText = 'font-size:11px;color:#666;margin-bottom:6px;';
+        constSection.appendChild(constLabel);
+
+        var constInput = document.createElement('input');
+        constInput.type = 'text';
+        constInput.placeholder = 'constellation name';
+        constInput.setAttribute('list', 'postcardKnownConstellations');
+        constInput.style.cssText = 'width:100%;box-sizing:border-box;font-size:12px;padding:5px 7px;border:1px solid #ccc;border-radius:3px;margin-bottom:6px;';
+        constSection.appendChild(constInput);
+
+        var constDatalist = document.createElement('datalist');
+        constDatalist.id = 'postcardKnownConstellations';
+        constSection.appendChild(constDatalist);
+        self._populateKnownConstellations(constDatalist);
+
+        var constMsg = document.createElement('div');
+        constMsg.style.cssText = 'font-size:11px;color:#999;min-height:14px;margin-bottom:6px;';
+        constSection.appendChild(constMsg);
+
+        var constBtnRow = document.createElement('div');
+        constBtnRow.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;';
+        var constCancelBtn = document.createElement('button');
+        constCancelBtn.textContent = 'Cancel';
+        constCancelBtn.style.cssText = 'font-size:11px;padding:4px 10px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
+        constCancelBtn.addEventListener('mousedown', function (e) {
+          e.preventDefault(); e.stopPropagation();
+          self._closeSendPanel();
+        });
+        constBtnRow.appendChild(constCancelBtn);
+
+        var postBtn2 = document.createElement('button');
+        postBtn2.textContent = 'Post';
+        postBtn2.style.cssText = 'font-size:11px;padding:4px 10px;cursor:pointer;border:1px solid #E31361;border-radius:3px;background:#fde6ee;';
+        function submitConstellation() {
+          var name = constInput.value.trim();
+          if (!name) { constMsg.textContent = 'Enter a constellation name'; constMsg.style.color = '#c33'; return; }
+          if (!self._objId) { constMsg.textContent = 'Save first'; constMsg.style.color = '#c33'; return; }
+          postBtn2.disabled = true;
+          constMsg.textContent = 'Posting…';
+          constMsg.style.color = '#888';
+          self._doSendToConstellation(name, function (err) {
+            postBtn2.disabled = false;
+            if (err) { constMsg.textContent = err.message || 'Failed'; constMsg.style.color = '#c33'; return; }
+            constMsg.textContent = 'Posted to ' + name;
+            constMsg.style.color = '#2a2';
+            setTimeout(function () { self._closeEditor(); }, 800);
+          });
+        }
+        postBtn2.addEventListener('mousedown', function (e) {
+          e.preventDefault(); e.stopPropagation();
+          submitConstellation();
+        });
+        constBtnRow.appendChild(postBtn2);
+        constSection.appendChild(constBtnRow);
+        constInput.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') submitConstellation();
+        });
+
+        this._sendPanelTabs = { handle: handleTab, constellation: constTab };
+        this._sendPanelSections = { handle: handleSection, constellation: constSection };
+        this._sendPanelInputs = { handle: handleInput, constellation: constInput };
+        this._selectSendTab(tab);
+      },
+
+      _selectSendTab: function (tab) {
+        if (!this._sendPanelTabs) return;
+        this._sendPanelTab = tab;
+        var onHandle = tab === 'handle';
+        this._sendPanelTabs.handle.style.color = onHandle ? '#333' : '#888';
+        this._sendPanelTabs.handle.style.borderBottomColor = onHandle ? '#E31361' : 'transparent';
+        this._sendPanelTabs.constellation.style.color = onHandle ? '#888' : '#333';
+        this._sendPanelTabs.constellation.style.borderBottomColor = onHandle ? 'transparent' : '#E31361';
+        this._sendPanelSections.handle.style.display = onHandle ? '' : 'none';
+        this._sendPanelSections.constellation.style.display = onHandle ? 'none' : '';
+        this._sendPanelInputs[tab].focus();
+      },
+
+      _closeSendPanel: function () {
+        if (this._sendPanel) { this._sendPanel.remove(); this._sendPanel = null; }
+        if (this._sendBackdrop) { this._sendBackdrop.remove(); this._sendBackdrop = null; }
+        this._sendStep = null;
+        this._sendPendingTab = null;
+        this._sendPanelTab = null;
+        this._sendPanelTabs = null;
+        this._sendPanelSections = null;
+        this._sendPanelInputs = null;
+      },
+
+      // Unlike the panel it replaced, this one lives on document.body (not
+      // shapeNode — see CLAUDE.md), so it isn't torn down for free when the
+      // editor morph's own DOM goes away. Close it explicitly or it's left
+      // floating after the editor closes.
+      remove: function ($super) {
+        this._closeSendPanel();
+        $super();
+      },
+
+      // A successful send/post is treated as "done with this card" — close
+      // the whole editor (window chrome included), not just the send panel.
+      // getWindow() covers the normal windowed case (_openInCenteredWindow);
+      // the plain remove() fallback covers a freestanding/embedded editor
+      // that was never wrapped in one.
+      _closeEditor: function () {
+        this._closeSendPanel();
+        var win = this.getWindow && this.getWindow();
+        if (win && win.initiateShutdown) win.initiateShutdown();
+        else this.remove();
       },
 
       // thenDo(err, result) — result is the inbox POST's JSON body
@@ -3071,17 +3335,12 @@ module('lively.identity.PostCardEditor')
       },
 
       // Load an existing postcard and open the editor.
-      // opts.forceReadOnly: used only by PostCardView to embed this editor
-      // purely as a decrypt+render engine for private/shared card content —
-      // strips all editing chrome and disables autosave regardless of
-      // ownership (see _forceReadOnly, _applyReadOnlyMode, _markEdited).
       openCard: function (handle, objId, options) {
         var opts = options || {};
         var editor = new lively.identity.PostCardEditor(opts.bounds || lively.rect(0, 0, 680, 520));
         editor._handle = handle;
         editor._objId = objId;
         editor._isNew = false;
-        editor._forceReadOnly = !!opts.forceReadOnly;
         if (opts.target) {
           opts.target.addMorph(editor);
           editor._setup();
