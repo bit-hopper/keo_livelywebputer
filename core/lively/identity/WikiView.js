@@ -39,12 +39,18 @@
  * check WikiEditor.js already performs when a non-owner opens the editor
  * directly.
  *
+ * A self-rendering lively.morphic.Box (no lively.morphic.Window chrome —
+ * same pattern as lively.commerce.Shop). Opened standalone (no target), it's
+ * placed directly in the world via openInWorld at Shop-sized dimensions;
+ * embedded call sites (ConstellationLounge/Canvas feeds) pass their own
+ * target + bounds and keep their smaller, card-shaped sizing.
+ *
  * Entry point:
  *   lively.identity.WikiView.open(handle, objId, options)
- *     options.target      -> embed via target.addMorph(view) instead of a window
+ *     options.target      -> embed via target.addMorph(view) instead of the world
  *     options.envelope    -> render immediately, skip the fetch
  *     options.cid         -> view a specific historical version
- *     options.bounds      -> override the default card-shaped extent
+ *     options.bounds      -> override the default extent
  */
 
 module("lively.identity.WikiView")
@@ -579,42 +585,25 @@ module("lively.identity.WikiView")
     // ─── class-side entry points ─────────────────────────────────────────────────
 
     Object.extend(WikiViewClass, {
-      _openInCenteredWindow: function (view, title) {
-        var win = view.openInWindow({ title: title });
-        if (win) {
-          if (!document.getElementById("lively-postcard-view-window-style")) {
-            var styleEl = document.createElement("style");
-            styleEl.id = "lively-postcard-view-window-style";
-            styleEl.textContent =
-              ".Window.postcard-view-window { border-radius: 10px; }";
-            document.head.appendChild(styleEl);
-          }
-          win.addStyleClassName("postcard-view-window");
-
-          if (win.menuButton) {
-            win.menuButton.remove();
-            win.titleBar.buttons = win.titleBar.buttons.without(win.menuButton);
-            win.menuButton = null;
-            win.titleBar.adjustElementPositions();
-          }
-
-          win.align(
-            win.bounds().center(),
-            lively.morphic.World.current().visibleBounds().center(),
-          );
-          win.bringToFront();
-        }
+      // Opens the view as a plain self-rendering Box morph directly in the
+      // world — same pattern as lively.commerce.Shop.open, no
+      // lively.morphic.Window chrome. Centered on the visible world bounds.
+      _openInWorld: function (view) {
+        var extent = view.getExtent();
+        view.openInWorld(lively.morphic.World.current().visibleBounds().center().subPt(extent.scaleBy(0.5)));
+        view.bringToFront();
       },
 
       // options.target      -> embed via target.addMorph(view)
       // options.envelope    -> render immediately, skip the fetch
       // options.cid         -> view a specific historical version
-      // options.bounds      -> override the default card-shaped extent
+      // options.bounds      -> override the default extent
       open: function (handle, objId, options) {
         var opts = options || {};
         var view = new lively.identity.WikiView(
-          opts.bounds || lively.rect(0, 0, 420, 300),
+          opts.bounds || lively.rect(0, 0, 1180, 780),
         );
+        view.setName("WikiView");
         view._handle = handle;
         view._objId = objId;
         view._cid = opts.cid || null;
@@ -623,7 +612,7 @@ module("lively.identity.WikiView")
           opts.target.addMorph(view);
           view._setup();
         } else {
-          this._openInCenteredWindow(view, "Wiki page from @" + handle);
+          this._openInWorld(view);
           view._setup();
         }
         return view;

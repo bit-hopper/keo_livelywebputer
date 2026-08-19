@@ -2045,6 +2045,12 @@ module('lively.identity.WikiEditor')
 
     Object.extend(WikiEditorClass, {
 
+      // Unlike WikiView (a plain self-rendering Box, no window — see that
+      // file), the editor is opened inside a lively.morphic.Window: its
+      // title bar is the only drag handle, since disableDragging() below
+      // turns off whole-body dragging on the editor morph itself (needed so
+      // native text-selection drag inside the ProseMirror pane isn't
+      // hijacked by Lively's default drag-to-move).
       _openInCenteredWindow: function (editor, title) {
         var win = editor.openInWindow({ title: title });
         if (win) {
@@ -2059,7 +2065,7 @@ module('lively.identity.WikiEditor')
       // and disables autosave regardless of ownership.
       openCard: function (handle, objId, options) {
         var opts = options || {};
-        var editor = new lively.identity.WikiEditor(opts.bounds || lively.rect(0, 0, 680, 520));
+        var editor = new lively.identity.WikiEditor(opts.bounds || lively.rect(0, 0, 1180, 780));
         editor._handle = handle;
         editor._objId = objId;
         editor._isNew = false;
@@ -2081,7 +2087,7 @@ module('lively.identity.WikiEditor')
       // "no path to convert a plain card into a wiki page or vice versa").
       newCard: function (handle, options) {
         var opts = options || {};
-        var editor = new lively.identity.WikiEditor(lively.rect(0, 0, 680, 520));
+        var editor = new lively.identity.WikiEditor(lively.rect(0, 0, 1180, 780));
         editor._handle = handle;
         editor._objId = null;
         editor._isNew = true;
