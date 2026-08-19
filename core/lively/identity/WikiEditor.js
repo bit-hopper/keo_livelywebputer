@@ -1299,6 +1299,16 @@ module('lively.identity.WikiEditor')
             var partDom = part.renderContext && part.renderContext().shapeNode;
             if (partDom) contentDiv.appendChild(partDom);
             else { showError('Part has no renderable content'); return; }
+            // BUG FIX: see PostCardEditor.js's identical fix — a Lively
+            // morph's shapeNode is position:absolute, so it never
+            // contributes to contentDiv's flow height, and the outer
+            // .lively-embedded-part-node's overflow:hidden clips everything
+            // past its min-height:32px regardless of the morph's real size.
+            if (part.getExtent) {
+              var partExtent = part.getExtent();
+              contentDiv.style.width = partExtent.x + 'px';
+              contentDiv.style.height = partExtent.y + 'px';
+            }
             if (typeof part.onPostCardEmbed === 'function') {
               part.onPostCardEmbed(self._embedStateApi(node.attrs.embedId));
             }

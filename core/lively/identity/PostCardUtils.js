@@ -123,7 +123,17 @@ module('lively.identity.PostCardUtils')
             el.innerHTML = '';
             var partDom = part.renderContext && part.renderContext().shapeNode;
             if (partDom) el.appendChild(partDom);
-            else showError('Part has no renderable content');
+            else { showError('Part has no renderable content'); return; }
+            // BUG FIX: same clipping issue as the editor's NodeView (see its
+            // matching fix in PostCardEditor.js/WikiEditor.js) — a Lively
+            // morph's shapeNode is position:absolute and never grows el's
+            // flow height, so el stayed at its ~32px min-height regardless
+            // of the morph's real size.
+            if (part.getExtent) {
+              var partExtent = part.getExtent();
+              el.style.width = partExtent.x + 'px';
+              el.style.height = partExtent.y + 'px';
+            }
           });
         };
         xhr.onerror = function () { showError('Network error loading part'); };

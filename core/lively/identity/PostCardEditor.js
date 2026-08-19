@@ -2161,6 +2161,19 @@ module('lively.identity.PostCardEditor')
             var partDom = part.renderContext && part.renderContext().shapeNode;
             if (partDom) contentDiv.appendChild(partDom);
             else { showError('Part has no renderable content'); return; }
+            // BUG FIX: a Lively morph's shapeNode is position:absolute, so it
+            // never contributes to contentDiv's flow height — contentDiv (and
+            // the outer .lively-embedded-part-node, which has overflow:hidden)
+            // stayed at their near-zero/min-height:32px size regardless of the
+            // morph's real extent, clipping everything below that to a thin
+            // strip. Confirmed live: a 100x100 clock morph rendered as ~32px
+            // of visible content. Sizing contentDiv explicitly to the part's
+            // actual extent fixes it for any morph size.
+            if (part.getExtent) {
+              var partExtent = part.getExtent();
+              contentDiv.style.width = partExtent.x + 'px';
+              contentDiv.style.height = partExtent.y + 'px';
+            }
             if (typeof part.onPostCardEmbed === 'function') {
               part.onPostCardEmbed(self._embedStateApi(node.attrs.embedId));
             }
