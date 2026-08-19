@@ -890,9 +890,15 @@ function _pmNodeToHtml(node) {
     case 'math_inline': return _renderKatex((node.attrs && node.attrs.value) || '', false);
     case 'math_display': return _renderKatex((node.attrs && node.attrs.value) || '', true);
     case 'embeddedPart':
-      var objId = (node.attrs && node.attrs.objId) || '';
+      // BUG FIX: was missing data-cid/data-handle/data-embed-id — see the
+      // matching fix + explanation in PostCardUtils.js's pmNodeToHtml.
+      var epAttrs = node.attrs || {};
+      var objId = epAttrs.objId || '';
       return '<div class="lively-embedded-part" data-obj-id="' + escapeHtml(objId) +
-             '">[embedded part: ' + escapeHtml(objId) + ']</div>';
+             '" data-cid="' + escapeHtml(epAttrs.cid || '') +
+             '" data-handle="' + escapeHtml(epAttrs.handle || '') +
+             '" data-embed-id="' + escapeHtml(epAttrs.embedId || '') + '">' +
+             '[embedded part: ' + escapeHtml(objId) + ']</div>';
     default: return inner;
   }
 }

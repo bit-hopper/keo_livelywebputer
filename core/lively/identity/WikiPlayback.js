@@ -427,7 +427,10 @@ module('lively.identity.WikiPlayback')
     'helpers', {
 
       _setSnapHtml: function (html) {
-        if (this._snapDiv) this._snapDiv.innerHTML = html;
+        if (!this._snapDiv) return;
+        this._snapDiv.innerHTML = html;
+        // BUG FIX: see PostCardView.js's _renderContentArea — same fix.
+        lively.identity.postCardUtils.hydrateEmbeddedParts(this._snapDiv);
       },
 
       _setVersionInfo: function (text) {

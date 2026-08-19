@@ -741,6 +741,10 @@ module("lively.identity.PostCardView")
             this._contentEl.innerHTML = snapshot
               ? lively.identity.postCardUtils.snapshotToHtml(snapshot)
               : "";
+            // BUG FIX: embedded Lively parts used to render as a permanent
+            // "[Embedded Part: <objId>]" text stub here — nothing ever
+            // turned the placeholder into the live morph it references.
+            lively.identity.postCardUtils.hydrateEmbeddedParts(this._contentEl);
             return;
           }
 

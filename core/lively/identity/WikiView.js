@@ -438,6 +438,8 @@ module("lively.identity.WikiView")
           this._contentEl.innerHTML = snapshot
             ? lively.identity.postCardUtils.snapshotToHtml(snapshot)
             : "";
+          // BUG FIX: see PostCardView.js's _renderContentArea — same fix.
+          lively.identity.postCardUtils.hydrateEmbeddedParts(this._contentEl);
         },
 
         _renderDetails: function (envelope) {

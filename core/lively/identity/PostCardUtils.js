@@ -27,6 +27,7 @@ module('lively.identity.PostCardUtils')
       truncateAddress:     truncateAddress,
       encodeLocation:      encodeLocation,
       sanitizeLocationCode: sanitizeLocationCode,
+      hydrateEmbeddedParts: hydrateEmbeddedParts,
     };
 
     // BUG FIX: the .lively-postcard-image/.lively-postcard-video max-width/
@@ -55,13 +56,79 @@ module('lively.identity.PostCardUtils')
       styleEl.textContent =
         '.lively-postcard-image{max-width:100%;max-height:320px;vertical-align:middle;border-radius:4px;}' +
         '.lively-postcard-video{max-width:100%;max-height:400px;display:block;border-radius:4px;}' +
-        '.lively-postcard-audio{max-width:100%;width:320px;display:block;}';
+        '.lively-postcard-audio{max-width:100%;width:320px;display:block;}' +
+        '.lively-embedded-part{position:relative;min-height:32px;margin:4px 0;padding:4px;}' +
+        '.lively-embedded-part.lively-embed-error{color:#c33;font-style:italic;padding:8px;}';
       document.head.appendChild(styleEl);
     }
 
     function snapshotToHtml(snapshot) {
       if (!snapshot || !snapshot.content) return '';
       return snapshot.content.map(pmNodeToHtml).join('');
+    }
+
+    // BUG FIX: no read-only view (PostCardView, PostCardFeed, WikiView,
+    // WikiPlayback) ever turned a rendered .lively-embedded-part placeholder
+    // into the actual live Lively morph it references — confirmed live, the
+    // placeholder text is permanent, not just a brief loading state. The
+    // live editor's NodeView (_embeddedPartNodeView in PostCardEditor.js/
+    // WikiEditor.js) already has this exact fetch-envelope+loadPart logic;
+    // this is the same thing, standalone (no ProseMirror view/getPos to
+    // thread through, no selection overlay). Callers: after setting
+    // .innerHTML from snapshotToHtml(...), call
+    // hydrateEmbeddedParts(thatContainerEl) to upgrade every placeholder
+    // inside it in place.
+    function hydrateEmbeddedParts(containerEl) {
+      if (!containerEl || typeof document === 'undefined') return;
+      var placeholders = containerEl.querySelectorAll('.lively-embedded-part[data-obj-id]');
+      Array.prototype.forEach.call(placeholders, _hydrateOneEmbeddedPart);
+    }
+
+    function _hydrateOneEmbeddedPart(el) {
+      var handle = el.getAttribute('data-handle');
+      var objId = el.getAttribute('data-obj-id');
+      var cid = el.getAttribute('data-cid');
+      // No data-handle: a pre-fix embed saved before this attr existed, or a
+      // malformed one. Nothing to fetch from — leave the placeholder text.
+      if (!handle || !objId) return;
+      if (typeof lively === 'undefined' || !lively.require) return;
+
+      function showError(msg) {
+        el.textContent = msg;
+        el.classList.add('lively-embed-error');
+      }
+
+      lively.require('lively.identity.IdentityPartsSpace').toRun(function () {
+        var base = lively.identity.did.baseUrl();
+        var url = base + '/@' + encodeURIComponent(handle) + '/' + encodeURIComponent(objId) +
+          (cid ? ('/at/' + encodeURIComponent(cid)) : '');
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', url, true);
+        xhr.setRequestHeader('Accept', 'application/json');
+        xhr.withCredentials = true;
+        xhr.onload = function () {
+          if (xhr.status === 404) { showError(cid ? 'This part was removed.' : 'Part not found.'); return; }
+          if (xhr.status !== 200) { showError('Failed to load part: HTTP ' + xhr.status); return; }
+          var envelope;
+          try { envelope = JSON.parse(xhr.responseText); } catch (e) { showError('Invalid part data'); return; }
+          if (envelope.type !== 'part' || !envelope.record) { showError('Not a part envelope'); return; }
+          var space = new lively.identity.IdentityPartsSpace(handle, null);
+          var item = space.createPartItemFromEnvelope(envelope);
+          if (!item) { showError('Missing partName in embedded object'); return; }
+          item.loadPart(false, false, envelope.record.cid, function (err, part) {
+            if (err || !part) {
+              showError('Could not render part: ' + ((err && err.message) || 'unknown error'));
+              return;
+            }
+            el.innerHTML = '';
+            var partDom = part.renderContext && part.renderContext().shapeNode;
+            if (partDom) el.appendChild(partDom);
+            else showError('Part has no renderable content');
+          });
+        };
+        xhr.onerror = function () { showError('Network error loading part'); };
+        xhr.send();
+      });
     }
 
     function pmNodeToHtml(node) {
@@ -107,8 +174,21 @@ module('lively.identity.PostCardUtils')
         case 'math_display':
           return renderKatex((node.attrs && node.attrs.value) || '', true);
         case 'embeddedPart': {
-          var partId = (node.attrs && node.attrs.objId) ? node.attrs.objId : '(embedded)';
-          return '<div class="embedded-part-placeholder" data-obj-id="' + escapeAttr(partId) + '">' +
+          // BUG FIX: this used to emit only data-obj-id, dropping
+          // handle/cid/embed-id — hydrateEmbeddedParts (and, previously, no
+          // code at all) has no way to look up which account's object store
+          // to fetch the part from without data-handle, so every embedded
+          // part in a read-only view (feed, permalink page) rendered as a
+          // permanent, un-clickable "[Embedded Part: <objId>]" text stub.
+          // Matches the schema's own toDOM (PostCardEditor.js/WikiEditor.js)
+          // attr-for-attr, including the class name, so the same
+          // .lively-embedded-part querySelector finds both.
+          var attrs = node.attrs || {};
+          var partId = attrs.objId || '(embedded)';
+          return '<div class="lively-embedded-part" data-obj-id="' + escapeAttr(attrs.objId || '') +
+                 '" data-cid="' + escapeAttr(attrs.cid || '') +
+                 '" data-handle="' + escapeAttr(attrs.handle || '') +
+                 '" data-embed-id="' + escapeAttr(attrs.embedId || '') + '">' +
                  '[Embedded Part: ' + escapeHtml(partId) + ']</div>';
         }
         default:
