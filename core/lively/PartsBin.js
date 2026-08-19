@@ -891,7 +891,30 @@ Trait('lively.PartsBin.PartTrait', {
     // opts: { name, comment, tags, visibility: 'public'|'private'|'shared',
     //         recipientHandles, onWaiting }
     // Calls thenDo(err, envelope).
+    //
+    // HARDENING: this used to assume lively.identity.userSpace (and
+    // .did/.objectStore/.webAuthn) were already loaded — true when called
+    // via the normal promptPublishToInventory dialog flow (which
+    // lively.require()s UserSpace/PartSerializer before the dialog even
+    // opens), but not guaranteed for any other caller. Confirmed live: a
+    // caller that skips promptPublishToInventory and calls this directly
+    // hits "Cannot read properties of undefined (reading 'addPart')" deep
+    // inside an IndexedDB transaction callback — a confusing crash instead
+    // of a clear error, since the actual failure has nothing to do with
+    // what's on that line. lively.require-ing here makes this method
+    // correct standalone, matching promptPublishToInventory's own guard.
     _publishToInventory: function(opts, thenDo) {
+        var morph = this;
+        if (typeof lively === 'undefined' || !lively.require) {
+            thenDo(new Error('Cannot publish to Inventory: Lively module system not available'));
+            return;
+        }
+        lively.require('lively.identity.UserSpace', 'lively.identity.PartSerializer').toRun(function() {
+            morph._publishToInventoryImpl(opts, thenDo);
+        });
+    },
+
+    _publishToInventoryImpl: function(opts, thenDo) {
         var morph = this;
         var user = lively.identity.did.currentUser();
         if (!user) { thenDo(new Error('Not signed in')); return; }
