@@ -210,6 +210,14 @@ function verifyAuthentication(req, body, thenDo) {
       if (!credential) {
         return thenDo(new Error('Credential not found: ' + body.credentialId));
       }
+      // The signature check below only proves the caller holds the private
+      // key for body.credentialId — it says nothing about whether that
+      // credential belongs to the handle the caller claims to be. Without
+      // this check, presenting any valid credential alongside an arbitrary
+      // `handle` in the request body would mint a session for that handle.
+      if (credential.did !== registeredDid) {
+        return thenDo(new Error('Credential does not belong to handle: ' + body.handle));
+      }
 
       swAuth.verifyAuthenticationResponse({
         response: {

@@ -365,7 +365,14 @@ module("lively.identity.LoginDialog")
         var pathHandle = (window.location.pathname.match(/^\/@([^\/]+)/) || [])[1];
         if (pathHandle === handle) return;
         if (typeof lively !== 'undefined' && lively.Config) lively.Config.askBeforeQuit = false;
-        fetch('/@' + handle, { credentials: 'include' })
+        // Explicit Accept header required: the server's /@:handle route content-
+        // negotiates (redirects to the world's HTML page for a browser navigation,
+        // returns JSON otherwise) via req.accepts(["html","json"]) — a bare fetch()
+        // sends "Accept: */*", which that check resolves to "html" (first match),
+        // so without this header the server 302s here, fetch follows it silently,
+        // and .json() throws on the HTML body — swallowed by the catch below,
+        // leaving the user stuck on the login page with no visible error.
+        fetch('/@' + handle, { credentials: 'include', headers: { 'Accept': 'application/json' } })
           .then(function (r) { return r.json(); })
           .then(function (body) {
             var worlds = (body.objects || []).filter(function (e) { return e.type === 'world'; });
