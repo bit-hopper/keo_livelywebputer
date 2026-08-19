@@ -883,6 +883,10 @@ function _pmNodeToHtml(node) {
       var vsrc = (node.attrs && node.attrs.src) || '';
       if (!vsrc) return '';
       return '<video class="lively-postcard-video" controls preload="metadata" src="' + escapeHtml(vsrc) + '"></video>';
+    case 'audio':
+      var asrc = (node.attrs && node.attrs.src) || '';
+      if (!asrc) return '';
+      return '<audio class="lively-postcard-audio" controls preload="metadata" src="' + escapeHtml(asrc) + '"></audio>';
     case 'math_inline': return _renderKatex((node.attrs && node.attrs.value) || '', false);
     case 'math_display': return _renderKatex((node.attrs && node.attrs.value) || '', true);
     case 'embeddedPart':

@@ -54,7 +54,8 @@ module('lively.identity.PostCardUtils')
       styleEl.id = 'lively-postcard-media-style';
       styleEl.textContent =
         '.lively-postcard-image{max-width:100%;max-height:320px;vertical-align:middle;border-radius:4px;}' +
-        '.lively-postcard-video{max-width:100%;max-height:400px;display:block;border-radius:4px;}';
+        '.lively-postcard-video{max-width:100%;max-height:400px;display:block;border-radius:4px;}' +
+        '.lively-postcard-audio{max-width:100%;width:320px;display:block;}';
       document.head.appendChild(styleEl);
     }
 
@@ -95,6 +96,11 @@ module('lively.identity.PostCardUtils')
           var vsrc = (node.attrs && node.attrs.src) || '';
           if (!vsrc) return '';
           return '<video class="lively-postcard-video" controls preload="metadata" src="' + escapeAttr(vsrc) + '"></video>';
+        }
+        case 'audio': {
+          var asrc = (node.attrs && node.attrs.src) || '';
+          if (!asrc) return '';
+          return '<audio class="lively-postcard-audio" controls preload="metadata" src="' + escapeAttr(asrc) + '"></audio>';
         }
         case 'math_inline':
           return renderKatex((node.attrs && node.attrs.value) || '', false);

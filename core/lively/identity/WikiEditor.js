@@ -217,6 +217,7 @@ module('lively.identity.WikiEditor')
             '.lively-postcard-image{max-width:100%;max-height:320px;vertical-align:middle;' +
             'border-radius:4px;}' +
             '.lively-postcard-video{max-width:100%;max-height:400px;display:block;border-radius:4px;}' +
+            '.lively-postcard-audio{max-width:100%;width:320px;display:block;}' +
             '.lively-math-node{cursor:pointer;border-radius:3px;}' +
             '.lively-math-node.lively-math-selected,' +
             '.lively-math-node.ProseMirror-selectednode{outline:2px solid #8cf;}' +
@@ -814,6 +815,7 @@ module('lively.identity.WikiEditor')
             embeddedPart: function (node, view, getPos) { return self._embeddedPartNodeView(node, view, getPos); },
             image:        function (node, view, getPos) { return self._attachmentImageNodeView(node, view, getPos); },
             video:        function (node, view, getPos) { return self._attachmentVideoNodeView(node, view, getPos); },
+            audio:        function (node, view, getPos) { return self._attachmentAudioNodeView(node, view, getPos); },
           },
           handleDOMEvents: {
             blur: function () { self._hideLinkPreview(); return false; },
@@ -1432,6 +1434,61 @@ module('lively.identity.WikiEditor')
         };
       },
 
+      // NodeView for the audio node — same reasoning as
+      // _attachmentVideoNodeView above.
+      _attachmentAudioNodeView: function (node, view, getPos) {
+        var self = this;
+        var destroyed = false;
+        var audio = document.createElement('audio');
+        audio.className = 'lively-postcard-audio';
+        audio.controls = true;
+        audio.preload = 'metadata';
+
+        function render(currentNode) {
+          if (currentNode.attrs.name) audio.title = currentNode.attrs.name;
+          audio.classList.remove('lively-attachment-loading', 'lively-attachment-error');
+
+          if (currentNode.attrs.src) {
+            audio.src = currentNode.attrs.src;
+            return;
+          }
+          if (!currentNode.attrs.objId) return;
+
+          audio.classList.add('lively-attachment-loading');
+          var entry = (self._attachments || []).find(function (a) { return a.objId === currentNode.attrs.objId; });
+          if (!entry) {
+            audio.classList.remove('lively-attachment-loading');
+            audio.classList.add('lively-attachment-error');
+            return;
+          }
+          lively.identity.fileCrypto.resolveAttachmentUrl(self._handle, entry, function (err, url) {
+            if (destroyed) return;
+            audio.classList.remove('lively-attachment-loading');
+            if (err) {
+              audio.classList.add('lively-attachment-error');
+              console.error('[WikiEditor] attachment audio resolve failed:', err);
+              return;
+            }
+            audio.src = url;
+          });
+        }
+
+        render(node);
+
+        return {
+          dom: audio,
+          update: function (newNode) {
+            if (newNode.type !== node.type) return false;
+            var changed = newNode.attrs.objId !== node.attrs.objId || newNode.attrs.src !== node.attrs.src;
+            node = newNode;
+            if (changed) render(node);
+            return true;
+          },
+          destroy: function () { destroyed = true; },
+          ignoreMutation: function () { return true; },
+        };
+      },
+
       _showEmbedOverlay: function (dom, node, view, getPos) {
         this._hideEmbedOverlay(dom);
         var self = this;
@@ -1667,6 +1724,7 @@ module('lively.identity.WikiEditor')
         if (!this._handle) return;
         var isImage = /^image\//.test(file.type || '');
         var isVideo = /^video\//.test(file.type || '');
+        var isAudio = /^audio\//.test(file.type || '');
 
         this._setStatus('Uploading…');
         lively.identity.fileCrypto.encryptAndUpload(file, {
@@ -1691,6 +1749,7 @@ module('lively.identity.WikiEditor')
           self._attachments.push(entry);
           if (isImage) self._insertAttachmentImage(entry);
           else if (isVideo) self._insertAttachmentVideo(entry);
+          else if (isAudio) self._insertAttachmentAudio(entry);
           else self._insertAttachmentLink(entry);
           self._setStatus('Uploaded');
         });
@@ -1724,6 +1783,24 @@ module('lively.identity.WikiEditor')
         if (!videoType) return;
         var src = entry.dek ? '' : this._publicBlobUrl(entry.blobCid);
         var node = videoType.create({ src: src, name: entry.name, objId: entry.objId });
+        view.dispatch(state.tr.replaceSelectionWith(node));
+        view.focus();
+      },
+
+      // Audio attachments: same reasoning as _insertAttachmentVideo.
+      //
+      // KNOWN BUG (README.md "Fix before Deploying"): same exposure as
+      // _insertAttachmentVideo's note — this is a block atom, so it can be
+      // silently replaced by the next attachment/embed insert if it ends up
+      // as the doc's last node.
+      _insertAttachmentAudio: function (entry) {
+        if (!this.editorView) return;
+        var view = this.editorView;
+        var state = view.state;
+        var audioType = state.schema.nodes.audio;
+        if (!audioType) return;
+        var src = entry.dek ? '' : this._publicBlobUrl(entry.blobCid);
+        var node = audioType.create({ src: src, name: entry.name, objId: entry.objId });
         view.dispatch(state.tr.replaceSelectionWith(node));
         view.focus();
       },
@@ -1888,6 +1965,17 @@ module('lively.identity.WikiEditor')
                               return ['video', { src: n.attrs.src, controls: 'true', preload: 'metadata',
                                 'data-name': n.attrs.name || '', 'data-obj-id': n.attrs.objId || '',
                                 'class': 'lively-postcard-video' }];
+                            } },
+            audio:        { group: 'block', atom: true,
+                            attrs: { src: { default: '' }, name: { default: '' }, objId: { default: null } },
+                            parseDOM: [{ tag: 'audio[src]', getAttrs: function(d) {
+                              return { src: d.getAttribute('src'), name: d.getAttribute('data-name') || '',
+                                       objId: d.getAttribute('data-obj-id') || null };
+                            }}],
+                            toDOM: function(n) {
+                              return ['audio', { src: n.attrs.src, controls: 'true', preload: 'metadata',
+                                'data-name': n.attrs.name || '', 'data-obj-id': n.attrs.objId || '',
+                                'class': 'lively-postcard-audio' }];
                             } },
             text:         { group: 'inline' },
             hard_break:   { group: 'inline', inline: true, selectable: false,
