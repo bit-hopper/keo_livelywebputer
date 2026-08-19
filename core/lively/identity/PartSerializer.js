@@ -344,7 +344,7 @@ module('lively.identity.PartSerializer')
         if (!myEntry) return thenDo(new Error('PartSerializer: no sealed DEK for current user'));
         var ch = new Uint8Array(32);
         crypto.getRandomValues(ch);
-        wa.deriveX25519KeyPair({ credentialId: user.credentialId, challenge: ch }, function (err, pair) {
+        wa.deriveX25519KeyPair({ credentialId: user.credentialId, rpId: user.rpId, challenge: ch }, function (err, pair) {
           if (err) return thenDo(err);
           c.openSealedBox(myEntry.sealedDek, pair.publicKey, pair.privateKey, thenDo);
         });

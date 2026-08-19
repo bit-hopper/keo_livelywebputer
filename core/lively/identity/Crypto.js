@@ -385,16 +385,26 @@ Object.subclass('lively.identity.Crypto',
       var parts = envelope.sig.split('.');
       if (parts.length !== 3) return thenDo(null, { cidValid: cidValid, sigStatus: 'invalid' });
 
-      // The JWS's own embedded payload must match the envelope-minus-sig
-      // exactly — verifyJws alone only proves the signature is valid over
-      // whatever payload the JWS carries, not that it's still THIS envelope's
-      // content (e.g. title/visibility changed after signing, cid untouched).
+      // The JWS's own embedded payload must match the envelope-minus-sig —
+      // minus `state` — exactly. verifyJws alone only proves the signature
+      // is valid over whatever payload the JWS carries, not that it's still
+      // THIS envelope's content (e.g. title changed after signing, cid
+      // untouched), so that much still needs checking here. `state` is
+      // excluded on both sides: ObjectRepository.js's put()/setSentAtIfUnset
+      // legitimately rewrite state (sentAt freeze-stamp, recipient-add
+      // reseal, mailbox hide, ...) in place, server-side, without
+      // re-signing — by design, since record.cid only ever covered
+      // record.payload, never state. Comparing state here would flag every
+      // one of those legitimate updates as tampering.
       var envelopeSigned = Object.assign({}, envelope);
       delete envelopeSigned.sig;
+      delete envelopeSigned.state;
       var expectedPayload = self.canonicalJson(envelopeSigned);
       var actualPayload;
       try {
-        actualPayload = new TextDecoder().decode(self.base64urlDecode(parts[1]));
+        var actualObj = JSON.parse(new TextDecoder().decode(self.base64urlDecode(parts[1])));
+        delete actualObj.state;
+        actualPayload = self.canonicalJson(actualObj);
       } catch (e) {
         return thenDo(null, { cidValid: cidValid, sigStatus: 'invalid' });
       }

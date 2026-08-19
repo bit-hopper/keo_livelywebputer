@@ -2266,6 +2266,15 @@ module.exports = function (route, app) {
     var handle = req.params.handle;
     var objId = req.params.objId;
 
+    // Every version of an objId is served from this same URL — a browser
+    // that caches this GET (nothing here previously said not to) can go on
+    // serving an earlier version (e.g. a pre-send draft that predates
+    // signing, or recipients as they stood before a reseal) indefinitely.
+    // _trimRecipientsForNonOwner's per-viewer response makes this worse: a
+    // cached response is scoped to whichever identity happened to fetch it
+    // first. Always hit the network.
+    res.set("Cache-Control", "no-store");
+
     objectRepo.get(objId, function (err, envelope) {
       if (err) return res.status(500).json({ error: String(err) });
       if (!envelope)
