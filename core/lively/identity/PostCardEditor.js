@@ -1978,6 +1978,10 @@ module('lively.identity.PostCardEditor')
         handleInput.type = 'text';
         handleInput.placeholder = 'handle (no @)';
         handleInput.style.cssText = 'width:100%;box-sizing:border-box;font-size:12px;padding:5px 7px;border:1px solid #ccc;border-radius:3px;margin-bottom:6px;';
+        // Reply preset (§5.2, see newCard) — prefill rather than auto-send,
+        // so the recipient is still a step the user confirms by clicking
+        // Send.
+        if (self._replyPresetRecipient) handleInput.value = self._replyPresetRecipient;
         handleSection.appendChild(handleInput);
 
         var handleMsg = document.createElement('div');
@@ -3352,6 +3356,10 @@ module('lively.identity.PostCardEditor')
       },
 
       // Create a new genesis postcard (objId not yet known) and open the editor.
+      // opts.recipientHandle/opts.visibility (PostcardDesignSpec-v2.md §5.2's
+      // reply presets): applied *after* _setup(), since _setup() itself
+      // resets _visibility/_recipientHandles to their new-card defaults —
+      // setting them beforehand would just get overwritten.
       newCard: function (handle, options) {
         var opts = options || {};
         var editor = new lively.identity.PostCardEditor(lively.rect(0, 0, 680, 520));
@@ -3366,6 +3374,12 @@ module('lively.identity.PostCardEditor')
         } else {
           this._openInCenteredWindow(editor, 'New Post Card');
           editor._setup();
+        }
+        if (opts.recipientHandle) {
+          editor._visibility = opts.visibility || 'private';
+          editor._recipientHandles = [opts.recipientHandle];
+          editor._replyPresetRecipient = opts.recipientHandle;
+          editor._updateVisibilityBtn();
         }
         return editor;
       },

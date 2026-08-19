@@ -74,6 +74,7 @@ module("lively.identity.PostCardView")
           "_editBtn",
           "_footerEl",
           "_tipJarChipEl",
+          "_replyBtnEl",
           "_pillsWrapEl",
           "_reactionPickerEl",
           "_pickerCloseHandler",
@@ -452,6 +453,7 @@ module("lively.identity.PostCardView")
         // _renderReactionsFooter, since state.reactionsEnabled isn't known
         // until the envelope loads.
         _buildReactionsFooter: function (front) {
+          var self = this;
           var footer = document.createElement("div");
           footer.className = "lively-postcard-view-reactions-footer";
           footer.style.cssText = [
@@ -472,19 +474,54 @@ module("lively.identity.PostCardView")
           front.appendChild(footer);
           this._footerEl = footer;
 
-          // Two independent sub-areas so a tip-jar-only card (reactions off)
-          // and a reactions-only card (no tip jar) both render correctly —
-          // the tip chip is rebuilt once per envelope load, the pills wrap
-          // is rebuilt on every reactions poll, and neither clear should
-          // wipe out the other (§5.4: reactionsEnabled/tipJarAddress are
-          // independent toggles).
+          // Three independent sub-areas so a tip-jar-only card (reactions
+          // off), a reply-only card (reactions off, no tip jar), and a
+          // reactions-only card (no tip jar) all render correctly — the tip
+          // chip and reply button are rebuilt once per envelope load, the
+          // pills wrap is rebuilt on every reactions poll, and none of the
+          // three clears should wipe out the others (§5.4:
+          // reactionsEnabled/replyEnabled/tipJarAddress are independent
+          // toggles).
           var tipJarChip = document.createElement("span");
           tipJarChip.style.cssText = "flex:none;display:flex;align-items:center;gap:4px;";
           footer.appendChild(tipJarChip);
           this._tipJarChipEl = tipJarChip;
 
+          // Reply takes the tip jar chip's old neighboring (left) slot;
+          // reactions moves to the far right (see pillsWrap's
+          // margin-left:auto below) to make room for it.
+          var replyBtn = document.createElement("button");
+          replyBtn.textContent = "↩";
+          replyBtn.title = "Reply";
+          replyBtn.style.cssText = [
+            "flex:none",
+            "width:18px",
+            "height:18px",
+            "line-height:1",
+            "padding:0",
+            "font-size:12px",
+            "border-radius:50%",
+            "cursor:pointer",
+            "border:1px solid #ddd",
+            "background:#fafafa",
+            "color:#777",
+            "display:none",
+          ].join(";");
+          ["mousedown", "click"].forEach(function (t) {
+            replyBtn.addEventListener(t, function (e) {
+              e.preventDefault();
+              e.stopPropagation();
+              if (t === "click") self._openReply();
+            });
+          });
+          footer.appendChild(replyBtn);
+          this._replyBtnEl = replyBtn;
+
+          // margin-left:auto pushes this (and only this) sub-area to the
+          // footer's far right within the flex row, leaving the tip jar
+          // chip and reply button in their left-hand slots.
           var pillsWrap = document.createElement("span");
-          pillsWrap.style.cssText = "flex:none;display:flex;align-items:center;gap:4px;";
+          pillsWrap.style.cssText = "flex:none;display:flex;align-items:center;gap:4px;margin-left:auto;";
           footer.appendChild(pillsWrap);
           this._pillsWrapEl = pillsWrap;
         },
@@ -893,11 +930,13 @@ module("lively.identity.PostCardView")
         // actually lists a user's own authored cards is that mailbox tab.
         _renderReactionsFooter: function (envelope) {
           var reactionsOn = !(envelope.state && envelope.state.reactionsEnabled === false);
+          var replyOn = !(envelope.state && envelope.state.replyEnabled === false);
           var tipJarAddress = (envelope.state && envelope.state.tipJarAddress) || null;
 
-          if (!reactionsOn && !tipJarAddress) {
+          if (!reactionsOn && !tipJarAddress && !replyOn) {
             this._footerEl.style.display = "none";
             this._tipJarChipEl.innerHTML = "";
+            this._replyBtnEl.style.display = "none";
             this._pillsWrapEl.innerHTML = "";
             this._closeReactionPicker();
             return;
@@ -907,6 +946,12 @@ module("lively.identity.PostCardView")
 
           this._tipJarChipEl.innerHTML = "";
           if (tipJarAddress) this._renderTipJarChip(tipJarAddress);
+
+          // Reply additionally requires a logged-in viewer — an anonymous
+          // visitor has no session to compose a reply as (mirrors the
+          // reactions "+" button's own currentUser gate below).
+          this._replyBtnEl.style.display =
+            (replyOn && lively.identity.did.currentUser()) ? "" : "none";
 
           if (reactionsOn) {
             this._pillsWrapEl.style.display = "";
@@ -1127,6 +1172,38 @@ module("lively.identity.PostCardView")
           fetch(url, { method: "DELETE", credentials: "include" })
             .then(function () { self._loadReactions(); })
             .catch(function () {});
+        },
+      },
+
+      "reply",
+      {
+        // Reply (PostcardDesignSpec-v2.md §5.2) — opens a new PostCardEditor
+        // compose window rather than editing in place, since a plain post
+        // card is immutable once sent (§1's split; see §5.2's full
+        // rationale). Preset behavior:
+        //  - replyTo always set, so the new card threads under this one
+        //    (surfaced via GET .../replies, §8.2).
+        //  - constellation carried over, so a reply to a constellation post
+        //    posts into the same constellation by default.
+        //  - if this card was sent to the viewer specifically (a private/
+        //    shared card the viewer isn't the owner of — "delivered via
+        //    /inbox" in spec terms), the reply presets its recipient to
+        //    this card's sender and its visibility to private, so replying
+        //    behaves like writing back. A standalone public post gets no
+        //    recipient preset — the reply is just posted (to the viewer's
+        //    own profile, or into the same constellation).
+        _openReply: function () {
+          var currentUser = lively.identity.did.currentUser();
+          if (!currentUser || !this._envelope) return;
+          var opts = { replyTo: { objId: this._objId, anchor: null } };
+          if (this._envelope.constellation) opts.constellation = this._envelope.constellation;
+          if (!this._isOwner && this._envelope.visibility !== "public") {
+            opts.recipientHandle = this._handle;
+            opts.visibility = "private";
+          }
+          lively.require("lively.identity.PostCardEditor").toRun(function () {
+            lively.identity.PostCardEditor.newCard(currentUser.handle, opts);
+          });
         },
       },
 
