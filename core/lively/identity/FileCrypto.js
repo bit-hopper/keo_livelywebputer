@@ -54,7 +54,7 @@ module('lively.identity.FileCrypto')
         if (onWaiting) onWaiting();
         var ch = new Uint8Array(32);
         crypto.getRandomValues(ch);
-        wa.deriveKek({ credentialId: user.credentialId, challenge: ch }, thenDo);
+        wa.deriveKek({ credentialId: user.credentialId, rpId: user.rpId, challenge: ch }, thenDo);
       },
 
     },

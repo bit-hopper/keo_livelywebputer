@@ -1572,7 +1572,7 @@ module('lively.identity.PostCardEditor')
           self._setStatus('Confirm passkey…');
           var ch = new Uint8Array(32);
           crypto.getRandomValues(ch);
-          wa.deriveKek({ credentialId: user.credentialId, challenge: ch }, function (err) { cb2(err); });
+          wa.deriveKek({ credentialId: user.credentialId, rpId: user.rpId, challenge: ch }, function (err) { cb2(err); });
         }
 
         withKek(function (err) {
