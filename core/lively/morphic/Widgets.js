@@ -1765,6 +1765,11 @@ lively.morphic.World.addMethods(
                 openInWorldCenter().comeForward();
         });
     },
+    openPublicPartsBrowser: function() {
+        lively.require('lively.identity.PublicPartsBrowser').toRun(function() {
+            lively.identity.PublicPartsBrowser.open();
+        });
+    },
     openEntanglementInspectorFor: function(object, evt) {
         var e = object.buildSpec().createEntanglement();
         e.postEntangle(object);
@@ -2177,6 +2182,7 @@ lively.morphic.World.addMethods(
         var world = this;
         var items = [
             ['Inventory', this.openPartsBin.bind(this)],
+            ['Browse Public Inventory', this.openPublicPartsBrowser.bind(this)],
             ['Items', this.morphMenuDefaultPartsItems()],
             ['Search', [
                 ['code', function() { lively.ide.commands.byName["lively.ide.codeSearch"].exec(); }],

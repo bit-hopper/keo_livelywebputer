@@ -3271,6 +3271,39 @@ module.exports = function (route, app) {
     });
   });
 
+  // Cross-user public Inventory browse/search — "Publish to Inventory"
+  // (visibility:'public') previously had no discovery path at all: the
+  // classic PartsBinBrowser's WebDAV-backed Search command structurally
+  // can't see identity-published parts (they were never written to
+  // WebDAV), and the browser's own "*myparts*"/"#tag" categories only ever
+  // read the CURRENT signed-in user's local ObjectStore — a public part
+  // was, in practice, only ever visible to its own publisher. Mirrors
+  // /postcards/nearby's pattern (same optionalAuth + handle-resolution +
+  // defense-in-depth visibility filter), backed by
+  // ObjectRepository.listPublicParts. q matches a partName substring OR an
+  // exact objId, so pasting an objId (e.g. from a share link) works the
+  // same as typing a name.
+  app.get("/parts/public", auth.optionalAuth, function (req, res) {
+    var limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
+    var cursor = req.query.cursor || null;
+    var q = typeof req.query.q === "string" ? req.query.q.trim().slice(0, 200) : null;
+
+    objectRepo.listPublicParts({ limit: limit, cursor: cursor, q: q || null }, function (err, result) {
+      if (err) return res.status(500).json({ error: String(err) });
+      // visibility:'public' is already filtered at the SQL level — this is
+      // defense-in-depth matching /postcards/nearby's own pattern.
+      var visible = result.parts.filter(function (p) { return p.visibility === "public"; });
+      var dids = visible.map(function (p) { return p.did; });
+      _resolveHandlesForDids(dids, function (resolveErr, didToHandle) {
+        if (resolveErr) return res.status(500).json({ error: String(resolveErr) });
+        result.parts = visible.map(function (p) {
+          return Object.assign({}, p, { handle: didToHandle[p.did] || null });
+        });
+        res.json(result);
+      });
+    });
+  });
+
   app.get("/c/:constellation/feed", auth.optionalAuth, function (req, res) {
     var name = req.params.constellation;
     constellationRegistry.get(name, function (err, constellation) {

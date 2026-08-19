@@ -405,6 +405,89 @@ function listForUser(did, thenDo) {
   });
 }
 
+// List the latest version of every public part, newest first, optionally
+// filtered by a partName substring or exact objId match. Same "latest per
+// obj_id" join pattern as listForUser/listPostcardsNearby, but scoped to
+// type='part' AND visibility='public' across ALL authors instead of one
+// did — the cross-user index type/part never had (unlike constellations'
+// listPublic or postcards' listPostcardsNearby, which this mirrors).
+// Metadata only (no payload/htmlLogo) — callers fetch the full envelope
+// via the existing GET /@:handle/:objId route when actually opening a
+// result, same lazy-load split every other listing here already uses.
+// opts: { limit, cursor, q }
+// Calls thenDo(null, { parts: envelopeMetadata[], cursor: String|null }).
+function listPublicParts(opts, thenDo) {
+  var limit = (opts && opts.limit) || 20;
+  var cursor = (opts && opts.cursor) || null;
+  var q = (opts && opts.q) || null;
+
+  withDB(function (err, db) {
+    if (err) return thenDo(err);
+
+    function withPivot(cb) {
+      if (!cursor) return cb(null, null);
+      db.get(
+        'SELECT MAX(id) AS pivot FROM objects WHERE obj_id = ? AND type = \'part\'',
+        [cursor],
+        function (err, row) { cb(err, row ? row.pivot : null); }
+      );
+    }
+
+    withPivot(function (err, pivotId) {
+      if (err) return thenDo(err);
+      var conditions = [];
+      var params = [];
+      if (q) {
+        conditions.push('(json_extract(o.envelope, \'$.state.partName\') LIKE ? ESCAPE \'\\\' OR o.obj_id = ?)');
+        params.push('%' + _escapeLikePrefix(q) + '%', q);
+      }
+      if (pivotId) {
+        conditions.push('o.id < ?');
+        params.push(pivotId);
+      }
+      var whereExtra = conditions.length ? ' AND ' + conditions.join(' AND ') : '';
+      var sql =
+        'SELECT o.envelope, o.obj_id, o.id FROM objects o' +
+        ' INNER JOIN (' +
+        '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
+        '   WHERE type = \'part\' AND visibility = \'public\'' +
+        '   GROUP BY obj_id' +
+        ' ) latest ON o.id = latest.max_id' +
+        ' WHERE 1=1' + whereExtra +
+        ' ORDER BY o.id DESC LIMIT ?';
+      params.push(limit + 1);
+
+      db.all(sql, params, function (err, rows) {
+        if (err) return thenDo(err);
+        var hasMore = rows.length > limit;
+        if (hasMore) rows = rows.slice(0, limit);
+        var parts = rows.map(function (r) {
+          try {
+            var env = JSON.parse(r.envelope);
+            var state = env.state || {};
+            return {
+              objId: env.objId,
+              did: env.did,
+              // htmlLogo deliberately omitted — unlike a postcard's state,
+              // a part's state.htmlLogo is a full rendered-HTML snapshot
+              // (multiple KB per row), which would make a 20-40 row
+              // listing response heavy for no reason. Full envelope
+              // (htmlLogo included) is one GET /@:handle/:objId away once
+              // a specific result is actually opened.
+              state: { partName: state.partName, comment: state.comment, tags: state.tags },
+              record: { cid: env.record && env.record.cid },
+              created: env.created,
+              visibility: env.visibility || 'public'
+            };
+          } catch (e) { return null; }
+        }).filter(Boolean);
+        var nextCursor = hasMore ? rows[rows.length - 1].obj_id : null;
+        thenDo(null, { parts: parts, cursor: nextCursor });
+      });
+    });
+  });
+}
+
 // Get the latest profile envelope for a DID.
 // Profiles are type:'profile' singletons — one per user.
 // Calls thenDo(null, envelope | null).
@@ -1254,6 +1337,7 @@ module.exports = {
   getVersion:                    getVersion,
   getVersionsSince:              getVersionsSince,
   listForUser:                   listForUser,
+  listPublicParts:               listPublicParts,
   getProfileForDid:              getProfileForDid,
   getRecoveryWorldForDid:        getRecoveryWorldForDid,
   getSettingsForDid:             getSettingsForDid,

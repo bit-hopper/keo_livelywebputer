@@ -1167,6 +1167,21 @@ handleOnCapture);
     onBackspacePressed: function(evt) {
         // don't trigger browser back
         if (this.eventsAreIgnored) { return false; }
+        // isFocused() is Lively's own morphic-focus bookkeeping, not real DOM
+        // focus — a morph can be "focused" this way (e.g. from an earlier
+        // mousedown) while actual document.activeElement is a native
+        // <input>/<textarea>/<select>/contenteditable nested inside it (a
+        // self-rendering morph embedding real form controls, same idiom as
+        // lively.identity.PostCardView). Confirmed live: without this guard,
+        // pressing Backspace to delete a character in such a control fires
+        // keydown/keyup but preventDefault() here silently blocks the actual
+        // deletion — the browser's native text-edit behavior never runs.
+        // Same activeElement check already used by installDefaultGlobalKeys's
+        // ensureFocusedMorph/doGlobalActionsOnBubble in this file.
+        var activeEl = document.activeElement;
+        if (activeEl && (/^(INPUT|TEXTAREA|SELECT)$/.test(activeEl.tagName) || activeEl.isContentEditable)) {
+            return false;
+        }
         if (this.isFocused()) evt.preventDefault();
         return false;
     },
