@@ -1017,6 +1017,40 @@ module.exports = function (route, app) {
   domainVerifier.recheckAllDomains();
   setInterval(function () { domainVerifier.recheckAllDomains(); }, 6 * 60 * 60 * 1000);
 
+  // ─── mobile gate ────────────────────────────────────────────────────────────
+  // A phone visitor landing on anything other than /start.html (or
+  // /warpdrop, its one deliberate exception — see buildWarpDropPage's own
+  // mobile-friendly viewport handling) gets bounced there — every other
+  // page in this app (constellations, wikis, canvases, profile pages,
+  // individual postcards, PartsBin, arbitrary saved worlds) assumes a
+  // mouse+keyboard desktop session, and start.html is the one page with
+  // an actual mobile-mode layout built for it (see World.applyResponsiveMode
+  // in its own saved snapshot). User-Agent based rather than the
+  // clientWidth<768 check every client-side mobile-mode check elsewhere in
+  // this app uses, since this has to run before any page's own JS loads —
+  // there's no viewport to measure yet server-side.
+  //
+  // Registered as app.get() with a catch-all path regex, NOT app.use() —
+  // confirmed live the hard way that a plain app.use(fn) middleware here
+  // never actually ran (not even for entirely unmatched paths, checked via
+  // a diagnostic response header). life_star's subserver loader
+  // (node_modules/life_star/lib/subservers.js's
+  // runFuncAndRecordNewExpressRoutes) walks this old Express 3.x-style
+  // app.routes[method] object to find each subserver's newly-registered
+  // VERB routes and unshifts them to the front so later-loaded subservers
+  // still win route-matching priority — app.use() middleware isn't
+  // tracked by that mechanism at all. app.get() is, and does fire.
+  var MOBILE_USER_AGENT = /iPhone|iPod|Android.*Mobile|Windows Phone|BlackBerry|IEMobile|Opera Mini/i;
+  var STATIC_ASSET_PATH = /\.(?:js|css|png|jpe?g|gif|svg|ico|webp|woff2?|ttf|eot|json|map|mp3|mp4|webm|txt|xml|pdf)$/i;
+  app.get(/^\/.*/, function (req, res, next) {
+    if (req.path === "/start.html") return next();
+    if (req.path === "/warpdrop") return next();
+    if (STATIC_ASSET_PATH.test(req.path)) return next();
+    if (req.accepts(["html", "json"]) !== "html") return next();
+    if (!MOBILE_USER_AGENT.test(req.headers["user-agent"] || "")) return next();
+    res.redirect(302, "/start.html");
+  });
+
   // ─── challenge ─────────────────────────────────────────────────────────────
 
   app.get(route + "challenge", function (req, res) {
