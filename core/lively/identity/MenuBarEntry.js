@@ -17,6 +17,10 @@ module("lively.identity.MenuBarEntry")
       },
     });
 
+    lively.require("lively.identity.VoiceControlPanel").toRun(function () {
+      lively.identity.VoiceControlPanel.init();
+    });
+
     lively.BuildSpec(
       "lively.identity.MenuBarEntry",
       lively.BuildSpec("lively.morphic.tools.MenuBarEntry").customize({
@@ -55,6 +59,7 @@ module("lively.identity.MenuBarEntry")
             ["My profile",         function () { self.openMyProfile(); }],
             ["My worlds",          function () { self.openMyWorlds(); }],
             ["My Constellations",  function () { self.openMyConstellations(); }],
+            ["Friends",            function () { self.openFriends(); }],
             ["Wallet",             function () { self.openWallet(); }],
             ["Mailbox", [
               ["Received",  function () { self.openMailbox("received");  }],
@@ -169,6 +174,17 @@ module("lively.identity.MenuBarEntry")
           var box = new lively.morphic.Box(lively.rect(0, 0, 400, 300));
           box.openInWindow({
             title: "Settings",
+            pos: lively.morphic.World.current().visibleBounds().center(),
+          });
+        },
+
+        // Placeholder — no friends list/browser exists yet (the only Friends
+        // UI so far is the stub panel on ProfileCard). Opens a blank window
+        // titled "Friends" to be filled in later.
+        openFriends: function openFriends() {
+          var box = new lively.morphic.Box(lively.rect(0, 0, 400, 300));
+          box.openInWindow({
+            title: "Friends",
             pos: lively.morphic.World.current().visibleBounds().center(),
           });
         },
