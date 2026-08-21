@@ -96,6 +96,13 @@ module("lively.identity.ConstellationLounge")
     var NAV_H = 40;
     var ROW_GAP = 16;
 
+    // Comment thread (Reddit-style, no votes) geometry/palette.
+    var COMMENT_INDENT = 30;   // px per nesting depth
+    var COMMENT_AVATAR = 22;   // px, square
+    var THREAD_LINE_COLOR = Color.rgb(224, 227, 230);
+    var COMMENT_META_COLOR = Color.rgb(120, 120, 120);
+    var COMMENT_ACCENT = "#e8497e";  // same pink accent as lively.commerce.Shop's --color-accent
+
     Object.subclass("lively.identity.ConstellationLoungeController",
 
     "initializing", {
@@ -111,15 +118,19 @@ module("lively.identity.ConstellationLounge")
         this._feedCards = [];      // top-level stack, newest-first
         this._feedCursor = null;
         this._activeIndex = -1;
-        this._focusStack = [];     // [rootObjId, ...focusedReplyObjIds]
 
         this._wikiPages = [];
         this._wikiPagesFiltered = null;
         this._activeWikiObjId = null;
 
+        this._threadRootObjId = null;
         this._threadReplies = [];
         this._threadChildrenCache = {};
         this._threadExpanded = {};
+        this._replyBoxOpenFor = null;   // objId of the comment whose inline reply box is open, "ROOT" for the top composer, or null
+        this._draftText = {};           // same keys as above -> in-progress composer text, kept across re-renders
+        this._draftAttachment = {};     // same keys -> {uploading:true} while in flight, else {kind, url, name, entry}
+        this._didHandleCache = {};      // did -> handle, for authors not already in quickInfo.memberHandles
 
         this._frontCardBox = null;
         this._backCardBox = null;
@@ -245,6 +256,8 @@ module("lively.identity.ConstellationLounge")
         var staticEl = document.getElementById("lounge-static");
         if (staticEl) staticEl.remove();
 
+        this._ensureCommentBodyStyle();
+
         this._searchBox = this._buildSearchField();
         $world.addMorph(this._searchBox);
         this._styleSearchGoButton();
@@ -358,6 +371,23 @@ module("lively.identity.ConstellationLounge")
         morph.disableDragging();
         morph.disableGrabbing();
         (morph.submorphs || []).forEach(this._disableDragging, this);
+      },
+
+      // Comment bodies are rendered as raw HTML (reusing postCardUtils.
+      // snapshotToHtml, same as PostCardView.js's own content area — see
+      // the "thread" section below) inside a Box morph's shapeNode, so they
+      // need the same kind of one-time stylesheet PostCardUtils.js's own
+      // _ensureMediaStyle already injects for postcard media — just scoped
+      // to tightening <p> margins for a compact comment list instead.
+      _ensureCommentBodyStyle: function () {
+        if (document.getElementById("lounge-comment-body-style")) return;
+        var styleEl = document.createElement("style");
+        styleEl.id = "lounge-comment-body-style";
+        styleEl.textContent =
+          ".lounge-comment-body{font-size:12.5px;line-height:1.45;color:#1a1a1b;}" +
+          ".lounge-comment-body p{margin:0 0 6px;}" +
+          ".lounge-comment-body p:last-child{margin-bottom:0;}";
+        document.head.appendChild(styleEl);
       },
     },
 
@@ -564,7 +594,6 @@ module("lively.identity.ConstellationLounge")
       _showActiveCard: function () {
         var card = this._feedCards[this._activeIndex];
         if (!card) return;
-        this._focusStack = [card.objId];
         this._renderNavPosition();
         this._renderCardInto(this._frontCardBox, card.objId);
         this._loadThread(card.objId);
@@ -634,19 +663,35 @@ module("lively.identity.ConstellationLounge")
       },
     },
 
-    // ─── reply thread — recursive, collapsible, click-to-focus ────────────────
+    // ─── comment thread — Reddit-style, inline, no votes ───────────────────────
+    // Every comment renders inline (avatar, handle, relative time, full body,
+    // Reply/collapse actions) — there's no "click to focus into the main card
+    // slot" anymore; the twisty only shows/hides a comment's own children.
+    // The /replies list endpoint deliberately returns metadata only (no
+    // record.payload — see ObjectRepository.js's _runPostcardQuery), so a
+    // level's replies get a full-envelope fetch per row before they're ever
+    // rendered (_hydrateReplies) — the same fetch-then-render sequence
+    // _renderCardInto already uses for the big card, just batched for a
+    // whole list. Composing a reply reuses the same lively.morphic.Text +
+    // allowInput technique the search field above already established in
+    // this file (not a raw <textarea> in the shapeNode) — real Lively text
+    // editing has none of the native-input focus-stealing gotchas documented
+    // in CLAUDE.md, since those only ever affected genuine DOM <input>/
+    // <textarea> elements.
 
     "thread", {
       _loadThread: function (rootObjId) {
         var self = this;
+        this._threadRootObjId = rootObjId;
         this._threadChildrenCache = {};
         this._threadExpanded = {};
+        this._replyBoxOpenFor = null;
         (this._threadContainer.submorphs || []).slice().forEach(function (m) { m.remove(); });
-        var loading = lively.morphic.Text.makeLabel("Loading replies…", { fontSize: 12, textColor: Color.gray });
+        var loading = lively.morphic.Text.makeLabel("Loading comments…", { fontSize: 12, textColor: Color.gray });
         loading.setPosition(lively.pt(0, 0));
         this._threadContainer.addMorph(loading);
 
-        this._fetchReplies(rootObjId, function (err, replies) {
+        this._loadReplyLevel(rootObjId, function (err, replies) {
           self._threadReplies = err ? [] : replies;
           self._renderThreadTree();
         });
@@ -671,122 +716,666 @@ module("lively.identity.ConstellationLounge")
         xhr.send();
       },
 
-      // Rebuilds the whole visible tree from this._threadReplies +
-      // this._threadExpanded + this._threadChildrenCache — simplest
-      // correct way to keep an expand/collapse-anywhere tree in the right
-      // visual order without hand-patching morph insertion points.
-      _renderThreadTree: function () {
+      // Fetches one level's reply metadata, then hydrates every reply with
+      // its real body HTML + author handle before handing back — a caller
+      // never renders a row that isn't already fully loaded.
+      _loadReplyLevel: function (parentObjId, thenDo) {
         var self = this;
+        this._fetchReplies(parentObjId, function (err, replies) {
+          if (err || !replies.length) return thenDo(err, replies || []);
+          self._hydrateReplies(replies, function () { thenDo(null, replies); });
+        });
+      },
+
+      _hydrateReplies: function (replies, thenDo) {
+        var self = this;
+        var dids = [];
+        replies.forEach(function (r) { if (dids.indexOf(r.did) === -1) dids.push(r.did); });
+        this._resolveHandlesBatch(dids, function (handleMap) {
+          var pending = replies.length;
+          replies.forEach(function (r) {
+            r._handle = handleMap[r.did] || null;
+            self._fetchEnvelope(r.objId, function (err, envelope) {
+              r._bodyHtml = self._extractReplyBodyHtml(envelope, err);
+              if (--pending === 0) thenDo();
+            });
+          });
+        });
+      },
+
+      // Same visibility handling as PostCardView.js's _renderContentArea
+      // public branch (plain doc-or-snapshot, hydrateEmbeddedParts) —
+      // decrypting an encrypted reply inline isn't attempted here, matching
+      // this being a lightweight comment list rather than a second full
+      // card renderer; an encrypted reply just shows a locked placeholder.
+      _extractReplyBodyHtml: function (envelope, err) {
+        if (err || !envelope) return '<span style="color:#999;font-style:italic;">(could not load)</span>';
+        if (envelope.visibility !== "public") {
+          return '<span style="color:#999;font-style:italic;">🔒 Encrypted reply</span>';
+        }
+        var payload = envelope.record && envelope.record.payload;
+        var snapshot = payload &&
+          (payload.format === "prosemirror-doc-v1" ? payload.doc : payload.snapshot);
+        return snapshot ? lively.identity.postCardUtils.snapshotToHtml(snapshot) : "";
+      },
+
+      // Same batch endpoint _resolveHandle already uses, generalized to
+      // resolve several dids in one request — quickInfo.memberHandles and
+      // this._didHandleCache (dids resolved by an earlier batch) are both
+      // checked first, so a level where every author is already a known
+      // constellation member (the common case) needs no request at all.
+      _resolveHandlesBatch: function (dids, thenDo) {
+        var self = this;
+        var qi = this._quickInfo || {};
+        var known = {};
+        var unknown = [];
+        dids.forEach(function (did) {
+          if (qi.memberHandles && qi.memberHandles[did]) known[did] = qi.memberHandles[did];
+          else if (self._didHandleCache[did]) known[did] = self._didHandleCache[did];
+          else unknown.push(did);
+        });
+        if (!unknown.length) return thenDo(known);
+
+        var base = lively.identity.did.baseUrl();
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", base + "/dids/handles?dids=" + encodeURIComponent(unknown.join(",")), true);
+        xhr.withCredentials = true;
+        xhr.setRequestHeader("Accept", "application/json");
+        xhr.onload = function () {
+          if (xhr.status === 200) {
+            try {
+              var data = JSON.parse(xhr.responseText);
+              Object.keys(data.handles || {}).forEach(function (did) {
+                known[did] = data.handles[did];
+                self._didHandleCache[did] = data.handles[did];
+              });
+            } catch (e) {}
+          }
+          thenDo(known);
+        };
+        xhr.onerror = function () { thenDo(known); };
+        xhr.send();
+      },
+
+      // Rebuilds the whole visible tree from this._threadReplies +
+      // this._threadExpanded + this._threadChildrenCache — simplest correct
+      // way to keep an expand/collapse-anywhere tree in the right visual
+      // order without hand-patching morph insertion points. A "join the
+      // conversation" composer always sits first, same as a real Reddit
+      // thread's top-level comment box.
+      _renderThreadTree: function () {
         var container = this._threadContainer;
         (container.submorphs || []).slice().forEach(function (m) { m.remove(); });
-        var w = container.getExtent().x;
+        var w = container.getExtent().x || CARD_W;
 
-        var breadcrumb = this._buildBreadcrumbRow(w);
-        container.addMorph(breadcrumb);
-        breadcrumb.setPosition(lively.pt(0, 0));
-        var y = breadcrumb.getExtent().y + 8;
+        var y = this._renderComposerIfSignedIn(
+          container, "ROOT", this._threadRootObjId, 0, 0, w, "Start conversation");
+        y += 10;
 
         if (!this._threadReplies.length) {
-          var empty = lively.morphic.Text.makeLabel("No replies yet.", { fontSize: 12, textColor: Color.gray });
+          var empty = lively.morphic.Text.makeLabel("No comments yet — be the first to reply.", { fontSize: 12, textColor: Color.gray });
           empty.setPosition(lively.pt(0, y));
+          empty.setExtent(lively.pt(w, 16));
           container.addMorph(empty);
         } else {
-          this._layoutReplyLevel(container, this._threadReplies, 0, y, w);
+          this._renderCommentLevel(container, this._threadReplies, 0, y, w);
         }
         this._disableDragging(container);
       },
 
-      _layoutReplyLevel: function (container, replies, depth, y, w) {
+      _renderCommentLevel: function (container, replies, depth, y, w) {
         var self = this;
         replies.forEach(function (reply) {
-          var row = self._buildReplyRow(reply, depth, w);
-          container.addMorph(row);
-          row.setPosition(lively.pt(0, y));
-          y += row.getExtent().y + 4;
-          if (self._threadExpanded[reply.objId]) {
-            var children = self._threadChildrenCache[reply.objId];
-            if (children) {
-              y = self._layoutReplyLevel(container, children, depth + 1, y, w);
-            } else {
-              var loading = lively.morphic.Text.makeLabel("Loading…", { fontSize: 11, textColor: Color.gray });
-              loading.setPosition(lively.pt((depth + 1) * 16, y));
-              loading.setExtent(lively.pt(w - (depth + 1) * 16, 16));
-              container.addMorph(loading);
-              y += 20;
-            }
-          }
+          y = self._renderCommentNode(container, reply, depth, y, w);
         });
         return y;
       },
 
-      _buildBreadcrumbRow: function (w) {
+      // Lays out one comment (avatar/header/body/actions), its own inline
+      // reply composer if open, its children if expanded, and — if it has
+      // any visible children — a single vertical guideline box connecting
+      // its avatar down to its last child, the same continuous-thread-line
+      // idiom a real Reddit comment tree uses. Returns the y position just
+      // below everything this node (and its subtree) occupied.
+      _renderCommentNode: function (container, reply, depth, y, w) {
         var self = this;
-        var row = new lively.morphic.Box(lively.rect(0, 0, w, 18));
-        row.applyStyle({ fill: null, borderWidth: 0 });
-        var x = 0;
-        this._focusStack.forEach(function (objId, i) {
-          if (i > 0) {
-            var sep = lively.morphic.Text.makeLabel(" › ", { fontSize: 11, textColor: Color.gray });
-            sep.setPosition(lively.pt(x, 2));
-            sep.setExtent(lively.pt(16, 14));
-            row.addMorph(sep);
-            x += 16;
-          }
-          var label = i === 0 ? "top" : "reply";
-          var isLast = i === self._focusStack.length - 1;
-          var link = lively.morphic.Text.makeLabel(label, {
-            fontSize: 11,
-            textColor: isLast ? Color.rgb(51, 51, 51) : Color.rgb(51, 102, 204),
+        var x = depth * COMMENT_INDENT;
+        var rowW = w - x;
+        var topY = y;
+
+        var avatar = new lively.morphic.Image(lively.rect(0, 0, COMMENT_AVATAR, COMMENT_AVATAR));
+        avatar.setImageURL(lively.identity.postCardUtils.identiconDataUrl(reply.did, COMMENT_AVATAR));
+        avatar.applyStyle({ borderRadius: COMMENT_AVATAR / 2, borderWidth: 0, clipMode: "hidden" });
+        container.addMorph(avatar);
+        avatar.setPosition(lively.pt(x, y));
+
+        var textX = x + COMMENT_AVATAR + 8;
+        var textW = Math.max(60, rowW - COMMENT_AVATAR - 8);
+
+        var header = lively.morphic.Text.makeLabel(
+          "@" + (reply._handle || (reply.did || "").slice(0, 10) + "…") + "  ·  " + self._formatRelativeTime(reply.created),
+          { fontSize: 10.5, textColor: COMMENT_META_COLOR });
+        container.addMorph(header);
+        header.setPosition(lively.pt(textX, y + 2));
+        header.setExtent(lively.pt(textW, 14));
+
+        var bodyBox = new lively.morphic.Box(lively.rect(0, 0, textW, 10));
+        bodyBox.applyStyle({ fill: null, borderWidth: 0 });
+        container.addMorph(bodyBox);
+        bodyBox.setPosition(lively.pt(textX, y + 20));
+        var bodyNode = bodyBox.renderContext().shapeNode;
+        bodyNode.className = (bodyNode.className ? bodyNode.className + " " : "") + "lounge-comment-body";
+        bodyNode.innerHTML = reply._bodyHtml || "";
+        // Measure-the-real-DOM, same technique as this file's own text-
+        // sizing convention elsewhere — the body's height genuinely depends
+        // on its (rich, possibly multi-paragraph) content, not a guessed
+        // constant, so it's read back off the live node after the HTML and
+        // width are both already set.
+        var bodyH = Math.max(14, bodyNode.scrollHeight);
+        bodyBox.setExtent(lively.pt(textW, bodyH));
+        lively.identity.postCardUtils.hydrateEmbeddedParts(bodyNode);
+
+        var actionsY = y + 20 + bodyH + 4;
+        var actionsX = textX;
+        if (lively.identity.did.currentUser()) {
+          var replyBtn = self._buildIconLabel("reply", "Reply", COMMENT_META_COLOR, function () {
+            self._replyBoxOpenFor = (self._replyBoxOpenFor === reply.objId) ? null : reply.objId;
+            self._renderThreadTree();
           });
-          link.setPosition(lively.pt(x, 2));
-          link.setExtent(lively.pt(36, 14));
-          link.onMouseDown = function () {
-            self._focusStack = self._focusStack.slice(0, i + 1);
-            self._renderCardInto(self._frontCardBox, objId);
-            self._loadThread(objId);
-          };
-          row.addMorph(link);
-          x += 36;
+          container.addMorph(replyBtn);
+          replyBtn.setPosition(lively.pt(actionsX, actionsY));
+          actionsX += replyBtn.getExtent().x + 10;
+        }
+
+        var expanded = !!self._threadExpanded[reply.objId];
+        var toggleBtn = self._buildIconLabel(
+          expanded ? "expand_more" : "chevron_right",
+          expanded ? "Hide replies" : "Replies",
+          COMMENT_META_COLOR,
+          function () {
+            self._threadExpanded[reply.objId] = !self._threadExpanded[reply.objId];
+            if (self._threadExpanded[reply.objId] && !self._threadChildrenCache[reply.objId]) {
+              self._loadReplyLevel(reply.objId, function (err, children) {
+                self._threadChildrenCache[reply.objId] = err ? [] : children;
+                self._renderThreadTree();
+              });
+            }
+            self._renderThreadTree();
+          });
+        container.addMorph(toggleBtn);
+        toggleBtn.setPosition(lively.pt(actionsX, actionsY));
+
+        var rowBottom = actionsY + 20;
+
+        if (self._replyBoxOpenFor === reply.objId) {
+          rowBottom = self._renderComposerIfSignedIn(
+            container, reply.objId, reply.objId, textX, rowBottom, w - textX,
+            "Replying to @" + (reply._handle || "…"));
+        }
+
+        var childrenBottom = rowBottom;
+        if (expanded) {
+          var children = self._threadChildrenCache[reply.objId];
+          if (children) {
+            if (children.length) {
+              childrenBottom = self._renderCommentLevel(container, children, depth + 1, rowBottom + 6, w);
+            }
+          } else {
+            var loading = lively.morphic.Text.makeLabel("Loading…", { fontSize: 11, textColor: Color.gray });
+            container.addMorph(loading);
+            loading.setPosition(lively.pt(x + COMMENT_INDENT, rowBottom + 6));
+            loading.setExtent(lively.pt(Math.max(30, w - x - COMMENT_INDENT), 16));
+            childrenBottom = rowBottom + 26;
+          }
+        }
+
+        if (childrenBottom > rowBottom + 2) {
+          var lineTop = topY + COMMENT_AVATAR + 2;
+          var line = new lively.morphic.Box(lively.rect(0, 0, 2, Math.max(0, (childrenBottom - 6) - lineTop)));
+          line.setFill(THREAD_LINE_COLOR);
+          line.applyStyle({ borderWidth: 0 });
+          container.addMorph(line);
+          line.setPosition(lively.pt(x + COMMENT_AVATAR / 2 - 1, lineTop));
+        }
+
+        return childrenBottom + 10;
+      },
+
+      // A small icon(Material Symbols)+label affordance — the "Reply" and
+      // "Replies"/"Hide replies" actions under each comment. Constructed at
+      // (0,0) and positioned by the caller, matching this file's own
+      // construct-then-addMorph-then-setPosition convention throughout.
+      _buildIconLabel: function (glyph, label, color, onClick) {
+        var w = Math.max(50, label.length * 6.2 + 26);
+        var row = new lively.morphic.Box(lively.rect(0, 0, w, 16));
+        row.applyStyle({ fill: null, borderWidth: 0 });
+
+        var icon = new lively.morphic.Text(lively.rect(0, 0, 14, 14), glyph);
+        icon.applyStyle({
+          fontFamily: "'Material Symbols Rounded'", fontSize: 10.5, textColor: color,
+          fill: null, borderWidth: 0, allowInput: false, selectable: false,
+          clipMode: "hidden", whiteSpaceHandling: "pre",
         });
+        row.addMorph(icon);
+
+        var text = lively.morphic.Text.makeLabel(label, { fontSize: 10.5, textColor: color, fontWeight: "600" });
+        row.addMorph(text);
+        text.setPosition(lively.pt(17, 1));
+        text.setExtent(lively.pt(w - 17, 14));
+
+        if (onClick) {
+          row.onMouseDown = onClick;
+          row.handStyle = "pointer";
+          icon.eventsAreIgnored = true;
+          text.eventsAreIgnored = true;
+        }
         return row;
       },
 
-      _buildReplyRow: function (reply, depth, w) {
+      // Renders a "join the conversation" (key "ROOT") or per-comment reply
+      // composer — a bordered, generously-rounded box with a multi-line
+      // Lively Text input (the same allowInput technique the search field
+      // above uses, not a raw <textarea>), a toolbar row (image/video are
+      // wired to a real upload; GIF/text-format stay decorative — see this
+      // file's own project memory), an attachment preview strip when
+      // something is staged, and pill-shaped Cancel/Comment(Reply) buttons
+      // on the right. Renders nothing (and returns y unchanged) for a
+      // signed-out visitor, mirroring PostCardView.js's own reply-button
+      // visibility gating. Draft text/attachment are kept in
+      // this._draftText[key]/this._draftAttachment[key] across re-renders
+      // so expanding an unrelated comment elsewhere in the tree doesn't
+      // erase what's being composed here.
+      _renderComposerIfSignedIn: function (container, key, parentObjId, x, y, w, placeholderText) {
+        if (!lively.identity.did.currentUser() || !parentObjId) return y;
         var self = this;
-        var row = new lively.morphic.Box(lively.rect(0, 0, w, 22));
-        row.applyStyle({ fill: null, borderWidth: 0 });
-        var indent = depth * 16;
+        var isRoot = key === "ROOT";
+        var PAD = 14, TOOLBAR_H = 30, BOTTOM_PAD = 12, PREVIEW_H = 48;
+        var staged = this._draftAttachment[key];
+        var H = (isRoot ? 112 : 100) + (staged ? PREVIEW_H : 0);
+        var fieldH = H - PAD - TOOLBAR_H - BOTTOM_PAD - 6 - (staged ? PREVIEW_H : 0);
+        var toolbarY = H - BOTTOM_PAD - TOOLBAR_H;
 
-        var twisty = lively.morphic.Text.makeLabel(this._threadExpanded[reply.objId] ? "▾" : "▸", {
-          fontSize: 11, textColor: Color.gray,
-        });
-        twisty.setPosition(lively.pt(indent, 4));
-        twisty.setExtent(lively.pt(14, 14));
-        twisty.onMouseDown = function () {
-          self._threadExpanded[reply.objId] = !self._threadExpanded[reply.objId];
-          if (self._threadExpanded[reply.objId] && !self._threadChildrenCache[reply.objId]) {
-            self._fetchReplies(reply.objId, function (err, children) {
-              self._threadChildrenCache[reply.objId] = err ? [] : children;
-              self._renderThreadTree();
+        var box = new lively.morphic.Box(lively.rect(0, 0, w, H));
+        box.setFill(Color.white);
+        box.applyStyle({ borderWidth: 1, borderColor: Color.rgb(224, 224, 224), borderRadius: 16 });
+        container.addMorph(box);
+        box.setPosition(lively.pt(x, y));
+
+        var placeholder = lively.morphic.Text.makeLabel(placeholderText, { fontSize: 12, textColor: Color.rgb(170, 170, 170) });
+        placeholder.eventsAreIgnored = true;
+        box.addMorph(placeholder);
+        placeholder.setPosition(lively.pt(PAD, PAD - 2));
+        placeholder.setExtent(lively.pt(w - PAD * 2, fieldH));
+
+        var field = new lively.morphic.Text(lively.rect(PAD, PAD - 2, w - PAD * 2, fieldH), this._draftText[key] || "");
+        field.applyStyle({ allowInput: true, fixedWidth: true, fixedHeight: true, fontSize: 12, fill: null, borderWidth: 0 });
+        placeholder.setVisible(!field.textString);
+        var superKeyDown = field.onKeyDown;
+        field.onKeyDown = function (evt) {
+          var result = superKeyDown.call(this, evt);
+          self._draftText[key] = field.textString;
+          placeholder.setVisible(!field.textString);
+          return result;
+        };
+        box.addMorph(field);
+
+        if (staged) this._renderAttachmentPreview(box, key, staged, PAD, PAD + fieldH + 4, w - PAD * 2, PREVIEW_H - 8);
+
+        // Toolbar — image/video icons open a real file picker and upload
+        // (see _promptFileUpload/_stageAttachmentUpload below); text-format
+        // and GIF stay decorative for now. text_fields is the vendored
+        // Material Symbols ligature for the reference composer's "Aa"
+        // text-formatting glyph (renders as a stylized "Tt").
+        //
+        // Icon box sized generously taller than the target glyph, not
+        // tight to it — same fontSize-is-pt-not-px clipping gotcha
+        // AmbientPresencePanel.js's makeIconButton hit and fixed the same
+        // way (CLAUDE.md's "fontSize on Text morphs is in points, not
+        // pixels" section): a 16px real glyph needs fontSize 12
+        // (16*0.75), and even then a box tightly sized to 16px clips the
+        // bottom — GLYPH_BOX_H stays a few px taller with top padding to
+        // compensate, instead of matching the target size 1:1.
+        var GLYPH_PX = 16, GLYPH_FONT = GLYPH_PX * 0.75, GLYPH_BOX_H = 22;
+        var toolbarX = PAD;
+        // Text, Image, Video, GIF — explicit order per request, not the
+        // order these happen to be easiest to group by type in, so icon
+        // and label items are interleaved from one list instead of drawn
+        // in two separate icons-then-labels passes.
+        [
+          { icon: "text_fields", w: 20 },
+          { icon: "image", w: 20, upload: "image" },
+          { icon: "play_circle", w: 20, upload: "video" },
+          { label: "GIF", w: 28 },
+        ].forEach(function (item) {
+          if (item.icon) {
+            var g = new lively.morphic.Text(lively.rect(0, 0, item.w, GLYPH_BOX_H), item.icon);
+            g.applyStyle({
+              fontFamily: "'Material Symbols Rounded'", fontSize: GLYPH_FONT, textColor: Color.rgb(150, 150, 150),
+              fill: null, borderWidth: 0, allowInput: false, selectable: false, align: "center",
+              padding: lively.Rectangle.inset(0, Math.round((GLYPH_BOX_H - GLYPH_PX) / 2), 0, 0),
+              clipMode: "hidden", whiteSpaceHandling: "pre",
             });
+            box.addMorph(g);
+            g.setPosition(lively.pt(toolbarX, toolbarY + Math.round((TOOLBAR_H - GLYPH_BOX_H) / 2)));
+            toolbarX += item.w + 8;
+            if (item.upload) {
+              g.handStyle = "pointer";
+              g.onMouseDown = function () {
+                if (self._draftAttachment[key]) return; // one attachment at a time
+                self._promptFileUpload(item.upload, function (file) {
+                  if (file) self._stageAttachmentUpload(key, file, item.upload);
+                });
+              };
+            }
+          } else {
+            var lbl = lively.morphic.Text.makeLabel(item.label, { fontSize: 11.5, fontWeight: "700", textColor: Color.rgb(150, 150, 150) });
+            box.addMorph(lbl);
+            lbl.setPosition(lively.pt(toolbarX, toolbarY + 7));
+            lbl.setExtent(lively.pt(item.w, 16));
+            toolbarX += item.w + 6;
           }
+        });
+
+        var postLabel = isRoot ? "Comment" : "Reply";
+        var postW = Math.max(56, postLabel.length * 7.5 + 32);
+        var postBtn = new lively.morphic.Button(lively.rect(0, 0, postW, TOOLBAR_H));
+        box.addMorph(postBtn);
+        postBtn.setPosition(lively.pt(w - PAD - postW, toolbarY));
+        this._paintPillButton(postBtn, {
+          label: postLabel, fillCss: COMMENT_ACCENT, textColor: Color.rgb(255, 255, 255), radius: TOOLBAR_H / 2,
+        });
+
+        var sending = false;
+        postBtn.onMouseDown = function () {
+          if (sending) return;
+          var text = (field.textString || "").trim();
+          var attachment = self._draftAttachment[key];
+          if (attachment && attachment.uploading) return; // wait for the upload to finish
+          if (!text && !attachment) return;
+          sending = true;
+          self._paintPillButton(postBtn, { label: "Sending…", fillCss: COMMENT_ACCENT, textColor: Color.rgb(255, 255, 255), radius: TOOLBAR_H / 2 });
+          self._submitReply(parentObjId, text, attachment, function (err) {
+            sending = false;
+            if (err) {
+              self._paintPillButton(postBtn, { label: postLabel, fillCss: COMMENT_ACCENT, textColor: Color.rgb(255, 255, 255), radius: TOOLBAR_H / 2 });
+              return self._showError("Could not send reply: " + err.message);
+            }
+            delete self._draftText[key];
+            delete self._draftAttachment[key];
+            if (!isRoot) self._replyBoxOpenFor = null;
+            self._reloadAfterReply(parentObjId);
+          });
+        };
+
+        if (!isRoot) {
+          var cancelW = 64;
+          var cancelBtn = new lively.morphic.Button(lively.rect(0, 0, cancelW, TOOLBAR_H));
+          box.addMorph(cancelBtn);
+          cancelBtn.setPosition(lively.pt(w - PAD - postW - 8 - cancelW, toolbarY));
+          this._paintPillButton(cancelBtn, {
+            label: "Cancel", fillCss: "rgb(244,244,245)", textColor: Color.rgb(80, 80, 80), radius: TOOLBAR_H / 2,
+            borderCss: "1px solid rgb(224,224,224)",
+          });
+          cancelBtn.onMouseDown = function () {
+            self._replyBoxOpenFor = null;
+            self._renderThreadTree();
+          };
+        }
+
+        return y + H;
+      },
+
+      // Button.setFill/setBorderColor/applyStyle({fill:...}) silently don't
+      // reach the DOM for a Button created procedurally (`new
+      // lively.morphic.Button(...)` + addMorph, as opposed to one declared
+      // in a BuildSpec's static submorphs array) — confirmed in
+      // feedback_morph_dialog_baseline_polish's PublishToInventoryDialog.js
+      // finding. That finding's own verified-working fix (style the
+      // shapeNode's DOM directly for background/border, but use the
+      // label's own normal setTextColor for text color — an ordinary Text
+      // morph setter, unaffected by the Button-specific bug) is reused here
+      // rather than the untested guess of letting a color style cascade
+      // down from the outer node. WalletSetupDialog.js's _paintToggleButton
+      // is the reference implementation this mirrors. Re-callable any time
+      // a button's label text changes (e.g. "Sending…"), since setLabel
+      // rebuilds the label morph and drops any earlier color set on it.
+      _paintPillButton: function (btn, opts) {
+        btn.setLabel(opts.label);
+        var node = btn.renderContext && btn.renderContext().shapeNode;
+        if (node) {
+          node.style.background = opts.fillCss;
+          node.style.border = opts.borderCss || "none";
+          node.style.borderRadius = opts.radius + "px";
+        }
+        if (btn.label) {
+          if (btn.label.setTextColor) btn.label.setTextColor(opts.textColor);
+          if (btn.label.applyStyle) btn.label.applyStyle({ fontWeight: "600" });
+        }
+      },
+
+      // A hidden native <input type=file>, appended to document.body and
+      // removed right after use — same construction PostCardEditor.js's own
+      // _promptAttachment uses for its 📎 toolbar button (confirmed via
+      // project research before writing this). A file picker doesn't need
+      // real keyboard focus the way a text field does, but appending to
+      // document.body rather than nesting in a morph's shapeNode still
+      // matches this file's own "dialog overlay -> document.body" CLAUDE.md
+      // convention regardless. kind is "image" or "video", used only to
+      // set the file input's accept filter.
+      _promptFileUpload: function (kind, thenDo) {
+        var input = document.createElement("input");
+        input.type = "file";
+        input.accept = kind === "video" ? "video/*" : "image/*";
+        input.style.display = "none";
+        document.body.appendChild(input);
+        input.addEventListener("change", function () {
+          var file = input.files && input.files[0];
+          if (input.parentNode) input.parentNode.removeChild(input);
+          thenDo(file || null);
+        });
+        input.click();
+      },
+
+      // Uploads a file the same way ProfileCard.js's avatar upload and
+      // PostCardEditor.js's _uploadAttachment do for a PUBLIC attachment —
+      // fileCrypto.encryptAndUpload skips the KEK/passkey ceremony entirely
+      // for visibility:"public" (dek/blobNonce come back null), and the
+      // resulting blob is fetchable at a plain, permanent URL
+      // (baseUrl()+"/@handle/blobs/"+blobCid — same _publicBlobUrl formula
+      // PostCardEditor.js uses), so the ProseMirror node can carry a real
+      // `src` immediately instead of the objId+placeholder scheme
+      // encrypted/private attachments need (see PostCardUtils.js's
+      // pmNodeToHtml image/video cases — src-present skips the placeholder
+      // path entirely).
+      _uploadPublicAttachment: function (file, kind, thenDo) {
+        var user = lively.identity.did.currentUser();
+        if (!user) return thenDo(new Error("Not signed in."));
+        lively.require("lively.identity.FileCrypto").toRun(function () {
+          lively.identity.fileCrypto.encryptAndUpload(file, { visibility: "public", name: file.name }, function (err, result) {
+            if (err) return thenDo(err);
+            var base = lively.identity.did.baseUrl();
+            var url = base + "/@" + encodeURIComponent(user.handle) + "/blobs/" + encodeURIComponent(result.blobCid);
+            thenDo(null, {
+              kind: kind, url: url, name: file.name,
+              entry: {
+                objId: result.objId, dek: null, blobCid: result.blobCid, blobNonce: null,
+                name: file.name, mime: file.type || "application/octet-stream",
+              },
+            });
+          });
+        });
+      },
+
+      // Marks the composer as "uploading" immediately (re-rendering so the
+      // preview strip shows a spin-ish status line right away), then swaps
+      // in the real staged attachment once the upload resolves — or clears
+      // it and surfaces the error if it fails. One attachment at a time per
+      // composer (the icon handlers already guard against a second pick
+      // while one is in flight).
+      _stageAttachmentUpload: function (key, file, kind) {
+        var self = this;
+        this._draftAttachment[key] = { uploading: true, kind: kind, name: file.name };
+        this._renderThreadTree();
+        this._uploadPublicAttachment(file, kind, function (err, staged) {
+          if (err) {
+            delete self._draftAttachment[key];
+            self._showError("Could not upload " + kind + ": " + err.message);
+            self._renderThreadTree();
+            return;
+          }
+          self._draftAttachment[key] = staged;
+          self._renderThreadTree();
+        });
+      },
+
+      // A small strip between the text field and the toolbar: an image
+      // thumbnail (a real lively.morphic.Image, since the src is already a
+      // plain fetchable URL) or a video filename chip, plus a "✕" to drop
+      // it before sending. Shows an "Uploading…" status label instead
+      // while staged.uploading is true.
+      _renderAttachmentPreview: function (box, key, staged, x, y, w, h) {
+        var self = this;
+        var strip = new lively.morphic.Box(lively.rect(0, 0, w, h));
+        strip.applyStyle({ fill: Color.rgb(245, 245, 247), borderWidth: 0, borderRadius: 8 });
+        box.addMorph(strip);
+        strip.setPosition(lively.pt(x, y));
+
+        if (staged.uploading) {
+          var uploading = lively.morphic.Text.makeLabel(
+            "Uploading " + staged.kind + "…", { fontSize: 11.5, textColor: Color.rgb(130, 130, 130) });
+          strip.addMorph(uploading);
+          uploading.setPosition(lively.pt(10, Math.round((h - 16) / 2)));
+          uploading.setExtent(lively.pt(w - 20, 16));
+          return;
+        }
+
+        if (staged.kind === "image") {
+          var thumb = new lively.morphic.Image(lively.rect(0, 0, h - 12, h - 12));
+          thumb.setImageURL(staged.url);
+          thumb.applyStyle({ borderRadius: 4, borderWidth: 0, clipMode: "hidden" });
+          strip.addMorph(thumb);
+          thumb.setPosition(lively.pt(6, 6));
+        } else {
+          var vicon = new lively.morphic.Text(lively.rect(0, 0, h - 12, h - 12), "movie");
+          vicon.applyStyle({
+            fontFamily: "'Material Symbols Rounded'", fontSize: (h - 12) * 0.75 * 0.7, textColor: Color.rgb(130, 130, 130),
+            fill: null, borderWidth: 0, allowInput: false, selectable: false, align: "center",
+            clipMode: "hidden", whiteSpaceHandling: "pre",
+          });
+          strip.addMorph(vicon);
+          vicon.setPosition(lively.pt(6, 6));
+        }
+
+        var name = lively.morphic.Text.makeLabel(staged.name || "", {
+          fontSize: 11.5, textColor: Color.rgb(80, 80, 80),
+        });
+        strip.addMorph(name);
+        name.setPosition(lively.pt(h + 4, Math.round((h - 16) / 2)));
+        name.setExtent(lively.pt(w - h - 34, 16));
+
+        var remove = lively.morphic.Text.makeLabel("✕", { fontSize: 12, textColor: Color.rgb(150, 150, 150) });
+        strip.addMorph(remove);
+        remove.setPosition(lively.pt(w - 24, Math.round((h - 16) / 2)));
+        remove.setExtent(lively.pt(16, 16));
+        remove.handStyle = "pointer";
+        remove.onMouseDown = function () {
+          delete self._draftAttachment[key];
           self._renderThreadTree();
         };
-        row.addMorph(twisty);
+      },
 
-        var title = lively.morphic.Text.makeLabel((reply.state && reply.state.title) || "(untitled reply)", {
-          fontSize: 12, textColor: Color.rgb(30, 30, 30),
+      // Builds a minimal one- or two-node plain postcard (no title prompt,
+      // no rich formatting — the point of the inline box, vs. the full
+      // PostCardEditor reply flow every other "Reply" affordance in the app
+      // uses) threaded under parentObjId via the same replyTo field every
+      // reply already rides on. attachment is the staged {kind, url, name,
+      // entry} from _uploadPublicAttachment, or null for a text-only
+      // comment — when present, its ProseMirror node goes first (image or
+      // video, matching PostCardEditor.js's _insertAttachmentImage/-Video
+      // node shape) and its entry is carried in payload.attachments so a
+      // future edit/re-render has the full metadata, not just the URL.
+      // Same serialize-then-PUT sequence as _sendWelcomeCard/_requestJoin
+      // above.
+      _submitReply: function (parentObjId, text, attachment, thenDo) {
+        var user = lively.identity.did.currentUser();
+        if (!user) return thenDo(new Error("Not signed in."));
+        var self = this;
+        var content = [];
+        if (attachment) {
+          // Schema note (PostCardEditor.js's ProseMirror schema,
+          // confirmed by reading it): image is `group:'inline'`, so it
+          // must sit inside a paragraph's content array like any other
+          // inline node — a bare image can't be a direct doc.content
+          // child. video is `group:'block'`, atom:true, so it's the
+          // opposite: a direct doc.content sibling, never paragraph-wrapped.
+          if (attachment.kind === "image") {
+            content.push({
+              type: "paragraph",
+              content: [{ type: "image", attrs: { src: attachment.url, alt: attachment.name, title: attachment.name, objId: attachment.entry.objId } }],
+            });
+          } else {
+            content.push({ type: "video", attrs: { src: attachment.url, objId: attachment.entry.objId } });
+          }
+        }
+        if (text) content.push({ type: "paragraph", content: [{ type: "text", text: text }] });
+        if (!content.length) return thenDo(new Error("Nothing to post"));
+        var doc = { type: "doc", content: content };
+        lively.require("lively.identity.PostCardSerializer").toRun(function () {
+          lively.identity.postCardSerializer.serializePlainToEnvelope({
+            doc: doc,
+            constellation: self._name,
+            visibility: "public",
+            attachments: attachment ? [attachment.entry] : [],
+            replyTo: { objId: parentObjId, anchor: null },
+          }, function (err, envelope) {
+            if (err) return thenDo(err);
+            var base = lively.identity.did.baseUrl();
+            var xhr = new XMLHttpRequest();
+            xhr.open("PUT", base + "/@" + encodeURIComponent(user.handle) + "/" + encodeURIComponent(envelope.objId), true);
+            xhr.withCredentials = true;
+            xhr.setRequestHeader("Content-Type", "application/json");
+            xhr.onload = function () {
+              if (xhr.status !== 200) return thenDo(new Error("save failed (" + xhr.status + ")"));
+              thenDo(null);
+            };
+            xhr.onerror = function () { thenDo(new Error("network error")); };
+            xhr.send(JSON.stringify(envelope));
+          });
         });
-        title.setPosition(lively.pt(indent + 16, 3));
-        title.setExtent(lively.pt(Math.max(30, w - indent - 20), 16));
-        title.onMouseDown = function () {
-          self._focusStack.push(reply.objId);
-          self._renderCardInto(self._frontCardBox, reply.objId);
-          self._loadThread(reply.objId);
-        };
-        row.addMorph(title);
+      },
 
-        return row;
+      // Refreshes just the level a new reply landed in — the root thread if
+      // it was posted from the top composer, or a specific comment's
+      // (auto-expanded, so the new reply is immediately visible) children
+      // otherwise — rather than reloading the whole tree.
+      _reloadAfterReply: function (parentObjId) {
+        var self = this;
+        if (parentObjId === this._threadRootObjId) {
+          this._loadReplyLevel(parentObjId, function (err, replies) {
+            self._threadReplies = err ? [] : replies;
+            self._renderThreadTree();
+          });
+        } else {
+          this._threadExpanded[parentObjId] = true;
+          this._loadReplyLevel(parentObjId, function (err, children) {
+            self._threadChildrenCache[parentObjId] = err ? [] : children;
+            self._renderThreadTree();
+          });
+        }
+      },
+
+      _formatRelativeTime: function (iso) {
+        if (!iso) return "";
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) return "";
+        var diffSec = Math.max(0, (Date.now() - d.getTime()) / 1000);
+        var mins = diffSec / 60, hours = mins / 60, days = hours / 24;
+        if (diffSec < 60) return "just now";
+        if (mins < 60) return Math.floor(mins) + "m";
+        if (hours < 24) return Math.floor(hours) + "h";
+        if (days < 30) return Math.floor(days) + "d";
+        if (days < 365) return Math.floor(days / 30) + "mo";
+        return Math.floor(days / 365) + "y";
       },
     },
 
