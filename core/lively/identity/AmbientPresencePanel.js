@@ -1,4 +1,4 @@
-module("lively.identity.VoiceControlPanel")
+module("lively.identity.AmbientPresencePanel")
   .requires(
     "lively.identity.DID",
     "lively.identity.PostCardUtils",
@@ -13,10 +13,10 @@ module("lively.identity.VoiceControlPanel")
     // wrapper's own `var`s — confirmed empirically (a var referenced from
     // an addScript'd function throws "ReferenceError: ... is not defined"
     // even though the file loads fine). So every constant/helper those
-    // methods need lives on the lively.identity.VoiceControlPanel namespace
+    // methods need lives on the lively.identity.AmbientPresencePanel namespace
     // object itself instead of a closure var — a dotted global path still
     // resolves fine after reconstruction, only closures are lost.
-    Object.extend(lively.identity.VoiceControlPanel, {
+    Object.extend(lively.identity.AmbientPresencePanel, {
       PANEL_W: 306,
       PANEL_H: 52,
       PANEL_BG:       Color.rgb(0x7A, 0x28, 0x59),
@@ -43,7 +43,7 @@ module("lively.identity.VoiceControlPanel")
       // text so textColor drives the on/off (gray/red) recoloring instead
       // of image tinting.
       makeIconButton: function (rect, glyph, actionName) {
-        var NS = lively.identity.VoiceControlPanel;
+        var NS = lively.identity.AmbientPresencePanel;
         var btn = new lively.morphic.Text(rect);
         btn.textString = glyph;
         btn.applyStyle({
@@ -67,7 +67,7 @@ module("lively.identity.VoiceControlPanel")
         });
         btn._actionName = actionName;
         btn.addScript(function onMouseOver() {
-          this.applyStyle({ fill: lively.identity.VoiceControlPanel.HOVER_BG });
+          this.applyStyle({ fill: lively.identity.AmbientPresencePanel.HOVER_BG });
         });
         btn.addScript(function onMouseOut() {
           this.applyStyle({ fill: null });
@@ -81,10 +81,10 @@ module("lively.identity.VoiceControlPanel")
       },
     });
 
-    lively.BuildSpec("lively.identity.VoiceControlPanel", {
+    lively.BuildSpec("lively.identity.AmbientPresencePanel", {
       isEpiMorph: true,
       className: "lively.morphic.Box",
-      name: "VoiceControlPanel",
+      name: "AmbientPresencePanel",
       draggingEnabled: false,
       droppingEnabled: false,
       grabbingEnabled: false,
@@ -113,7 +113,7 @@ module("lively.identity.VoiceControlPanel")
       },
 
       _render: function _render() {
-        var NS = lively.identity.VoiceControlPanel;
+        var NS = lively.identity.AmbientPresencePanel;
         this.removeAllMorphs();
 
         this._avatarMorph = new lively.morphic.Image(lively.rect(10, 10, 32, 32));
@@ -168,7 +168,7 @@ module("lively.identity.VoiceControlPanel")
       },
 
       _updateControls: function _updateControls() {
-        var NS = lively.identity.VoiceControlPanel;
+        var NS = lively.identity.AmbientPresencePanel;
         this._micBtn.textString = this.micMuted ? "mic_off" : "mic";
         this._micBtn.applyStyle({ textColor: this.micMuted ? NS.ICON_DANGER : NS.ICON_DEFAULT });
         this._headsetBtn.textString = this.deafened ? "headset_off" : "headset_mic";
@@ -184,7 +184,7 @@ module("lively.identity.VoiceControlPanel")
       },
 
       _updateStatus: function _updateStatus() {
-        var NS = lively.identity.VoiceControlPanel;
+        var NS = lively.identity.AmbientPresencePanel;
         var idle = typeof document !== "undefined" && document.hidden;
         this._statusMorph.textString = idle ? "Idle" : "Online";
         this._badgeBase.applyStyle({ fill: idle ? NS.STATUS_IDLE : NS.STATUS_ONLINE });
@@ -230,7 +230,7 @@ module("lively.identity.VoiceControlPanel")
 
     // Plain vanilla JS object extension (not a BuildSpec/addScript path),
     // so normal closures over `self` etc. are safe here.
-    Object.extend(lively.identity.VoiceControlPanel, {
+    Object.extend(lively.identity.AmbientPresencePanel, {
       _panel: null,
 
       init: function init() {
@@ -253,7 +253,7 @@ module("lively.identity.VoiceControlPanel")
           this._panel.update();
           return this._panel;
         }
-        var p = lively.BuildSpec("lively.identity.VoiceControlPanel").createMorph();
+        var p = lively.BuildSpec("lively.identity.AmbientPresencePanel").createMorph();
         p.openInWorld();
         p.enableFixedPositioning();
         p.alignInWorld();
@@ -271,4 +271,4 @@ module("lively.identity.VoiceControlPanel")
       },
     });
 
-  }); // end module('lively.identity.VoiceControlPanel')
+  }); // end module('lively.identity.AmbientPresencePanel')

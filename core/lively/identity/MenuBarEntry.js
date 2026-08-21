@@ -17,8 +17,8 @@ module("lively.identity.MenuBarEntry")
       },
     });
 
-    lively.require("lively.identity.VoiceControlPanel").toRun(function () {
-      lively.identity.VoiceControlPanel.init();
+    lively.require("lively.identity.AmbientPresencePanel").toRun(function () {
+      lively.identity.AmbientPresencePanel.init();
     });
 
     lively.BuildSpec(
