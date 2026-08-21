@@ -1715,16 +1715,42 @@ module("lively.identity.ConstellationLounge")
             params: { token: data.token },
           });
 
-          var user = lively.identity.did.currentUser();
+          self._publishPresence();
+          // BUG FIX: DID.js's own boot-time restoreSession() (an async
+          // fetch chain — loadMeta, loadDocument, then a server round trip)
+          // can still be in flight when this runs — this route's own
+          // space-token fetch and restoreSession's chain finish at
+          // comparable times with no ordering guarantee between them
+          // (confirmed live: with restoreSession's server round trip
+          // artificially slowed, this handler ran with currentUser() still
+          // null and published presence as {did:null,handle:"anonymous"}).
+          // Since _onAwarenessChange's `if (presence && presence.did)`
+          // guard then silently drops that entry, and nothing here ever
+          // republished it afterward, a signed-in visitor who merely lost
+          // this race never showed up in anyone's Active Members list for
+          // their whole visit. Same race Shop.js's _bindIdentity documents
+          // and fixes the same way: listen for identityChanged in case it
+          // fires later, AND re-call restoreSession (idempotent) to get a
+          // definitive answer regardless of whether the signal already
+          // fired before this connected.
+          self._identityConnection = lively.bindings.connect(
+            lively.identity.did, "identityChanged", self, "_publishPresence");
+          lively.identity.did.restoreSession(function () { self._publishPresence(); });
+
           var awareness = self.wsProvider.awareness;
-          awareness.setLocalStateField("presence", {
-            did: user && user.did,
-            handle: (user && user.handle) || "anonymous",
-          });
           awareness.on("change", function () { self._onAwarenessChange(); });
         };
         tokenXhr.onerror = function () {};
         tokenXhr.send();
+      },
+
+      _publishPresence: function () {
+        if (!this.wsProvider) return;
+        var user = lively.identity.did.currentUser();
+        this.wsProvider.awareness.setLocalStateField("presence", {
+          did: user && user.did,
+          handle: (user && user.handle) || "anonymous",
+        });
       },
 
       _onAwarenessChange: function () {
