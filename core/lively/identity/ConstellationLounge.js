@@ -809,6 +809,19 @@ module("lively.identity.ConstellationLounge")
       // thread's top-level comment box.
       _renderThreadTree: function () {
         var container = this._threadContainer;
+        var containerNode = container.renderContext().shapeNode;
+        // BUG FIX: clicking "Replies" to expand a nested reply rebuilds the
+        // whole tree (same full-rebuild-from-state idiom as everywhere else
+        // in this file) — removing every submorph below drops the
+        // container's scrollHeight to ~0 for an instant, which clamps its
+        // native scrollTop to 0, and nothing restored it afterward. So
+        // expanding a reply anywhere but the very top of the thread threw
+        // the reader back to the first comment, even though the newly
+        // expanded content made the thread *taller*, not shorter (confirmed
+        // live: scrollTop went 200 -> 0 while scrollHeight actually grew
+        // 965 -> 1108). Saving/restoring scrollTop around the rebuild keeps
+        // the reader's position stable.
+        var savedScrollTop = containerNode.scrollTop;
         (container.submorphs || []).slice().forEach(function (m) { m.remove(); });
         var w = container.getExtent().x || CARD_W;
 
@@ -825,6 +838,7 @@ module("lively.identity.ConstellationLounge")
           this._renderCommentLevel(container, this._threadReplies, 0, y, w);
         }
         this._disableDragging(container);
+        containerNode.scrollTop = savedScrollTop;
       },
 
       _renderCommentLevel: function (container, replies, depth, y, w) {
