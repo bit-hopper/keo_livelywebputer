@@ -131,6 +131,8 @@ module("lively.identity.ConstellationLounge")
         this._draftText = {};           // same keys as above -> in-progress composer text, kept across re-renders
         this._draftAttachment = {};     // same keys -> {uploading:true} while in flight, else {kind, url, name, entry}
         this._didHandleCache = {};      // did -> handle, for authors not already in quickInfo.memberHandles
+        this._bodyBoxCache = {};        // reply.objId -> {box, html, width, height} — see _renderCommentNode
+        this._threadRerenderTimer = null;
 
         this._frontCardBox = null;
         this._backCardBox = null;
@@ -686,6 +688,8 @@ module("lively.identity.ConstellationLounge")
         this._threadChildrenCache = {};
         this._threadExpanded = {};
         this._replyBoxOpenFor = null;
+        this._bodyBoxCache = {};
+        if (this._threadRerenderTimer) { clearTimeout(this._threadRerenderTimer); this._threadRerenderTimer = null; }
         (this._threadContainer.submorphs || []).slice().forEach(function (m) { m.remove(); });
         var loading = lively.morphic.Text.makeLabel("Loading comments…", { fontSize: 12, textColor: Color.gray });
         loading.setPosition(lively.pt(0, 0));
@@ -859,21 +863,52 @@ module("lively.identity.ConstellationLounge")
         header.setPosition(lively.pt(textX, y + 2));
         header.setExtent(lively.pt(textW, 14));
 
-        var bodyBox = new lively.morphic.Box(lively.rect(0, 0, textW, 10));
-        bodyBox.applyStyle({ fill: null, borderWidth: 0 });
-        container.addMorph(bodyBox);
+        // BUG FIX: an earlier version always built a fresh Box + innerHTML
+        // here, every single call — fine for text, but an <img>/<video>
+        // inside reply._bodyHtml has no intrinsic size until the browser
+        // actually finishes loading it, and _renderThreadTree rebuilds the
+        // whole tree (including this box) any time anything below the top
+        // composer changes. Recreating the DOM node threw away an
+        // already-loaded (or still-loading) media element's real progress
+        // every time, and confirmed live via chrome-devtools that a fresh
+        // <video> element takes ~140-150ms to reach loadedmetadata even
+        // against an already browser-cached URL (caching speeds up the
+        // network fetch, not the element's own decode/metadata pipeline) —
+        // so a naive "just re-measure after load" fix still measured a
+        // *different*, still-loading element on the settling re-render and
+        // landed on the wrong height anyway. Reusing the same Box/DOM node
+        // across rebuilds whenever this reply's HTML+width haven't changed
+        // keeps whatever media it contains genuinely loaded (or genuinely
+        // still loading, still being watched) instead of restarting it.
+        var cacheKey = reply.objId;
+        var cached = self._bodyBoxCache[cacheKey];
+        var bodyBox, bodyNode, bodyH;
+        if (cached && cached.html === (reply._bodyHtml || "") && cached.width === textW) {
+          bodyBox = cached.box;
+          bodyNode = bodyBox.renderContext().shapeNode;
+          bodyH = cached.height;
+          container.addMorph(bodyBox);
+        } else {
+          bodyBox = new lively.morphic.Box(lively.rect(0, 0, textW, 10));
+          bodyBox.applyStyle({ fill: null, borderWidth: 0 });
+          container.addMorph(bodyBox);
+          bodyNode = bodyBox.renderContext().shapeNode;
+          bodyNode.className = (bodyNode.className ? bodyNode.className + " " : "") + "lounge-comment-body";
+          bodyNode.innerHTML = reply._bodyHtml || "";
+          // Measure-the-real-DOM, same technique as this file's own text-
+          // sizing convention elsewhere — the body's height genuinely
+          // depends on its (rich, possibly multi-paragraph) content, not a
+          // guessed constant, so it's read back off the live node after
+          // the HTML and width are both already set. Wrong the moment any
+          // embedded media hasn't loaded yet — _watchMediaLoad corrects
+          // cached.height (and reflows) once it has.
+          bodyH = Math.max(14, bodyNode.scrollHeight);
+          lively.identity.postCardUtils.hydrateEmbeddedParts(bodyNode);
+          cached = self._bodyBoxCache[cacheKey] = { box: bodyBox, html: reply._bodyHtml || "", width: textW, height: bodyH };
+          self._watchMediaLoad(bodyNode, cached);
+        }
         bodyBox.setPosition(lively.pt(textX, y + 20));
-        var bodyNode = bodyBox.renderContext().shapeNode;
-        bodyNode.className = (bodyNode.className ? bodyNode.className + " " : "") + "lounge-comment-body";
-        bodyNode.innerHTML = reply._bodyHtml || "";
-        // Measure-the-real-DOM, same technique as this file's own text-
-        // sizing convention elsewhere — the body's height genuinely depends
-        // on its (rich, possibly multi-paragraph) content, not a guessed
-        // constant, so it's read back off the live node after the HTML and
-        // width are both already set.
-        var bodyH = Math.max(14, bodyNode.scrollHeight);
         bodyBox.setExtent(lively.pt(textW, bodyH));
-        lively.identity.postCardUtils.hydrateEmbeddedParts(bodyNode);
 
         var actionsY = y + 20 + bodyH + 4;
         var actionsX = textX;
@@ -939,6 +974,57 @@ module("lively.identity.ConstellationLounge")
         }
 
         return childrenBottom + 10;
+      },
+
+      // A comment's body height is measured synchronously via
+      // bodyNode.scrollHeight right after its HTML is set — but an <img>/
+      // <video> inside it (pmNodeToHtml emits a real src= directly for a
+      // public attachment, no placeholder step) has no intrinsic size until
+      // the browser actually finishes loading it. Without this, every later
+      // comment/reply in the tree stayed positioned off that (too-small)
+      // measurement forever, so a reply with an image next to one with a
+      // video — each resolving its real size at a different moment — went
+      // from a smooth scroll to rows permanently overlapping, mistaken for
+      // the panel "trying to fit everything together."
+      //
+      // Attaches a one-time load/error listener to any not-yet-loaded media
+      // in this specific (freshly built, per _renderCommentNode's cache-miss
+      // branch) bodyNode. `cached` is that reply's _bodyBoxCache entry —
+      // updating cached.height in place, then scheduling a debounced
+      // rebuild, means the *next* rebuild's cache-hit path (reusing this
+      // same Box/DOM node rather than rebuilding it — see
+      // _renderCommentNode) picks up the corrected height without ever
+      // touching the media element again. That reuse is what makes this
+      // safe to call only once per genuine content build: recreating a
+      // <video> element restarts its whole load cycle from scratch even
+      // against an already browser-cached URL (confirmed live via
+      // chrome-devtools — three fresh <video>s against the same cached URL
+      // each still took ~140-150ms to reach loadedmetadata), so an earlier
+      // version of this fix that rebuilt indiscriminately on every load
+      // event re-triggered itself forever instead of settling.
+      _watchMediaLoad: function (bodyNode, cached) {
+        var self = this;
+        var media = bodyNode.querySelectorAll("img, video");
+        Array.prototype.forEach.call(media, function (el) {
+          var isLoaded = el.tagName === "IMG" ? el.complete : el.readyState >= 1;
+          if (isLoaded) return;
+          var settle = function () {
+            cached.height = Math.max(14, bodyNode.scrollHeight);
+            self._scheduleThreadRerender();
+          };
+          var readyEvt = el.tagName === "IMG" ? "load" : "loadedmetadata";
+          el.addEventListener(readyEvt, settle, { once: true });
+          el.addEventListener("error", settle, { once: true });
+        });
+      },
+
+      _scheduleThreadRerender: function () {
+        var self = this;
+        if (this._threadRerenderTimer) return;
+        this._threadRerenderTimer = setTimeout(function () {
+          self._threadRerenderTimer = null;
+          self._renderThreadTree();
+        }, 60);
       },
 
       // A small icon(Material Symbols)+label affordance — the "Reply" and

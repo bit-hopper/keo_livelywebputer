@@ -635,6 +635,11 @@ function listPostcardsForUser(did, opts, thenDo) {
       ' ) latest ON o.id = latest.max_id' +
       ' WHERE (json_extract(o.envelope, \'$.state.deleted\') IS NULL' +
       '        OR json_extract(o.envelope, \'$.state.deleted\') != 1)' +
+      // Replies (postcards carrying a replyTo, posted from a comment
+      // thread) are not top-level postcards — they belong only in
+      // listRepliesForPostcard's own listing, never mixed into a
+      // did/constellation's main feed alongside genuine top-level cards.
+      '        AND json_extract(o.envelope, \'$.replyTo.objId\') IS NULL' +
       (qLike ? ' AND json_extract(o.envelope, \'$.state.title\') LIKE ? ESCAPE \'\\\'' : '');
 
     var params, sql;
@@ -693,6 +698,14 @@ function listPostcardsForConstellation(constellation, opts, thenDo) {
       // controllers' inboxes, not the public constellation feed.
       '        AND (json_extract(o.envelope, \'$.state.kind\') IS NULL' +
       '             OR json_extract(o.envelope, \'$.state.kind\') != \'constellation-join-request\')' +
+      // Replies (comment-thread postcards carrying a replyTo) are not
+      // top-level postcards either — confirmed live via objects.db that
+      // every reply also carries this constellation's name, so without
+      // this filter every comment-thread reply doubled as its own entry
+      // in the postcard turnover reel (ConstellationLounge.js's _fetchFeed).
+      // listRepliesForPostcard below is the only listing that should ever
+      // surface them.
+      '        AND json_extract(o.envelope, \'$.replyTo.objId\') IS NULL' +
       (qLike ? ' AND json_extract(o.envelope, \'$.state.title\') LIKE ? ESCAPE \'\\\'' : '');
 
     var params, sql;
