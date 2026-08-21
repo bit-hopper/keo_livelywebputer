@@ -1386,7 +1386,10 @@ module("lively.identity.ConstellationLounge")
         var user = lively.identity.did.currentUser();
         if (!user) return thenDo(new Error("Not signed in."));
         var self = this;
+        // Text goes first — a reply's caption belongs above whatever it's
+        // captioning, not buried under an image/video/gif.
         var content = [];
+        if (text) content.push({ type: "paragraph", content: [{ type: "text", text: text }] });
         if (attachment) {
           // Schema note (PostCardEditor.js's ProseMirror schema,
           // confirmed by reading it): image is `group:'inline'`, so it
@@ -1403,7 +1406,6 @@ module("lively.identity.ConstellationLounge")
             content.push({ type: "video", attrs: { src: attachment.url, objId: attachment.entry.objId } });
           }
         }
-        if (text) content.push({ type: "paragraph", content: [{ type: "text", text: text }] });
         if (!content.length) return thenDo(new Error("Nothing to post"));
         var doc = { type: "doc", content: content };
         lively.require("lively.identity.PostCardSerializer").toRun(function () {
