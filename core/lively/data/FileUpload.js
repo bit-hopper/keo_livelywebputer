@@ -147,6 +147,32 @@ module("lively.data.FileUpload")
             setTimeout(function () {
               console.log('[identityDelete] setTimeout: owner is', self.owner, '→ will DELETE:', !self.owner);
               if (!self.owner) {
+                delete self.identityUploadUrl;
+                // Another morph (e.g. a halo copy, which carries over
+                // persisted properties like _ImageURL but not this ad-hoc
+                // identityUploadUrl marker) can end up displaying the same
+                // upload URL without ever being tracked for deletion itself.
+                // Deleting the file out from under that still-live sibling
+                // silently corrupts it — confirmed against @candle's saved
+                // world history: two Image morphs ended up with an identical
+                // _ImageURL, only one ever carried identityUploadUrl, and
+                // the backing file is now gone from disk while the other
+                // morph's reference to it lives on in the latest save. Scan
+                // every morph's own properties for the same URL before
+                // deleting — cheap, and catches any media type (image/video/
+                // audio/pdf) without needing to know its src property name.
+                var stillReferenced = false;
+                $world.withAllSubmorphsDo(function (m) {
+                  if (stillReferenced || m === self) return;
+                  for (var k in m) {
+                    try { if (m[k] === uploadUrl) { stillReferenced = true; break; } }
+                    catch (e) {}
+                  }
+                });
+                if (stillReferenced) {
+                  console.log('[identityDelete] URL still referenced by another morph, skipping DELETE:', uploadUrl);
+                  return;
+                }
                 fetch(uploadUrl, { method: "DELETE", credentials: "include" })
                   .then(function (r) {
                     r.json().then(function (j) {
@@ -154,7 +180,6 @@ module("lively.data.FileUpload")
                     });
                   })
                   .catch(function (e) { console.warn('[identityDelete] DELETE failed', e); });
-                delete self.identityUploadUrl;
               }
             }, 0);
           });
@@ -162,8 +187,18 @@ module("lively.data.FileUpload")
 
         identityUpload: function (file, thenDo) {
           var user = lively.identity.did.currentUser();
+          // Uniquify by upload, not just by name — dropped/pasted files
+          // routinely share a generic browser-assigned name (clipboard
+          // screenshots all come in as "image.png"), so keying purely on
+          // file.name lets two unrelated uploads collide on the same server
+          // path: a later upload overwrites an earlier one's file in place,
+          // and attachIdentityDelete's delete-on-remove (see below) can then
+          // delete that shared path while a different morph still displays
+          // it — permanently, since these files have no server-side trash
+          // or versioning. See attachIdentityDelete's comment for the
+          // specific case this was found from.
           var url =
-            "/@" + user.handle + "/uploads/" + encodeURIComponent(file.name);
+            "/@" + user.handle + "/uploads/" + Strings.newUUID() + "-" + encodeURIComponent(file.name);
           fetch(url, {
             method: "PUT",
             credentials: "include",
