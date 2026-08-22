@@ -6,14 +6,15 @@
  * drag/place world — that world now lives at /c/:name/canvas,
  * ConstellationCanvas.js). A visitor to /c/:name sees:
  *
- *   - a search field (top, styled after PartsBin/iPadWidgets/SearchField.json
+ *   - a search field (top, horizontally centered across the full page width
+ *     as its own row, styled after PartsBin/iPadWidgets/SearchField.json
  *     — white rounded pill, magnifying-glass icon, blue "Go" button, same
  *     embedded icon asset), searching this constellation's postcard titles
  *     (server-side, via GET /c/:name/feed?q=) and wiki page names
  *     (client-side, against the already-loaded index)
  *   - a quick-info panel (name, visibility, member count, created date,
- *     co-creator) to the right of the search field, capped to the
- *     postcard's height
+ *     co-creator) beside the postcard reel, below the search row, sized to
+ *     hug its own content instead of stretching to the postcard's height
  *   - a postcard "turnover" reel: newest-first, one card visible at a
  *     time, turned via a literal 3D flip-away (CSS perspective/rotateY,
  *     same technique PostCardView.js's own front/back flip uses, applied
@@ -95,6 +96,7 @@ module("lively.identity.ConstellationLounge")
     var SEARCH_W = 490, SEARCH_H = 45;
     var NAV_H = 40;
     var ROW_GAP = 16;
+    var QUICK_INFO_H = 96;     // hugs its own content (title + 2 lines) instead of stretching to the postcard's height
 
     // Comment thread (Reddit-style, no votes) geometry/palette.
     var COMMENT_INDENT = 30;   // px per nesting depth
@@ -202,10 +204,12 @@ module("lively.identity.ConstellationLounge")
         var threadY = reelY + CARD_H + NAV_H;
 
         var g = this._geom = {
-          searchX: wikiColX - SEARCH_W, searchY: TOP,
-          // Quick-info's bottom edge lines up with the postcard's bottom
-          // edge — "does not drop below the post card."
-          quickInfoX: wikiColX, quickInfoY: TOP, quickInfoW: wikiColW, quickInfoH: (reelY + CARD_H) - TOP,
+          // Centered as its own hero row across the full page width, above
+          // the reel/quick-info/wiki columns rather than tucked beside them.
+          searchX: (W - SEARCH_W) / 2, searchY: TOP,
+          // Sits beside the postcard (same row start as the reel), sized to
+          // its own content rather than stretched down to the card's bottom.
+          quickInfoX: wikiColX, quickInfoY: reelY, quickInfoW: wikiColW, quickInfoH: QUICK_INFO_H,
           reelX: GUTTER, reelY: reelY,
           navX: GUTTER, navY: reelY + CARD_H + 6,
           threadX: GUTTER, threadY: threadY, threadW: CARD_W, threadH: Math.max(120, H - threadY - 16),
