@@ -110,7 +110,14 @@ module("lively.identity.ConstellationLounge")
     // compensation as THREAD_W above.
     var THREAD_H_MAX = 574;
     var THREAD_H_MIN = 200;    // floor so a very short viewport still gets a usable (internally-scrolling) thread box
-    var QUICK_INFO_W = 974, QUICK_INFO_H = 306;   // about panel; wiki panel below it shares this width
+    // QUICK_INFO_H has 60px more headroom than the about panel's own
+    // content strictly needs, reserved for the event card below — a long
+    // event title wrapped onto a second line needs that extra vertical
+    // room to avoid the avatar row/"+N Others" label getting pushed past
+    // the card's own bottom edge and clipped there (confirmed live with a
+    // real 45-character title: without this, height ~131px needed but
+    // only ~98px was available).
+    var QUICK_INFO_W = 974, QUICK_INFO_H = 366;   // about panel; wiki panel below it shares this width
     var MEMBERS_W = 220;       // outer slot width
     var GUTTER = 20;           // column gutter, also the gap before the members column and the page's right edge
     var BOTTOM_MARGIN = 20;    // space left below the comment thread before the viewport's bottom edge
@@ -603,10 +610,10 @@ module("lively.identity.ConstellationLounge")
         var self = this;
         var box = new lively.morphic.Box(lively.rect(0, 0, SORT_W, SORT_H));
         box.setFill(Color.white);
-        box.applyStyle({ borderWidth: 1, borderColor: Color.rgb(112, 112, 112), borderRadius: 10 });
+        box.applyStyle({ borderWidth: 1, borderColor: Color.rgb(232, 73, 126), borderRadius: 10 });   // COMMENT_ACCENT (#e8497e)
 
         var label = lively.morphic.Text.makeLabel(this._sortSelection, {
-          fontSize: 12, fontWeight: "bold", textColor: Color.rgb(30, 30, 30),
+          fontSize: 12, fontWeight: "bold", textColor: Color.rgb(30, 30, 30), fixedWidth: true, fixedHeight: true,
         });
         label.setPosition(lively.pt(12, 0));
         label.setExtent(lively.pt(SORT_W - 34, SORT_H));
@@ -614,8 +621,23 @@ module("lively.identity.ConstellationLounge")
         box.addMorph(label);
         this._sortByLabel = label;
 
+        // fixedWidth/fixedHeight: true — left off here, this box's own
+        // explicit 20px width got silently blown out to ~102-110px
+        // (confirmed live) the same way the event card's labels did
+        // earlier in this file: makeLabel defaults both to false, so
+        // Lively's own deferred re-layout (Text#onRenderFinishedHTML's
+        // `setPadding` call, fired once the morph is actually opened in
+        // the world) recomputes the box size from `getTextExtent()` and
+        // overwrites the explicit setExtent below. For an icon-font
+        // ligature specifically that recompute is worse than the
+        // already-bad general case: "expand_more" is 12 literal
+        // characters, and if that recompute's DOM measurement gets pulled
+        // before the ligature font substitution settles, it locks in a
+        // ~12-character-wide box forever, spilling ~85-90px past the
+        // button's own 110px width.
         var chevron = lively.morphic.Text.makeLabel("expand_more", {
           fontFamily: "'Material Symbols Rounded'", fontSize: 14, textColor: Color.rgb(90, 90, 90),
+          fixedWidth: true, fixedHeight: true,
         });
         chevron.setPosition(lively.pt(SORT_W - 26, 0));
         chevron.setExtent(lively.pt(20, SORT_H));
@@ -634,12 +656,16 @@ module("lively.identity.ConstellationLounge")
         var self = this;
         var itemsH = SORT_OPTIONS.length * SORT_ITEM_H;
         var headerH = 26;
-        var dropdown = new lively.morphic.Box(lively.rect(0, 0, SORT_W, headerH + itemsH));
+        // +4: bottom breathing room — the last row's own bottom edge landed
+        // 1px past the dropdown box's bottom otherwise (confirmed live),
+        // since headerH + itemsH alone accounts for exactly the rows'
+        // stacked height with nothing left over for the box's own border.
+        var dropdown = new lively.morphic.Box(lively.rect(0, 0, SORT_W, headerH + itemsH + 4));
         dropdown.setFill(Color.white);
-        dropdown.applyStyle({ borderWidth: 1, borderColor: Color.rgb(112, 112, 112), borderRadius: 8 });
+        dropdown.applyStyle({ borderWidth: 1, borderColor: Color.rgb(232, 73, 126), borderRadius: 8 });   // COMMENT_ACCENT (#e8497e)
 
         var header = lively.morphic.Text.makeLabel("Sort by", {
-          fontSize: 10, textColor: Color.rgb(140, 140, 140),
+          fontSize: 10, textColor: Color.rgb(140, 140, 140), fixedWidth: true, fixedHeight: true,
         });
         header.setPosition(lively.pt(12, 6));
         header.setExtent(lively.pt(SORT_W - 24, 16));
@@ -653,6 +679,7 @@ module("lively.identity.ConstellationLounge")
             fontSize: 12,
             fontWeight: isSelected ? "bold" : "normal",
             textColor: isSelected ? Color.rgb(20, 20, 20) : Color.rgb(90, 90, 90),
+            fixedWidth: true, fixedHeight: true,
           });
           row.setPosition(lively.pt(12, headerH + i * SORT_ITEM_H));
           row.setExtent(lively.pt(SORT_W - 24, SORT_ITEM_H));
@@ -830,10 +857,64 @@ module("lively.identity.ConstellationLounge")
         avatar.applyStyle({ borderRadius: AVATAR / 2, borderWidth: 0, clipMode: "hidden" });
         this._quickInfoBox.addMorph(avatar);
 
-        var title = lively.morphic.Text.makeLabel("c/" + this._name, { fontSize: 16, fontWeight: "bold" });
-        title.setPosition(lively.pt(avX, avY + AVATAR + 10));
-        title.setExtent(lively.pt(w - avX * 2, 22));
+        // Same measure-then-hug treatment as every other label in this
+        // panel (event card title/date/location, "+N Others", the detail
+        // lines below) — previously left at a fixed 22px height and a
+        // fixed w - avX*2 (~934px) width regardless of the actual text,
+        // which is the exact box-exceeds-visible-bounds pattern already
+        // fixed elsewhere in this file (confirmed live via halo-select:
+        // the title's own box ran most of the way across the panel no
+        // matter how short the constellation name was) and the exact
+        // fixed-height-clips-descenders pattern too (a constellation name
+        // with a "y"/"g"/"p"/"q" would clip the same way "People" did).
+        // Height is measured with the box at 1px first — a generous
+        // throwaway height would hit the min-height-floor trap the event
+        // title already ran into (CLAUDE.md's Text-morph note) — then
+        // padded back by 4 for the shapeNode's own top/bottom padding.
+        var title = lively.morphic.Text.makeLabel("c/" + this._name,
+          { fontSize: 16, fontWeight: "bold", fixedWidth: true, fixedHeight: true });
+        var titleY = avY + AVATAR + 10;
+        title.setPosition(lively.pt(avX, titleY));
+        title.setExtent(lively.pt(w - avX * 2, 1));
         this._quickInfoBox.addMorph(title);
+        var titleInner = title.renderContext().shapeNode.querySelector("div");
+        var titleSpan = title.renderContext().shapeNode.querySelector("span");
+        var titleH = (titleInner ? titleInner.offsetHeight : 20) + 4;
+        var titleTextW = titleSpan ? titleSpan.offsetWidth : 120;
+        title.setExtent(lively.pt(titleTextW + 8, titleH));
+
+        // cardX derived from the *widest* of the title and the two detail
+        // lines below it (visibility/members, created/creator) — all real
+        // measured DOM widths, not any of these labels' own nominal box
+        // extent, which spans nearly the panel's full width regardless of
+        // actual text — plus a gutter, rather than a flat fraction of
+        // visibleW. A flat 42% split was tried first and reliably cleared
+        // the title, but left too little room on the card's side for the
+        // date/time line to avoid clipping (confirmed live: the full
+        // "Weekday, Month D, YYYY at H AM/PM +NN" format needs ~307px,
+        // more than a 42% split ever left available at a typical
+        // 1440px-wide viewport). Using only the *title's* width (an
+        // earlier version of this) was a second live-corrected mistake:
+        // the title is often shorter than "Created 8/4/2026 by @handle"
+        // below it, so the card started too close and forced the detail
+        // lines to wrap even at a wide 1920px browser window, not just a
+        // narrow one — measuring all three left-column lines up front
+        // avoids that regardless of which one happens to be longest.
+        // Falls back to a fixed floor if measurement fails for any reason.
+        var titleRight = avX + titleTextW;
+
+        // QUICK_INFO_W is wider than what's actually visible before the
+        // members column starts, at typical viewport widths — harmless
+        // while that space stayed blank, but an opaque card there would
+        // render partly hidden underneath the members panel (confirmed
+        // live: the card's right portion disappeared behind it). Use the
+        // real gap from this._geom instead of the panel's nominal width
+        // for the card's bounds specifically. Computed here (rather than
+        // down by the event card call, where it used to live) because
+        // EVENT_CARD_X's own clamp just below needs it too.
+        var visibleW = (this._geom && typeof this._geom.membersX === "number")
+          ? Math.max(200, this._geom.membersX - GUTTER - this._geom.quickInfoX)
+          : w;
 
         var creatorHandle = qi.memberHandles && qi.createdBy ? qi.memberHandles[qi.createdBy] : null;
         var lines = [
@@ -841,53 +922,95 @@ module("lively.identity.ConstellationLounge")
             " member" + (qi.memberCount === 1 ? "" : "s"),
           "Created " + this._formatDate(qi.createdAt) + (creatorHandle ? (" by @" + creatorHandle) : ""),
         ];
-        // Anchored to the bottom-left of the panel instead of stacked right
-        // under the title — BOTTOM_PAD/LINE_H mirror the title's own 14px
-        // side padding and the original 20px line spacing, just measured
-        // up from the box's bottom edge rather than down from the top.
-        var BOTTOM_PAD = 14, LINE_H = 20;
-        var startY = h - BOTTOM_PAD - lines.length * LINE_H;
-        lines.forEach(function (str, i) {
-          var t = lively.morphic.Text.makeLabel(str, { fontSize: 12, textColor: Color.rgb(102, 102, 102) });
-          t.setPosition(lively.pt(14, startY + i * LINE_H));
-          t.setExtent(lively.pt(w - 28, 18));
+        // Throwaway single-line probes (removed immediately after
+        // measuring, same idiom as the "+N Others" label's own width
+        // probe in _renderEventCard) just to learn each detail line's
+        // natural width before EVENT_CARD_X is finalized.
+        var detailRight = titleRight;
+        lines.forEach(function (str) {
+          var probe = lively.morphic.Text.makeLabel(str, { fontSize: 12 });
+          probe.setPosition(lively.pt(-9999, -9999));
+          probe.setExtent(lively.pt(600, 18));
+          self._quickInfoBox.addMorph(probe);
+          var probeSpan = probe.renderContext().shapeNode.querySelector("span");
+          if (probeSpan) detailRight = Math.max(detailRight, avX + probeSpan.offsetWidth);
+          probe.remove();
+        });
+        // Clamped at the high end so a long "Created ... by @handle" line
+        // can't push EVENT_CARD_X so far right that the event card has no
+        // room left at all — confirmed live at a 1280px browser width: an
+        // unclamped EVENT_CARD_X of 276 left only 26px of visibleW for the
+        // card, under its own 160px legibility floor, so it silently
+        // didn't render at all (neither the populated nor the empty-state
+        // card). MIN_CARD_W/CARD_RIGHT_MARGIN mirror _renderEventCard's
+        // own floor/margin so this clamp lines up with what that function
+        // will actually do with the X it's handed. Below this width the
+        // detail lines fall back to wrapping (already handled below)
+        // rather than the event card losing its slot entirely.
+        //
+        // The high-end cap is itself clamped back up to a titleClearX floor
+        // (avatar clearance *and* the title's own real width — a second
+        // live-corrected mistake in this same pass: the outer Math.max
+        // originally only had avX+AVATAR+24, which clears the avatar circle
+        // but says nothing about the title text itself, which is often
+        // wider than the avatar; at a narrow enough visibleW the cap fell
+        // below titleRight too, pulling the card's left edge over the
+        // title's own text — confirmed live, "c/wikitest" partially hidden
+        // under the card's left border). Below titleClearX the card is
+        // never allowed to start, even if that leaves it a tight (but
+        // valid, >= 160px) width rather than the full MIN_CARD_W.
+        var MIN_CARD_W = 220, CARD_RIGHT_MARGIN = 28;
+        var titleClearX = Math.max(avX + AVATAR + 24, titleRight + 24);
+        var EVENT_CARD_X = Math.max(
+          titleClearX,
+          Math.min(detailRight + 24, visibleW - CARD_RIGHT_MARGIN - MIN_CARD_W)
+        );
+
+        // Stacked directly under the constellation name, same left edge as
+        // the avatar/title (avX) — previously anchored to the panel's own
+        // bottom-left corner instead, which orphaned these details far
+        // from the title they actually describe and left this whole left
+        // column empty below the title. Width capped at EVENT_CARD_X (now
+        // guaranteed wide enough for these exact lines, per the probe
+        // above) so a long visibility/member-count line can't run
+        // underneath the event card sitting to its right. Wrapping is kept
+        // as a fallback regardless (whiteSpaceHandling:"normal" +
+        // measure-real-height, same idiom as the event title) for the
+        // rare case a member count or handle changes between this probe
+        // and render — cheap insurance, not the primary mechanism.
+        var DETAIL_GAP = 8;
+        var detailY = titleY + titleH + DETAIL_GAP;
+        var detailW = Math.max(80, EVENT_CARD_X - avX - 16);
+        lines.forEach(function (str) {
+          var t = lively.morphic.Text.makeLabel(str,
+            { fontSize: 12, textColor: Color.rgb(102, 102, 102), whiteSpaceHandling: "normal", fixedWidth: true, fixedHeight: true });
+          t.setPosition(lively.pt(avX, detailY));
+          t.setExtent(lively.pt(detailW, 1));
           self._quickInfoBox.addMorph(t);
+          var inner = t.renderContext().shapeNode.querySelector("div");
+          var lineH = (inner ? inner.offsetHeight : 14) + 4; // +4: shapeNode's own 2px-top/2px-bottom padding, see CLAUDE.md
+          t.setExtent(lively.pt(detailW, lineH));
+          detailY += lineH + 2;
         });
 
-        // Event card — fills the empty space right of the avatar/title
-        // column, in the bottom half of the panel (above the bottom-left
-        // detail lines just rendered, using `startY` as its lower bound so
-        // the two never visually compete for the same row). Only the
-        // constellation's single next-upcoming event is shown (getNextEvent
-        // server-side); nothing renders if there isn't one.
-        //
-        // QUICK_INFO_W is wider than what's actually visible before the
-        // members column starts, at typical viewport widths — harmless
-        // while that space stayed blank, but an opaque card there would
-        // render partly hidden underneath the members panel (confirmed
-        // live: the card's right portion disappeared behind it). Use the
-        // real gap from this._geom instead of the panel's nominal width
-        // for the card's bounds specifically.
-        var visibleW = (this._geom && typeof this._geom.membersX === "number")
-          ? Math.max(200, this._geom.membersX - GUTTER - this._geom.quickInfoX)
-          : w;
-        // cardX derived from the title's real measured width (a live DOM
-        // measurement, not the title box's own nominal extent — that spans
-        // nearly the panel's full width regardless of the actual text) plus
-        // a gutter, rather than a flat fraction of visibleW. A flat 42%
-        // split was tried first and reliably cleared the title, but left
-        // too little room on the card's side for the date/time line to
-        // avoid clipping (confirmed live: the full "Weekday, Month D,
-        // YYYY at H AM/PM +NN" format needs ~307px, more than a 42% split
-        // ever left available at a typical 1440px-wide viewport). Falls
-        // back to a fixed floor if measurement fails for any reason.
-        var titleSpan = title.renderContext().shapeNode.querySelector("span");
-        var titleRight = avX + (titleSpan ? titleSpan.offsetWidth : 120);
-        var EVENT_CARD_X = Math.max(avX + AVATAR + 24, titleRight + 24);
+        // Event card — pinned to the top-right corner of the space right
+        // of the avatar/title column and below the banner, now that the
+        // visibility/members/created details above no longer reserve room
+        // at the bottom. Only the constellation's single next-upcoming
+        // event is shown (getNextEvent server-side); nothing renders if
+        // there isn't one. (visibleW/EVENT_CARD_X were both computed
+        // earlier, above the detail lines — visibleW because
+        // EVENT_CARD_X's own clamp needs it too.) BANNER_H itself (not
+        // BANNER_H + 14) is passed as the region's top edge — both
+        // _renderEventCard and _renderEmptyEventCard apply their own
+        // top margin internally now, so it lines up with the margin they
+        // leave on the right instead of a separately-guessed constant.
+        var PANEL_BOTTOM_PAD = 14;
+        var cardBottomMax = h - PANEL_BOTTOM_PAD;
         if (qi.nextEvent) {
-          this._renderEventCard(qi.nextEvent, EVENT_CARD_X, BANNER_H + 14, visibleW, startY - 10);
+          this._renderEventCard(qi.nextEvent, EVENT_CARD_X, BANNER_H, visibleW, cardBottomMax);
         } else {
-          this._renderEmptyEventCard(EVENT_CARD_X, BANNER_H + 14, visibleW, startY - 10);
+          this._renderEmptyEventCard(EVENT_CARD_X, BANNER_H, visibleW, cardBottomMax);
         }
 
         this._disableDragging(this._quickInfoBox);
@@ -900,13 +1023,19 @@ module("lively.identity.ConstellationLounge")
       // like the populated card's content, since there's no date/title/
       // location to anchor a left margin against.
       _renderEmptyEventCard: function (cardX, cardY, panelW, cardBottomMax) {
-        var cardW = panelW - cardX - 20;
-        var cardH = cardBottomMax - cardY;
+        // Same RIGHT_MARGIN, applied symmetrically top and right, as
+        // _renderEventCard — this card fills its whole region rather than
+        // hugging content, so unlike the populated card there's no
+        // separate "shrink then position" step; the margin is just baked
+        // straight into where the box starts and how big it is.
+        var RIGHT_MARGIN = 28;
+        var cardW = panelW - cardX - RIGHT_MARGIN;
+        var cardH = (cardBottomMax - cardY) - RIGHT_MARGIN;
         if (cardW < 160 || cardH < 70) return;
 
-        var card = new lively.morphic.Box(lively.rect(cardX, cardY, cardW, cardH));
+        var card = new lively.morphic.Box(lively.rect(cardX, cardY + RIGHT_MARGIN, cardW, cardH));
         card.setFill(Color.white);
-        card.applyStyle({ borderWidth: 1, borderColor: Color.rgb(232, 73, 126), borderRadius: 12, clipMode: "hidden" });   // COMMENT_ACCENT (#e8497e)
+        card.applyStyle({ borderWidth: 2, borderColor: Color.rgb(232, 73, 126), borderRadius: 12, clipMode: "hidden" });   // COMMENT_ACCENT (#e8497e)
         this._quickInfoBox.addMorph(card);
 
         // 28px real glyph size -> fontSize 21 (28*0.75), same pt-not-px
@@ -964,10 +1093,21 @@ module("lively.identity.ConstellationLounge")
       // actual content on both axes, same measure-then-shrink idiom as the
       // empty-state "No events scheduled" label. Confirmed live: the
       // stretched version left a large dead gap to the right of "+N
-      // People" and zero bottom margin below the avatar row.
+      // Others" and zero bottom margin below the avatar row.
       _renderEventCard: function (ev, cardX, cardY, panelW, cardBottomMax) {
-        var maxCardW = panelW - cardX - 20;
-        var maxCardH = cardBottomMax - cardY;
+        // RIGHT_MARGIN (rather than the flat 20 GUTTER used elsewhere in
+        // this file) so the card visibly clears the panel's right edge
+        // even when it hugs all the way out to maxCardW, instead of
+        // stopping just short of it. Reused as the *top* margin too (see
+        // the final positioning below) so the card sits pinned to the
+        // available region's top-right corner with equal margins on both
+        // sides, rather than centered in the region — cardY here is this
+        // region's own top edge (banner bottom), not yet offset by any
+        // margin, so that margin has to come out of maxCardH the same way
+        // RIGHT_MARGIN already comes out of maxCardW.
+        var RIGHT_MARGIN = 28;
+        var maxCardW = panelW - cardX - RIGHT_MARGIN;
+        var maxCardH = (cardBottomMax - cardY) - RIGHT_MARGIN;
         if (maxCardW < 160 || maxCardH < 70) return; // not enough room to render legibly
 
         var card = new lively.morphic.Box(lively.rect(cardX, cardY, maxCardW, maxCardH));
@@ -977,44 +1117,152 @@ module("lively.identity.ConstellationLounge")
         // visibleW above) clips cleanly at the card's own edge instead of
         // visually overflowing past it — confirmed live with a real
         // 45-character title before adding this.
-        card.applyStyle({ borderWidth: 1, borderColor: Color.rgb(232, 73, 126), borderRadius: 12, clipMode: "hidden" });   // COMMENT_ACCENT (#e8497e)
+        card.applyStyle({ borderWidth: 2, borderColor: Color.rgb(232, 73, 126), borderRadius: 12, clipMode: "hidden" });   // COMMENT_ACCENT (#e8497e)
         this._quickInfoBox.addMorph(card);
 
-        var PAD = 16;
+        var PAD = 16, GAP = 4;
         var contentW = maxCardW - PAD * 2;
         // Widest content edge seen so far (card-relative x) — drives the
-        // final shrunk width below. Title alone is excluded: it's the one
-        // line allowed to clip for a long event name (the whole reason for
-        // clipMode above). Date/time was excluded too in an earlier pass
-        // (its full "Weekday, Month D, YYYY at H AM/PM +NN" format runs
-        // ~307px, wider than this panel's available card width) but that
-        // made the date itself clip mid-word, which read worse than a
-        // slightly wider card — so it's back to driving width, same as
-        // location and the avatar row.
+        // final shrunk width below, capped at contentW per-line so a
+        // wrapped title (see below) can't itself push the card wider than
+        // the room actually available.
         var maxRight = 0;
         function trackRight(right) { if (right > maxRight) maxRight = right; }
 
+        // Every label below that sizes itself from a *measured* content
+        // height (as opposed to a hardcoded guess) has to add HEIGHT_PAD
+        // back on top of that measurement before calling setExtent — the
+        // vertical sibling of the shapeNode's own fixed internal padding
+        // CLAUDE.md already documents for width (the "+8/-4" pattern used
+        // elsewhere in this file): `setExtentHTML` treats the extent it's
+        // given as the box's *total* size and subtracts the shapeNode's
+        // own 2px-top/2px-bottom padding from it to get the actual CSS
+        // content-box height. Passing the measured *content* height
+        // straight through therefore ends up 4px short of what's actually
+        // needed — confirmed live: measuring the "+N People" label's real
+        // content height as 19px and calling setExtent(w, 19) produced a
+        // box only 15px tall, clipping the descender of the "p" in
+        // "People" against the box's own overflow:hidden. fixedWidth/
+        // fixedHeight are also set true on these labels (unlike makeLabel's
+        // hug-content default of false for both) so nothing later
+        // silently re-fits them back to a different size.
+        var HEIGHT_PAD = 4;
         var dt = lively.morphic.Text.makeLabel(this._formatEventDateTime(ev.startsAt),
-          { fontSize: 12, fontWeight: "700", textColor: Color.rgb(230, 126, 34) });
+          { fontSize: 12, fontWeight: "700", textColor: Color.rgb(230, 126, 34), fixedWidth: true, fixedHeight: true });
         dt.setPosition(lively.pt(PAD, 8));
+        // contentW is a generous throwaway width here — only so the "pre"
+        // (no-wrap) text has room to measure at its natural size, never
+        // the box's final width. Left un-hugged, this and the other two
+        // labels below stayed at the full contentW forever (their own
+        // invisible box always as wide as the card's *widest possible*
+        // content), which sat visibly wider than the card itself once the
+        // card hugged down to a narrower finalW below — confirmed live via
+        // halo-select, an empty-space overhang past the card's own right
+        // border on every line shorter than whichever line drove finalW.
         dt.setExtent(lively.pt(contentW, 14));
         card.addMorph(dt);
+        // Measure the real content height rather than trust the hardcoded
+        // 14 above (see HEIGHT_PAD comment) — a fixed guess is a coin flip
+        // on whether a descender like the "y" in "Thursday" clips.
+        var dtInner = dt.renderContext().shapeNode.querySelector("div");
+        var dtH = dtInner ? dtInner.offsetHeight + HEIGHT_PAD : 14;
         var dtSpan = dt.renderContext().shapeNode.querySelector("span");
-        if (dtSpan) trackRight(PAD + dtSpan.offsetWidth);
+        // Hug width to the real measured text (+8 shapeNode-padding
+        // compensation, same idiom as the "+N Others" label below), capped
+        // at contentW so an overlong date still clips at the card's edge
+        // rather than overflow past it — same trade-off already made for
+        // trackRight just below.
+        var dtW = dtSpan ? Math.min(dtSpan.offsetWidth + 8, contentW) : contentW;
+        dt.setExtent(lively.pt(dtW, dtH));
+        if (dtSpan) trackRight(PAD + Math.min(dtSpan.offsetWidth, contentW));
 
+        // Title is allowed to wrap onto a second line — unlike every other
+        // label in this file (all single-line "pre") — instead of clipping
+        // mid-word at the card's own edge, which is what a real ~45-char
+        // event title did before this (confirmed live: cut off after ~30
+        // characters, mid-word, with the rest of the title simply gone).
+        // The box starts at a generous throwaway height (its real wrapped
+        // height isn't knowable until after render — same measure-after-
+        // render idiom used elsewhere in this file) and is then shrunk to
+        // the actual measured height, so nothing below it in the card
+        // overlaps or leaves an oversized gap.
         var titleM = lively.morphic.Text.makeLabel(ev.title || "",
-          { fontSize: 15, fontWeight: "bold", textColor: Color.rgb(20, 20, 20) });
-        titleM.setPosition(lively.pt(PAD, 24));
-        titleM.setExtent(lively.pt(contentW, 18));
+          { fontSize: 15, fontWeight: "bold", textColor: Color.rgb(20, 20, 20), whiteSpaceHandling: "normal", fixedWidth: true, fixedHeight: true });
+        var titleY = 24;
+        titleM.setPosition(lively.pt(PAD, titleY));
+        // Single-line height first (a throwaway 2000px-wide box guarantees
+        // no wrap regardless of content) — this is the per-line height used
+        // below to cap wrapping at 2 lines. The box's own height is set to
+        // 1px (not something generous) for every measurement in this
+        // function: the rendered content div's CSS is
+        // `min-height: calc(100% - 4px)` of the *box's own* height, so a
+        // generous throwaway height (e.g. 60) becomes a floor that a short
+        // single line's true ~23-27px content can never measure below —
+        // confirmed live, every measurement came back pinned at exactly
+        // (thrown-away height - 4) regardless of actual content. A 1px box
+        // makes that floor negligible, so offsetHeight reflects real
+        // content height instead.
+        titleM.setExtent(lively.pt(2000, 1));
         card.addMorph(titleM);
+        var titleInner = titleM.renderContext().shapeNode.querySelector("div");
+        var singleLineH = titleInner ? titleInner.offsetHeight : 20;
+        titleM.setExtent(lively.pt(contentW, 1));
+        var titleH = titleInner ? titleInner.offsetHeight : singleLineH;
+        // A narrow card (this panel's available width shrinks a lot below
+        // ~1600px browser width, see visibleW above) can wrap a long title
+        // onto 4-5 lines, which blows past the card's own fixed vertical
+        // budget and pushes the avatar row/"+N Others" label past the
+        // card's bottom edge to be clipped there — confirmed live at a
+        // 1280px browser width with this same 45-character title. Capped
+        // at 2 lines with a trailing "…" instead: trims one word at a time
+        // off the end (titles are short, a handful of words, so this is a
+        // handful of reflows at most) until the wrapped height fits back
+        // within 2 lines.
+        var maxTitleH = singleLineH * 2 + 4;
+        if (titleH > maxTitleH) {
+          var words = (ev.title || "").split(/\s+/);
+          while (words.length > 1 && titleH > maxTitleH) {
+            words.pop();
+            titleM.setTextString(words.join(" ") + "…");
+            titleH = titleInner.offsetHeight;
+          }
+        }
+        var titleSpan = titleM.renderContext().shapeNode.querySelector("span");
+        // Only hug width when the title stayed on one line — a wrapped
+        // title's own width *is* contentW (that's what forced it to
+        // wrap), so there's no narrower "natural" width to hug to; the
+        // span's own offsetWidth for wrapped content is just the widest
+        // individual line anyway (see the trackRight cap below), not a
+        // sizing target. "Stayed one line" is titleH landing back at
+        // singleLineH — allow a couple px of font-rounding slack.
+        var titleIsSingleLine = titleH <= singleLineH + 2;
+        var titleW = (titleIsSingleLine && titleSpan)
+          ? Math.min(titleSpan.offsetWidth + 8, contentW)
+          : contentW;
+        titleM.setExtent(lively.pt(titleW, titleH + HEIGHT_PAD));
+        if (titleSpan) trackRight(PAD + Math.min(titleSpan.offsetWidth, contentW));
+        var afterTitleY = titleY + titleH + HEIGHT_PAD;
 
+        // Location's y (and, below, the avatar row's rowY) is derived from
+        // the title's *real* measured bottom rather than a fixed offset —
+        // a wrapped two-line title is taller than the original fixed
+        // offsets assumed, and without this the location line and avatar
+        // row would sit on top of the title's second line instead of below
+        // it.
+        var contentBottomY = afterTitleY;
         if (ev.location) {
-          var locM = lively.morphic.Text.makeLabel(ev.location, { fontSize: 12, textColor: Color.rgb(110, 110, 110) });
-          locM.setPosition(lively.pt(PAD, 44));
+          var locM = lively.morphic.Text.makeLabel(ev.location, { fontSize: 12, textColor: Color.rgb(110, 110, 110), fixedWidth: true, fixedHeight: true });
+          var locY = afterTitleY + GAP;
+          locM.setPosition(lively.pt(PAD, locY));
           locM.setExtent(lively.pt(contentW, 14));
           card.addMorph(locM);
+          var locInner = locM.renderContext().shapeNode.querySelector("div");
+          var locH = locInner ? locInner.offsetHeight : 14;
           var locSpan = locM.renderContext().shapeNode.querySelector("span");
-          if (locSpan) trackRight(PAD + locSpan.offsetWidth);
+          var locW = locSpan ? Math.min(locSpan.offsetWidth + 8, contentW) : contentW;
+          locM.setExtent(lively.pt(locW, locH + HEIGHT_PAD));
+          if (locSpan) trackRight(PAD + Math.min(locSpan.offsetWidth, contentW));
+          contentBottomY = locY + locH + HEIGHT_PAD;
         }
 
         // Overlapping attendee avatars — same white-ring cutout technique
@@ -1024,8 +1272,37 @@ module("lively.identity.ConstellationLounge")
         // same as every other avatar in this file — no real photos, this
         // app has no such upload path for anyone, member or attendee.
         var AV = 26, OVERLAP = 8, RING = 2, MAX_SHOWN = 4;
-        var shown = (ev.attendees || []).slice(0, MAX_SHOWN);
-        var rowY = 64;
+        var allAttendees = ev.attendees || [];
+        var totalAttendeeCount = ev.attendeeCount || allAttendees.length;
+        // A narrow card (contentW shrinks a lot below ~1600px browser
+        // width, see visibleW above) can't always fit 4 overlapping
+        // avatars plus a "+N Others" label on one row — confirmed live at
+        // a 1280px browser width, where the label's own right edge landed
+        // ~30px past the card's right border and was clipped there. Rather
+        // than let the row overflow, shrink how many avatar circles are
+        // shown (never the label itself, which is what actually carries
+        // the count) until the whole row fits within contentW. The
+        // label's width barely changes with the exact "+N" digit count, so
+        // one throwaway measurement at the MAX_SHOWN guess is close enough
+        // to size against.
+        var guessShown = Math.min(allAttendees.length, MAX_SHOWN);
+        var guessExtra = Math.max(0, totalAttendeeCount - guessShown);
+        var lblW = 0;
+        if (guessExtra > 0) {
+          var lblProbe = lively.morphic.Text.makeLabel("+" + guessExtra + " Others",
+            { fontSize: 12.5, fontWeight: "700", textColor: Color.rgb(40, 40, 40) });
+          lblProbe.setPosition(lively.pt(-9999, -9999));
+          lblProbe.setExtent(lively.pt(200, 18));
+          card.addMorph(lblProbe);
+          var lblProbeSpan = lblProbe.renderContext().shapeNode.querySelector("span");
+          lblW = lblProbeSpan ? lblProbeSpan.offsetWidth : Math.ceil(("+" + guessExtra + " Others").length * 8);
+          lblProbe.remove();
+        }
+        var avatarsBudget = contentW - (guessExtra > 0 ? (lblW + 8 + 8) : 0);
+        var shownCount = guessShown;
+        while (shownCount > 0 && (AV + (shownCount - 1) * (AV - OVERLAP)) > avatarsBudget) shownCount--;
+        var shown = allAttendees.slice(0, shownCount);
+        var rowY = contentBottomY + GAP;
         var x = PAD;
         shown.forEach(function (did) {
           var rs = AV + RING * 2;
@@ -1041,21 +1318,27 @@ module("lively.identity.ConstellationLounge")
         if (shown.length) x += OVERLAP;
         trackRight(x);
 
-        var extra = Math.max(0, (ev.attendeeCount || 0) - shown.length);
+        var extra = Math.max(0, totalAttendeeCount - shown.length);
         if (extra > 0) {
           var lblX = x + (shown.length ? 8 : 0);
-          var lbl = lively.morphic.Text.makeLabel("+" + extra + " People",
-            { fontSize: 12.5, fontWeight: "700", textColor: Color.rgb(40, 40, 40) });
+          var lbl = lively.morphic.Text.makeLabel("+" + extra + " Others",
+            { fontSize: 12.5, fontWeight: "700", textColor: Color.rgb(40, 40, 40), fixedWidth: true, fixedHeight: true });
           lbl.setPosition(lively.pt(lblX, rowY + 5));
           lbl.setExtent(lively.pt(Math.max(30, contentW - lblX), 18)); // generous throwaway so it doesn't wrap
           card.addMorph(lbl);
           // Shrink to the real measured width — same +8 shapeNode-padding
           // compensation as the empty-state label, so the box hugs the
           // text (no dead space trailing it) without clipping its own
-          // last character.
+          // last character. Height is likewise measured rather than a
+          // guessed 18: that guess was ~1px short of this text's real
+          // rendered height, which clipped the descender of the "p" in
+          // "People" against the box's own overflow:hidden (confirmed
+          // live) — see the HEIGHT_PAD comment above for why.
+          var lblInner = lbl.renderContext().shapeNode.querySelector("div");
           var lblSpan = lbl.renderContext().shapeNode.querySelector("span");
-          var lblW = lblSpan ? lblSpan.offsetWidth : Math.ceil(("+" + extra + " People").length * 8);
-          lbl.setExtent(lively.pt(lblW + 8, 18));
+          var lblW = lblSpan ? lblSpan.offsetWidth : Math.ceil(("+" + extra + " Others").length * 8);
+          var lblH = lblInner ? lblInner.offsetHeight : 18;
+          lbl.setExtent(lively.pt(lblW + 8, lblH + HEIGHT_PAD));
           trackRight(lblX + lblW + 8);
         }
 
@@ -1066,6 +1349,19 @@ module("lively.identity.ConstellationLounge")
         var finalW = Math.min(maxCardW, Math.max(220, maxRight + PAD));
         var finalH = Math.min(maxCardH, Math.max(70, rowY + AV + 14));
         card.setExtent(lively.pt(finalW, finalH));
+        // Pinned to the top-right corner of the region handed to this
+        // function, with equal margins on both sides: RIGHT_MARGIN from
+        // the panel's right edge (finalX — since maxCardW already reserved
+        // RIGHT_MARGIN, sitting flush against maxCardW's own right edge
+        // lands exactly there) and that same RIGHT_MARGIN below cardY,
+        // this region's own top edge (finalY — maxCardH above already
+        // reserved room for it too). Never left of cardX regardless of
+        // how narrow the card ends up, since finalW <= maxCardW by
+        // construction — that's what keeps it clear of the avatar/title/
+        // detail-lines column to its left.
+        var finalX = cardX + maxCardW - finalW;
+        var finalY = cardY + RIGHT_MARGIN;
+        card.setPosition(lively.pt(finalX, finalY));
       },
 
       _formatDate: function (iso) {
