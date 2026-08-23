@@ -24,6 +24,12 @@
  *                                       of controllers/members (like those, no mutation
  *                                       route exists yet; populated directly for now)
  *
+ *   constellation_events table: one row per scheduled event, backing the
+ *     quick-info panel's event card — id, constellation, title, starts_at
+ *     (ISO string with UTC offset), location, attendees (JSON array of
+ *     did:jwk strings), attendee_count, created_by, created_at. See
+ *     getNextEvent()/createEvent() below.
+ *
  * The DB file is stored at <WORKSPACE_LK>/identity/constellations.db.
  * Created automatically on first use. withDB() migrates existing DBs that
  * predate the `bots` column via ALTER TABLE, guarded by a PRAGMA
@@ -72,6 +78,31 @@ function withDB(thenDo) {
       function(err) {
         if (err) return thenDo(err);
 
+        function createEvents() {
+          // Backs the quick-info panel's event card (ConstellationLounge.js
+          // _renderQuickInfo) — one row per scheduled event; the panel shows
+          // whichever has the soonest future `starts_at` (getNextEvent()).
+          // `attendees` is a small JSON array of did:jwk strings (enough to
+          // render a handful of avatars); `attendee_count` is the displayed
+          // headcount and may exceed attendees.length — the card's "+N
+          // People" badge is attendee_count - attendees.length, not a claim
+          // that every attendee's DID is known.
+          db.run(
+            'CREATE TABLE IF NOT EXISTS constellation_events (' +
+            '  id             INTEGER PRIMARY KEY AUTOINCREMENT,' +
+            '  constellation  TEXT NOT NULL,' +
+            '  title          TEXT NOT NULL,' +
+            '  starts_at      TEXT NOT NULL,' +
+            '  location       TEXT NOT NULL DEFAULT \'\',' +
+            '  attendees      TEXT NOT NULL DEFAULT \'[]\',' +
+            '  attendee_count INTEGER NOT NULL DEFAULT 0,' +
+            '  created_by     TEXT NOT NULL,' +
+            '  created_at     TEXT NOT NULL' +
+            ')',
+            function(err) { thenDo(err || null, db); }
+          );
+        }
+
         function createJoinRequests() {
           // ConstellationDesignSpec.md §4.2/§7 — request-to-join flow. One row
           // per (constellation, did): a re-request after a decline overwrites
@@ -88,7 +119,10 @@ function withDB(thenDo) {
             '  status        TEXT NOT NULL DEFAULT \'pending\',' +
             '  PRIMARY KEY (constellation, did)' +
             ')',
-            function(err) { thenDo(err || null, db); }
+            function(err) {
+              if (err) return thenDo(err);
+              createEvents();
+            }
           );
         }
 
@@ -121,7 +155,7 @@ var NAME_RE = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/;
 var RESERVED_NAMES = {
   'feed': true, 'wiki': true, 'members': true, 'invites': true,
   'join-requests': true, 'settings': true, 'did.json': true, 'space': true,
-  'canvas': true, 'admin': true, 'api': true, 'www': true
+  'canvas': true, 'admin': true, 'api': true, 'www': true, 'events': true
 };
 
 function isValidName(name) {
@@ -394,6 +428,76 @@ function declineJoinRequest(name, did, thenDo) {
   });
 }
 
+// ─── events — quick-info panel's event card ─────────────────────────────────
+// No creation UI exists yet (same gap as bots/moderators) — createEvent is a
+// real write path for whenever one gets built, but rows can also be inserted
+// directly for now.
+
+// fields: { constellation, title, startsAt (ISO string with offset),
+//           location, attendees: [did,...], attendeeCount, createdBy }
+// Calls thenDo(err).
+function createEvent(fields, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.run(
+      'INSERT INTO constellation_events ' +
+      '(constellation, title, starts_at, location, attendees, attendee_count, created_by, created_at)' +
+      ' VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        fields.constellation,
+        fields.title,
+        fields.startsAt,
+        fields.location || '',
+        JSON.stringify(fields.attendees || []),
+        fields.attendeeCount || 0,
+        fields.createdBy,
+        new Date().toISOString()
+      ],
+      function(err) { thenDo(err || null); }
+    );
+  });
+}
+
+// Whichever of this constellation's events has the soonest future
+// `starts_at` — fetches all of them and compares as real Date objects
+// (rather than a SQL string-range query) since starts_at strings carry
+// arbitrary UTC offsets that don't sort correctly as plain text. Fine at
+// this table's expected size (a handful of upcoming events per
+// constellation, not a hot path). Calls thenDo(null, event|null), where
+// event: { id, title, startsAt, location, attendees: [did,...],
+//          attendeeCount, createdBy, createdAt }.
+function getNextEvent(name, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.all('SELECT * FROM constellation_events WHERE constellation = ?', [name], function(err, rows) {
+      if (err) return thenDo(err);
+      var now = Date.now();
+      var upcoming = (rows || [])
+        .map(function(row) {
+          var attendees;
+          try { attendees = JSON.parse(row.attendees || '[]'); } catch (e) { attendees = []; }
+          return {
+            id: row.id,
+            title: row.title,
+            startsAt: row.starts_at,
+            location: row.location,
+            attendees: attendees,
+            attendeeCount: row.attendee_count,
+            createdBy: row.created_by,
+            createdAt: row.created_at,
+            _ts: new Date(row.starts_at).getTime()
+          };
+        })
+        .filter(function(ev) { return !isNaN(ev._ts) && ev._ts >= now; })
+        .sort(function(a, b) { return a._ts - b._ts; });
+      if (!upcoming.length) return thenDo(null, null);
+      var next = upcoming[0];
+      delete next._ts;
+      thenDo(null, next);
+    });
+  });
+}
+
 module.exports = {
   withDB: withDB,
   isValidName: isValidName,
@@ -411,5 +515,7 @@ module.exports = {
   getJoinRequestStatus: getJoinRequestStatus,
   listPendingJoinRequests: listPendingJoinRequests,
   approveJoinRequest: approveJoinRequest,
-  declineJoinRequest: declineJoinRequest
+  declineJoinRequest: declineJoinRequest,
+  createEvent: createEvent,
+  getNextEvent: getNextEvent
 };

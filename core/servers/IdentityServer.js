@@ -3048,28 +3048,34 @@ module.exports = function (route, app) {
       // one batch here means the client never has to resolve DIDs itself.
       function respond(joinRequestStatus) {
         var bots = constellation.bots || [];
-        // Bots aren't necessarily also constellation members, so they need
-        // their own DIDs folded into the handle-resolution batch — omitting
-        // them here would leave ConstellationLounge.js's BOTS section unable
-        // to look up a handle for any bot that isn't also a member.
-        _resolveHandlesForDids(constellation.members.concat(bots), function (err, memberHandles) {
+        constellationRegistry.getNextEvent(name, function (err, nextEvent) {
           if (err) return res.status(500).json({ error: String(err) });
-          res.json({
-            token: constellationSpace.mintSpaceToken(constellation, req.identity),
-            genesisObjId: constellation.genesisObjId,
-            canWrite: canWrite,
-            isController: isController,
-            joinRequestStatus: joinRequestStatus,
-            quickInfo: {
-              createdBy: constellation.createdBy,
-              controllers: constellation.controllers,
-              members: constellation.members,
-              memberCount: constellation.members.length,
-              memberHandles: memberHandles,
-              createdAt: constellation.createdAt,
-              visibility: constellation.visibility,
-              bots: bots
-            }
+          // Bots and event attendees aren't necessarily also constellation
+          // members, so their DIDs need folding into the handle-resolution
+          // batch too — omitting them would leave ConstellationLounge.js's
+          // BOTS section / event card unable to look up a handle for anyone
+          // who isn't also a member.
+          var eventAttendees = nextEvent ? nextEvent.attendees : [];
+          _resolveHandlesForDids(constellation.members.concat(bots, eventAttendees), function (err, memberHandles) {
+            if (err) return res.status(500).json({ error: String(err) });
+            res.json({
+              token: constellationSpace.mintSpaceToken(constellation, req.identity),
+              genesisObjId: constellation.genesisObjId,
+              canWrite: canWrite,
+              isController: isController,
+              joinRequestStatus: joinRequestStatus,
+              quickInfo: {
+                createdBy: constellation.createdBy,
+                controllers: constellation.controllers,
+                members: constellation.members,
+                memberCount: constellation.members.length,
+                memberHandles: memberHandles,
+                createdAt: constellation.createdAt,
+                visibility: constellation.visibility,
+                bots: bots,
+                nextEvent: nextEvent
+              }
+            });
           });
         });
       }
@@ -3078,6 +3084,41 @@ module.exports = function (route, app) {
       constellationRegistry.getJoinRequestStatus(name, viewerDid, function (err, status) {
         if (err) return res.status(500).json({ error: String(err) });
         respond(status);
+      });
+    });
+  });
+
+  // Controller-only event creation — no client UI exists yet (same gap as
+  // bots/moderators; see ConstellationDesignSpec.md), but this gives the
+  // feature a real write path rather than only ever being seeded by hand.
+  // Body: { title, startsAt (ISO string with UTC offset), location,
+  //          attendees: [did,...], attendeeCount }
+  app.post("/c/:name/events", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var body = req.body || {};
+    if (!body.title || !body.startsAt) {
+      return res.status(400).json({ error: "Missing required fields: title, startsAt" });
+    }
+    if (isNaN(new Date(body.startsAt).getTime())) {
+      return res.status(400).json({ error: "startsAt is not a valid date/time string" });
+    }
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.isController(constellation, req.identity.did)) {
+        return res.status(403).json({ error: "Forbidden: controllers only" });
+      }
+      constellationRegistry.createEvent({
+        constellation: name,
+        title: body.title,
+        startsAt: body.startsAt,
+        location: body.location || "",
+        attendees: Array.isArray(body.attendees) ? body.attendees : [],
+        attendeeCount: parseInt(body.attendeeCount, 10) || 0,
+        createdBy: req.identity.did
+      }, function (err) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.status(201).json({ ok: true });
       });
     });
   });

@@ -367,7 +367,11 @@ module("lively.identity.ConstellationLounge")
 
         this._quickInfoBox = new lively.morphic.Box(lively.rect(0, 0, 10, 10));
         this._quickInfoBox.setFill(Color.white);
-        this._quickInfoBox.applyStyle({ borderWidth: 1, borderColor: Color.rgb(238, 238, 238), borderRadius: 8 });
+        // clipMode hidden so the banner/avatar section _renderQuickInfo adds
+        // (a full-width banner flush against the box's top edge) gets
+        // clipped to this box's own rounded corners automatically, instead
+        // of needing separate per-corner radii on the banner morph itself.
+        this._quickInfoBox.applyStyle({ borderWidth: 1, borderColor: Color.rgb(238, 238, 238), borderRadius: 8, clipMode: "hidden" });
         $world.addMorph(this._quickInfoBox);
 
         // Back card slot first (rendered below the front card) — a plain
@@ -414,6 +418,7 @@ module("lively.identity.ConstellationLounge")
         this._threadContainer.applyStyle({ borderWidth: 1, borderColor: Color.rgb(238, 238, 238), borderRadius: 8 });
         this._threadContainer.renderContext().shapeNode.style.overflowY = "auto";
         this._threadContainer.renderContext().shapeNode.style.padding = "10px " + THREAD_PAD_X + "px";
+        this._threadContainer.renderContext().shapeNode.classList.add("lounge-comment-thread");
         $world.addMorph(this._threadContainer);
 
         this._wikiHeaderBox = new lively.morphic.Box(lively.rect(0, 0, 10, 32));
@@ -489,7 +494,18 @@ module("lively.identity.ConstellationLounge")
         styleEl.textContent =
           ".lounge-comment-body{font-size:12.5px;line-height:1.45;color:#1a1a1b;}" +
           ".lounge-comment-body p{margin:0 0 6px;}" +
-          ".lounge-comment-body p:last-child{margin-bottom:0;}";
+          ".lounge-comment-body p:last-child{margin-bottom:0;}" +
+          // Same pill-thumb scrollbar treatment as lively.commerce.Shop's
+          // .lk-shop-root, recolored for this panel's white (not pink-tinted)
+          // background. A straight COMMENT_ACCENT (#e8497e) thumb read as
+          // too bright/saturated against white — deepened to a warmer,
+          // muted rose (#a52c58, darker still on hover) instead of the
+          // bright accent used for borders/buttons elsewhere in this file.
+          ".lounge-comment-thread{scrollbar-width:thin;scrollbar-color:#a52c58 #f2f2f3;}" +
+          ".lounge-comment-thread::-webkit-scrollbar{width:10px;}" +
+          ".lounge-comment-thread::-webkit-scrollbar-track{background:#f2f2f3;}" +
+          ".lounge-comment-thread::-webkit-scrollbar-thumb{background:#a52c58;border-radius:999px;border:2px solid #f2f2f3;}" +
+          ".lounge-comment-thread::-webkit-scrollbar-thumb:hover{background:#742040;}";
         document.head.appendChild(styleEl);
       },
     },
@@ -785,10 +801,38 @@ module("lively.identity.ConstellationLounge")
         (this._quickInfoBox.submorphs || []).slice().forEach(function (m) { m.remove(); });
         var qi = this._quickInfo || {};
         var w = this._quickInfoBox.getExtent().x;
+        var h = this._quickInfoBox.getExtent().y;
+
+        // Banner + avatar, same layout idiom as ProfileCard.js's read view
+        // (a full-width banner strip, a circular avatar straddling its
+        // bottom-left corner in a white "ring") scaled down for this much
+        // shorter panel. Neither constellations have an uploadable
+        // banner/avatar yet (no bannerUrl/avatarUrl field exists — same gap
+        // as the bots section's missing settings UI), so both render their
+        // permanent fallback for now: a flat placeholder banner (identical
+        // color to ProfileCard's own "no bannerUrl" fallback) and a
+        // deterministic identicon avatar seeded off this constellation's
+        // own name, exactly like every member/comment avatar elsewhere in
+        // this file already is off a DID.
+        var BANNER_H = 130, AVATAR = 64, RING = 3;
+        var banner = new lively.morphic.Box(lively.rect(0, 0, w, BANNER_H));
+        banner.applyStyle({ fill: Color.rgb(225, 222, 232), borderWidth: 0 });
+        this._quickInfoBox.addMorph(banner);
+
+        var avX = 20, avY = BANNER_H - Math.floor(AVATAR / 2);
+        var RS = AVATAR + RING * 2;
+        var avRing = new lively.morphic.Box(lively.rect(avX - RING, avY - RING, RS, RS));
+        avRing.applyStyle({ fill: Color.white, borderRadius: RS / 2, borderWidth: 0 });
+        this._quickInfoBox.addMorph(avRing);
+
+        var avatar = new lively.morphic.Image(lively.rect(avX, avY, AVATAR, AVATAR));
+        avatar.setImageURL(lively.identity.postCardUtils.identiconDataUrl("c/" + this._name, AVATAR));
+        avatar.applyStyle({ borderRadius: AVATAR / 2, borderWidth: 0, clipMode: "hidden" });
+        this._quickInfoBox.addMorph(avatar);
 
         var title = lively.morphic.Text.makeLabel("c/" + this._name, { fontSize: 16, fontWeight: "bold" });
-        title.setPosition(lively.pt(14, 12));
-        title.setExtent(lively.pt(w - 28, 22));
+        title.setPosition(lively.pt(avX, avY + AVATAR + 10));
+        title.setExtent(lively.pt(w - avX * 2, 22));
         this._quickInfoBox.addMorph(title);
 
         var creatorHandle = qi.memberHandles && qi.createdBy ? qi.memberHandles[qi.createdBy] : null;
@@ -797,13 +841,231 @@ module("lively.identity.ConstellationLounge")
             " member" + (qi.memberCount === 1 ? "" : "s"),
           "Created " + this._formatDate(qi.createdAt) + (creatorHandle ? (" by @" + creatorHandle) : ""),
         ];
+        // Anchored to the bottom-left of the panel instead of stacked right
+        // under the title — BOTTOM_PAD/LINE_H mirror the title's own 14px
+        // side padding and the original 20px line spacing, just measured
+        // up from the box's bottom edge rather than down from the top.
+        var BOTTOM_PAD = 14, LINE_H = 20;
+        var startY = h - BOTTOM_PAD - lines.length * LINE_H;
         lines.forEach(function (str, i) {
           var t = lively.morphic.Text.makeLabel(str, { fontSize: 12, textColor: Color.rgb(102, 102, 102) });
-          t.setPosition(lively.pt(14, 40 + i * 20));
+          t.setPosition(lively.pt(14, startY + i * LINE_H));
           t.setExtent(lively.pt(w - 28, 18));
           self._quickInfoBox.addMorph(t);
         });
+
+        // Event card — fills the empty space right of the avatar/title
+        // column, in the bottom half of the panel (above the bottom-left
+        // detail lines just rendered, using `startY` as its lower bound so
+        // the two never visually compete for the same row). Only the
+        // constellation's single next-upcoming event is shown (getNextEvent
+        // server-side); nothing renders if there isn't one.
+        //
+        // QUICK_INFO_W is wider than what's actually visible before the
+        // members column starts, at typical viewport widths — harmless
+        // while that space stayed blank, but an opaque card there would
+        // render partly hidden underneath the members panel (confirmed
+        // live: the card's right portion disappeared behind it). Use the
+        // real gap from this._geom instead of the panel's nominal width
+        // for the card's bounds specifically.
+        var visibleW = (this._geom && typeof this._geom.membersX === "number")
+          ? Math.max(200, this._geom.membersX - GUTTER - this._geom.quickInfoX)
+          : w;
+        // cardX derived from the title's real measured width (a live DOM
+        // measurement, not the title box's own nominal extent — that spans
+        // nearly the panel's full width regardless of the actual text) plus
+        // a gutter, rather than a flat fraction of visibleW. A flat 42%
+        // split was tried first and reliably cleared the title, but left
+        // too little room on the card's side for the date/time line to
+        // avoid clipping (confirmed live: the full "Weekday, Month D,
+        // YYYY at H AM/PM +NN" format needs ~307px, more than a 42% split
+        // ever left available at a typical 1440px-wide viewport). Falls
+        // back to a fixed floor if measurement fails for any reason.
+        var titleSpan = title.renderContext().shapeNode.querySelector("span");
+        var titleRight = avX + (titleSpan ? titleSpan.offsetWidth : 120);
+        var EVENT_CARD_X = Math.max(avX + AVATAR + 24, titleRight + 24);
+        if (qi.nextEvent) {
+          this._renderEventCard(qi.nextEvent, EVENT_CARD_X, BANNER_H + 14, visibleW, startY - 10);
+        } else {
+          this._renderEmptyEventCard(EVENT_CARD_X, BANNER_H + 14, visibleW, startY - 10);
+        }
+
         this._disableDragging(this._quickInfoBox);
+      },
+
+      // Same bordered slot as _renderEventCard, shown instead of it when
+      // there's no upcoming event — a calendar glyph (Material Symbols
+      // Rounded, per CLAUDE.md's icon convention) over "No events
+      // scheduled", both centered in the card rather than left-aligned
+      // like the populated card's content, since there's no date/title/
+      // location to anchor a left margin against.
+      _renderEmptyEventCard: function (cardX, cardY, panelW, cardBottomMax) {
+        var cardW = panelW - cardX - 20;
+        var cardH = cardBottomMax - cardY;
+        if (cardW < 160 || cardH < 70) return;
+
+        var card = new lively.morphic.Box(lively.rect(cardX, cardY, cardW, cardH));
+        card.setFill(Color.white);
+        card.applyStyle({ borderWidth: 1, borderColor: Color.rgb(232, 73, 126), borderRadius: 12, clipMode: "hidden" });   // COMMENT_ACCENT (#e8497e)
+        this._quickInfoBox.addMorph(card);
+
+        // 28px real glyph size -> fontSize 21 (28*0.75), same pt-not-px
+        // conversion as every other icon in this file.
+        var ICON_PX = 28, ICON_FONT = ICON_PX * 0.75, ICON_BOX_H = 34;
+        var icon = new lively.morphic.Text(lively.rect(0, Math.round(cardH / 2) - 34, cardW, ICON_BOX_H), "calendar_month");
+        icon.applyStyle({
+          fontFamily: "'Material Symbols Rounded'", fontSize: ICON_FONT, textColor: Color.rgb(190, 190, 190),
+          fill: null, borderWidth: 0, allowInput: false, selectable: false, align: "center",
+          fixedWidth: true, fixedHeight: true,
+          clipMode: "hidden", whiteSpaceHandling: "pre",
+        });
+        card.addMorph(icon);
+
+        // Left at makeLabel's default fixedWidth:false so the box hugs the
+        // text itself (a small centered pill, not a label stretched across
+        // the whole card) — align:"center" can't do the centering here
+        // since a box that auto-shrinks to its content has no extra room
+        // left to center within (confirmed live: with align alone the text
+        // sat flush-left instead). Generous throwaway width first so it
+        // doesn't wrap, then measure the real rendered span and reposition
+        // — same measure-after-render idiom _fitCreatePostcardButton
+        // already uses in this file for the same reason.
+        var label = lively.morphic.Text.makeLabel("No events scheduled",
+          { fontSize: 12.5, textColor: Color.rgb(150, 150, 150) });
+        var labelY = Math.round(cardH / 2) + 4;
+        label.setPosition(lively.pt(0, labelY));
+        label.setExtent(lively.pt(cardW, 18));
+        card.addMorph(label);
+        var labelSpan = label.renderContext().shapeNode.querySelector("span");
+        var labelW = labelSpan ? labelSpan.offsetWidth : Math.ceil("No events scheduled".length * 7);
+        // setExtent back down to the real measured width, not just
+        // setPosition — the box itself was still the full cardW-wide
+        // throwaway extent from above (fixedWidth:false only auto-fits at
+        // initial creation, not on every subsequent change), so repositioning
+        // alone just slid that still-full-width box rightward, overflowing
+        // past the card's own right edge. Shrinking the extent too is what
+        // actually makes it hug the text.
+        //
+        // +8/-4: the shapeNode's own small fixed internal padding (CLAUDE.md's
+        // Text-morph sizing gotcha) eats into the content box, so setting
+        // width to exactly labelW clips the last couple px (confirmed live:
+        // the trailing "d" in "scheduled" was cut off) — pad the extent and
+        // shift position back by half that so the visible glyph still lands
+        // centered with nothing clipped.
+        var SIZE_PAD = 8;
+        label.setExtent(lively.pt(labelW + SIZE_PAD, 18));
+        label.setPosition(lively.pt(Math.max(0, Math.round((cardW - labelW) / 2) - SIZE_PAD / 2), labelY));
+      },
+
+      // cardRight/cardBottomMax: the panel's own right/bottom bounds are an
+      // upper limit the card must stay within, not a size to stretch to
+      // fill — the card is built at that generous throwaway size first
+      // (so nothing wraps while measuring), then shrunk down to hug its
+      // actual content on both axes, same measure-then-shrink idiom as the
+      // empty-state "No events scheduled" label. Confirmed live: the
+      // stretched version left a large dead gap to the right of "+N
+      // People" and zero bottom margin below the avatar row.
+      _renderEventCard: function (ev, cardX, cardY, panelW, cardBottomMax) {
+        var maxCardW = panelW - cardX - 20;
+        var maxCardH = cardBottomMax - cardY;
+        if (maxCardW < 160 || maxCardH < 70) return; // not enough room to render legibly
+
+        var card = new lively.morphic.Box(lively.rect(cardX, cardY, maxCardW, maxCardH));
+        card.setFill(Color.white);
+        // clipMode hidden so a long title/location (this panel's available
+        // width is fairly narrow once the members column eats into it, see
+        // visibleW above) clips cleanly at the card's own edge instead of
+        // visually overflowing past it — confirmed live with a real
+        // 45-character title before adding this.
+        card.applyStyle({ borderWidth: 1, borderColor: Color.rgb(232, 73, 126), borderRadius: 12, clipMode: "hidden" });   // COMMENT_ACCENT (#e8497e)
+        this._quickInfoBox.addMorph(card);
+
+        var PAD = 16;
+        var contentW = maxCardW - PAD * 2;
+        // Widest content edge seen so far (card-relative x) — drives the
+        // final shrunk width below. Title alone is excluded: it's the one
+        // line allowed to clip for a long event name (the whole reason for
+        // clipMode above). Date/time was excluded too in an earlier pass
+        // (its full "Weekday, Month D, YYYY at H AM/PM +NN" format runs
+        // ~307px, wider than this panel's available card width) but that
+        // made the date itself clip mid-word, which read worse than a
+        // slightly wider card — so it's back to driving width, same as
+        // location and the avatar row.
+        var maxRight = 0;
+        function trackRight(right) { if (right > maxRight) maxRight = right; }
+
+        var dt = lively.morphic.Text.makeLabel(this._formatEventDateTime(ev.startsAt),
+          { fontSize: 12, fontWeight: "700", textColor: Color.rgb(230, 126, 34) });
+        dt.setPosition(lively.pt(PAD, 8));
+        dt.setExtent(lively.pt(contentW, 14));
+        card.addMorph(dt);
+        var dtSpan = dt.renderContext().shapeNode.querySelector("span");
+        if (dtSpan) trackRight(PAD + dtSpan.offsetWidth);
+
+        var titleM = lively.morphic.Text.makeLabel(ev.title || "",
+          { fontSize: 15, fontWeight: "bold", textColor: Color.rgb(20, 20, 20) });
+        titleM.setPosition(lively.pt(PAD, 24));
+        titleM.setExtent(lively.pt(contentW, 18));
+        card.addMorph(titleM);
+
+        if (ev.location) {
+          var locM = lively.morphic.Text.makeLabel(ev.location, { fontSize: 12, textColor: Color.rgb(110, 110, 110) });
+          locM.setPosition(lively.pt(PAD, 44));
+          locM.setExtent(lively.pt(contentW, 14));
+          card.addMorph(locM);
+          var locSpan = locM.renderContext().shapeNode.querySelector("span");
+          if (locSpan) trackRight(PAD + locSpan.offsetWidth);
+        }
+
+        // Overlapping attendee avatars — same white-ring cutout technique
+        // as the main avatar above, one ring+image pair per attendee, each
+        // added after (so rendered on top of) the previous one to get the
+        // "stacked" look. Deterministic identicons off each attendee's DID,
+        // same as every other avatar in this file — no real photos, this
+        // app has no such upload path for anyone, member or attendee.
+        var AV = 26, OVERLAP = 8, RING = 2, MAX_SHOWN = 4;
+        var shown = (ev.attendees || []).slice(0, MAX_SHOWN);
+        var rowY = 64;
+        var x = PAD;
+        shown.forEach(function (did) {
+          var rs = AV + RING * 2;
+          var ring = new lively.morphic.Box(lively.rect(x - RING, rowY - RING, rs, rs));
+          ring.applyStyle({ fill: Color.white, borderRadius: rs / 2, borderWidth: 0 });
+          card.addMorph(ring);
+          var av = new lively.morphic.Image(lively.rect(x, rowY, AV, AV));
+          av.setImageURL(lively.identity.postCardUtils.identiconDataUrl(did, AV));
+          av.applyStyle({ borderRadius: AV / 2, borderWidth: 0, clipMode: "hidden" });
+          card.addMorph(av);
+          x += AV - OVERLAP;
+        });
+        if (shown.length) x += OVERLAP;
+        trackRight(x);
+
+        var extra = Math.max(0, (ev.attendeeCount || 0) - shown.length);
+        if (extra > 0) {
+          var lblX = x + (shown.length ? 8 : 0);
+          var lbl = lively.morphic.Text.makeLabel("+" + extra + " People",
+            { fontSize: 12.5, fontWeight: "700", textColor: Color.rgb(40, 40, 40) });
+          lbl.setPosition(lively.pt(lblX, rowY + 5));
+          lbl.setExtent(lively.pt(Math.max(30, contentW - lblX), 18)); // generous throwaway so it doesn't wrap
+          card.addMorph(lbl);
+          // Shrink to the real measured width — same +8 shapeNode-padding
+          // compensation as the empty-state label, so the box hugs the
+          // text (no dead space trailing it) without clipping its own
+          // last character.
+          var lblSpan = lbl.renderContext().shapeNode.querySelector("span");
+          var lblW = lblSpan ? lblSpan.offsetWidth : Math.ceil(("+" + extra + " People").length * 8);
+          lbl.setExtent(lively.pt(lblW + 8, 18));
+          trackRight(lblX + lblW + 8);
+        }
+
+        // Shrink the card down to hug its content on both axes (capped at
+        // the original available maxCardW/maxCardH so it never grows back
+        // past the visible bounds established by the caller) — MIN floors
+        // keep a short title/no-attendees card from collapsing too tight.
+        var finalW = Math.min(maxCardW, Math.max(220, maxRight + PAD));
+        var finalH = Math.min(maxCardH, Math.max(70, rowY + AV + 14));
+        card.setExtent(lively.pt(finalW, finalH));
       },
 
       _formatDate: function (iso) {
@@ -811,6 +1073,33 @@ module("lively.identity.ConstellationLounge")
         var d = new Date(iso);
         if (isNaN(d.getTime())) return String(iso);
         return d.toLocaleDateString();
+      },
+
+      // Renders an ISO 8601 datetime string (e.g. "2025-12-03T14:00:00+06:00")
+      // as "Wednesday, December 3, 2025 at 2 PM +06" — always in the
+      // event's own stored UTC offset, not the viewer's local timezone
+      // (an event's wall-clock time shouldn't shift per-viewer), so this
+      // parses the string's numeric fields directly rather than going
+      // through `new Date(iso)` + toLocale*, which would silently convert
+      // to the browser's local zone instead.
+      _formatEventDateTime: function (iso) {
+        var m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/.exec(iso || "");
+        if (!m) return iso || "";
+        var year = +m[1], month = +m[2], day = +m[3], hour = +m[4], minute = +m[5];
+        var DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+        var MONTHS = ["January", "February", "March", "April", "May", "June",
+          "July", "August", "September", "October", "November", "December"];
+        var weekday = DAYS[new Date(Date.UTC(year, month - 1, day)).getUTCDay()];
+        var ampm = hour >= 12 ? "PM" : "AM";
+        var hour12 = hour % 12 || 12;
+        var timeStr = hour12 + (minute ? (":" + (minute < 10 ? "0" : "") + minute) : "") + " " + ampm;
+        var offsetStr = "";
+        var offRaw = m[7];
+        if (offRaw && offRaw !== "Z") {
+          var om = /^([+-])(\d{2}):?(\d{2})$/.exec(offRaw);
+          if (om) offsetStr = " " + om[1] + om[2] + (om[3] !== "00" ? (":" + om[3]) : "");
+        }
+        return weekday + ", " + MONTHS[month - 1] + " " + day + ", " + year + " at " + timeStr + offsetStr;
       },
     },
 
