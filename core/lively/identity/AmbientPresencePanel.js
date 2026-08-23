@@ -17,9 +17,9 @@ module("lively.identity.AmbientPresencePanel")
     // object itself instead of a closure var — a dotted global path still
     // resolves fine after reconstruction, only closures are lost.
     Object.extend(lively.identity.AmbientPresencePanel, {
-      PANEL_W: 306,
+      PANEL_W: 340,
       PANEL_H: 52,
-      PANEL_BG:       Color.rgb(0x7A, 0x28, 0x59),
+      PANEL_BG:       Color.black,
       TEXT_PRIMARY:   Color.rgb(242, 243, 245),
       TEXT_SECONDARY: Color.rgb(148, 155, 164),
       ICON_DEFAULT:   Color.rgb(181, 186, 193),
@@ -89,8 +89,8 @@ module("lively.identity.AmbientPresencePanel")
       droppingEnabled: false,
       grabbingEnabled: false,
       style: {
-        extent: lively.pt(306, 52),
-        fill: Color.rgb(0x7A, 0x28, 0x59),
+        extent: lively.pt(340, 52),
+        fill: Color.black,
         borderRadius: 12,
         borderWidth: 1,
         borderColor: Color.rgba(255, 255, 255, 0.06),
@@ -98,6 +98,7 @@ module("lively.identity.AmbientPresencePanel")
 
       micMuted: false,
       deafened: false,
+      cameraOff: false,
 
       alignInWorld: function alignInWorld() {
         var wBounds = $world.visibleBounds();
@@ -136,18 +137,21 @@ module("lively.identity.AmbientPresencePanel")
         this.addMorph(this._nameMorph);
 
         this._statusMorph = new lively.morphic.Text(lively.rect(50, 27, 140, 16));
-        this._statusMorph.applyStyle({ fontSize: 8.25, textColor: NS.TEXT_SECONDARY,
+        this._statusMorph.applyStyle({ fontSize: 8.25, fontWeight: "600", textColor: NS.TEXT_SECONDARY,
           fill: null, borderWidth: 0, allowInput: false, selectable: false,
           clipMode: "hidden", whiteSpaceHandling: "pre" });
         this.addMorph(this._statusMorph);
 
-        this._micBtn = NS.makeIconButton(lively.rect(200, 12, 28, 28), "mic", "toggleMic");
+        this._camBtn = NS.makeIconButton(lively.rect(200, 12, 28, 28), "videocam", "toggleCamera");
+        this.addMorph(this._camBtn);
+
+        this._micBtn = NS.makeIconButton(lively.rect(234, 12, 28, 28), "mic", "toggleMic");
         this.addMorph(this._micBtn);
 
-        this._headsetBtn = NS.makeIconButton(lively.rect(234, 12, 28, 28), "headset_mic", "toggleDeafen");
+        this._headsetBtn = NS.makeIconButton(lively.rect(268, 12, 28, 28), "headset_mic", "toggleDeafen");
         this.addMorph(this._headsetBtn);
 
-        this._gearBtn = NS.makeIconButton(lively.rect(268, 12, 28, 28), "settings", "openSettings");
+        this._gearBtn = NS.makeIconButton(lively.rect(302, 12, 28, 28), "settings", "openSettings");
         this.addMorph(this._gearBtn);
       },
 
@@ -167,12 +171,19 @@ module("lively.identity.AmbientPresencePanel")
         this._updateControls();
       },
 
+      toggleCamera: function toggleCamera() {
+        this.cameraOff = !this.cameraOff;
+        this._updateControls();
+      },
+
       _updateControls: function _updateControls() {
         var NS = lively.identity.AmbientPresencePanel;
+        this._camBtn.textString = this.cameraOff ? "videocam_off" : "videocam";
+        this._camBtn.applyStyle({ textColor: this.cameraOff ? NS.ICON_DANGER : NS.STATUS_ONLINE });
         this._micBtn.textString = this.micMuted ? "mic_off" : "mic";
-        this._micBtn.applyStyle({ textColor: this.micMuted ? NS.ICON_DANGER : NS.ICON_DEFAULT });
+        this._micBtn.applyStyle({ textColor: this.micMuted ? NS.ICON_DANGER : NS.STATUS_ONLINE });
         this._headsetBtn.textString = this.deafened ? "headset_off" : "headset_mic";
-        this._headsetBtn.applyStyle({ textColor: this.deafened ? NS.ICON_DANGER : NS.ICON_DEFAULT });
+        this._headsetBtn.applyStyle({ textColor: this.deafened ? NS.ICON_DANGER : NS.STATUS_ONLINE });
       },
 
       openSettings: function openSettings() {
