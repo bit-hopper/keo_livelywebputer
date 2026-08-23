@@ -92,8 +92,8 @@ module("lively.identity.AmbientPresencePanel")
         extent: lively.pt(340, 52),
         fill: Color.black,
         borderRadius: 12,
-        borderWidth: 1,
-        borderColor: Color.rgba(255, 255, 255, 0.06),
+        borderWidth: 3,
+        borderColor: Color.rgb(232, 73, 126),   // #e8497e
       },
 
       micMuted: false,
