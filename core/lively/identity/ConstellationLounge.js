@@ -177,6 +177,7 @@ module("lively.identity.ConstellationLounge")
 
         this._frontCardBox = null;
         this._backCardBox = null;
+        this._spacesBox = null;
 
         this._presenceByDid = {};  // did -> true while online
       },
@@ -261,6 +262,12 @@ module("lively.identity.ConstellationLounge")
         // live: without it the rendered box came out 20px taller than
         // requested and swallowed the whole bottom margin.
         var threadH = threadRenderedH - THREAD_PAD_Y * 2;
+        var threadBottom = threadY + threadRenderedH;
+        // Spaces/rooms panel (placeholder — no real feature behind it yet)
+        // sits directly below the about panel, same footprint the old
+        // embedded wiki panel had: same column/width, bottoming out level
+        // with the comment thread below it.
+        var spacesY = quickInfoY + QUICK_INFO_H + ROW_GAP;
 
         // Nudged right of dead-center, as its own hero row across the full
         // page width, above the reel/quick-info columns rather than
@@ -285,6 +292,7 @@ module("lively.identity.ConstellationLounge")
           reelX: GUTTER, reelY: reelY,
           navX: GUTTER, navY: reelY + CARD_H + 6,
           threadX: GUTTER, threadY: threadY, threadW: THREAD_W, threadH: threadH,
+          spacesX: rightColX, spacesY: spacesY, spacesW: QUICK_INFO_W, spacesH: threadBottom - spacesY,
           membersX: membersX, membersY: TOP, membersW: MEMBERS_W, membersH: Math.max(120, H - TOP),
           createBtnX: createBtnX, createBtnY: TOP,
         };
@@ -311,6 +319,10 @@ module("lively.identity.ConstellationLounge")
         if (this._threadContainer) {
           this._threadContainer.setPosition(lively.pt(g.threadX, g.threadY));
           this._threadContainer.setExtent(lively.pt(g.threadW, g.threadH));
+        }
+        if (this._spacesBox) {
+          this._spacesBox.setPosition(lively.pt(g.spacesX, g.spacesY));
+          this._spacesBox.setExtent(lively.pt(g.spacesW, g.spacesH));
         }
         if (this._membersBox) {
           this._membersBox.setPosition(lively.pt(g.membersX, g.membersY));
@@ -401,6 +413,27 @@ module("lively.identity.ConstellationLounge")
         this._threadContainer.renderContext().shapeNode.classList.add("lounge-comment-thread");
         $world.addMorph(this._threadContainer);
 
+        // Placeholder for a future spaces/rooms feature — occupies the same
+        // footprint the embedded wiki panel used to (below the about panel,
+        // bottoming out level with the comment thread), same panel
+        // treatment (border, radius), no real content behind it yet.
+        this._spacesBox = new lively.morphic.Box(lively.rect(0, 0, 10, 10));
+        this._spacesBox.setFill(Color.white);
+        this._spacesBox.applyStyle({ borderWidth: 1, borderColor: Color.rgb(238, 238, 238), borderRadius: 8 });
+        $world.addMorph(this._spacesBox);
+
+        var spacesTitle = lively.morphic.Text.makeLabel("Spaces", {
+          fontSize: 14, fontWeight: "600", textColor: Color.rgb(30, 30, 30),
+        });
+        spacesTitle.setPosition(lively.pt(14, 14));
+        this._spacesBox.addMorph(spacesTitle);
+
+        var spacesPlaceholder = lively.morphic.Text.makeLabel("Coming soon.", {
+          fontSize: 12, textColor: Color.gray,
+        });
+        spacesPlaceholder.setPosition(lively.pt(14, 42));
+        this._spacesBox.addMorph(spacesPlaceholder);
+
         this._membersBox = new lively.morphic.Box(lively.rect(0, 0, 10, 10));
         this._membersBox.setFill(Color.white);
         // Same panel treatment as the about/comment boxes (border,
@@ -427,7 +460,7 @@ module("lively.identity.ConstellationLounge")
         [
           this._searchBox, this._sortByBox, this._createPostcardBtn, this._quickInfoBox,
           this._backCardBox, this._frontCardBox,
-          this._navBox, this._threadContainer, this._membersBox,
+          this._navBox, this._threadContainer, this._spacesBox, this._membersBox,
         ].forEach(this._disableDragging, this);
 
         this._layout();
