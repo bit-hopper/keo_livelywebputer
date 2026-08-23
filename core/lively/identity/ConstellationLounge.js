@@ -10,13 +10,10 @@
  *     as its own row, styled after PartsBin/iPadWidgets/SearchField.json
  *     — white rounded pill, magnifying-glass icon, blue "Go" button, same
  *     embedded icon asset), searching this constellation's postcard titles
- *     (server-side, via GET /c/:name/feed?q=) and wiki page names
- *     (client-side, against the already-loaded index)
+ *     (server-side, via GET /c/:name/feed?q=)
  *   - a quick-info panel (name, visibility, member count, created date,
  *     co-creator) beside the postcard reel, below the search row, at a
- *     fixed size (not derived from the viewport) — a wiki panel sits
- *     directly below it, sharing its width and bottoming out level with
- *     the comment section further down the page
+ *     fixed size (not derived from the viewport)
  *   - a postcard "turnover" reel: newest-first, one card visible at a
  *     time, turned via a literal 3D flip-away (CSS perspective/rotateY,
  *     same technique PostCardView.js's own front/back flip uses, applied
@@ -28,9 +25,9 @@
  *     IdentityServer.js, so the same route recurses to any depth). Clicking
  *     a reply focuses it into the active slot; a breadcrumb steps back out
  *     without disturbing the top-level stack position.
- *   - an embedded wiki panel (most-recently-updated page, with an inline
- *     list of every published page as click-to-open pills and "+ New wiki
- *     page" for members) extending to the page bottom, right of the reel
+ *   - the wiki no longer embeds here — it's its own real Lively world at
+ *     /c/:name/wiki (WikiIndex.js), reached via the "Open wiki" entry in
+ *     this controller's own membership dropdown (_openMembershipMenu)
  *   - a Discord-style member list on the far right: co-creator (green
  *     badge, constellation.createdBy) — moderator (yellow badge, every
  *     other DID in constellation.controllers, per the owner's "every
@@ -59,10 +56,10 @@
  * morphs (added via addMorph, same as ConstellationCanvas.js's placements)
  * fix both by construction, and — the actual reason this matters per the
  * project owner — keep every element halo-selectable and Object-Editor
- * inspectable, the way everything else in this codebase is. The postcard/
- * wiki embed slots were already lively.morphic.Box morphs; this revision
+ * inspectable, the way everything else in this codebase is. The postcard
+ * embed slots were already lively.morphic.Box morphs; this revision
  * brings the rest of the chrome (search, quick-info, nav, reply thread,
- * wiki header, member list) in line with that, and only the front card
+ * member list) in line with that, and only the front card
  * slot's own CSS 3D transform (applied to its own shapeNode, the same
  * technique PostCardView.js's internal flip already uses) remains a direct
  * style manipulation — that's an animation detail on a real morph, not a
@@ -77,7 +74,6 @@ module("lively.identity.ConstellationLounge")
     "lively.identity.DID",
     "lively.identity.PostCardView",
     "lively.identity.WikiView",
-    "lively.identity.WikiEditor",
     "lively.identity.PostCardUtils",
     "lively.morphic.Complete",
   )
@@ -117,7 +113,7 @@ module("lively.identity.ConstellationLounge")
     // the card's own bottom edge and clipped there (confirmed live with a
     // real 45-character title: without this, height ~131px needed but
     // only ~98px was available).
-    var QUICK_INFO_W = 974, QUICK_INFO_H = 366;   // about panel; wiki panel below it shares this width
+    var QUICK_INFO_W = 974, QUICK_INFO_H = 366;   // about panel
     var MEMBERS_W = 220;       // outer slot width
     var GUTTER = 20;           // column gutter, also the gap before the members column and the page's right edge
     var BOTTOM_MARGIN = 20;    // space left below the comment thread before the viewport's bottom edge
@@ -168,10 +164,6 @@ module("lively.identity.ConstellationLounge")
         this._feedCursor = null;
         this._activeIndex = -1;
 
-        this._wikiPages = [];
-        this._wikiPagesFiltered = null;
-        this._activeWikiObjId = null;
-
         this._threadRootObjId = null;
         this._threadReplies = [];
         this._threadChildrenCache = {};
@@ -185,7 +177,6 @@ module("lively.identity.ConstellationLounge")
 
         this._frontCardBox = null;
         this._backCardBox = null;
-        this._wikiBox = null;
 
         this._presenceByDid = {};  // did -> true while online
       },
@@ -227,7 +218,6 @@ module("lively.identity.ConstellationLounge")
         this._renderQuickInfo();
         this._renderMemberList();
         this._fetchFeed(null);
-        this._fetchWikiIndex();
         this._connectPresence();
         this._installMenuBarEntry();
         window.addEventListener("resize", this._layout.bind(this));
@@ -242,10 +232,10 @@ module("lively.identity.ConstellationLounge")
       // happen where the underlying data changes, not here.
       _layout: function () {
         var W = window.innerWidth, H = window.innerHeight;
-        // Right column starts one gutter past the postcard's fixed right
-        // edge, not a separate "outer slot" constant — the postcard's own
-        // width is now the thing that determines it.
-        var wikiColX = GUTTER + CARD_W + GUTTER;
+        // Right column (the about panel) starts one gutter past the
+        // postcard's fixed right edge, not a separate "outer slot" constant
+        // — the postcard's own width is now the thing that determines it.
+        var rightColX = GUTTER + CARD_W + GUTTER;
         // GUTTER-width margin on the right too, matching every other
         // column gap instead of running the members list flush to the edge.
         var membersX = W - MEMBERS_W - GUTTER;
@@ -271,16 +261,9 @@ module("lively.identity.ConstellationLounge")
         // live: without it the rendered box came out 20px taller than
         // requested and swallowed the whole bottom margin.
         var threadH = threadRenderedH - THREAD_PAD_Y * 2;
-        var threadBottom = threadY + threadRenderedH;
-        // Wiki panel sits directly below the about panel (not beside the
-        // comment thread), and its height is derived — not another fixed
-        // guess — so its bottom edge lines up exactly with the comment
-        // section's bottom edge below it.
-        var wikiHeaderY = quickInfoY + QUICK_INFO_H + ROW_GAP;
-        var wikiY = wikiHeaderY + 40;
 
         // Nudged right of dead-center, as its own hero row across the full
-        // page width, above the reel/quick-info/wiki columns rather than
+        // page width, above the reel/quick-info columns rather than
         // tucked beside them.
         var searchX = (W - SEARCH_W) / 2 + 100;
         // "+ Postcard" sits centered in the horizontal gap between the
@@ -298,12 +281,10 @@ module("lively.identity.ConstellationLounge")
           // search box's left edge, same row.
           sortByX: searchX - GUTTER - SORT_W, sortByY: TOP,
           // Sits beside the postcard, below the search row.
-          quickInfoX: wikiColX, quickInfoY: quickInfoY, quickInfoW: QUICK_INFO_W, quickInfoH: QUICK_INFO_H,
+          quickInfoX: rightColX, quickInfoY: quickInfoY, quickInfoW: QUICK_INFO_W, quickInfoH: QUICK_INFO_H,
           reelX: GUTTER, reelY: reelY,
           navX: GUTTER, navY: reelY + CARD_H + 6,
           threadX: GUTTER, threadY: threadY, threadW: THREAD_W, threadH: threadH,
-          wikiHeaderX: wikiColX, wikiHeaderY: wikiHeaderY, wikiHeaderW: QUICK_INFO_W, wikiHeaderH: 32,
-          wikiX: wikiColX, wikiY: wikiY, wikiW: QUICK_INFO_W, wikiH: threadBottom - wikiY,
           membersX: membersX, membersY: TOP, membersW: MEMBERS_W, membersH: Math.max(120, H - TOP),
           createBtnX: createBtnX, createBtnY: TOP,
         };
@@ -330,14 +311,6 @@ module("lively.identity.ConstellationLounge")
         if (this._threadContainer) {
           this._threadContainer.setPosition(lively.pt(g.threadX, g.threadY));
           this._threadContainer.setExtent(lively.pt(g.threadW, g.threadH));
-        }
-        if (this._wikiHeaderBox) {
-          this._wikiHeaderBox.setPosition(lively.pt(g.wikiHeaderX, g.wikiHeaderY));
-          this._wikiHeaderBox.setExtent(lively.pt(g.wikiHeaderW, g.wikiHeaderH));
-        }
-        if (this._wikiBox) {
-          this._wikiBox.setPosition(lively.pt(g.wikiX, g.wikiY));
-          this._wikiBox.setExtent(lively.pt(g.wikiW, g.wikiH));
         }
         if (this._membersBox) {
           this._membersBox.setPosition(lively.pt(g.membersX, g.membersY));
@@ -428,30 +401,9 @@ module("lively.identity.ConstellationLounge")
         this._threadContainer.renderContext().shapeNode.classList.add("lounge-comment-thread");
         $world.addMorph(this._threadContainer);
 
-        this._wikiHeaderBox = new lively.morphic.Box(lively.rect(0, 0, 10, 32));
-        this._wikiHeaderBox.applyStyle({ fill: null, borderWidth: 0 });
-        $world.addMorph(this._wikiHeaderBox);
-
-        this._wikiPagesRow = new lively.morphic.Box(lively.rect(0, 4, 10, 24));
-        this._wikiPagesRow.applyStyle({ fill: null, borderWidth: 0 });
-        this._wikiPagesRow.renderContext().shapeNode.style.overflowX = "auto";
-        this._wikiPagesRow.renderContext().shapeNode.style.whiteSpace = "nowrap";
-        this._wikiHeaderBox.addMorph(this._wikiPagesRow);
-
-        this._wikiNewBtn = new lively.morphic.Button(lively.rect(190, 4, 100, 24));
-        this._wikiNewBtn.setLabel("+ New page");
-        this._wikiNewBtn.onMouseDown = function () { self._promptNewWikiPage(); };
-        this._wikiHeaderBox.addMorph(this._wikiNewBtn);
-
-        this._wikiBox = new lively.morphic.Box(lively.rect(0, 0, 10, 10));
-        this._wikiBox.setFill(Color.white);
-        this._wikiBox.applyStyle({ borderWidth: 1, borderColor: Color.rgb(238, 238, 238), borderRadius: 8 });
-        this._wikiBox.renderContext().shapeNode.style.overflow = "auto";
-        $world.addMorph(this._wikiBox);
-
         this._membersBox = new lively.morphic.Box(lively.rect(0, 0, 10, 10));
         this._membersBox.setFill(Color.white);
-        // Same panel treatment as the about/comment/wiki boxes (border,
+        // Same panel treatment as the about/comment boxes (border,
         // radius) instead of the plain left-border-only strip it had before.
         this._membersBox.applyStyle({ borderWidth: 1, borderColor: Color.rgb(238, 238, 238), borderRadius: 8 });
         this._membersBox.renderContext().shapeNode.style.overflowY = "auto";
@@ -475,7 +427,7 @@ module("lively.identity.ConstellationLounge")
         [
           this._searchBox, this._sortByBox, this._createPostcardBtn, this._quickInfoBox,
           this._backCardBox, this._frontCardBox,
-          this._navBox, this._threadContainer, this._wikiHeaderBox, this._wikiBox, this._membersBox,
+          this._navBox, this._threadContainer, this._membersBox,
         ].forEach(this._disableDragging, this);
 
         this._layout();
@@ -598,7 +550,6 @@ module("lively.identity.ConstellationLounge")
       search: function (queryString) {
         var q = (queryString || "").trim();
         this._fetchFeed(q || null);
-        this._renderWikiHeader(q || null);
       },
     },
 
@@ -2374,154 +2325,6 @@ module("lively.identity.ConstellationLounge")
         if (days < 30) return Math.floor(days) + "d";
         if (days < 365) return Math.floor(days / 30) + "mo";
         return Math.floor(days / 365) + "y";
-      },
-    },
-
-    // ─── wiki panel ─────────────────────────────────────────────────────────
-
-    "wiki", {
-      _fetchWikiIndex: function (thenDo) {
-        var self = this;
-        var base = lively.identity.did.baseUrl();
-        var xhr = new XMLHttpRequest();
-        xhr.open("GET", base + "/c/" + encodeURIComponent(this._name) + "/wiki", true);
-        xhr.withCredentials = true;
-        xhr.setRequestHeader("Accept", "application/json");
-        xhr.onload = function () {
-          if (xhr.status !== 200) return thenDo && thenDo();
-          var data;
-          try { data = JSON.parse(xhr.responseText); } catch (e) { return thenDo && thenDo(); }
-          self._wikiPages = data.pages || [];
-          self._renderWikiHeader(null);
-          if (self._wikiPages.length) {
-            // listWikiPages sorts by name — pick most-recently-updated
-            // client-side for the default page shown.
-            var sorted = self._wikiPages.slice().sort(function (a, b) {
-              return new Date(b.updatedAt) - new Date(a.updatedAt);
-            });
-            self._openWikiPage(sorted[0].objId);
-          } else {
-            self._renderWikiEmpty();
-          }
-          if (thenDo) thenDo();
-        };
-        xhr.onerror = function () { if (thenDo) thenDo(); };
-        xhr.send();
-      },
-
-      _renderWikiEmpty: function () {
-        (this._wikiBox.submorphs || []).slice().forEach(function (m) { m.remove(); });
-        var empty = lively.morphic.Text.makeLabel("No wiki pages yet.", { fontSize: 13, textColor: Color.gray });
-        empty.setPosition(lively.pt(16, 16));
-        this._wikiBox.addMorph(empty);
-      },
-
-      // Renders every matching page as a click-to-open pill in a horizontally
-      // scrolling row, left of "+ New page" — the full list is always
-      // visible (no menu to open first), and the active page's pill is
-      // highlighted.
-      _renderWikiHeader: function (filterQuery) {
-        var self = this;
-        var pages = this._wikiPages;
-        if (filterQuery) {
-          var q = filterQuery.toLowerCase();
-          pages = pages.filter(function (p) { return (p.wikiName || "").toLowerCase().indexOf(q) !== -1; });
-        }
-        this._wikiPagesFiltered = pages;
-
-        var row = this._wikiPagesRow;
-        (row.submorphs || []).slice().forEach(function (m) { m.remove(); });
-
-        var headerW = this._wikiHeaderBox.getExtent().x || 200;
-        var newBtnW = this._wikiNewBtn.getExtent().x || 100;
-        var rowW = Math.max(40, headerW - newBtnW - 10);
-        row.setExtent(lively.pt(rowW, 24));
-        this._wikiNewBtn.setPosition(lively.pt(rowW + 10, 4));
-
-        if (!pages.length) {
-          var empty = lively.morphic.Text.makeLabel("(no pages)", { fontSize: 12, textColor: Color.gray });
-          empty.setPosition(lively.pt(0, 3));
-          row.addMorph(empty);
-        } else {
-          var x = 0;
-          pages.forEach(function (p) {
-            var isActive = p.objId === self._activeWikiObjId;
-            var w = Math.max(30, p.wikiName.length * 7 + 16);
-            var pillBox = new lively.morphic.Box(lively.rect(x, 0, w, 22));
-            pillBox.setFill(isActive ? Color.rgb(53, 83, 255) : Color.rgb(240, 240, 240));
-            pillBox.applyStyle({ borderWidth: 0, borderRadius: 11 });
-            pillBox.onMouseDown = function () { self._openWikiPage(p.objId); };
-            var pillLabel = lively.morphic.Text.makeLabel(p.wikiName, {
-              fontSize: 12, textColor: isActive ? Color.white : Color.rgb(51, 51, 51),
-            });
-            pillLabel.setPosition(lively.pt(8, 3));
-            pillLabel.setExtent(lively.pt(w - 8, 16));
-            pillLabel.eventsAreIgnored = true;
-            pillBox.addMorph(pillLabel);
-            row.addMorph(pillBox);
-            x += w + 6;
-          });
-        }
-        this._wikiNewBtn.setVisible(!!this._canWrite);
-        if (this._createPostcardBtn) this._createPostcardBtn.setVisible(!!this._canWrite);
-        this._disableDragging(this._wikiHeaderBox);
-      },
-
-      // Same handle-free-fetch-then-resolve path as _renderCardInto, for
-      // the same reason (a real handle, not null, avoids relying on
-      // /@null/:objId happening to work).
-      _openWikiPage: function (objId) {
-        var self = this;
-        this._activeWikiObjId = objId;
-        this._renderWikiHeader(null);
-        (this._wikiBox.submorphs || []).slice().forEach(function (m) { m.remove(); });
-        var extent = this._wikiBox.getExtent();
-        this._fetchEnvelope(objId, function (err, envelope) {
-          if (err || !envelope) return;
-          self._resolveHandle(envelope.did, function (handle) {
-            lively.identity.WikiView.open(handle, objId, { target: self._wikiBox, envelope: envelope, bounds: lively.rect(0, 0, extent.x, extent.y) });
-          });
-        });
-      },
-
-      // Mirrors ConstellationCanvas.js's _promptNewWikiPage exactly (same
-      // page-name charset, same WikiEditor.newCard entry point) — this is
-      // the same "create a wiki page" affordance, just relocated to the
-      // lounge's wiki panel instead of the canvas toolbar.
-      _promptNewWikiPage: function () {
-        var pageName = window.prompt("New wiki page name (letters, numbers, hyphens):");
-        if (!pageName) return;
-        pageName = pageName.trim();
-        if (!/^[a-zA-Z0-9-]{1,64}$/.test(pageName)) {
-          return this._showError("Wiki page names may only contain letters, numbers, and hyphens (max 64 chars).");
-        }
-        var user = lively.identity.did.currentUser();
-        if (!user) return this._showError("Not signed in.");
-        var self = this;
-        var constellationName = this._name;
-        lively.require("lively.identity.WikiEditor").toRun(function () {
-          lively.identity.WikiEditor.newCard(user.handle, {
-            constellation: constellationName,
-            wikiName: pageName,
-          });
-        });
-        // newCard opens its own editor window and saves asynchronously as
-        // the user types (WikiEditor.js's own debounced autosave) — there's
-        // no "saved" callback exposed to hook, so the index is polled for
-        // the new page name for a bit instead of just going stale until the
-        // next full reload.
-        this._pollForWikiPage(pageName, 0);
-      },
-
-      _pollForWikiPage: function (pageName, attempt) {
-        var self = this;
-        if (attempt >= 10) return;
-        setTimeout(function () {
-          self._fetchWikiIndex(function () {
-            var found = self._wikiPages.some(function (p) { return p.wikiName === pageName; });
-            if (!found) self._pollForWikiPage(pageName, attempt + 1);
-          });
-        }, 3000);
       },
     },
 
