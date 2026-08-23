@@ -3047,7 +3047,12 @@ module.exports = function (route, app) {
       // Resolving all of `members` (a superset of controllers, §4.1) in
       // one batch here means the client never has to resolve DIDs itself.
       function respond(joinRequestStatus) {
-        _resolveHandlesForDids(constellation.members, function (err, memberHandles) {
+        var bots = constellation.bots || [];
+        // Bots aren't necessarily also constellation members, so they need
+        // their own DIDs folded into the handle-resolution batch — omitting
+        // them here would leave ConstellationLounge.js's BOTS section unable
+        // to look up a handle for any bot that isn't also a member.
+        _resolveHandlesForDids(constellation.members.concat(bots), function (err, memberHandles) {
           if (err) return res.status(500).json({ error: String(err) });
           res.json({
             token: constellationSpace.mintSpaceToken(constellation, req.identity),
@@ -3062,7 +3067,8 @@ module.exports = function (route, app) {
               memberCount: constellation.members.length,
               memberHandles: memberHandles,
               createdAt: constellation.createdAt,
-              visibility: constellation.visibility
+              visibility: constellation.visibility,
+              bots: bots
             }
           });
         });

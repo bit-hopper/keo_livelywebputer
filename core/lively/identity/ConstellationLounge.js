@@ -95,10 +95,25 @@ module("lively.identity.ConstellationLounge")
     // section pt(580.7, 574.0), about panel pt(973.7, 306.0), rounded here),
     // not computed to fill whatever room happens to be left.
     var CARD_W = 650, CARD_H = 395;
-    var THREAD_W = 581, THREAD_H = 574;   // comment section
+    // Comment section's outer box is set to CARD_W minus its own left/right
+    // CSS padding (THREAD_PAD_Y_X below) so the *rendered* box — padding is
+    // real box-model padding on a content-box element, so it adds to the
+    // visible width on top of whatever extent is set — ends up exactly
+    // CARD_W wide, same left edge (both start at GUTTER), matching the
+    // postcard above it. Confirmed live: without this adjustment the
+    // rendered box measured ~23px wider than the postcard.
+    var THREAD_PAD_X = 12, THREAD_PAD_Y = 10;   // must match the "10px 12px" set on the container below
+    var THREAD_W = CARD_W - THREAD_PAD_X * 2;   // comment section
+    // THREAD_H_MAX/MIN are *rendered* (visible, padding-included) height
+    // targets — _layout derives the actual extent to set by subtracting
+    // THREAD_PAD_Y*2 from whichever of these applies, same padding
+    // compensation as THREAD_W above.
+    var THREAD_H_MAX = 574;
+    var THREAD_H_MIN = 200;    // floor so a very short viewport still gets a usable (internally-scrolling) thread box
     var QUICK_INFO_W = 974, QUICK_INFO_H = 306;   // about panel; wiki panel below it shares this width
     var MEMBERS_W = 220;       // outer slot width
     var GUTTER = 20;           // column gutter, also the gap before the members column and the page's right edge
+    var BOTTOM_MARGIN = 20;    // space left below the comment thread before the viewport's bottom edge
     var TOP = 56;              // top margin below the menu bar
     var SEARCH_W = 490, SEARCH_H = 45;
     var NAV_H = 40;
@@ -125,6 +140,7 @@ module("lively.identity.ConstellationLounge")
     // margin has to be baked into every x/width passed to the render
     // functions below instead.
     var COMMENT_PAD_X = 10;
+    var COMMENT_TOP_MARGIN = 12;   // small gap above the top ("Start conversation") composer, which otherwise sits flush against the container's top edge
     var THREAD_LINE_COLOR = Color.rgb(224, 227, 230);
     var COMMENT_META_COLOR = Color.rgb(120, 120, 120);
     var COMMENT_ACCENT = "#e8497e";  // same pink accent as lively.commerce.Shop's --color-accent
@@ -235,7 +251,20 @@ module("lively.identity.ConstellationLounge")
         // its column overlaps the search box's centered position.
         var quickInfoY = TOP + SEARCH_H + ROW_GAP;
         var threadY = reelY + CARD_H + NAV_H;
-        var threadBottom = threadY + THREAD_H;
+        // Rendered (visible) height comes from whatever room is actually
+        // left in the viewport below the thread's top edge (minus
+        // BOTTOM_MARGIN), capped at THREAD_H_MAX rather than always
+        // claiming it — the container's own overflowY:auto (see
+        // _buildChrome) scrolls whatever content doesn't fit, so shrinking
+        // the box on a short viewport is safe.
+        var threadRenderedH = Math.min(THREAD_H_MAX, Math.max(THREAD_H_MIN, H - threadY - BOTTOM_MARGIN));
+        // The extent actually passed to setExtent has to be smaller than
+        // that by the container's own vertical CSS padding (THREAD_PAD_Y
+        // top+bottom) — same box-model correction as THREAD_W, confirmed
+        // live: without it the rendered box came out 20px taller than
+        // requested and swallowed the whole bottom margin.
+        var threadH = threadRenderedH - THREAD_PAD_Y * 2;
+        var threadBottom = threadY + threadRenderedH;
         // Wiki panel sits directly below the about panel (not beside the
         // comment thread), and its height is derived — not another fixed
         // guess — so its bottom edge lines up exactly with the comment
@@ -265,7 +294,7 @@ module("lively.identity.ConstellationLounge")
           quickInfoX: wikiColX, quickInfoY: quickInfoY, quickInfoW: QUICK_INFO_W, quickInfoH: QUICK_INFO_H,
           reelX: GUTTER, reelY: reelY,
           navX: GUTTER, navY: reelY + CARD_H + 6,
-          threadX: GUTTER, threadY: threadY, threadW: THREAD_W, threadH: THREAD_H,
+          threadX: GUTTER, threadY: threadY, threadW: THREAD_W, threadH: threadH,
           wikiHeaderX: wikiColX, wikiHeaderY: wikiHeaderY, wikiHeaderW: QUICK_INFO_W, wikiHeaderH: 32,
           wikiX: wikiColX, wikiY: wikiY, wikiW: QUICK_INFO_W, wikiH: threadBottom - wikiY,
           membersX: membersX, membersY: TOP, membersW: MEMBERS_W, membersH: Math.max(120, H - TOP),
@@ -384,7 +413,7 @@ module("lively.identity.ConstellationLounge")
         this._threadContainer.setFill(Color.white);
         this._threadContainer.applyStyle({ borderWidth: 1, borderColor: Color.rgb(238, 238, 238), borderRadius: 8 });
         this._threadContainer.renderContext().shapeNode.style.overflowY = "auto";
-        this._threadContainer.renderContext().shapeNode.style.padding = "10px 12px";
+        this._threadContainer.renderContext().shapeNode.style.padding = "10px " + THREAD_PAD_X + "px";
         $world.addMorph(this._threadContainer);
 
         this._wikiHeaderBox = new lively.morphic.Box(lively.rect(0, 0, 10, 32));
@@ -1096,7 +1125,7 @@ module("lively.identity.ConstellationLounge")
         var w = (container.getExtent().x || THREAD_W) - COMMENT_PAD_X * 2;
 
         var y = this._renderComposerIfSignedIn(
-          container, "ROOT", this._threadRootObjId, COMMENT_PAD_X, 0, w, "Start conversation");
+          container, "ROOT", this._threadRootObjId, COMMENT_PAD_X, COMMENT_TOP_MARGIN, w, "Start conversation");
         y += 10;
 
         if (!this._threadReplies.length) {
@@ -1141,8 +1170,8 @@ module("lively.identity.ConstellationLounge")
         container.addMorph(avatar);
         avatar.setPosition(lively.pt(x, y));
 
-        var textX = x + COMMENT_AVATAR + 8;
-        var textW = Math.max(60, rowW - COMMENT_AVATAR - 8);
+        var textX = x + COMMENT_AVATAR + 4;
+        var textW = Math.max(60, rowW - COMMENT_AVATAR - 4);
 
         var header = lively.morphic.Text.makeLabel(
           "@" + (reply._handle || (reply.did || "").slice(0, 10) + "…") + "  ·  " + self._formatRelativeTime(reply.created),
@@ -1379,7 +1408,7 @@ module("lively.identity.ConstellationLounge")
 
         var box = new lively.morphic.Box(lively.rect(0, 0, w, H));
         box.setFill(Color.white);
-        box.applyStyle({ borderWidth: 1, borderColor: Color.rgb(224, 224, 224), borderRadius: 16 });
+        box.applyStyle({ borderWidth: 1, borderColor: Color.rgb(232, 73, 126), borderRadius: 16 });   // COMMENT_ACCENT (#e8497e)
         container.addMorph(box);
         box.setPosition(lively.pt(x, y));
 
@@ -1920,14 +1949,19 @@ module("lively.identity.ConstellationLounge")
         var handles = qi.memberHandles || {};
         var controllers = qi.controllers || [];
         var members = qi.members || [];
+        var bots = qi.bots || [];
         var coCreator = qi.createdBy;
         var moderators = controllers.filter(function (did) { return did !== coCreator; });
-        var plainMembers = members.filter(function (did) { return controllers.indexOf(did) === -1; });
+        var plainMembers = members.filter(function (did) {
+          return controllers.indexOf(did) === -1 && bots.indexOf(did) === -1;
+        });
         var w = this._membersBox.getExtent().x;
 
         var y = 4;
         y = this._renderMemberSection(w, y, "CO-CREATOR", [coCreator].filter(Boolean), handles,
           Color.rgb(46, 125, 50), Color.rgb(232, 245, 233), "co-creator");
+        y = this._renderMemberSection(w, y, "BOTS", bots, handles,
+          Color.rgb(69, 90, 100), Color.rgb(236, 239, 241), "bot");
         y = this._renderMemberSection(w, y, "MODERATORS", moderators, handles,
           Color.rgb(138, 109, 0), Color.rgb(255, 248, 225), "moderator");
         this._renderMemberSection(w, y, "ACTIVE MEMBERS", plainMembers.filter(this._isOnline.bind(this)), handles, null, null, null);

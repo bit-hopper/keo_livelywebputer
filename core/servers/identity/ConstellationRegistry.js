@@ -18,9 +18,16 @@
  *     created_at     TEXT NOT NULL
  *     creation_sig   TEXT NOT NULL     — JWS, verified at creation time (CryptoVerify)
  *     visibility     TEXT NOT NULL DEFAULT 'public'
+ *     bots           TEXT NOT NULL DEFAULT '[]'  — JSON array of did:jwk strings, bot
+ *                                       accounts to surface in the members list under
+ *                                       their own section — a labeling list, independent
+ *                                       of controllers/members (like those, no mutation
+ *                                       route exists yet; populated directly for now)
  *
  * The DB file is stored at <WORKSPACE_LK>/identity/constellations.db.
- * Created automatically on first use.
+ * Created automatically on first use. withDB() migrates existing DBs that
+ * predate the `bots` column via ALTER TABLE, guarded by a PRAGMA
+ * table_info check (SQLite has no ADD COLUMN IF NOT EXISTS).
  */
 
 'use strict';
@@ -59,27 +66,46 @@ function withDB(thenDo) {
       '  created_by     TEXT NOT NULL,' +
       '  created_at     TEXT NOT NULL,' +
       '  creation_sig   TEXT NOT NULL,' +
-      '  visibility     TEXT NOT NULL DEFAULT \'public\'' +
+      '  visibility     TEXT NOT NULL DEFAULT \'public\',' +
+      '  bots           TEXT NOT NULL DEFAULT \'[]\'' +
       ')',
       function(err) {
         if (err) return thenDo(err);
-        // ConstellationDesignSpec.md §4.2/§7 — request-to-join flow. One row
-        // per (constellation, did): a re-request after a decline overwrites
-        // the old row rather than accumulating history, since only the
-        // current status is ever consulted (join-request-status is a
-        // display concern for the requester's own dropdown, not an audit
-        // log — unlike the space doc's moderation log, §4.4, which is
-        // deliberately transparent/replayable).
-        db.run(
-          'CREATE TABLE IF NOT EXISTS join_requests (' +
-          '  constellation TEXT NOT NULL,' +
-          '  did           TEXT NOT NULL,' +
-          '  requested_at  TEXT NOT NULL,' +
-          '  status        TEXT NOT NULL DEFAULT \'pending\',' +
-          '  PRIMARY KEY (constellation, did)' +
-          ')',
-          function(err) { thenDo(err || null, db); }
-        );
+
+        function createJoinRequests() {
+          // ConstellationDesignSpec.md §4.2/§7 — request-to-join flow. One row
+          // per (constellation, did): a re-request after a decline overwrites
+          // the old row rather than accumulating history, since only the
+          // current status is ever consulted (join-request-status is a
+          // display concern for the requester's own dropdown, not an audit
+          // log — unlike the space doc's moderation log, §4.4, which is
+          // deliberately transparent/replayable).
+          db.run(
+            'CREATE TABLE IF NOT EXISTS join_requests (' +
+            '  constellation TEXT NOT NULL,' +
+            '  did           TEXT NOT NULL,' +
+            '  requested_at  TEXT NOT NULL,' +
+            '  status        TEXT NOT NULL DEFAULT \'pending\',' +
+            '  PRIMARY KEY (constellation, did)' +
+            ')',
+            function(err) { thenDo(err || null, db); }
+          );
+        }
+
+        // Migration for DBs created before the `bots` column existed —
+        // CREATE TABLE IF NOT EXISTS above is a no-op against an existing
+        // table, so a fresh column has to be added by hand. SQLite has no
+        // "ADD COLUMN IF NOT EXISTS", so check PRAGMA table_info first
+        // rather than racing ALTER TABLE against a "duplicate column" error.
+        db.all('PRAGMA table_info(constellations)', function(err, cols) {
+          if (err) return thenDo(err);
+          var hasBots = (cols || []).some(function(c) { return c.name === 'bots'; });
+          if (hasBots) return createJoinRequests();
+          db.run('ALTER TABLE constellations ADD COLUMN bots TEXT NOT NULL DEFAULT \'[]\'', function(err) {
+            if (err) return thenDo(err);
+            createJoinRequests();
+          });
+        });
       }
     );
   });
@@ -108,15 +134,15 @@ function isValidName(name) {
 
 // fields: { name, did, genesisObjId, genesisNonce, controllers: [did,...],
 //           threshold, members: [did,...], createdBy, createdAt, creationSig,
-//           visibility }
+//           visibility, bots: [did,...] }
 // Calls thenDo(err).
 function create(fields, thenDo) {
   withDB(function(err, db) {
     if (err) return thenDo(err);
     db.run(
       'INSERT INTO constellations ' +
-      '(name, did, genesis_obj_id, genesis_nonce, controllers, threshold, members, created_by, created_at, creation_sig, visibility)' +
-      ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      '(name, did, genesis_obj_id, genesis_nonce, controllers, threshold, members, created_by, created_at, creation_sig, visibility, bots)' +
+      ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [
         fields.name,
         fields.did,
@@ -128,7 +154,8 @@ function create(fields, thenDo) {
         fields.createdBy,
         fields.createdAt,
         fields.creationSig,
-        fields.visibility || 'public'
+        fields.visibility || 'public',
+        JSON.stringify(fields.bots || [])
       ],
       function(err) { thenDo(err || null); }
     );
@@ -181,10 +208,11 @@ function listPublic(opts, thenDo) {
 }
 
 function _rowToConstellation(row, name) {
-  var controllers, members;
+  var controllers, members, bots;
   try {
     controllers = JSON.parse(row.controllers);
     members = JSON.parse(row.members);
+    bots = JSON.parse(row.bots || '[]');
   } catch (e) {
     throw new Error('ConstellationRegistry: corrupt row for ' + name);
   }
@@ -199,14 +227,15 @@ function _rowToConstellation(row, name) {
     createdBy: row.created_by,
     createdAt: row.created_at,
     creationSig: row.creation_sig,
-    visibility: row.visibility
+    visibility: row.visibility,
+    bots: bots
   };
 }
 
 // Calls thenDo(null, constellation) or thenDo(null, null) if not found.
 // constellation: { name, did, genesisObjId, genesisNonce, controllers: [...],
 //                   threshold, members: [...], createdBy, createdAt,
-//                   creationSig, visibility }
+//                   creationSig, visibility, bots: [...] }
 function get(name, thenDo) {
   withDB(function(err, db) {
     if (err) return thenDo(err);
