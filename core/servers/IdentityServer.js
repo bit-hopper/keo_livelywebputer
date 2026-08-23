@@ -780,6 +780,71 @@ function _formatDateForLounge(iso) {
   return d.toLocaleDateString();
 }
 
+// Serve a constellation's wiki index — every wikiName'd page in the
+// constellation — as a standalone HTML page. Same two-mode boot shape as
+// buildConstellationLoungePage/buildConstellationCanvasPage: a static
+// skeleton for fast first paint (pre-filled from `pages`, which the route
+// handler already has from objectRepo.listWikiPages), then manuallyCreateWorld
+// hands off to the live lively.identity.WikiIndex controller (a real morphic
+// grid of page cards, search field, "+ New wiki page" — see WikiIndex.js)
+// once $world exists. Replaces the old bare <ul> this route used to render
+// directly for an HTML request.
+function buildWikiIndexPage(constellation, pages) {
+  var title = escapeHtml(constellation.name);
+  var pageData = {
+    name: constellation.name,
+    did: constellation.did,
+    genesisObjId: constellation.genesisObjId,
+    visibility: constellation.visibility
+  };
+  var dataJson = JSON.stringify(pageData).replace(/<\/script>/gi, '<\\/script>');
+
+  var itemsHtml = pages.map(function (p) {
+    return '<li><a href="/c/' + encodeURIComponent(constellation.name) + '/wiki/' +
+      encodeURIComponent(p.wikiName) + '">' + escapeHtml(p.wikiName) + '</a></li>';
+  }).join('');
+
+  return (
+    '<!DOCTYPE html><html lang="en"><head>' +
+    '<meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<meta name="apple-mobile-web-app-capable" content="yes">' +
+    '<link rel="shortcut icon" href="/core/media/lively.ico">' +
+    '<title>c/' + title + ' wiki</title>' +
+    '<style>' +
+    'body{margin:0;font-family:system-ui,sans-serif;background:#fafafa}' +
+    '.wiki-index-static{position:relative;min-height:100vh;padding:64px 40px}' +
+    '.wiki-index-static h1{font-size:18px}' +
+    '.wiki-index-static ul{padding-left:20px}' +
+    '.wiki-index-loader{position:fixed;bottom:12px;right:12px;font-size:12px;' +
+    'color:#999;background:#fff;border:1px solid #eee;border-radius:4px;padding:4px 8px}' +
+    '</style>' +
+    '</head><body>' +
+    '<div class="wiki-index-static" id="wiki-index-static">' +
+    '<h1>c/' + title + ' wiki</h1>' +
+    (itemsHtml ? '<ul>' + itemsHtml + '</ul>' : '<p>No wiki pages yet.</p>') +
+    '</div>' +
+    '<div class="wiki-index-loader" id="wiki-index-loader">Loading live mode…</div>' +
+    '<script type="application/json" id="wiki-index-data">' + dataJson + '</script>' +
+    '<script src="/core/lib/postcard/postcard-runtime.js"></script>' +
+    '<script>window.Config={' +
+    'codeBase:location.protocol+"//"+location.host+"/core/",' +
+    'rootPath:location.protocol+"//"+location.host+"/",' +
+    'manuallyCreateWorld:true,' +
+    // Same reasoning as buildConstellationLoungePage: this is a place the
+    // user navigates within the constellation, so the normal menu bar
+    // (identity, "my postcards", etc.) stays available.
+    'onStartWorld:function(){' +
+    'lively.require("lively.identity.WikiIndex").toRun(function(){' +
+    'lively.identity.WikiIndex.open(' + JSON.stringify(constellation.name) + ');' +
+    '});' +
+    '}' +
+    '}</script>' +
+    '<script src="/core/lively/bootstrap.js"></script>' +
+    '</body></html>'
+  );
+}
+
 // Convert a ProseMirror snapshot JSON to simple HTML for static rendering.
 // Only handles the node types defined in §6.1 (paragraph, heading, list, etc.).
 function _snapshotToHtml(snapshot) {
@@ -3425,17 +3490,7 @@ module.exports = function (route, app) {
       objectRepo.listWikiPages(name, function (err, pages) {
         if (err) return res.status(500).json({ error: String(err) });
         if (req.accepts(["html", "json"]) === "html") {
-          var items = pages.map(function (p) {
-            return '<li><a href="/c/' + encodeURIComponent(name) + '/wiki/' +
-              encodeURIComponent(p.wikiName) + '">' + escapeHtml(p.wikiName) + '</a></li>';
-          }).join('');
-          return res.send(
-            '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">' +
-            '<title>' + escapeHtml(name) + ' wiki</title></head><body>' +
-            '<h1>' + escapeHtml(name) + ' wiki</h1>' +
-            (items ? '<ul>' + items + '</ul>' : '<p>No wiki pages yet.</p>') +
-            '</body></html>'
-          );
+          return res.send(buildWikiIndexPage(constellation, pages));
         }
         res.json({ pages: pages });
       });
