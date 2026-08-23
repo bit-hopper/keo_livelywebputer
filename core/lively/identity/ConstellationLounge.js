@@ -13,8 +13,10 @@
  *     (server-side, via GET /c/:name/feed?q=) and wiki page names
  *     (client-side, against the already-loaded index)
  *   - a quick-info panel (name, visibility, member count, created date,
- *     co-creator) beside the postcard reel, below the search row, sized to
- *     hug its own content instead of stretching to the postcard's height
+ *     co-creator) beside the postcard reel, below the search row, at a
+ *     fixed size (not derived from the viewport) — a wiki panel sits
+ *     directly below it, sharing its width and bottoming out level with
+ *     the comment section further down the page
  *   - a postcard "turnover" reel: newest-first, one card visible at a
  *     time, turned via a literal 3D flip-away (CSS perspective/rotateY,
  *     same technique PostCardView.js's own front/back flip uses, applied
@@ -87,20 +89,42 @@ module("lively.identity.ConstellationLounge")
     var SEARCH_ICON_DATA_URL =
       "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABYAAAAWCAYAAADEtGw7AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAACxMAAAsTAQCanBgAAAPbSURBVEhLrVVdTxtXED13d/0RB+zFFCp4KkI1ThBCAgGVIhHUP8D/5SXqI1F5AFUVJHwEEihfsTFQY+/X7Zm5XpP0Ode68mrv3JkzZ87MmvPrr3b0RQWVchl+gOGyFkgzC88zMAbIbKZnnvFg+dNnGFgx5DJixJWmKXzfh1cLX6JQNPB8iyTJkLn76ix3ml8cOqHDfIlDeZ/xouzh+8Sm1vCF53mMJgh99Hp9tFotXN/c4O7uTs+q1SomJiYwNjaGSqWs9+3g3nOez08ms7F18T3drdYdjo6OcHh4iKvra8RxrKkFQYB6vY7Z2Vk0XzUQ1kJkTFuWnOfZ5NmZOO1ZnzyCWfT6Kd6//xMHBwfK2U9EODk5qZduiP7q6grFYhFzc3NYWFhAdfSlUie0DShWOiRDIo6I2Gj0k09f8O7dH4iiCMvLy/hlZkYpEMNOp4PT01Nsb28rwo2NDTTnGq6wdE4T1ijRzDR/A6ahnHtKwe3tLX5tNPB6fh5hGKJcLhJlgFqtpkgXFxfVRoIkaTbQR17w56IyjsjH7fPzf5SCGSIdGamoQ1GKFFWeR5n69PQ0SqWSOg4C3qPaBG0UJZpJvqRiDjpPHx8fSYpPdGOu6rxkqFuRXb7Gx8fVQbfb1aBChdhJ4G+XJ/IWtGIR1uoa4OHhgSj/XxQRv1UahEuRne87XEni1CGFy9UxRCw0T/w8iThNsL+/j/v7BzVWRFIg7qcoxt8HH5Qu0bQsCeYHPrv0e57VcWakCBbNZgNTU1M4OTnB3t4ezs4umHKfMkxwcXGJnZ0dPZOiNpvNAYWu5YVnyTbvPsrN2oSyEBRplNLhX9jd3VXJSbriRNBKJ7bbba3DNDPb3NzkWXVAgfBsEfiGXdujksqiY2vTfKgw5273CcfHn9h5H7QLW50WkThFVKshLi8vdND8trKKpaUl1W2h4LsZQ0/aHARpUptZo9V/nlS9fozOfRtf2x0i6LJIBRRKASVYpeNLbZL+Uw+rq6tYW1tDgRxz5Eib0VYUpJ1ndVZYsm8GVdaikB5JzzKgG5UMzt0hFV/OPmNra0vVsbKygt/frrvK0T5JImZQ0snDNBKHmM7T2G1jPQScdIHoWG1UlKiNjGC++Qrrb9YRjobwaMfrSFXTBEHaVE1RltoCL3/Xmy6+A+GAOMTyL9JLGIRNdvjxmIOqzmEU6kzPZ4Y6/jeO7QsWQIaQR1RGdJO3kwxwYUy1JIJ2fLBGkoM6cpzKePsGjchPqqoFZSsbmUySrwqT//KJCQY3xJt+hpiy2rBQnBXkQp3mszl3b1gg99H6wWvY0j/YL/4DF1XopJQ13lsAAAAASUVORK5CYII=";
 
-    var CARD_W = 420, CARD_H = 200;
-    var REEL_W = 480;
+    // Every panel below is a fixed pixel size (not derived from
+    // window.innerWidth/innerHeight) per the reference layout — sized off
+    // live-inspected morph extents (postcard pt(604.7, 367.3), comment
+    // section pt(580.7, 574.0), about panel pt(973.7, 306.0), rounded here),
+    // not computed to fill whatever room happens to be left.
+    var CARD_W = 650, CARD_H = 395;
+    var THREAD_W = 581, THREAD_H = 574;   // comment section
+    var QUICK_INFO_W = 974, QUICK_INFO_H = 306;   // about panel; wiki panel below it shares this width
     var MEMBERS_W = 220;       // outer slot width
-    var MEMBERS_MARGIN = 12;   // right margin left inside that slot
-    var GUTTER = 20;           // column gutter, also the gap before the members column
+    var GUTTER = 20;           // column gutter, also the gap before the members column and the page's right edge
     var TOP = 56;              // top margin below the menu bar
     var SEARCH_W = 490, SEARCH_H = 45;
     var NAV_H = 40;
     var ROW_GAP = 16;
-    var QUICK_INFO_H = 96;     // hugs its own content (title + 2 lines) instead of stretching to the postcard's height
+
+    // "Sort by" placeholder dropdown, sitting in the gap between the
+    // postcard's top-right corner and the search box's left edge.
+    var SORT_W = 110, SORT_H = SEARCH_H;   // same height as the search box, same row
+    var SORT_ITEM_H = 32;
+    var SORT_OPTIONS = ["Best", "Hot", "New", "Top", "Rising"];
+
+    // "+ Postcard" — opens a new PostCardEditor compose window, preset to
+    // post into this constellation. Sits left of the members list, top
+    // edge aligned with the search box's top edge, but shorter than the
+    // search box itself — height hugs the label the same way width does.
+    var CREATE_BTN_W = 150, CREATE_BTN_H = 34;
 
     // Comment thread (Reddit-style, no votes) geometry/palette.
     var COMMENT_INDENT = 30;   // px per nesting depth
     var COMMENT_AVATAR = 22;   // px, square
+    // Left/right inset for the whole thread's content — same fix as the
+    // members panel: the container's CSS padding doesn't actually offset
+    // Lively's absolutely-positioned submorphs (confirmed live), so the
+    // margin has to be baked into every x/width passed to the render
+    // functions below instead.
+    var COMMENT_PAD_X = 10;
     var THREAD_LINE_COLOR = Color.rgb(224, 227, 230);
     var COMMENT_META_COLOR = Color.rgb(120, 120, 120);
     var COMMENT_ACCENT = "#e8497e";  // same pink accent as lively.commerce.Shop's --color-accent
@@ -195,30 +219,65 @@ module("lively.identity.ConstellationLounge")
       // happen where the underlying data changes, not here.
       _layout: function () {
         var W = window.innerWidth, H = window.innerHeight;
-        var wikiColX = REEL_W + GUTTER;
-        var membersX = W - MEMBERS_W;
-        // Wiki column stops GUTTER short of the members slot, instead of
-        // touching it flush.
-        var wikiColW = Math.max(280, (membersX - GUTTER) - wikiColX);
-        var reelY = TOP + SEARCH_H + ROW_GAP;
+        // Right column starts one gutter past the postcard's fixed right
+        // edge, not a separate "outer slot" constant — the postcard's own
+        // width is now the thing that determines it.
+        var wikiColX = GUTTER + CARD_W + GUTTER;
+        // GUTTER-width margin on the right too, matching every other
+        // column gap instead of running the members list flush to the edge.
+        var membersX = W - MEMBERS_W - GUTTER;
+        // Postcard's top edge lines up with the search box's top edge —
+        // both start at TOP — rather than sitting a row below it.
+        var reelY = TOP;
+        // About panel stays below the search row (its own row, not sharing
+        // reelY any more) — otherwise it'd sit in the same band as the now
+        // top-aligned postcard and cover the search box entirely, since
+        // its column overlaps the search box's centered position.
+        var quickInfoY = TOP + SEARCH_H + ROW_GAP;
         var threadY = reelY + CARD_H + NAV_H;
+        var threadBottom = threadY + THREAD_H;
+        // Wiki panel sits directly below the about panel (not beside the
+        // comment thread), and its height is derived — not another fixed
+        // guess — so its bottom edge lines up exactly with the comment
+        // section's bottom edge below it.
+        var wikiHeaderY = quickInfoY + QUICK_INFO_H + ROW_GAP;
+        var wikiY = wikiHeaderY + 40;
+
+        // Nudged right of dead-center, as its own hero row across the full
+        // page width, above the reel/quick-info/wiki columns rather than
+        // tucked beside them.
+        var searchX = (W - SEARCH_W) / 2 + 100;
+        // "+ Postcard" sits centered in the horizontal gap between the
+        // search box's right edge and the members column's left edge,
+        // rather than pinned to either one — width comes from
+        // _fitCreatePostcardButton once known, not the guessed constant.
+        var createBtnW = this._createBtnW || CREATE_BTN_W;
+        var createGapStart = searchX + SEARCH_W;
+        var createGapEnd = membersX;
+        var createBtnX = createGapStart + (createGapEnd - createGapStart - createBtnW) / 2;
 
         var g = this._geom = {
-          // Centered as its own hero row across the full page width, above
-          // the reel/quick-info/wiki columns rather than tucked beside them.
-          searchX: (W - SEARCH_W) / 2, searchY: TOP,
-          // Sits beside the postcard (same row start as the reel), sized to
-          // its own content rather than stretched down to the card's bottom.
-          quickInfoX: wikiColX, quickInfoY: reelY, quickInfoW: wikiColW, quickInfoH: QUICK_INFO_H,
+          searchX: searchX, searchY: TOP,
+          // Sits in the gap between the postcard's top-right corner and the
+          // search box's left edge, same row.
+          sortByX: searchX - GUTTER - SORT_W, sortByY: TOP,
+          // Sits beside the postcard, below the search row.
+          quickInfoX: wikiColX, quickInfoY: quickInfoY, quickInfoW: QUICK_INFO_W, quickInfoH: QUICK_INFO_H,
           reelX: GUTTER, reelY: reelY,
           navX: GUTTER, navY: reelY + CARD_H + 6,
-          threadX: GUTTER, threadY: threadY, threadW: CARD_W, threadH: Math.max(120, H - threadY - 16),
-          wikiHeaderX: wikiColX, wikiHeaderY: threadY, wikiHeaderW: wikiColW, wikiHeaderH: 32,
-          wikiX: wikiColX, wikiY: threadY + 40, wikiW: wikiColW, wikiH: Math.max(160, H - (threadY + 40) - 16),
-          membersX: membersX, membersY: TOP, membersW: Math.max(140, MEMBERS_W - MEMBERS_MARGIN), membersH: Math.max(120, H - TOP),
+          threadX: GUTTER, threadY: threadY, threadW: THREAD_W, threadH: THREAD_H,
+          wikiHeaderX: wikiColX, wikiHeaderY: wikiHeaderY, wikiHeaderW: QUICK_INFO_W, wikiHeaderH: 32,
+          wikiX: wikiColX, wikiY: wikiY, wikiW: QUICK_INFO_W, wikiH: threadBottom - wikiY,
+          membersX: membersX, membersY: TOP, membersW: MEMBERS_W, membersH: Math.max(120, H - TOP),
+          createBtnX: createBtnX, createBtnY: TOP,
         };
 
         if (this._searchBox) this._searchBox.setPosition(lively.pt(g.searchX, g.searchY));
+        if (this._sortByBox) this._sortByBox.setPosition(lively.pt(g.sortByX, g.sortByY));
+        if (this._createPostcardBtn) this._createPostcardBtn.setPosition(lively.pt(g.createBtnX, g.createBtnY));
+        if (this._sortByDropdown) {
+          this._sortByDropdown.setPosition(lively.pt(g.sortByX, g.sortByY + SORT_H + 4));
+        }
         if (this._quickInfoBox) {
           this._quickInfoBox.setPosition(lively.pt(g.quickInfoX, g.quickInfoY));
           this._quickInfoBox.setExtent(lively.pt(g.quickInfoW, g.quickInfoH));
@@ -267,6 +326,15 @@ module("lively.identity.ConstellationLounge")
         this._searchBox = this._buildSearchField();
         $world.addMorph(this._searchBox);
         this._styleSearchGoButton();
+
+        this._sortSelection = SORT_OPTIONS[0];
+        this._sortByBox = this._buildSortByButton();
+        $world.addMorph(this._sortByBox);
+
+        this._createPostcardBtn = this._buildCreatePostcardButton();
+        $world.addMorph(this._createPostcardBtn);
+        this._createPostcardBtn.setVisible(!!this._canWrite);
+        this._fitCreatePostcardButton();
 
         this._quickInfoBox = new lively.morphic.Box(lively.rect(0, 0, 10, 10));
         this._quickInfoBox.setFill(Color.white);
@@ -342,11 +410,10 @@ module("lively.identity.ConstellationLounge")
 
         this._membersBox = new lively.morphic.Box(lively.rect(0, 0, 10, 10));
         this._membersBox.setFill(Color.white);
-        this._membersBox.applyStyle({ borderWidth: 0 });
-        this._membersBox.renderContext().shapeNode.style.borderLeft = "1px solid #eee";
+        // Same panel treatment as the about/comment/wiki boxes (border,
+        // radius) instead of the plain left-border-only strip it had before.
+        this._membersBox.applyStyle({ borderWidth: 1, borderColor: Color.rgb(238, 238, 238), borderRadius: 8 });
         this._membersBox.renderContext().shapeNode.style.overflowY = "auto";
-        this._membersBox.renderContext().shapeNode.style.padding = "14px 10px";
-        this._membersBox.renderContext().shapeNode.style.boxSizing = "border-box";
         $world.addMorph(this._membersBox);
 
         // Only turns the stack when no Lively text field currently has
@@ -365,7 +432,8 @@ module("lively.identity.ConstellationLounge")
         // draggable. Recurses into submorphs since dragging is a
         // per-morph flag, not inherited from a container.
         [
-          this._searchBox, this._quickInfoBox, this._backCardBox, this._frontCardBox,
+          this._searchBox, this._sortByBox, this._createPostcardBtn, this._quickInfoBox,
+          this._backCardBox, this._frontCardBox,
           this._navBox, this._threadContainer, this._wikiHeaderBox, this._wikiBox, this._membersBox,
         ].forEach(this._disableDragging, this);
 
@@ -464,7 +532,7 @@ module("lively.identity.ConstellationLounge")
       _styleSearchGoButton: function () {
         var node = this._searchGoBtn && this._searchGoBtn.renderContext().shapeNode;
         if (!node) return;
-        node.style.background = "rgb(53,83,255)";
+        node.style.background = COMMENT_ACCENT;   // pink accent, matching the Comment/+ Postcard buttons
         node.style.borderRadius = "19px";
       },
 
@@ -479,6 +547,204 @@ module("lively.identity.ConstellationLounge")
         var q = (queryString || "").trim();
         this._fetchFeed(q || null);
         this._renderWikiHeader(q || null);
+      },
+    },
+
+    // ─── sort by (placeholder — Reddit-style dropdown, not wired to any
+    // actual re-sorting yet) ─────────────────────────────────────────────────
+
+    "sort by", {
+      _buildSortByButton: function () {
+        var self = this;
+        var box = new lively.morphic.Box(lively.rect(0, 0, SORT_W, SORT_H));
+        box.setFill(Color.white);
+        box.applyStyle({ borderWidth: 1, borderColor: Color.rgb(112, 112, 112), borderRadius: 10 });
+
+        var label = lively.morphic.Text.makeLabel(this._sortSelection, {
+          fontSize: 12, fontWeight: "bold", textColor: Color.rgb(30, 30, 30),
+        });
+        label.setPosition(lively.pt(12, 0));
+        label.setExtent(lively.pt(SORT_W - 34, SORT_H));
+        label.applyStyle({ borderWidth: 0 });
+        box.addMorph(label);
+        this._sortByLabel = label;
+
+        var chevron = lively.morphic.Text.makeLabel("expand_more", {
+          fontFamily: "'Material Symbols Rounded'", fontSize: 14, textColor: Color.rgb(90, 90, 90),
+        });
+        chevron.setPosition(lively.pt(SORT_W - 26, 0));
+        chevron.setExtent(lively.pt(20, SORT_H));
+        chevron.applyStyle({ borderWidth: 0 });
+        chevron.eventsAreIgnored = true;
+        box.addMorph(chevron);
+
+        box.onMouseDown = function () { self._toggleSortByDropdown(); };
+
+        return box;
+      },
+
+      _toggleSortByDropdown: function () {
+        if (this._sortByDropdown) return this._closeSortByDropdown();
+
+        var self = this;
+        var itemsH = SORT_OPTIONS.length * SORT_ITEM_H;
+        var headerH = 26;
+        var dropdown = new lively.morphic.Box(lively.rect(0, 0, SORT_W, headerH + itemsH));
+        dropdown.setFill(Color.white);
+        dropdown.applyStyle({ borderWidth: 1, borderColor: Color.rgb(112, 112, 112), borderRadius: 8 });
+
+        var header = lively.morphic.Text.makeLabel("Sort by", {
+          fontSize: 10, textColor: Color.rgb(140, 140, 140),
+        });
+        header.setPosition(lively.pt(12, 6));
+        header.setExtent(lively.pt(SORT_W - 24, 16));
+        header.applyStyle({ borderWidth: 0 });
+        header.eventsAreIgnored = true;
+        dropdown.addMorph(header);
+
+        SORT_OPTIONS.forEach(function (option, i) {
+          var isSelected = option === self._sortSelection;
+          var row = lively.morphic.Text.makeLabel(option, {
+            fontSize: 12,
+            fontWeight: isSelected ? "bold" : "normal",
+            textColor: isSelected ? Color.rgb(20, 20, 20) : Color.rgb(90, 90, 90),
+          });
+          row.setPosition(lively.pt(12, headerH + i * SORT_ITEM_H));
+          row.setExtent(lively.pt(SORT_W - 24, SORT_ITEM_H));
+          row.applyStyle({ borderWidth: 0 });
+          row.onMouseDown = function () { self._selectSortOption(option); };
+          dropdown.addMorph(row);
+        });
+
+        this._disableDragging(dropdown);
+        $world.addMorph(dropdown);
+        this._sortByDropdown = dropdown;
+        this._layout();
+      },
+
+      _closeSortByDropdown: function () {
+        if (!this._sortByDropdown) return;
+        this._sortByDropdown.remove();
+        this._sortByDropdown = null;
+      },
+
+      // Placeholder only — updates the button label and closes the
+      // dropdown, doesn't actually re-sort the feed yet.
+      _selectSortOption: function (option) {
+        this._sortSelection = option;
+        if (this._sortByLabel) this._sortByLabel.setTextString(option);
+        this._closeSortByDropdown();
+      },
+    },
+
+    // ─── create postcard ────────────────────────────────────────────────────
+
+    "create postcard", {
+      // Built oversized, then _fitCreatePostcardButton (called once the box
+      // is actually in the world) shrinks it to hug its real content —
+      // same "measure the live-rendered text, don't guess" idiom as
+      // ProfileCard.js's fitTextHeight, since a guessed padding number
+      // reliably either clips or leaves slack (per CLAUDE.md's Text-morph
+      // sizing gotcha).
+      _buildCreatePostcardButton: function () {
+        var self = this;
+        var box = new lively.morphic.Box(lively.rect(0, 0, CREATE_BTN_W, CREATE_BTN_H));
+        box.setFill(Color.rgb(232, 73, 126));   // COMMENT_ACCENT (#e8497e), matching the Comment button
+        box.applyStyle({ borderWidth: 0, borderRadius: CREATE_BTN_H / 2 });
+
+        // A single label ("+ Postcard", plain "+" character) rather than a
+        // separate icon-font glyph next to a text label — two different
+        // fonts (Material Symbols vs the label's own) don't share the same
+        // baseline/vertical metrics, which read as misaligned next to each
+        // other. One Text morph guarantees the "+" and "Postcard" sit on
+        // exactly the same baseline, matching the reference image.
+        var label = lively.morphic.Text.makeLabel("+ Postcard", {
+          fontSize: 14, fontWeight: "700", textColor: Color.rgb(255, 255, 255),
+        });
+        label.setExtent(lively.pt(160, 20));
+        label.applyStyle({ borderWidth: 0 });
+        label.eventsAreIgnored = true;
+        box.addMorph(label);
+        this._createBtnLabel = label;
+
+        box.onMouseDown = function () { self._openCreatePostcard(); };
+
+        return box;
+      },
+
+      // Shrinks the button to hug its icon+label, both horizontally
+      // (rounded pill matches the content instead of guessed padding) and
+      // vertically (icon/label centered on the button's own height). Must
+      // run after the box is in the world — reading the real rendered
+      // glyph width needs a live render context.
+      //
+      // getTextExtent() turned out to just echo back whatever extent was
+      // already set on the morph (the generous throwaway width from
+      // _buildCreatePostcardButton), not the actual glyph width — same
+      // "read the live DOM span, don't trust the model value" gotcha
+      // CLAUDE.md documents for fontSize. Read the real leaf <span>'s
+      // offsetWidth instead.
+      _realTextWidth: function (textMorph) {
+        var shapeNode = textMorph.renderContext().shapeNode;
+        var span = shapeNode && shapeNode.querySelector("span");
+        return span ? span.offsetWidth : textMorph.getTextExtent().x;
+      },
+
+      _fitCreatePostcardButton: function () {
+        var box = this._createPostcardBtn, label = this._createBtnLabel;
+        if (!box || !label) return;
+        var PAD = 12, LINE_H = 20;
+        // A Text morph's own shapeNode carries a fixed 4px padding on each
+        // side (confirmed via computed style) that isn't part of the glyph
+        // itself — setting extent to exactly the measured glyph width
+        // clips it by 8px. TEXT_PAD compensates: the morph's box is grown
+        // by 8 and shifted left by 4 so the visible glyph still starts
+        // exactly at the intended x, with nothing clipped.
+        var TEXT_PAD = 4;
+        var labelW = this._realTextWidth(label);
+        var boxW = Math.ceil(labelW + PAD * 2);
+
+        label.setExtent(lively.pt(labelW + TEXT_PAD * 2, LINE_H));
+        label.setPosition(lively.pt(PAD - TEXT_PAD, (CREATE_BTN_H - LINE_H) / 2));
+        box.setExtent(lively.pt(boxW, CREATE_BTN_H));
+
+        // Vertical centering correction: the shapeNode also carries its own
+        // fixed top/bottom padding (separate from the horizontal one above)
+        // that the position formula above doesn't account for — confirmed
+        // live, the label rendered visibly high in the box even though the
+        // math looked centered (9px above the glyph vs 4px below it).
+        // Read the actual rendered gap above/below the glyph and nudge
+        // until they match, rather than hardcoding a padding guess that'd
+        // only hold for this exact font/size.
+        var boxNode = box.renderContext().shapeNode;
+        var labelSpan = label.renderContext().shapeNode.querySelector("span");
+        if (boxNode && labelSpan) {
+          var boxRect = boxNode.getBoundingClientRect();
+          var spanRect = labelSpan.getBoundingClientRect();
+          var topGap = spanRect.top - boxRect.top;
+          var bottomGap = boxRect.bottom - spanRect.bottom;
+          var correction = (topGap - bottomGap) / 2;
+          if (Math.abs(correction) > 0.25) {
+            label.setPosition(lively.pt(PAD - TEXT_PAD, label.getPosition().y - correction));
+          }
+        }
+
+        this._createBtnW = boxW;   // read by _layout to keep the button's right edge anchored to the members column
+        this._layout();
+      },
+
+      // Opens a new PostCardEditor compose window preset to post into this
+      // constellation — same lazy-require + newCard(handle, opts) idiom
+      // MenuBarEntry.js's "New postcard" entry and PostCardView.js's own
+      // reply flow already use, with opts.constellation carrying the
+      // target over (mirrors PostCardView.js's _openReply).
+      _openCreatePostcard: function () {
+        var currentUser = lively.identity.did.currentUser();
+        if (!currentUser) return;
+        var opts = { constellation: this._name };
+        lively.require("lively.identity.PostCardEditor").toRun(function () {
+          lively.identity.PostCardEditor.newCard(currentUser.handle, opts);
+        });
       },
     },
 
@@ -827,15 +1093,15 @@ module("lively.identity.ConstellationLounge")
         // the reader's position stable.
         var savedScrollTop = containerNode.scrollTop;
         (container.submorphs || []).slice().forEach(function (m) { m.remove(); });
-        var w = container.getExtent().x || CARD_W;
+        var w = (container.getExtent().x || THREAD_W) - COMMENT_PAD_X * 2;
 
         var y = this._renderComposerIfSignedIn(
-          container, "ROOT", this._threadRootObjId, 0, 0, w, "Start conversation");
+          container, "ROOT", this._threadRootObjId, COMMENT_PAD_X, 0, w, "Start conversation");
         y += 10;
 
         if (!this._threadReplies.length) {
           var empty = lively.morphic.Text.makeLabel("No comments yet — be the first to reply.", { fontSize: 12, textColor: Color.gray });
-          empty.setPosition(lively.pt(0, y));
+          empty.setPosition(lively.pt(COMMENT_PAD_X, y));
           empty.setExtent(lively.pt(w, 16));
           container.addMorph(empty);
         } else {
@@ -861,8 +1127,12 @@ module("lively.identity.ConstellationLounge")
       // below everything this node (and its subtree) occupied.
       _renderCommentNode: function (container, reply, depth, y, w) {
         var self = this;
-        var x = depth * COMMENT_INDENT;
-        var rowW = w - x;
+        var x = COMMENT_PAD_X + depth * COMMENT_INDENT;
+        // Width shrinks with nesting depth only — not with the constant
+        // left inset baked into x above — so the right edge lands at the
+        // same COMMENT_PAD_X margin regardless of depth, matching the
+        // composer box's own right edge exactly.
+        var rowW = w - depth * COMMENT_INDENT;
         var topY = y;
 
         var avatar = new lively.morphic.Image(lively.rect(0, 0, COMMENT_AVATAR, COMMENT_AVATAR));
@@ -879,7 +1149,11 @@ module("lively.identity.ConstellationLounge")
           { fontSize: 10.5, textColor: COMMENT_META_COLOR });
         container.addMorph(header);
         header.setPosition(lively.pt(textX, y + 2));
-        header.setExtent(lively.pt(textW, 14));
+        // 14 clipped the glyph's bottom ~3px (measured live: the rendered
+        // span was 15.33px tall against a 14px, overflow:hidden box) — 18
+        // gives real headroom instead of matching the fontSize-in-pt
+        // number too tightly.
+        header.setExtent(lively.pt(textW, 18));
 
         // BUG FIX: an earlier version always built a fresh Box + innerHTML
         // here, every single call — fine for text, but an <img>/<video>
@@ -961,8 +1235,12 @@ module("lively.identity.ConstellationLounge")
         var rowBottom = actionsY + 20;
 
         if (self._replyBoxOpenFor === reply.objId) {
+          // +COMMENT_PAD_X: w's right boundary already sits COMMENT_PAD_X
+          // short of the container's true right edge (see the rowW comment
+          // above) — add it back so this composer's right edge lines up
+          // with the top-level one instead of landing PAD_X short of it.
           rowBottom = self._renderComposerIfSignedIn(
-            container, reply.objId, reply.objId, textX, rowBottom, w - textX,
+            container, reply.objId, reply.objId, textX, rowBottom, w - textX + COMMENT_PAD_X,
             "Replying to @" + (reply._handle || "…"));
         }
 
@@ -1571,6 +1849,7 @@ module("lively.identity.ConstellationLounge")
           });
         }
         this._wikiNewBtn.setVisible(!!this._canWrite);
+        if (this._createPostcardBtn) this._createPostcardBtn.setVisible(!!this._canWrite);
         this._disableDragging(this._wikiHeaderBox);
       },
 
@@ -1660,30 +1939,46 @@ module("lively.identity.ConstellationLounge")
       _renderMemberSection: function (w, y, label, dids, handles, badgeColor, badgeBg, badgeText) {
         if (!dids.length) return y;
         var self = this;
+        // The box's CSS padding (set in _buildChrome) doesn't actually
+        // offset these morphs — Lively positions submorphs as plain pixel
+        // coordinates from the box's own origin, not its CSS padding box
+        // (confirmed live: the avatar rendered flush against the panel's
+        // border with zero gap despite the padding style being set). Bake
+        // the inset into the geometry here instead.
+        var PAD_X = 10;
+        var w2 = w - PAD_X * 2;
+
         var header = lively.morphic.Text.makeLabel(label, { fontSize: 10, textColor: Color.rgb(153, 153, 153) });
-        header.setPosition(lively.pt(0, y));
-        header.setExtent(lively.pt(w, 14));
+        header.setPosition(lively.pt(PAD_X, y));
+        header.setExtent(lively.pt(w2, 14));
         this._membersBox.addMorph(header);
         y += 20;
 
         dids.forEach(function (did) {
           var handle = handles[did] || (did.slice(0, 10) + "…");
-          var row = new lively.morphic.Box(lively.rect(0, y, w, 26));
+          var row = new lively.morphic.Box(lively.rect(PAD_X, y, w2, 26));
           row.applyStyle({ fill: null, borderWidth: 0 });
 
-          var avatar = new lively.morphic.Image(lively.rect(0, 1, 22, 22));
+          // Text morphs don't render their glyph vertically centered in
+          // their own box (same gotcha as the "+ Postcard" pill's label) —
+          // confirmed live, the name's actual glyph center sat ~3px below
+          // the avatar's geometric center even though both boxes were
+          // set to the same nominal middle. Nudging the avatar down those
+          // 3px, rather than fighting the text's rendering, is what
+          // actually lines the two up.
+          var avatar = new lively.morphic.Image(lively.rect(0, 4, 22, 22));
           avatar.setImageURL(lively.identity.postCardUtils.identiconDataUrl(did, 22));
           avatar.applyStyle({ borderRadius: 11, borderWidth: 0, clipMode: "hidden" });
           row.addMorph(avatar);
 
-          var nameW = badgeColor ? (w - 30 - 70) : (self._isOnline(did) ? (w - 30 - 12) : (w - 30));
+          var nameW = badgeColor ? (w2 - 30 - 70) : (self._isOnline(did) ? (w2 - 30 - 12) : (w2 - 30));
           var nameT = lively.morphic.Text.makeLabel("@" + handle, { fontSize: 12 });
           nameT.setPosition(lively.pt(28, 4));
           nameT.setExtent(lively.pt(Math.max(30, nameW), 16));
           row.addMorph(nameT);
 
           if (badgeColor) {
-            var badge = new lively.morphic.Box(lively.rect(w - 66, 3, 62, 18));
+            var badge = new lively.morphic.Box(lively.rect(w2 - 66, 3, 62, 18));
             badge.setFill(badgeBg);
             badge.applyStyle({ borderWidth: 0, borderRadius: 9 });
             var badgeT = lively.morphic.Text.makeLabel(badgeText, { fontSize: 9, textColor: badgeColor });
@@ -1692,7 +1987,7 @@ module("lively.identity.ConstellationLounge")
             badge.addMorph(badgeT);
             row.addMorph(badge);
           } else if (self._isOnline(did)) {
-            var dot = new lively.morphic.Box(lively.rect(w - 14, 8, 8, 8));
+            var dot = new lively.morphic.Box(lively.rect(w2 - 14, 8, 8, 8));
             dot.setFill(Color.rgb(67, 160, 71));
             dot.applyStyle({ borderWidth: 0, borderRadius: 4 });
             row.addMorph(dot);
