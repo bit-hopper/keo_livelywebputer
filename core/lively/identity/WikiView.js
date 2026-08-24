@@ -448,6 +448,25 @@ module("lively.identity.WikiView")
           lively.identity.postCardUtils.hydrateEmbeddedParts(this._contentEl);
         },
 
+        // Public: every heading actually rendered in this page's content,
+        // in document order, read straight off the live DOM rather than
+        // re-walking the snapshot's node tree — sidesteps needing anchor
+        // ids threaded through PostCardUtils.js's snapshotToHtml just to
+        // support jump-to-heading navigation. `el` is the live heading
+        // node itself, so a caller (WikiIndex.js's page-outline sidebar)
+        // can scrollIntoView it directly. Only meaningful once content has
+        // actually rendered (see open()'s opts.envelope for a synchronous
+        // render, otherwise call after the async fetch has resolved).
+        getOutline: function () {
+          if (!this._contentEl) return [];
+          return Array.prototype.map.call(
+            this._contentEl.querySelectorAll("h1, h2, h3, h4, h5, h6"),
+            function (el) {
+              return { level: parseInt(el.tagName.substring(1), 10), text: el.textContent || "", el: el };
+            },
+          );
+        },
+
         _renderDetails: function (envelope) {
           var self = this;
           this._cidEl.textContent =
@@ -585,10 +604,21 @@ module("lively.identity.WikiView")
     // ─── class-side entry points ─────────────────────────────────────────────────
 
     Object.extend(WikiViewClass, {
+      // Tracks the single standalone (non-embedded) WikiView currently in
+      // the world, so opening another topic replaces it instead of piling
+      // up a new box on top — see _openInWorld.
+      _currentWorldView: null,
+
       // Opens the view as a plain self-rendering Box morph directly in the
       // world — same pattern as lively.commerce.Shop.open, no
       // lively.morphic.Window chrome. Centered on the visible world bounds.
+      // Only one standalone WikiView is ever in the world at a time: opening
+      // a new topic removes whichever one is already there first.
       _openInWorld: function (view) {
+        if (WikiViewClass._currentWorldView && WikiViewClass._currentWorldView.world()) {
+          WikiViewClass._currentWorldView.remove();
+        }
+        WikiViewClass._currentWorldView = view;
         var extent = view.getExtent();
         view.openInWorld(lively.morphic.World.current().visibleBounds().center().subPt(extent.scaleBy(0.5)));
         view.bringToFront();
