@@ -1303,6 +1303,36 @@ module("lively.identity.PostCardView")
           );
           win.bringToFront();
         }
+        PostCardViewClass._disableWorldRename();
+      },
+
+      // A standalone PostCardView boots into its own ephemeral per-object
+      // world (IdentityServer.js's buildPostCardPage), which — like any
+      // Lively world — gets the generic WorldNameMenuBarEntry by default.
+      // Its "rename this world" action serializes the *entire current
+      // world* as a fresh type:"world" envelope and PUTs it to whatever
+      // objId is in the current URL, with no idea a real postcard envelope
+      // already lives there (confirmed live for the wikipage counterpart —
+      // see WikiView.js's identical helper). IdentityServer.js's PUT
+      // handler now rejects a type-mismatched overwrite server-side
+      // regardless, but the action is also meaningless here (a single
+      // postcard isn't "a world" to rename), so it's disabled at the
+      // source too.
+      _disableWorldRename: function () {
+        var attempts = 0;
+        (function tryDisable() {
+          var menuBar = typeof $world !== "undefined" && $world && $world.get(/^MenuBar/);
+          var entry = menuBar &&
+            (menuBar.submorphs || []).find(function (m) { return m.name === "WorldNameMenuBarEntry"; });
+          if (entry) {
+            entry.renamePrompt = function () {
+              $world.alert("This page is a single post card, not a renameable Lively world.");
+            };
+            return;
+          }
+          if (++attempts > 25) return;
+          setTimeout(tryDisable, 200);
+        })();
       },
 
       // options.target      -> embed via target.addMorph(view)

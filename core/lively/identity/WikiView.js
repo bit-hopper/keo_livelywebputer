@@ -622,6 +622,35 @@ module("lively.identity.WikiView")
         var extent = view.getExtent();
         view.openInWorld(lively.morphic.World.current().visibleBounds().center().subPt(extent.scaleBy(0.5)));
         view.bringToFront();
+        WikiViewClass._disableWorldRename();
+      },
+
+      // A standalone WikiView boots into its own ephemeral per-object world
+      // (IdentityServer.js's buildPostCardPage), which — like any Lively
+      // world — gets the generic WorldNameMenuBarEntry by default. Its
+      // "rename this world" action serializes the *entire current world*
+      // as a fresh type:"world" envelope and PUTs it to whatever objId is
+      // in the current URL, with no idea a real wikipage envelope already
+      // lives there — confirmed live: this silently clobbered a real wiki
+      // page's content. IdentityServer.js's PUT handler now rejects a
+      // type-mismatched overwrite server-side regardless, but the action
+      // is also meaningless here (a single wiki page isn't "a world" to
+      // rename), so it's disabled at the source too.
+      _disableWorldRename: function () {
+        var attempts = 0;
+        (function tryDisable() {
+          var menuBar = typeof $world !== "undefined" && $world && $world.get(/^MenuBar/);
+          var entry = menuBar &&
+            (menuBar.submorphs || []).find(function (m) { return m.name === "WorldNameMenuBarEntry"; });
+          if (entry) {
+            entry.renamePrompt = function () {
+              $world.alert("This page is a single wiki page, not a renameable Lively world.");
+            };
+            return;
+          }
+          if (++attempts > 25) return;
+          setTimeout(tryDisable, 200);
+        })();
       },
 
       // options.target      -> embed via target.addMorph(view)

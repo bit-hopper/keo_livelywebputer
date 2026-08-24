@@ -2557,21 +2557,42 @@ module.exports = function (route, app) {
       });
     }
 
-    // Write authorization against the EXISTING stored version, for the two
-    // envelope types that need more than the self-consistency check above:
-    // plain postcards (freeze-on-send, §2.5) and wiki pages (constellation
-    // membership, §16.6). Every other envelope type (world/part/file/
-    // settings/home/profile) keeps exactly the self-consistency check above,
-    // unchanged.
-    if (envelope.type !== "postcard" && envelope.type !== "wikipage") {
-      return _handleRegistryCheckAndWrite();
-    }
-
+    // Write authorization against the EXISTING stored version. Always
+    // fetches it first (not gated on the incoming envelope's own claimed
+    // type) so a type mismatch can be caught regardless of what the
+    // incoming envelope says it is — see the type-immutability check just
+    // below. Postcards (freeze-on-send, §2.5) and wiki pages (constellation
+    // membership, §16.6) get further checks past that; every other
+    // envelope type (world/part/file/settings/home/profile) keeps exactly
+    // the self-consistency check above, unchanged, once past the type
+    // check.
     objectRepo.get(objId, function (err, existing) {
       if (err) return res.status(500).json({ error: String(err) });
-      // No existing version yet (genesis) — nothing to check authorship
-      // against; the self-consistency check above already covers this case.
+      // No existing version yet (genesis) — nothing to check type or
+      // authorship against; the self-consistency check above already
+      // covers this case.
       if (!existing) return _handleRegistryCheckAndWrite();
+
+      // An object's type is fixed for its whole lifetime once created —
+      // never silently replaceable by a different kind of object at the
+      // same objId. Confirmed live: WorldNameMenuBarEntry.js's "rename
+      // this world" save action builds a type:"world" envelope from
+      // whatever objId is sitting in the current URL, with no idea what's
+      // actually stored there — clicking it while viewing a wiki page's
+      // own permalink silently clobbered that page's real wikipage
+      // envelope with a raw world snapshot. This check closes that (and
+      // any equivalent) path server-side, regardless of which client code
+      // produces the mismatched write.
+      if (existing.type !== envelope.type) {
+        return res.status(409).json({
+          error: 'Forbidden: this object is type "' + existing.type +
+            '" and cannot be overwritten with type "' + envelope.type + '"',
+        });
+      }
+
+      if (envelope.type !== "postcard" && envelope.type !== "wikipage") {
+        return _handleRegistryCheckAndWrite();
+      }
 
       if (existing.type === "postcard") {
         // §2.5 whole-envelope freeze: once a plain postcard has been
