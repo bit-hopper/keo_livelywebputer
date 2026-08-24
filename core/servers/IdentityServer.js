@@ -845,6 +845,62 @@ function buildWikiIndexPage(constellation, pages) {
   );
 }
 
+// Personal (home-world) counterpart to buildWikiIndexPage — same
+// static-skeleton-then-live-boot shape, scoped to a user's own @handle
+// instead of a constellation. Kept as its own function rather than
+// branching buildWikiIndexPage on a "kind" flag: it's a small,
+// self-contained string builder, and the two differ in enough places
+// (title text, URLs, no constellation pageData, the onStartWorld target)
+// that a shared conditional template would read worse than the
+// duplication does.
+function buildPersonalWikiIndexPage(handle, pages) {
+  var title = escapeHtml(handle);
+  var pageData = { handle: handle };
+  var dataJson = JSON.stringify(pageData).replace(/<\/script>/gi, '<\\/script>');
+
+  var itemsHtml = pages.map(function (p) {
+    return '<li><a href="/@' + encodeURIComponent(handle) + '/wiki/' +
+      encodeURIComponent(p.wikiName) + '">' + escapeHtml(p.wikiName) + '</a></li>';
+  }).join('');
+
+  return (
+    '<!DOCTYPE html><html lang="en"><head>' +
+    '<meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<meta name="apple-mobile-web-app-capable" content="yes">' +
+    '<link rel="shortcut icon" href="/core/media/lively.ico">' +
+    '<title>@' + title + ' wiki</title>' +
+    '<style>' +
+    'body{margin:0;font-family:system-ui,sans-serif;background:#fafafa}' +
+    '.wiki-index-static{position:relative;min-height:100vh;padding:64px 40px}' +
+    '.wiki-index-static h1{font-size:18px}' +
+    '.wiki-index-static ul{padding-left:20px}' +
+    '.wiki-index-loader{position:fixed;bottom:12px;right:12px;font-size:12px;' +
+    'color:#999;background:#fff;border:1px solid #eee;border-radius:4px;padding:4px 8px}' +
+    '</style>' +
+    '</head><body>' +
+    '<div class="wiki-index-static" id="wiki-index-static">' +
+    '<h1>@' + title + ' wiki</h1>' +
+    (itemsHtml ? '<ul>' + itemsHtml + '</ul>' : '<p>No wiki pages yet.</p>') +
+    '</div>' +
+    '<div class="wiki-index-loader" id="wiki-index-loader">Loading live mode…</div>' +
+    '<script type="application/json" id="wiki-index-data">' + dataJson + '</script>' +
+    '<script src="/core/lib/postcard/postcard-runtime.js"></script>' +
+    '<script>window.Config={' +
+    'codeBase:location.protocol+"//"+location.host+"/core/",' +
+    'rootPath:location.protocol+"//"+location.host+"/",' +
+    'manuallyCreateWorld:true,' +
+    'onStartWorld:function(){' +
+    'lively.require("lively.identity.WikiIndex").toRun(function(){' +
+    'lively.identity.WikiIndex.openPersonal(' + JSON.stringify(handle) + ');' +
+    '});' +
+    '}' +
+    '}</script>' +
+    '<script src="/core/lively/bootstrap.js"></script>' +
+    '</body></html>'
+  );
+}
+
 // Convert a ProseMirror snapshot JSON to simple HTML for static rendering.
 // Only handles the node types defined in §6.1 (paragraph, heading, list, etc.).
 function _snapshotToHtml(snapshot) {
@@ -1935,6 +1991,70 @@ module.exports = function (route, app) {
         objectRepo.getHiddenObjIdsForDid(viewerDid, function (err2, hiddenObjIds) {
           if (err2) return res.status(500).json({ error: String(err2) });
           _finish(hiddenObjIds);
+        });
+      });
+    });
+  });
+
+  // ─── personal (home-world) wiki pages ───────────────────────────────────────
+  // Must be registered before /@:handle/:objId. Personal counterpart to
+  // /c/:constellation/wiki[/:pageName] above — a wiki page owned by a user's
+  // own did directly, with no constellation and no membership/canWrite
+  // concept: only the owning session may ever write it (see
+  // WikiSerializer.js's now-optional `constellation` param and the PUT
+  // /@:handle/:objId write-authz owner short-circuit, which already covers
+  // this with no changes needed there).
+
+  app.get("/@:handle/wiki", auth.optionalAuth, function (req, res) {
+    var handle = req.params.handle;
+    handleRegistry.resolve(handle, function (err, did) {
+      if (err)  return res.status(500).json({ error: String(err) });
+      if (!did) return res.status(404).json({ error: "Handle not found: @" + handle });
+
+      objectRepo.listWikiPagesForUser(did, function (err, pages) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (req.accepts(["html", "json"]) === "html") {
+          return res.send(buildPersonalWikiIndexPage(handle, pages));
+        }
+        res.json({ pages: pages });
+      });
+    });
+  });
+
+  // Resolve a personal wiki page by human-friendly name — same "name ->
+  // objId lookup only" job as /c/:constellation/wiki/:pageName above, reusing
+  // the exact same /@handle/:objId read path once resolved.
+  app.get("/@:handle/wiki/:pageName", auth.optionalAuth, function (req, res) {
+    var handle = req.params.handle;
+    var pageName = req.params.pageName;
+
+    handleRegistry.resolve(handle, function (err, did) {
+      if (err)  return res.status(500).json({ error: String(err) });
+      if (!did) return res.status(404).json({ error: "Handle not found: @" + handle });
+
+      objectRepo.getWikiPageObjIdForUser(did, pageName, function (err, objId) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!objId) {
+          var viewerDid = req.identity ? req.identity.did : null;
+          return res.status(404).json({
+            error: "No wiki page named \"" + pageName + "\" for @" + handle,
+            canCreate: viewerDid === did,
+          });
+        }
+
+        objectRepo.get(objId, function (err, envelope) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (!envelope) return res.status(404).json({ error: "Object not found: " + objId });
+          if (!_canReadEnvelope(envelope, req.identity)) {
+            return res.status(403).json({ error: "Forbidden" });
+          }
+
+          envelope = _trimRecipientsForNonOwner(envelope, req.identity);
+
+          if (req.accepts(["html", "json"]) === "html") {
+            return res.send(buildPostCardPage(envelope, handle));
+          }
+          res.json(envelope);
         });
       });
     });

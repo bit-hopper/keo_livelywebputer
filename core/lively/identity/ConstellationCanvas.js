@@ -39,6 +39,9 @@ module("lively.identity.ConstellationCanvas")
     "lively.identity.DID",
     "lively.identity.IdentityPartsSpace",
     "lively.identity.PostCardView",
+    "lively.identity.WikiEditor",
+    "lively.identity.WikiView",
+    "lively.identity.NewWikiPageDialog",
     "lively.morphic.Complete",
   )
   .toRun(function () {
@@ -284,7 +287,16 @@ module("lively.identity.ConstellationCanvas")
         var btn = new lively.morphic.Text(lively.rect(0, 0, 16, 16), "×");
         btn.setPosition(lively.pt(wrapper.getExtent().x - 18, 2));
         btn.onMouseUp = function (evt) {
-          if (self.yDoc) self.yDoc.getMap("layout").delete(id);
+          // Every other placement kind is only ever rendered from data
+          // already in layoutMap, so `delete` + _onLayoutChange's observer
+          // was always enough to remove the morph. A brand-new wiki-page
+          // placement (_createNewWikiPagePlacement) exists locally before
+          // its first save commits it to layoutMap, though — deleting a
+          // key that was never set fires no Yjs event, so the wrapper
+          // would otherwise never go away if removed before that point.
+          var layoutMap = self.yDoc && self.yDoc.getMap("layout");
+          if (layoutMap && layoutMap.has(id)) layoutMap.delete(id);
+          else self._removePlacementMorph(id);
           evt.stop();
         };
         wrapper.addMorph(btn);
@@ -300,7 +312,30 @@ module("lively.identity.ConstellationCanvas")
         if (!ref.handle || !ref.objId) return;
         var topInset = this._canWrite ? DRAG_HANDLE_H : 0;
         if (kind === "part") this._renderPartPlacement(wrapper, ref, id, topInset);
+        else if (kind === "wikipage") this._renderWikiPagePlacement(wrapper, ref, topInset);
         else this._renderPostcardPlacement(wrapper, ref, topInset);
+      },
+
+      // Reload / remote-viewer path for a "wikipage" placement (creation is
+      // _createNewWikiPagePlacement below, which embeds the editor directly
+      // since a brand-new page has no objId yet to resolve through here).
+      // Renders read-only (WikiView), not the editor — matches WikiIndex.js's
+      // _openPage, which always opens an existing page read-only too; a wiki
+      // page is normally in view mode, editing is a deliberate transient
+      // state entered via creation (dialog) or WikiView's own Edit button
+      // (today that reopens a floating-window editor rather than swapping
+      // in place — a pre-existing WikiView.js behavior, not changed here).
+      // Before this, every reload re-rendered as an editable WikiEditor
+      // regardless of the "Save -> view mode" transform below, which would
+      // have made that transform pointless the moment the page reloaded.
+      _renderWikiPagePlacement: function (wrapper, ref, topInset) {
+        var extent = wrapper.getExtent();
+        lively.require("lively.identity.WikiView").toRun(function () {
+          lively.identity.WikiView.open(ref.handle, ref.objId, {
+            target: wrapper,
+            bounds: lively.rect(0, topInset, extent.x, extent.y - topInset),
+          });
+        });
       },
 
       // Embeds a real, interactive PostCardView morph — click-to-flip and
@@ -394,29 +429,123 @@ module("lively.identity.ConstellationCanvas")
         this._toolbarBtn = btn;
       },
 
-      // Prompts for a page name, then opens a brand-new WikiEditor page.
-      // Page-name charset mirrors hashtags' normalization posture without
-      // reusing its exact pattern, since a wiki page name isn't a hashtag;
-      // uniqueness within a constellation isn't enforced here (a second
-      // page with the same name would simply be a distinct, separately-
-      // addressed objId that getWikiPageObjId's "latest by id" resolution
-      // would shadow) — acceptable for this minimal first pass.
+      // Opens the Title/Category/Tags dialog (replacing the old
+      // window.prompt-only flow). Uniqueness within a constellation isn't
+      // enforced here (a second page with the same name would simply be a
+      // distinct, separately-addressed objId that getWikiPageObjId's
+      // "latest by id" resolution would shadow) — acceptable for this
+      // minimal first pass, unchanged from the prior prompt-based flow.
       _promptNewWikiPage: function () {
-        var pageName = window.prompt("New wiki page name (letters, numbers, hyphens):");
-        if (!pageName) return;
-        pageName = pageName.trim();
-        if (!/^[a-zA-Z0-9-]{1,64}$/.test(pageName)) {
-          return this._showError("Wiki page names may only contain letters, numbers, and hyphens (max 64 chars).");
-        }
+        var self = this;
         var user = lively.identity.did.currentUser();
         if (!user) return this._showError("Not signed in.");
-        var constellationName = this._name;
-        lively.require("lively.identity.WikiEditor").toRun(function () {
-          lively.identity.WikiEditor.newCard(user.handle, {
-            constellation: constellationName,
-            wikiName: pageName,
+        lively.require("lively.identity.NewWikiPageDialog").toRun(function () {
+          lively.identity.NewWikiPageDialog.open({
+            scope: { constellation: self._name },
+            onCreate: function (fields) { self._createNewWikiPagePlacement(user.handle, fields); },
           });
         });
+      },
+
+      // Unlike a postcard/part placement (always created from an already-
+      // persisted envelope, so _renderPlacementContent's ref-resolution
+      // path always has a real objId to fetch), a brand-new wiki page has
+      // no objId yet — WikiEditor assigns one on its first autosave. So
+      // this builds the wrapper + embeds the editor directly (mirroring
+      // _renderPlacement's construction, minus the persisted-data branch
+      // that doesn't apply yet), then commits the placement into the
+      // shared layoutMap once _objId actually exists — before that, the
+      // page is visible locally but not yet synced to other viewers,
+      // matching the editor's own "nothing to sync until something's
+      // saved" behavior.
+      _createNewWikiPagePlacement: function (handle, fields) {
+        var self = this;
+        lively.require("lively.identity.WikiEditor").toRun(function () {
+          var id = self._generatePlacementId();
+          var count = Object.keys(self._placementMorphs).length;
+          var x = 40 + (count % 6) * 24, y = 40 + (count % 6) * 24;
+          var w = 420, h = 320;
+
+          var wrapper = new lively.morphic.Box(lively.rect(x, y, w, h));
+          wrapper._placementId = id;
+          wrapper.setFill(Color.rgb(255, 255, 255));
+          wrapper.setBorderWidth(1);
+          wrapper.setBorderColor(Color.rgb(220, 220, 220));
+          self._placementMorphs[id] = wrapper;
+          $world.addMorph(wrapper);
+
+          var topInset = self._canWrite ? DRAG_HANDLE_H : 0;
+          var editor = lively.identity.WikiEditor.newCard(handle, {
+            constellation: self._name,
+            wikiName: fields.wikiName,
+            category: fields.category,
+            tags: fields.tags,
+            target: wrapper,
+            bounds: lively.rect(0, topInset, w, h - topInset),
+            // Clicking Save (not autosave) swaps the editor for the same
+            // read-only WikiView the reload path (_renderWikiPagePlacement)
+            // already uses, in the same wrapper — same "editor is a
+            // transient state, view is the default" rationale as
+            // WikiIndex.js's identical onSaved handler.
+            onSaved: function (savedHandle, objId) {
+              if (self._placementMorphs[id] === undefined) return; // removed before save landed
+              editor.remove();
+              lively.require("lively.identity.WikiView").toRun(function () {
+                lively.identity.WikiView.open(savedHandle, objId, {
+                  target: wrapper,
+                  bounds: lively.rect(0, topInset, w, h - topInset),
+                });
+              });
+            },
+          });
+
+          if (self._canWrite) {
+            self._addDragHandle(wrapper, id);
+            self._addResizeHandle(wrapper, id);
+            self._addRemoveButton(wrapper, id);
+          }
+
+          self._commitWikiPlacementOnFirstSave(editor, id, x, y, w, h, 0);
+        });
+      },
+
+      _generatePlacementId: function () {
+        return "wiki-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+      },
+
+      // No "saved" callback out of newCard — polled the same way
+      // WikiIndex.js's own _pollForFirstSave watches for the genesis
+      // autosave to land (editor._objId going from null to set), then
+      // commits the placement once, guarded by layoutMap.has(id) in case
+      // this fires more than once. Gives up quietly after ~10s if the
+      // page is created but never saved (e.g. the tab is closed
+      // immediately) — the placement just never gets synced, same
+      // end state as never having called newCard at all.
+      //
+      // Also bails if the wrapper was locally removed (_addRemoveButton)
+      // while a save was still in flight (WikiEditor's autosave debounce
+      // isn't cancelled by morph removal) — otherwise a save landing after
+      // the user already deleted the placement would resurrect it into
+      // layoutMap with no wrapper left to represent it locally.
+      _commitWikiPlacementOnFirstSave: function (editor, id, x, y, w, h, attempt) {
+        var self = this;
+        if (attempt >= 20) return;
+        if (self._placementMorphs[id] === undefined) return;
+        setTimeout(function () {
+          if (self._placementMorphs[id] === undefined) return;
+          if (editor._objId) {
+            var layoutMap = self.yDoc && self.yDoc.getMap("layout");
+            if (layoutMap && !layoutMap.has(id)) {
+              layoutMap.set(id, {
+                kind: "wikipage",
+                ref: { handle: editor._handle, objId: editor._objId },
+                x: x, y: y, w: w, h: h,
+              });
+            }
+            return;
+          }
+          self._commitWikiPlacementOnFirstSave(editor, id, x, y, w, h, attempt + 1);
+        }, 500);
       },
 
     },

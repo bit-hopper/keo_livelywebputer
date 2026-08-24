@@ -96,7 +96,10 @@ module('lively.identity.WikiSerializer')
       //   yDoc:        Y.Doc     — MUST have been created with gc: false
       //   title:       String    — optional; auto-extracted from first block if absent
       //   titleExplicit: Boolean
-      //   constellation: String  — required; the owning constellation's name
+      //   constellation: String  — optional; the owning constellation's name.
+      //                             Omitted entirely for a personal (home-world)
+      //                             wiki page, which belongs to params/user's own
+      //                             did instead of any constellation.
       //   wikiName:    String    — required; the page's human-friendly name
       //   replyTo:     Object    — optional; { objId, anchor }
       //   prevEnvelope: Object   — previous version envelope for version chaining

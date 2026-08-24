@@ -86,7 +86,7 @@ module('lively.identity.WikiEditor')
     // ─── serialization guard ──────────────────────────────────────────────────────
 
     'serialization', {
-      doNotSerialize: ['editorView', 'yDoc', 'wsProvider', '_saveTimer', '_pmContainer', '_contentLoadStarted'],
+      doNotSerialize: ['editorView', 'yDoc', 'wsProvider', '_saveTimer', '_pmContainer', '_contentLoadStarted', '_onSaved'],
     },
 
     // ─── initialization ──────────────────────────────────────────────────────────
@@ -133,9 +133,16 @@ module('lively.identity.WikiEditor')
         // _constellation/_wikiName are set by newCard's opts or
         // _loadExistingNow (from the loaded envelope) and are fixed for the
         // lifetime of this objId — a wiki page's constellation/name never
-        // change after creation.
+        // change after creation. _category/_tags are also set from opts or
+        // the loaded envelope, but ARE user-editable metadata (unlike
+        // _constellation/_wikiName) — see _saveNow, which must re-send
+        // them on every autosave or serializeToEnvelope's stateMeta merge
+        // (which replaces envelope.state wholesale, not a deep merge with
+        // prevEnvelope.state) would silently wipe them on the next save.
         this._constellation = this._constellation || null;
         this._wikiName = this._wikiName || null;
+        this._category = this._category || null;
+        this._tags = this._tags || [];
         this._buildChrome();
 
         // Guards against double-firing the async content-load dispatch
@@ -454,7 +461,19 @@ module('lively.identity.WikiEditor')
         saveBtn.style.cssText = 'position:absolute;top:6px;right:8px;width:64px;height:24px;padding:0;font-size:12px;cursor:pointer;border:1px solid #5a5;border-radius:3px;background:#efe;';
         saveBtn.addEventListener('mousedown', function (e) {
           e.preventDefault(); e.stopPropagation();
-          self._saveNow();
+          // Only the explicit Save-button click transforms editor -> view
+          // mode, never the debounced autosave (_scheduleSave) — flipping
+          // to read-only every couple of seconds while someone is mid-typing
+          // would make the editor unusable. this._onSaved is caller-supplied
+          // (see newCard/openCard opts.onSaved) since only the embedding
+          // caller (WikiIndex.js's $world slot, ConstellationCanvas.js's
+          // placement wrapper) knows how to actually perform the swap —
+          // WikiEditor stays agnostic to its own embedding context, and
+          // can't require lively.identity.WikiView itself without a
+          // require() cycle (WikiView.js already requires WikiEditor).
+          self._saveNow(function (err) {
+            if (!err && self._onSaved) self._onSaved(self._handle, self._objId);
+          });
         });
         footerDiv.appendChild(saveBtn);
       },
@@ -720,6 +739,8 @@ module('lively.identity.WikiEditor')
           self._envelope = envelope;
           self._constellation = envelope.constellation || null;
           self._wikiName = (envelope.state && envelope.state.wikiName) || null;
+          self._category = (envelope.state && envelope.state.category) || null;
+          self._tags = (envelope.state && envelope.state.tags) || [];
           var user = lively.identity.did.currentUser();
           self._isOwner = !!(user && user.did === envelope.did);
           self._canEdit = self._isOwner;
@@ -1036,6 +1057,21 @@ module('lively.identity.WikiEditor')
         }
       },
 
+      // Mirrors WikiView.js's getOutline() exactly, but reads from this
+      // editor's own live ProseMirror-rendered DOM (_pmContainer) instead
+      // of WikiView's read-only _contentEl — lets WikiIndex.js's "On this
+      // page" sidebar work identically whether the currently-open inline
+      // view is the read-only WikiView or this editable WikiEditor.
+      getOutline: function () {
+        if (!this._pmContainer) return [];
+        return Array.prototype.map.call(
+          this._pmContainer.querySelectorAll('h1, h2, h3, h4, h5, h6'),
+          function (el) {
+            return { level: parseInt(el.tagName.substring(1), 10), text: el.textContent || '', el: el };
+          },
+        );
+      },
+
     },
 
     // ─── auto-save ────────────────────────────────────────────────────────────────
@@ -1074,7 +1110,11 @@ module('lively.identity.WikiEditor')
           wikiName:      this._wikiName,
           yDoc:          this.yDoc,
           attachments:   this._attachments || [],
-          stateMeta:     {},
+          // serializeToEnvelope replaces envelope.state wholesale from
+          // stateMeta each save (no merge with prevEnvelope.state) — so
+          // category/tags must be re-sent on every autosave, not just at
+          // creation, or they'd be silently wiped on the very next save.
+          stateMeta:     { category: this._category, tags: this._tags || [] },
           // title omitted — WikiSerializer extracts it from the first PM block
         };
         this._setStatus('Saving…');
@@ -2063,6 +2103,10 @@ module('lively.identity.WikiEditor')
       // opts.forceReadOnly: used only by WikiView to embed this editor
       // purely as a render engine for content — strips all editing chrome
       // and disables autosave regardless of ownership.
+      // opts.onSaved(handle, objId): fires once, only after an explicit
+      // Save-button click succeeds (never from the debounced autosave) —
+      // lets an embedding caller swap this editor for a read-only view in
+      // place. See _buildFooter's Save handler.
       openCard: function (handle, objId, options) {
         var opts = options || {};
         var editor = new lively.identity.WikiEditor(opts.bounds || lively.rect(0, 0, 1180, 780));
@@ -2070,6 +2114,7 @@ module('lively.identity.WikiEditor')
         editor._objId = objId;
         editor._isNew = false;
         editor._forceReadOnly = !!opts.forceReadOnly;
+        editor._onSaved = opts.onSaved || null;
         if (opts.target) {
           opts.target.addMorph(editor);
           editor._setup();
@@ -2081,18 +2126,27 @@ module('lively.identity.WikiEditor')
       },
 
       // Create a new genesis wiki page and open the editor.
-      // options: { constellation, wikiName } — both required; mode-switching
-      // isn't supported, so a wiki page's constellation/name are fixed from
-      // the moment it's created (matches PostcardDesignSpec-v2.md §1.3's
-      // "no path to convert a plain card into a wiki page or vice versa").
+      // options: { constellation, wikiName, category, tags } — wikiName is
+      // required; constellation is optional (omitted entirely for a
+      // personal/home-world page — see WikiSerializer.js's now-optional
+      // constellation param). Mode-switching isn't supported, so a wiki
+      // page's constellation/name are fixed from the moment it's created
+      // (matches PostcardDesignSpec-v2.md §1.3's "no path to convert a
+      // plain card into a wiki page or vice versa"). category/tags are
+      // editable afterward (unlike constellation/wikiName), but need an
+      // initial value from the creating dialog same as any other field.
+      // opts.onSaved: see openCard's identical option above.
       newCard: function (handle, options) {
         var opts = options || {};
-        var editor = new lively.identity.WikiEditor(lively.rect(0, 0, 1180, 780));
+        var editor = new lively.identity.WikiEditor(opts.bounds || lively.rect(0, 0, 1180, 780));
         editor._handle = handle;
         editor._objId = null;
         editor._isNew = true;
         editor._constellation = opts.constellation || null;
         editor._wikiName = opts.wikiName || null;
+        editor._category = opts.category || null;
+        editor._tags = opts.tags || [];
+        editor._onSaved = opts.onSaved || null;
         if (opts.target) {
           opts.target.addMorph(editor);
           editor._setup();

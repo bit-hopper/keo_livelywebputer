@@ -32,6 +32,7 @@ module("lively.identity.WikiIndex")
     "lively.identity.DID",
     "lively.identity.WikiView",
     "lively.identity.WikiEditor",
+    "lively.identity.NewWikiPageDialog",
     "lively.morphic.Complete",
   )
   .toRun(function () {
@@ -51,7 +52,10 @@ module("lively.identity.WikiIndex")
 
     "initializing", {
       initialize: function () {
-        this._name = null;
+        // scope: { kind: 'constellation', name } | { kind: 'personal', handle }
+        // — everything below that used to assume a constellation name
+        // branches on scope.kind instead. See open()/openPersonal() below.
+        this._scope = null;
         this._pages = [];
         this._pagesFiltered = [];
         this._filterQuery = "";
@@ -59,7 +63,7 @@ module("lively.identity.WikiIndex")
         this._quickInfo = null;
         this._cardMorphs = [];
         this._didHandleCache = {};
-        this._wikiView = null;
+        this._activeContentMorph = null; // a read-only WikiView or an editable WikiEditor
         this._sidebarBox = null;
       },
     },
@@ -67,35 +71,64 @@ module("lively.identity.WikiIndex")
     // ─── boot ─────────────────────────────────────────────────────────────────
 
     "boot", {
+      // Back-compat entry point — every existing caller (buildWikiIndexPage's
+      // onStartWorld hook, ConstellationLounge.js's "Open wiki" link target)
+      // passes a bare constellation name string.
       open: function (name) {
-        this._name = name;
+        this._openScope({ kind: "constellation", name: name });
+      },
+
+      openPersonal: function (handle) {
+        this._openScope({ kind: "personal", handle: handle });
+      },
+
+      _openScope: function (scope) {
+        this._scope = scope;
+        if (scope.kind === "personal") return this._startPersonal();
         this._loadSpaceToken();
       },
 
+      // Constellation scope: canWrite/quickInfo come from a space-token
+      // round trip (membership isn't known client-side).
       _loadSpaceToken: function () {
         var self = this;
+        var name = this._scope.name;
         var base = lively.identity.did.baseUrl();
         var xhr = new XMLHttpRequest();
-        xhr.open("GET", base + "/c/" + encodeURIComponent(this._name) + "/space-token", true);
+        xhr.open("GET", base + "/c/" + encodeURIComponent(name) + "/space-token", true);
         xhr.withCredentials = true;
         xhr.setRequestHeader("Accept", "application/json");
         xhr.onload = function () {
-          if (xhr.status !== 200) return self._showError("Failed to load c/" + self._name + " (" + xhr.status + ")");
+          if (xhr.status !== 200) return self._showError("Failed to load c/" + name + " (" + xhr.status + ")");
           var data;
           try { data = JSON.parse(xhr.responseText); } catch (e) { return self._showError("Bad space-token response"); }
           self._canWrite = !!data.canWrite;
           self._quickInfo = data.quickInfo || {};
           self._fetchWikiIndex();
         };
-        xhr.onerror = function () { self._showError("Network error loading c/" + self._name); };
+        xhr.onerror = function () { self._showError("Network error loading c/" + name); };
         xhr.send();
+      },
+
+      // Personal scope: canWrite is just "is this session's own handle" —
+      // no membership concept, no round trip needed (confirmed server-side:
+      // GET /@:handle/wiki and the wikipage PUT owner check both key off
+      // the session did directly).
+      _startPersonal: function () {
+        var user = lively.identity.did.currentUser();
+        this._canWrite = !!(user && user.handle === this._scope.handle);
+        this._quickInfo = {};
+        this._fetchWikiIndex();
       },
 
       _fetchWikiIndex: function () {
         var self = this;
         var base = lively.identity.did.baseUrl();
+        var url = this._scope.kind === "personal"
+          ? base + "/@" + encodeURIComponent(this._scope.handle) + "/wiki"
+          : base + "/c/" + encodeURIComponent(this._scope.name) + "/wiki";
         var xhr = new XMLHttpRequest();
-        xhr.open("GET", base + "/c/" + encodeURIComponent(this._name) + "/wiki", true);
+        xhr.open("GET", url, true);
         xhr.withCredentials = true;
         xhr.setRequestHeader("Accept", "application/json");
         xhr.onload = function () {
@@ -110,7 +143,9 @@ module("lively.identity.WikiIndex")
       },
 
       _start: function () {
-        document.title = "c/" + this._name + " wiki";
+        document.title = this._scope.kind === "personal"
+          ? "@" + this._scope.handle + " wiki"
+          : "c/" + this._scope.name + " wiki";
         this._buildChrome();
         this._renderPages();
         this._installMenuBarEntry();
@@ -131,7 +166,10 @@ module("lively.identity.WikiIndex")
         this._backBtn = this._buildBackButton();
         $world.addMorph(this._backBtn);
 
-        this._titleLabel = lively.morphic.Text.makeLabel("c/" + this._name + " wiki", {
+        var titleText = this._scope.kind === "personal"
+          ? "@" + this._scope.handle + " wiki"
+          : "c/" + this._scope.name + " wiki";
+        this._titleLabel = lively.morphic.Text.makeLabel(titleText, {
           fontSize: 22, fontWeight: "bold", textColor: Color.rgb(20, 20, 20),
         });
         $world.addMorph(this._titleLabel);
@@ -168,10 +206,15 @@ module("lively.identity.WikiIndex")
       // second line overlapped the grid's empty-filter-result message).
       _buildBackButton: function () {
         var self = this;
-        var btn = lively.morphic.Text.makeLabel("← c/" + this._name, {
+        var isPersonal = this._scope.kind === "personal";
+        var label = isPersonal ? "← @" + this._scope.handle : "← c/" + this._scope.name;
+        var href = isPersonal
+          ? "/@" + encodeURIComponent(this._scope.handle)
+          : "/c/" + encodeURIComponent(this._scope.name);
+        var btn = lively.morphic.Text.makeLabel(label, {
           fontSize: 14, fontWeight: "500", textColor: Color.rgb(70, 70, 70),
         });
-        btn.onMouseDown = function () { window.location.href = "/c/" + encodeURIComponent(self._name); };
+        btn.onMouseDown = function () { window.location.href = href; };
         return btn;
       },
 
@@ -299,8 +342,8 @@ module("lively.identity.WikiIndex")
       // SIDEBAR_W + SIDEBAR_GAP so the sidebar has room alongside it.
       _repositionWikiView: function () {
         var y = (this._gridY || 0) + (this._gridContentHeight || 0) + GRID_TOP_GAP;
-        if (this._wikiView && this._wikiView.world()) {
-          this._wikiView.setPosition(lively.pt(SIDE_MARGIN + SIDEBAR_W + SIDEBAR_GAP, y));
+        if (this._activeContentMorph && this._activeContentMorph.world()) {
+          this._activeContentMorph.setPosition(lively.pt(SIDE_MARGIN + SIDEBAR_W + SIDEBAR_GAP, y));
         }
         if (this._sidebarBox && this._sidebarBox.world() && this._sidebarBox.isVisible()) {
           this._sidebarBox.setPosition(lively.pt(SIDE_MARGIN, y));
@@ -421,11 +464,23 @@ module("lively.identity.WikiIndex")
           var w = Math.min(1180, window.innerWidth - leftEdge - SIDE_MARGIN);
           var opts = { bounds: lively.rect(0, 0, w, 780) };
           if (envelope) opts.envelope = envelope;
-          self._wikiView = lively.identity.WikiView.open(handle, page.objId, opts);
-          self._wikiView.bringToFront();
-          self._renderSidebar(self._wikiView);
-          self._repositionWikiView();
+          self._setActiveContentMorph(lively.identity.WikiView.open(handle, page.objId, opts));
         });
+      },
+
+      // Both the read-only WikiView (existing page) and the editable
+      // WikiEditor (newly-created page, see _createNewPage) end up pinned
+      // in this same slot and expose getOutline() — this is the one place
+      // that swap happens, so _openPage/_createNewPage don't need to know
+      // about each other's shape.
+      _setActiveContentMorph: function (morph) {
+        if (this._activeContentMorph && this._activeContentMorph !== morph) {
+          this._activeContentMorph.remove();
+        }
+        this._activeContentMorph = morph;
+        morph.bringToFront();
+        this._renderSidebar(morph);
+        this._repositionWikiView();
       },
 
       // Populates the "On this page" sidebar from the page's real rendered
@@ -493,11 +548,16 @@ module("lively.identity.WikiIndex")
       // (thenDo(handle, envelope)) so _openPage can pass it straight to
       // WikiView.open as opts.envelope instead of making WikiView re-fetch
       // the exact same thing a moment later.
+      // Personal scope already knows the owning handle (there's only ever
+      // one — the scope's own handle), so this skips straight to the plain
+      // /@handle/:objId read instead of the constellation path's DID
+      // resolution dance.
       _resolveHandle: function (objId, thenDo) {
+        if (this._scope.kind === "personal") return this._resolveHandlePersonal(objId, thenDo);
         var self = this;
         var base = lively.identity.did.baseUrl();
         var xhr = new XMLHttpRequest();
-        xhr.open("GET", base + "/c/" + encodeURIComponent(this._name) + "/" + encodeURIComponent(objId), true);
+        xhr.open("GET", base + "/c/" + encodeURIComponent(this._scope.name) + "/" + encodeURIComponent(objId), true);
         xhr.withCredentials = true;
         xhr.setRequestHeader("Accept", "application/json");
         xhr.onload = function () {
@@ -528,6 +588,23 @@ module("lively.identity.WikiIndex")
         xhr.send();
       },
 
+      _resolveHandlePersonal: function (objId, thenDo) {
+        var handle = this._scope.handle;
+        var base = lively.identity.did.baseUrl();
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", base + "/@" + encodeURIComponent(handle) + "/" + encodeURIComponent(objId), true);
+        xhr.withCredentials = true;
+        xhr.setRequestHeader("Accept", "application/json");
+        xhr.onload = function () {
+          if (xhr.status !== 200) return thenDo(null, null);
+          var envelope;
+          try { envelope = JSON.parse(xhr.responseText); } catch (e) { return thenDo(null, null); }
+          thenDo(handle, envelope);
+        };
+        xhr.onerror = function () { thenDo(null, null); };
+        xhr.send();
+      },
+
       _formatDate: function (iso) {
         if (!iso) return "—";
         var d = new Date(iso);
@@ -535,49 +612,90 @@ module("lively.identity.WikiIndex")
         return d.toLocaleDateString();
       },
 
-      // Mirrors ConstellationCanvas.js/ConstellationLounge.js's identical
-      // _promptNewWikiPage (same charset, same WikiEditor.newCard entry
-      // point) — the same "create a wiki page" affordance, relocated here.
+      // Opens the Title/Category/Tags dialog (replacing the old
+      // window.prompt-only flow) and, on Create, embeds a brand-new
+      // WikiEditor directly in-page — the same pinned-below-grid slot
+      // _openPage's read-only WikiView uses (_setActiveContentMorph) —
+      // instead of the old floating-window-plus-polling-for-completion
+      // hack (_pollForWikiPage/_fetchWikiIndexSilently, both removed: the
+      // editor is embedded synchronously now, so there's nothing to poll
+      // for).
       _promptNewWikiPage: function () {
-        var pageName = window.prompt("New wiki page name (letters, numbers, hyphens):");
-        if (!pageName) return;
-        pageName = pageName.trim();
-        if (!/^[a-zA-Z0-9-]{1,64}$/.test(pageName)) {
-          return this._showError("Wiki page names may only contain letters, numbers, and hyphens (max 64 chars).");
-        }
+        var self = this;
         var user = lively.identity.did.currentUser();
         if (!user) return this._showError("Not signed in.");
-        var constellationName = this._name;
-        lively.require("lively.identity.WikiEditor").toRun(function () {
-          lively.identity.WikiEditor.newCard(user.handle, {
-            constellation: constellationName,
-            wikiName: pageName,
+        var scope = this._scope.kind === "personal"
+          ? { handle: this._scope.handle }
+          : { constellation: this._scope.name };
+        lively.require("lively.identity.NewWikiPageDialog").toRun(function () {
+          lively.identity.NewWikiPageDialog.open({
+            scope: scope,
+            onCreate: function (fields) { self._createNewPage(user.handle, fields); },
           });
         });
-        this._pollForWikiPage(pageName, 0);
       },
 
-      // newCard opens its own editor window and saves asynchronously as the
-      // user types (WikiEditor.js's own debounced autosave) — there's no
-      // "saved" callback exposed to hook, so the index is polled for the
-      // new page name for a bit instead of just going stale until reload.
-      _pollForWikiPage: function (pageName, attempt) {
+      _createNewPage: function (handle, fields) {
         var self = this;
-        if (attempt >= 10) return;
+        lively.require("lively.identity.WikiEditor").toRun(function () {
+          var leftEdge = SIDE_MARGIN + SIDEBAR_W + SIDEBAR_GAP;
+          var w = Math.min(1180, window.innerWidth - leftEdge - SIDE_MARGIN);
+          var newCardOpts = {
+            wikiName: fields.wikiName,
+            category: fields.category,
+            tags: fields.tags,
+            bounds: lively.rect(0, 0, w, 780),
+            // Added directly to $world (not a floating window) — the same
+            // top-level-morph shape _openPage's read-only WikiView already
+            // has, so _setActiveContentMorph/_repositionWikiView can
+            // position either one identically via plain setPosition.
+            target: $world,
+            // Clicking Save (not autosave — see WikiEditor.js's _buildFooter)
+            // swaps the editor for the same read-only WikiView _openPage
+            // already uses to display an existing page, so a freshly-created
+            // page ends up presented exactly like any other once you're done
+            // with it, rather than staying in edit mode indefinitely.
+            onSaved: function (savedHandle, objId) {
+              var opts2 = { bounds: lively.rect(0, 0, w, 780) };
+              self._setActiveContentMorph(lively.identity.WikiView.open(savedHandle, objId, opts2));
+            },
+          };
+          if (self._scope.kind === "constellation") newCardOpts.constellation = self._scope.name;
+
+          var editor = lively.identity.WikiEditor.newCard(handle, newCardOpts);
+          self._setActiveContentMorph(editor);
+          // this._pages is refreshed (silently, not re-rendering the grid
+          // mid-edit) once the genesis autosave lands, so the new card
+          // appears in the grid without a manual reload — independent of
+          // onSaved above, which only fires on an explicit Save click and
+          // handles swapping the open view, not the grid card.
+          self._pollForFirstSave(editor, fields.wikiName, 0);
+        });
+      },
+
+      _pollForFirstSave: function (editor, wikiName, attempt) {
+        var self = this;
+        if (attempt >= 20) return;
         setTimeout(function () {
-          self._fetchWikiIndexSilently(function () {
-            var found = self._pages.some(function (p) { return p.wikiName === pageName; });
-            if (found) self._renderPages();
-            else self._pollForWikiPage(pageName, attempt + 1);
-          });
-        }, 1000);
+          if (editor._objId) {
+            self._fetchWikiIndexSilently(function () {
+              var found = self._pages.some(function (p) { return p.wikiName === wikiName; });
+              if (found) self._renderPages();
+            });
+            return;
+          }
+          self._pollForFirstSave(editor, wikiName, attempt + 1);
+        }, 500);
       },
 
       _fetchWikiIndexSilently: function (thenDo) {
         var self = this;
         var base = lively.identity.did.baseUrl();
+        var url = this._scope.kind === "personal"
+          ? base + "/@" + encodeURIComponent(this._scope.handle) + "/wiki"
+          : base + "/c/" + encodeURIComponent(this._scope.name) + "/wiki";
         var xhr = new XMLHttpRequest();
-        xhr.open("GET", base + "/c/" + encodeURIComponent(this._name) + "/wiki", true);
+        xhr.open("GET", url, true);
         xhr.withCredentials = true;
         xhr.setRequestHeader("Accept", "application/json");
         xhr.onload = function () {
@@ -611,11 +729,18 @@ module("lively.identity.WikiIndex")
 
       _patchMenuBarEntry: function (entry) {
         var self = this;
-        var label = "c/" + this._name + " wiki";
+        var isPersonal = this._scope.kind === "personal";
+        var label = isPersonal ? "@" + this._scope.handle + " wiki" : "c/" + this._scope.name + " wiki";
+        var backHref = isPersonal
+          ? "/@" + encodeURIComponent(this._scope.handle)
+          : "/c/" + encodeURIComponent(this._scope.name);
+        var tooltip = isPersonal
+          ? "@" + this._scope.handle + " — back to your home world"
+          : "Constellation " + this._scope.name + " — back to c/" + this._scope.name;
         entry.currentWorldDisplayName = function () { return label; };
-        entry.toolTip = "Constellation " + this._name + " — back to c/" + this._name;
+        entry.toolTip = tooltip;
         entry.onMouseUp = function (evt) {
-          window.location.href = "/c/" + encodeURIComponent(self._name);
+          window.location.href = backHref;
           evt.stop();
           return true;
         };
@@ -627,13 +752,19 @@ module("lively.identity.WikiIndex")
       },
     });
 
-    // Static open helper — constructs a fresh controller bound to $world.
-    // Callers (buildWikiIndexPage's onStartWorld hook) are expected to only
-    // call this once $world already exists.
+    // Static open helpers — construct a fresh controller bound to $world.
+    // Callers (buildWikiIndexPage's/buildPersonalWikiIndexPage's
+    // onStartWorld hooks) are expected to only call these once $world
+    // already exists.
     lively.identity.WikiIndex = {
       open: function (name) {
         var controller = new lively.identity.WikiIndexController();
         controller.open(name);
+        return controller;
+      },
+      openPersonal: function (handle) {
+        var controller = new lively.identity.WikiIndexController();
+        controller.openPersonal(handle);
         return controller;
       },
     };

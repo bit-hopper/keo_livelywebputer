@@ -803,6 +803,93 @@ function listWikiPages(constellation, thenDo) {
   });
 }
 
+// Personal (home-world) counterpart to getWikiPageObjId — resolves a wiki
+// page by human-friendly name under a user's own did, instead of within a
+// constellation. Same "latest version per obj_id" shape, keyed on the did
+// column directly (no json_extract needed for it, unlike constellation
+// which only lives inside the envelope JSON) instead of
+// json_extract(envelope,'$.constellation').
+//
+// constellation IS NULL is a real, load-bearing filter here, not a no-op:
+// this did may also own constellation-scoped wikipage envelopes (authored
+// as a member with write access, or in a constellation they control) —
+// those belong to the constellation, not to this user's personal wiki, and
+// must not resolve/list here. Confirmed live: without this filter,
+// getWikiPageObjIdForUser/listWikiPagesForUser below returned every
+// wikipage envelope this did ever authored regardless of constellation,
+// which put a constellation's test pages in the personal index. constella-
+// tion is fixed at genesis and never changes across a page's versions (see
+// WikiSerializer.js), so filtering it in this subquery (rather than only
+// in the outer WHERE) is equivalent and cheaper.
+function getWikiPageObjIdForUser(did, wikiName, thenDo) {
+  withDB(function (err, db) {
+    if (err) return thenDo(err);
+    db.get(
+      'SELECT o.obj_id FROM objects o' +
+      ' INNER JOIN (' +
+      '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
+      '   WHERE type = \'wikipage\'' +
+      '         AND did = ?' +
+      '         AND json_extract(envelope, \'$.constellation\') IS NULL' +
+      '         AND json_extract(envelope, \'$.state.wikiName\') = ?' +
+      '   GROUP BY obj_id' +
+      ' ) latest ON o.id = latest.max_id' +
+      ' WHERE (json_extract(o.envelope, \'$.state.deleted\') IS NULL' +
+      '        OR json_extract(o.envelope, \'$.state.deleted\') != 1)' +
+      ' ORDER BY o.id DESC LIMIT 1',
+      [did, wikiName],
+      function (err, row) {
+        if (err) return thenDo(err);
+        thenDo(null, row ? row.obj_id : null);
+      }
+    );
+  });
+}
+
+// Personal (home-world) counterpart to listWikiPages — every wiki page
+// owned by a user's own did, not tied to any constellation, for the
+// personal wiki index (GET /@:handle/wiki). Same no-pagination precedent as
+// listWikiPages (small per-scope counts). Also surfaces category/tags for
+// the index cards — listWikiPages doesn't need these today but there's no
+// reason the personal listing shouldn't carry them.
+// Calls thenDo(null, [{ objId, wikiName, category, tags, updatedAt }, ...]).
+function listWikiPagesForUser(did, thenDo) {
+  withDB(function (err, db) {
+    if (err) return thenDo(err);
+    db.all(
+      'SELECT o.obj_id, o.created_at,' +
+      '       json_extract(o.envelope, \'$.state.wikiName\') AS wiki_name,' +
+      '       json_extract(o.envelope, \'$.state.category\') AS category,' +
+      '       json_extract(o.envelope, \'$.state.tags\') AS tags_json' +
+      ' FROM objects o' +
+      ' INNER JOIN (' +
+      '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
+      '   WHERE type = \'wikipage\'' +
+      '         AND did = ?' +
+      '         AND json_extract(envelope, \'$.constellation\') IS NULL' +
+      '   GROUP BY obj_id' +
+      ' ) latest ON o.id = latest.max_id' +
+      ' WHERE (json_extract(o.envelope, \'$.state.deleted\') IS NULL' +
+      '        OR json_extract(o.envelope, \'$.state.deleted\') != 1)' +
+      ' ORDER BY wiki_name ASC',
+      [did],
+      function (err, rows) {
+        if (err) return thenDo(err);
+        thenDo(null, (rows || []).map(function (r) {
+          var tags = [];
+          if (r.tags_json) {
+            try { tags = JSON.parse(r.tags_json) || []; } catch (e) { tags = []; }
+          }
+          return {
+            objId: r.obj_id, wikiName: r.wiki_name, category: r.category || null,
+            tags: tags, updatedAt: r.created_at,
+          };
+        }));
+      }
+    );
+  });
+}
+
 // Escapes SQL LIKE wildcards (% and _) in a string that's about to be used
 // as a LIKE prefix — Plus Codes' own alphabet ('23456789CFGHJMPQRVWX' plus
 // '+'/'0') never contains either character, but a caller-supplied query
@@ -1364,6 +1451,8 @@ module.exports = {
   listPostcardsForConstellation: listPostcardsForConstellation,
   getWikiPageObjId:              getWikiPageObjId,
   listWikiPages:                 listWikiPages,
+  getWikiPageObjIdForUser:       getWikiPageObjIdForUser,
+  listWikiPagesForUser:          listWikiPagesForUser,
   listPostcardsNearby:           listPostcardsNearby,
   listRepliesForPostcard:        listRepliesForPostcard,
   upsertReaction:                upsertReaction,
