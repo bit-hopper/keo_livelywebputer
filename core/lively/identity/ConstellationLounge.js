@@ -874,7 +874,7 @@ module("lively.identity.ConstellationLounge")
         var w = QUICK_INFO_W;
         var PAD = 14;
 
-        var title = lively.morphic.Text.makeLabel("Spaces", {
+        var title = lively.morphic.Text.makeLabel("Rooms", {
           fontSize: 14, fontWeight: "600", textColor: Color.rgb(30, 30, 30),
         });
         title.setPosition(lively.pt(PAD, 16));
