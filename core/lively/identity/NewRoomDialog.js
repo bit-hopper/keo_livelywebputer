@@ -10,8 +10,8 @@
  * openInWorldCenter().comeForward()).
  *
  * The dialog itself never touches storage — it only collects and validates
- * { name, isVideo, isVoice, access } and hands them to the caller's
- * onCreate callback, which POSTs to /c/:name/rooms (see
+ * { name, isVideo, isVoice, access, activity } and hands them to the
+ * caller's onCreate callback, which POSTs to /c/:name/rooms (see
  * ConstellationLounge.js's _openNewRoom).
  *
  * The video/voice toggles are two independent chips (not a radio group,
@@ -32,6 +32,15 @@
  * clicking its card. 'request': a member must request access; a
  * constellation controller approves/declines (mirrors the constellation's
  * own join-request flow, scoped to one room).
+ *
+ * The "Active Participants Nickname" field, below the toggles, is a plain
+ * free-text input line (same shape as NameText) — the creator types their
+ * own optional nickname/category (e.g. "Jamming", "Reading") describing
+ * what active participants are doing, rather than picking from a preset
+ * list. This becomes room.activity server-side and shows on the room card
+ * as "· <activity>" (ConstellationLounge.js's _renderRoomCard already
+ * renders this field — it just had no way to be set before this dialog
+ * collected it).
  */
 
 module('lively.identity.NewRoomDialog')
@@ -40,7 +49,7 @@ module('lively.identity.NewRoomDialog')
 
     lively.BuildSpec('lively.identity.NewRoomDialog', {
       _BorderRadius: 7,
-      _Extent: lively.pt(380.0, 250.0),
+      _Extent: lively.pt(380.0, 324.0),
       _Fill: Color.rgb(88, 101, 242),
       className: 'lively.morphic.Window',
       name: 'NewRoomDialog',
@@ -48,11 +57,11 @@ module('lively.identity.NewRoomDialog')
       contentOffset: lively.pt(3.0, 22.0),
       draggingEnabled: true,
       layout: { adjustForNewBounds: true },
-      minExtent: lively.pt(380.0, 250.0),
+      minExtent: lively.pt(380.0, 324.0),
       submorphs: [{
         _BorderColor: Color.rgb(95, 94, 95),
         _BorderRadius: 4,
-        _Extent: lively.pt(374.0, 222.0),
+        _Extent: lively.pt(374.0, 296.0),
         _Fill: Color.rgb(243, 243, 243),
         _Position: lively.pt(3.0, 23.0),
         className: 'lively.morphic.Box',
@@ -210,11 +219,54 @@ module('lively.identity.NewRoomDialog')
             return true;
           },
         }, {
-          _Extent: lively.pt(200.0, 16.0),
+          _Extent: lively.pt(300.0, 16.0),
           _FontFamily: 'Arial, sans-serif',
           _FontSize: 11,
           _Padding: lively.rect(4, 3, 0, 0),
           _Position: lively.pt(10.0, 126.0),
+          _InputAllowed: false,
+          allowInput: false,
+          className: 'lively.morphic.Text',
+          droppingEnabled: false,
+          fixedWidth: true,
+          grabbingEnabled: false,
+          name: 'ActivityLabel',
+          sourceModule: 'lively.morphic.TextCore',
+          submorphs: [],
+          textString: 'Active Participants Nickname (optional)',
+        }, {
+          // Free-text, creator-typed nickname/category (e.g. "Jamming",
+          // "Reading") describing what active participants are doing --
+          // same input-line shape as NameText above. Shown on the room
+          // card as "· <activity>" once set (ConstellationLounge.js's
+          // _renderRoomCard, room.activity).
+          _BorderColor: Color.rgb(203, 203, 203),
+          _BorderRadius: 3.75,
+          _BorderWidth: 1,
+          _ClipMode: 'hidden',
+          _Extent: lively.pt(354.0, 22.0),
+          _Fill: Color.rgb(255, 255, 255),
+          _FontFamily: 'Helvetica',
+          _Padding: lively.rect(4, 4, 0, 0),
+          _Position: lively.pt(10.0, 148.0),
+          allowInput: true,
+          className: 'lively.morphic.Text',
+          doNotSerialize: ['charsTyped'],
+          evalEnabled: false,
+          fixedHeight: true,
+          fixedWidth: true,
+          isInputLine: true,
+          layout: { resizeWidth: true },
+          name: 'ActivityText',
+          sourceModule: 'lively.morphic.TextCore',
+          submorphs: [],
+          textString: '',
+        }, {
+          _Extent: lively.pt(200.0, 16.0),
+          _FontFamily: 'Arial, sans-serif',
+          _FontSize: 11,
+          _Padding: lively.rect(4, 3, 0, 0),
+          _Position: lively.pt(10.0, 180.0),
           _InputAllowed: false,
           allowInput: false,
           className: 'lively.morphic.Text',
@@ -231,7 +283,7 @@ module('lively.identity.NewRoomDialog')
           _BorderRadius: 5,
           _BorderWidth: 1,
           _Extent: lively.pt(70.0, 24.0),
-          _Position: lively.pt(10.0, 148.0),
+          _Position: lively.pt(10.0, 202.0),
           className: 'lively.morphic.Button',
           doNotCopyProperties: [],
           doNotSerialize: [],
@@ -252,7 +304,7 @@ module('lively.identity.NewRoomDialog')
           _BorderRadius: 5,
           _BorderWidth: 1,
           _Extent: lively.pt(130.0, 24.0),
-          _Position: lively.pt(88.0, 148.0),
+          _Position: lively.pt(88.0, 202.0),
           className: 'lively.morphic.Button',
           doNotCopyProperties: [],
           doNotSerialize: [],
@@ -273,7 +325,7 @@ module('lively.identity.NewRoomDialog')
           _FontFamily: 'Arial, sans-serif',
           _FontSize: 11,
           _Padding: lively.rect(4, 3, 0, 0),
-          _Position: lively.pt(10.0, 182.0),
+          _Position: lively.pt(10.0, 236.0),
           _InputAllowed: false,
           allowInput: false,
           className: 'lively.morphic.Text',
@@ -290,7 +342,7 @@ module('lively.identity.NewRoomDialog')
           _BorderRadius: 5,
           _BorderWidth: 1,
           _Extent: lively.pt(80.0, 24.0),
-          _Position: lively.pt(204.0, 188.0),
+          _Position: lively.pt(204.0, 262.0),
           className: 'lively.morphic.Button',
           doNotCopyProperties: [],
           doNotSerialize: [],
@@ -310,7 +362,7 @@ module('lively.identity.NewRoomDialog')
           _BorderWidth: 1.184,
           _Extent: lively.pt(80.0, 24.0),
           _Fill: Color.rgb(231, 233, 254),
-          _Position: lively.pt(288.0, 188.0),
+          _Position: lively.pt(288.0, 262.0),
           className: 'lively.morphic.Button',
           doNotCopyProperties: [],
           doNotSerialize: [],
@@ -338,6 +390,7 @@ module('lively.identity.NewRoomDialog')
           this._isVideo = false;
           this._isVoice = false;
           this.get('NameText').textString = '';
+          this.get('ActivityText').textString = '';
           this.paintToggle('VideoToggleChip', 'VideoIcon', 'VideoLabel', false);
           this.paintToggle('VoiceToggleChip', 'VoiceIcon', 'VoiceLabel', false);
           this.selectAccess('open');
@@ -409,7 +462,11 @@ module('lively.identity.NewRoomDialog')
           var name = this.get('NameText').textString.trim();
           if (!name) { this.setStatus('Room name is required', true); return; }
 
-          var fields = { name: name, isVideo: this._isVideo, isVoice: this._isVoice, access: this._access };
+          var activity = this.get('ActivityText').textString.trim();
+          var fields = {
+            name: name, isVideo: this._isVideo, isVoice: this._isVoice, access: this._access,
+            activity: activity || null,
+          };
           var cb = this._onCreateCallback;
           this.owner.remove();
           if (cb) cb(fields);
@@ -425,7 +482,7 @@ module('lively.identity.NewRoomDialog')
     // lively.identity.NewWikiPageDialog.open.
     //
     // opts: { scope: {constellation:name}, onCreate(fields) }
-    // fields: { name, isVideo, isVoice, access }
+    // fields: { name, isVideo, isVoice, access, activity }
     Object.extend(lively.identity.NewRoomDialog, {
       open: function (opts) {
         var world = lively.morphic.World.current();

@@ -3555,7 +3555,7 @@ module.exports = function (route, app) {
           function withStatus(status) {
             out.push({
               id: room.id, name: room.name, isVideo: room.isVideo, isVoice: room.isVoice,
-              access: room.access, createdBy: room.createdBy, createdAt: room.createdAt,
+              access: room.access, activity: room.activity, createdBy: room.createdBy, createdAt: room.createdAt,
               participantCount: live.count, participants: live.seedDids,
               iJoined: viewerDid ? roomPresence.isPresent(room.id, viewerDid) : false,
               myAccessStatus: room.access === "request" ? (status || null) : null
@@ -3583,6 +3583,8 @@ module.exports = function (route, app) {
     var roomName = typeof body.name === "string" ? body.name.trim().slice(0, 80) : "";
     if (!roomName) return res.status(400).json({ error: "Missing required field: name" });
     var access = body.access === "request" ? "request" : "open";
+    var activity = typeof body.activity === "string" ? body.activity.trim().slice(0, 40) : "";
+    if (!activity) activity = null;
     constellationRegistry.get(name, function (err, constellation) {
       if (err) return res.status(500).json({ error: String(err) });
       if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
@@ -3592,13 +3594,13 @@ module.exports = function (route, app) {
       constellationRegistry.createRoom({
         constellation: name, name: roomName,
         isVideo: !!body.isVideo, isVoice: !!body.isVoice,
-        access: access, createdBy: req.identity.did
+        access: access, activity: activity, createdBy: req.identity.did
       }, function (err, roomId) {
         if (err) return res.status(500).json({ error: String(err) });
         res.status(201).json({
           room: {
             id: roomId, name: roomName, isVideo: !!body.isVideo, isVoice: !!body.isVoice,
-            access: access, createdBy: req.identity.did, createdAt: new Date().toISOString(),
+            access: access, activity: activity, createdBy: req.identity.did, createdAt: new Date().toISOString(),
             participantCount: 0, participants: [], iJoined: false, myAccessStatus: null
           }
         });

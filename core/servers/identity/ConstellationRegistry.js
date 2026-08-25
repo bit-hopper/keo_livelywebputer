@@ -132,11 +132,27 @@ function withDB(thenDo) {
             '  is_video       INTEGER NOT NULL DEFAULT 0,' +
             '  is_voice       INTEGER NOT NULL DEFAULT 0,' +
             '  access         TEXT NOT NULL DEFAULT \'open\',' +
+            '  activity       TEXT DEFAULT NULL,' +
             '  created_by     TEXT NOT NULL,' +
             '  created_at     TEXT NOT NULL' +
             ')',
-            function(err) { if (err) return thenDo(err); createRoomJoinRequests(); }
+            function(err) { if (err) return thenDo(err); migrateRoomsActivity(); }
           );
+        }
+
+        // Migration for DBs created before the `activity` column existed —
+        // same PRAGMA-check idiom as the `bots` migration above (SQLite has
+        // no "ADD COLUMN IF NOT EXISTS").
+        function migrateRoomsActivity() {
+          db.all('PRAGMA table_info(rooms)', function(err, cols) {
+            if (err) return thenDo(err);
+            var hasActivity = (cols || []).some(function(c) { return c.name === 'activity'; });
+            if (hasActivity) return createRoomJoinRequests();
+            db.run('ALTER TABLE rooms ADD COLUMN activity TEXT DEFAULT NULL', function(err) {
+              if (err) return thenDo(err);
+              createRoomJoinRequests();
+            });
+          });
         }
 
         function createRoomJoinRequests() {
@@ -562,20 +578,25 @@ function getNextEvent(name, thenDo) {
 // check in this file). Live presence (who's currently in a room) is NOT
 // tracked here — see RoomPresence.js.
 
-// fields: { constellation, name, isVideo, isVoice, access, createdBy }
-// access: 'open' | 'request'. Calls thenDo(err, roomId).
+// fields: { constellation, name, isVideo, isVoice, access, activity, createdBy }
+// access: 'open' | 'request'. activity: an optional short creator-picked
+// label (e.g. "Jamming", "Reading" — see NewRoomDialog.js's activity chips)
+// describing what active participants are doing, shown on the room card
+// (ConstellationLounge.js's _renderRoomCard, "· <activity>"). Calls
+// thenDo(err, roomId).
 function createRoom(fields, thenDo) {
   withDB(function(err, db) {
     if (err) return thenDo(err);
     db.run(
-      'INSERT INTO rooms (constellation, name, is_video, is_voice, access, created_by, created_at)' +
-      ' VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO rooms (constellation, name, is_video, is_voice, access, activity, created_by, created_at)' +
+      ' VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       [
         fields.constellation,
         fields.name,
         fields.isVideo ? 1 : 0,
         fields.isVoice ? 1 : 0,
         fields.access === 'request' ? 'request' : 'open',
+        fields.activity || null,
         fields.createdBy,
         new Date().toISOString()
       ],
@@ -592,6 +613,7 @@ function _rowToRoom(row) {
     isVideo: !!row.is_video,
     isVoice: !!row.is_voice,
     access: row.access,
+    activity: row.activity || null,
     createdBy: row.created_by,
     createdAt: row.created_at
   };

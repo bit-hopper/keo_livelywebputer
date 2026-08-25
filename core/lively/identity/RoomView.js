@@ -41,22 +41,32 @@ module("lively.identity.RoomView")
   )
   .toRun(function () {
 
-    var BG_MAIN    = Color.rgb(49, 51, 56);     // #313338 — chat area
-    var BG_SIDEBAR = Color.rgb(43, 45, 49);     // #2b2d31 — header + members panel
-    var BG_INPUT   = Color.rgb(56, 58, 64);     // #383a40 — message input pill
+    var BG_MAIN    = Color.rgb(0x36, 0x05, 0x38);     // #360538 — chat area
+    var BG_SIDEBAR = Color.rgb(0x63, 0x09, 0x67);     // #630967 — header + members panel
+    var BG_INPUT   = Color.rgb(0x63, 0x09, 0x67);     // #630967 — message input pill
     var BG_ROW_HOVER = Color.rgba(255, 255, 255, 0.04);
     var TEXT_PRIMARY = Color.rgb(242, 243, 245);
     var TEXT_MUTED   = Color.rgb(148, 155, 164);
     var TEXT_FAINT   = Color.rgb(114, 118, 125);
-    var ACCENT = Color.rgb(88, 101, 242);       // blurple — matches ConstellationLounge's ROOM_ACCENT
+    var ACCENT = Color.rgb(79, 11, 67);       // #4F0B43 — matches ConstellationLounge's ROOM_ACCENT
     var DANGER = Color.rgb(242, 63, 66);
     var ONLINE = Color.rgb(35, 165, 89);
 
     var HEADER_H = 48;
     var MEMBERS_W = 240;
+    var ROOMS_PANEL_W = 220;
     var CHAT_W = 760;
     var BODY_H = 620;
-    var TOTAL_W = CHAT_W + MEMBERS_W;
+    // Gap between adjoining boxes (rooms panel/chat/members panel) -- each
+    // is a separate box rather than directly abutting the next, same
+    // "distinct card, own margin" treatment ConstellationLounge.js's
+    // right-hand co-creator/members sidebar uses.
+    var PANEL_GAP = 20;
+    // x-offset from the view's own origin to where the chat box starts --
+    // the rooms panel (this constellation's other rooms, similar intent to
+    // WikiIndex.js's left sidebar page list) occupies the space before it.
+    var CHAT_X_OFFSET = ROOMS_PANEL_W + PANEL_GAP;
+    var TOTAL_W = CHAT_X_OFFSET + CHAT_W + PANEL_GAP + MEMBERS_W;
     var TOTAL_H = HEADER_H + BODY_H;
     var INPUT_H = 52;
     var AVATAR_MSG = 28, AVATAR_MEMBER = 28;
@@ -167,6 +177,7 @@ module("lively.identity.RoomView")
         this._computeOrigin();
         this._seedMockMessages();
         this._buildHeader();
+        this._buildRoomsPanel();
         this._buildChatPanel();
         this._buildMembersPanel();
         this._buildVideoLayer();
@@ -274,6 +285,7 @@ module("lively.identity.RoomView")
           self._renderMembers();
           self._renderVideoCircles();
           self._updateParticipantCount();
+          self._fetchRoomsList(); // keeps the left rail's "N here" counts fresh too
         };
         xhr.send();
       },
@@ -375,6 +387,103 @@ module("lively.identity.RoomView")
 
     },
 
+    // ─── rooms panel ────────────────────────────────────────────────────────────
+    // Left-hand rail listing every room in this constellation (name + live
+    // participant count) — similar intent to WikiIndex.js's left sidebar
+    // page list: a standing way to jump between rooms without first going
+    // back to the Lounge. Fetches the same GET /c/:name/rooms
+    // ConstellationLounge.js's Spaces panel already uses. Clicking a room
+    // (other than the one you're already in) navigates straight into it,
+    // same as clicking a room card in the Lounge.
+
+    "rooms panel", {
+
+      _buildRoomsPanel: function () {
+        var panel = noDrag(new lively.morphic.Box(lively.rect(
+          this._originX, this._originY + HEADER_H, ROOMS_PANEL_W, BODY_H)));
+        panel.applyStyle({ fill: BG_SIDEBAR, borderWidth: 0, clipMode: "auto" });
+        $world.addMorph(panel);
+        this._roomsPanelBox = panel;
+
+        var heading = noDrag(lively.morphic.Text.makeLabel("ROOMS", {
+          fontSize: 11, fontWeight: "700", textColor: TEXT_MUTED,
+        }));
+        heading.eventsAreIgnored = true;
+        heading.setPosition(lively.pt(16, 16));
+        heading.setExtent(lively.pt(ROOMS_PANEL_W - 32, 16));
+        panel.addMorph(heading);
+
+        this._fetchRoomsList();
+      },
+
+      _fetchRoomsList: function () {
+        var self = this;
+        var base = lively.identity.did.baseUrl();
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", base + "/c/" + encodeURIComponent(this._name) + "/rooms", true);
+        xhr.withCredentials = true;
+        xhr.setRequestHeader("Accept", "application/json");
+        xhr.onload = function () {
+          if (xhr.status !== 200) return;
+          var data;
+          try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
+          self._renderRoomsList(data.rooms || []);
+        };
+        xhr.send();
+      },
+
+      _renderRoomsList: function (rooms) {
+        var self = this;
+        var panel = this._roomsPanelBox;
+        if (!panel) return;
+        (panel._roomItemMorphs || []).forEach(function (m) { m.remove(); });
+        panel._roomItemMorphs = [];
+
+        var y = 44;
+        rooms.forEach(function (room) {
+          var isCurrent = room.id === self._roomId;
+          var row = noDrag(new lively.morphic.Box(lively.rect(8, y, ROOMS_PANEL_W - 16, 40)));
+          row.applyStyle({ fill: isCurrent ? ACCENT : null, borderWidth: 0, borderRadius: 6 });
+          panel.addMorph(row);
+          panel._roomItemMorphs.push(row);
+
+          var nameM = noDrag(lively.morphic.Text.makeLabel(room.name || "", {
+            fontSize: 13, fontWeight: isCurrent ? "700" : "500",
+            textColor: isCurrent ? Color.white : TEXT_PRIMARY, fixedWidth: true, fixedHeight: true,
+          }));
+          nameM.eventsAreIgnored = true;
+          nameM.setPosition(lively.pt(10, 6));
+          nameM.setExtent(lively.pt(ROOMS_PANEL_W - 16 - 20, 16));
+          row.addMorph(nameM);
+
+          var count = room.participantCount || 0;
+          var countM = noDrag(lively.morphic.Text.makeLabel(
+            count === 1 ? "1 here" : (count + " here"),
+            {
+              fontSize: 11, textColor: isCurrent ? Color.rgba(255, 255, 255, 0.75) : TEXT_FAINT,
+              fixedWidth: true, fixedHeight: true,
+            }
+          ));
+          countM.eventsAreIgnored = true;
+          countM.setPosition(lively.pt(10, 22));
+          countM.setExtent(lively.pt(ROOMS_PANEL_W - 16 - 20, 14));
+          row.addMorph(countM);
+
+          if (!isCurrent) {
+            row.renderContext().shapeNode.style.cursor = "pointer";
+            row.onMouseOver = function () { row.applyStyle({ fill: BG_ROW_HOVER }); };
+            row.onMouseOut = function () { row.applyStyle({ fill: null }); };
+            row.onMouseDown = function () {
+              location.href = lively.identity.did.baseUrl() + "/c/" + encodeURIComponent(self._name) + "/rooms/" + room.id;
+            };
+          }
+
+          y += 44;
+        });
+      },
+
+    },
+
     // ─── chat panel ─────────────────────────────────────────────────────────────
     // Mock/local-only this session (see file header) — messages live only in
     // this._messages and vanish on reload. Sending appends locally; there is
@@ -394,7 +503,7 @@ module("lively.identity.RoomView")
 
       _buildChatPanel: function () {
         var self = this;
-        var chat = noDrag(new lively.morphic.Box(lively.rect(this._originX, this._originY + HEADER_H, CHAT_W, BODY_H)));
+        var chat = noDrag(new lively.morphic.Box(lively.rect(this._originX + CHAT_X_OFFSET, this._originY + HEADER_H, CHAT_W, BODY_H)));
         chat.applyStyle({ fill: BG_MAIN, borderWidth: 0 });
         $world.addMorph(chat);
         this._chatBox = chat;
@@ -515,7 +624,7 @@ module("lively.identity.RoomView")
 
       _buildMembersPanel: function () {
         var panel = noDrag(new lively.morphic.Box(lively.rect(
-          this._originX + CHAT_W, this._originY + HEADER_H, MEMBERS_W, BODY_H)));
+          this._originX + CHAT_X_OFFSET + CHAT_W + PANEL_GAP, this._originY + HEADER_H, MEMBERS_W, BODY_H)));
         panel.applyStyle({ fill: BG_SIDEBAR, borderWidth: 0, clipMode: "auto" });
         $world.addMorph(panel);
         this._membersBox = panel;
@@ -607,7 +716,7 @@ module("lively.identity.RoomView")
         var myDid = user ? user.did : null;
         var stillPresent = {};
 
-        var x = this._originX + 24, y = this._originY + HEADER_H + 24;
+        var x = this._originX + CHAT_X_OFFSET + 24, y = this._originY + HEADER_H + 24;
         this._participants.forEach(function (p, i) {
           stillPresent[p.did] = true;
           if (self._videoCircles[p.did]) return; // already showing, leave its dragged position alone

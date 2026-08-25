@@ -139,7 +139,9 @@ module("lively.identity.ConstellationLounge")
     // hug its own label the same way) and room-card palette. A distinct
     // accent (blurple, not COMMENT_ACCENT's pink) so Rooms reads as its own
     // feature rather than reusing the postcard-compose color.
-    var ROOM_ACCENT = Color.rgb(88, 101, 242);
+    var ROOM_ACCENT = Color.rgb(79, 11, 67);
+    var ROOM_GREEN = Color.rgb(46, 160, 90);
+    var ROOM_BANNER_COLOR = Color.rgb(0xDA, 0x7D, 0xE2); // #DA7DE2
     var NEW_ROOM_BTN_H = 28;
     var ROOM_CARD_PAD = 14;
     // Fixed tile size (not "stretch to fill the panel") — cards wrap into a
@@ -926,10 +928,10 @@ module("lively.identity.ConstellationLounge")
       _buildNewRoomButton: function () {
         var self = this;
         var box = new lively.morphic.Box(lively.rect(0, 0, 120, NEW_ROOM_BTN_H));
-        box.setFill(ROOM_ACCENT);
+        box.setFill(ROOM_GREEN);
         box.applyStyle({ borderWidth: 0, borderRadius: NEW_ROOM_BTN_H / 2 });
 
-        var label = lively.morphic.Text.makeLabel("+ New Room", {
+        var label = lively.morphic.Text.makeLabel("New Room", {
           fontSize: 12.5, fontWeight: "700", textColor: Color.rgb(255, 255, 255),
         });
         label.setExtent(lively.pt(140, 18));
@@ -997,11 +999,11 @@ module("lively.identity.ConstellationLounge")
         var self = this;
         var card = noDrag(new lively.morphic.Box(lively.rect(x, y, w, 10)));
         card.setFill(Color.white);
-        card.applyStyle({ borderWidth: 1, borderColor: Color.rgb(230, 230, 230), borderRadius: 12, clipMode: "hidden" });
+        card.applyStyle({ borderWidth: 4, borderColor: Color.rgb(232, 73, 126), borderRadius: 12, clipMode: "hidden" });   // COMMENT_ACCENT (#e8497e)
         this._spacesBox.addMorph(card);
 
         var banner = noDrag(new lively.morphic.Box(lively.rect(0, 0, w, ROOM_BANNER_H)));
-        banner.applyStyle({ fill: Color.rgb(224, 227, 254), borderWidth: 0 });
+        banner.applyStyle({ fill: ROOM_BANNER_COLOR, borderWidth: 0 });
         banner.eventsAreIgnored = true;
         card.addMorph(banner);
 
@@ -1165,11 +1167,11 @@ module("lively.identity.ConstellationLounge")
       // through unrequested -> pending -> approved -> joined, with a
       // declined request shown as re-requestable rather than a dead end.
       _roomStatusInfo: function (room) {
-        var GREY = Color.rgb(150, 150, 150), MUTED_RED = Color.rgb(180, 90, 90), GREEN = Color.rgb(46, 160, 90);
-        if (!this._amMember) return { text: "Sign in & join to enter", color: GREY, clickable: false };
+        var GREY = Color.rgb(150, 150, 150), MUTED_RED = Color.rgb(180, 90, 90);
+        if (!this._amMember) return { text: "Sign in required", color: GREY, clickable: false };
         if (room.iJoined) return { text: "Leave", color: ROOM_ACCENT, clickable: true };
-        if (room.access !== "request") return { text: "Enter", color: ROOM_ACCENT, clickable: true };
-        if (room.myAccessStatus === "approved") return { text: "Enter", color: GREEN, clickable: true, icon: "check_circle" };
+        if (room.access !== "request") return { text: "Enter", color: ROOM_GREEN, clickable: true };
+        if (room.myAccessStatus === "approved") return { text: "Enter", color: ROOM_GREEN, clickable: true, icon: "check_circle" };
         if (room.myAccessStatus === "pending") return { text: "Request pending…", color: GREY, clickable: false };
         if (room.myAccessStatus === "declined") return { text: "Declined — click to re-request", color: MUTED_RED, clickable: true };
         return { text: "Request to join", color: ROOM_ACCENT, clickable: true };

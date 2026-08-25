@@ -695,9 +695,14 @@ function listPostcardsForConstellation(constellation, opts, thenDo) {
       '        OR json_extract(o.envelope, \'$.state.deleted\') != 1)' +
       // System-generated cards (join requests riding the same postal rail
       // as everything else, ConstellationDesignSpec.md §4.2) belong in
-      // controllers' inboxes, not the public constellation feed.
+      // controllers' inboxes, not the public constellation feed. Room-level
+      // join requests (state.kind:'room-join-request', see
+      // ConstellationLounge.js's _requestRoomAccess) ride the same rail and
+      // were missing from this exclusion, so they rendered as ordinary
+      // postcards in the feed.
       '        AND (json_extract(o.envelope, \'$.state.kind\') IS NULL' +
-      '             OR json_extract(o.envelope, \'$.state.kind\') != \'constellation-join-request\')' +
+      '             OR json_extract(o.envelope, \'$.state.kind\') NOT IN' +
+      '                 (\'constellation-join-request\', \'room-join-request\'))' +
       // Replies (comment-thread postcards carrying a replyTo) are not
       // top-level postcards either — confirmed live via objects.db that
       // every reply also carries this constellation's name, so without
