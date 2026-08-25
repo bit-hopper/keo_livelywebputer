@@ -68,6 +68,7 @@ var cryptoVerify = require("./identity/CryptoVerify");
 var domainVerifier = require("./identity/DomainVerifier");
 var constellationSpace = require("./identity/ConstellationSpace");
 var plusCode = require("./identity/PlusCode");
+var roomPresence = require("./identity/RoomPresence");
 
 // ─── home-world bootstrap helpers ─────────────────────────────────────────────
 
@@ -1137,6 +1138,10 @@ module.exports = function (route, app) {
   // pattern as WebAuthnServer.js's cleanupExpiredChallenges.
   domainVerifier.recheckAllDomains();
   setInterval(function () { domainVerifier.recheckAllDomains(); }, 6 * 60 * 60 * 1000);
+
+  // Prunes stale room presence (a client that vanished without an explicit
+  // leave call) — see RoomPresence.js's own header comment.
+  roomPresence.startSweeping();
 
   // ─── mobile gate ────────────────────────────────────────────────────────────
   // A phone visitor landing on anything other than /start.html (or
@@ -3476,6 +3481,259 @@ module.exports = function (route, app) {
         });
       });
     });
+  });
+
+  // ─── rooms — Spaces panel ────────────────────────────────────────────────
+  // Room config/access-grants are SQLite-backed (ConstellationRegistry.js);
+  // live "who's here right now" presence is in-memory (RoomPresence.js) and
+  // does not survive a restart by design — see that module's header.
+
+  // Guests may list rooms (with live participant counts) but never join —
+  // optionalAuth, not requireAuth. amMember/iJoined/myAccessStatus are all
+  // computed for the viewer (null-safe for a signed-out visitor) so the
+  // client can render the right per-room affordance without a second
+  // round-trip per room.
+  app.get("/c/:name/rooms", auth.optionalAuth, function (req, res) {
+    var name = req.params.name;
+    var viewerDid = req.identity ? req.identity.did : null;
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.canRead(constellation, viewerDid)) {
+        return res.status(404).json({ error: "Constellation not found: " + name });
+      }
+      var amMember = constellationRegistry.canWrite(constellation, viewerDid);
+      constellationRegistry.listRooms(name, function (err, rooms) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!rooms.length) return res.json({ rooms: [], amMember: amMember });
+        var remaining = rooms.length;
+        var firstErr = null;
+        var out = [];
+        rooms.forEach(function (room) {
+          var live = roomPresence.summary(room.id, 4);
+          function withStatus(status) {
+            out.push({
+              id: room.id, name: room.name, isVideo: room.isVideo, isVoice: room.isVoice,
+              access: room.access, createdBy: room.createdBy, createdAt: room.createdAt,
+              participantCount: live.count, participants: live.seedDids,
+              iJoined: viewerDid ? roomPresence.isPresent(room.id, viewerDid) : false,
+              myAccessStatus: room.access === "request" ? (status || null) : null
+            });
+            if (--remaining === 0) {
+              if (firstErr) return res.status(500).json({ error: String(firstErr) });
+              out.sort(function (a, b) { return a.id - b.id; });
+              res.json({ rooms: out, amMember: amMember });
+            }
+          }
+          if (!viewerDid || room.access !== "request") return withStatus(null);
+          constellationRegistry.getRoomJoinRequestStatus(room.id, viewerDid, function (err, status) {
+            if (err) firstErr = firstErr || err;
+            withStatus(status);
+          });
+        });
+      });
+    });
+  });
+
+  // Controller-only — create a new room.
+  app.post("/c/:name/rooms", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var body = req.body || {};
+    var roomName = typeof body.name === "string" ? body.name.trim().slice(0, 80) : "";
+    if (!roomName) return res.status(400).json({ error: "Missing required field: name" });
+    var access = body.access === "request" ? "request" : "open";
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.isController(constellation, req.identity.did)) {
+        return res.status(403).json({ error: "Forbidden: controllers only" });
+      }
+      constellationRegistry.createRoom({
+        constellation: name, name: roomName,
+        isVideo: !!body.isVideo, isVoice: !!body.isVoice,
+        access: access, createdBy: req.identity.did
+      }, function (err, roomId) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.status(201).json({
+          room: {
+            id: roomId, name: roomName, isVideo: !!body.isVideo, isVoice: !!body.isVoice,
+            access: access, createdBy: req.identity.did, createdAt: new Date().toISOString(),
+            participantCount: 0, participants: [], iJoined: false, myAccessStatus: null
+          }
+        });
+      });
+    });
+  });
+
+  // A constellation member requests access to a 'request'-access room.
+  // Same real-postcard-riding-the-postal-rail pattern as
+  // POST /c/:name/join-requests above (never server-fabricated) — the
+  // client (_requestRoomAccess, ConstellationLounge.js) builds+signs a
+  // plain postcard with state.kind:'room-join-request' and PUTs it to its
+  // own /@handle/objId before calling this. This route (1) records the
+  // room_join_requests row and (2) delivers the card to every controller's
+  // inbox via objectRepo.putInboxRecord, exactly like the constellation-
+  // level route. No in-app Approve/Decline UI reads this yet
+  // (PostCardView.js's _renderMembershipActions only special-cases
+  // state.kind==='constellation-join-request') — that lands with the
+  // room-detail view planned for later; for now the postcard is a plain
+  // notification in the controller's mailbox.
+  app.post("/c/:name/rooms/:roomId/join-requests", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var roomId = parseInt(req.params.roomId, 10);
+    var objId = req.body && req.body.objId;
+    if (!objId) return res.status(400).json({ error: "Missing required field: objId" });
+
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.canWrite(constellation, req.identity.did)) {
+        return res.status(403).json({ error: "Forbidden: constellation members only" });
+      }
+      constellationRegistry.getRoom(roomId, function (err, room) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!room || room.constellation !== name) return res.status(404).json({ error: "Room not found" });
+        if (room.access !== "request") return res.status(400).json({ error: "This room does not require a request" });
+
+        constellationRegistry.getRoomJoinRequestStatus(roomId, req.identity.did, function (err, existingStatus) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (existingStatus === "approved") return res.status(409).json({ error: "Already approved for this room" });
+
+          objectRepo.get(objId, function (err, envelope) {
+            if (err) return res.status(500).json({ error: String(err) });
+            if (!envelope) return res.status(404).json({ error: "Post card not found: " + objId });
+            if (envelope.did !== req.identity.did) {
+              return res.status(403).json({ error: "Forbidden: you do not own this post card" });
+            }
+            if (envelope.type !== "postcard" ||
+                !envelope.state || envelope.state.kind !== "room-join-request" ||
+                envelope.constellation !== name ||
+                Number(envelope.state.roomId) !== roomId) {
+              return res.status(400).json({
+                error: "objId must be a postcard with state.kind='room-join-request', constellation='" + name + "', and matching roomId",
+              });
+            }
+
+            constellationRegistry.requestRoomJoin(roomId, req.identity.did, function (err) {
+              if (err) return res.status(500).json({ error: String(err) });
+
+              _resolveHandlesForDids(constellation.controllers, function (err, didToHandle) {
+                if (err) return res.status(500).json({ error: String(err) });
+                var record = {
+                  objId: objId,
+                  senderDid: req.identity.did,
+                  senderHandle: req.identity.handle,
+                  sentAt: new Date().toISOString(),
+                };
+                var controllerHandles = constellation.controllers
+                  .map(function (did) { return didToHandle[did]; })
+                  .filter(Boolean);
+                var remaining = controllerHandles.length;
+                if (!remaining) return res.status(201).json({ ok: true, status: "pending" });
+                var firstErr = null;
+                controllerHandles.forEach(function (controllerHandle) {
+                  objectRepo.putInboxRecord(controllerHandle, record, function (err) {
+                    if (err) firstErr = firstErr || err;
+                    if (--remaining === 0) {
+                      if (firstErr) return res.status(500).json({ error: String(firstErr) });
+                      res.status(201).json({ ok: true, status: "pending" });
+                    }
+                  });
+                });
+              });
+            });
+          });
+        });
+      });
+    });
+  });
+
+  // Controller-only — list pending access requests for one room.
+  app.get("/c/:name/rooms/:roomId/join-requests", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var roomId = parseInt(req.params.roomId, 10);
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.isController(constellation, req.identity.did)) {
+        return res.status(403).json({ error: "Forbidden: controllers only" });
+      }
+      constellationRegistry.listPendingRoomJoinRequests(roomId, function (err, requests) {
+        if (err) return res.status(500).json({ error: String(err) });
+        _resolveHandlesForDids(requests.map(function (r) { return r.did; }), function (err, didToHandle) {
+          if (err) return res.status(500).json({ error: String(err) });
+          res.json({
+            requests: requests.map(function (r) {
+              return { did: r.did, handle: didToHandle[r.did] || null, requestedAt: r.requestedAt };
+            })
+          });
+        });
+      });
+    });
+  });
+
+  // Controller-only — approve/decline one room access request. Same
+  // 409-if-already-resolved guard as PUT /c/:name/join-requests/:did above
+  // (multiple controllers can each have their own copy of the request UI
+  // open; this stops a second click from clobbering the first).
+  app.put("/c/:name/rooms/:roomId/join-requests/:did", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var roomId = parseInt(req.params.roomId, 10);
+    var did = req.params.did;
+    var action = req.body && req.body.action;
+    if (action !== "approve" && action !== "decline") {
+      return res.status(400).json({ error: 'Missing/invalid required field: action ("approve" or "decline")' });
+    }
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.isController(constellation, req.identity.did)) {
+        return res.status(403).json({ error: "Forbidden: controllers only" });
+      }
+      constellationRegistry.getRoomJoinRequestStatus(roomId, did, function (err, status) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (status !== "pending") {
+          return res.status(409).json({ error: "Already resolved (status: " + (status || "none") + ")" });
+        }
+        var apply = action === "approve" ? constellationRegistry.approveRoomJoinRequest : constellationRegistry.declineRoomJoinRequest;
+        apply(roomId, did, function (err) {
+          if (err) return res.status(500).json({ error: String(err) });
+          res.json({ ok: true, status: action === "approve" ? "approved" : "declined" });
+        });
+      });
+    });
+  });
+
+  // Join-or-heartbeat. A client re-POSTs this every ~25s while a room stays
+  // "joined" (ConstellationLounge.js's _startHeartbeat) — RoomPresence.js's
+  // sweep() prunes anyone whose heartbeat goes stale, so there's no
+  // separate "am I still here" check needed beyond re-touching presence.
+  app.post("/c/:name/rooms/:roomId/presence", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var roomId = parseInt(req.params.roomId, 10);
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      constellationRegistry.getRoom(roomId, function (err, room) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!room || room.constellation !== name) return res.status(404).json({ error: "Room not found" });
+        constellationRegistry.canJoinRoom(constellation, room, req.identity.did, function (err, allowed) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (!allowed) return res.status(403).json({ error: "Forbidden: join not permitted for this room" });
+          roomPresence.touch(roomId, req.identity.did, req.identity.handle);
+          res.json({ ok: true, participantCount: roomPresence.summary(roomId).count });
+        });
+      });
+    });
+  });
+
+  // Explicit leave — best-effort, called synchronously from
+  // ConstellationLounge.js's pagehide/beforeunload handlers too. Idempotent
+  // (leaving a room you're not in is a no-op), so no existence checks
+  // needed beyond auth.
+  app.delete("/c/:name/rooms/:roomId/presence", auth.requireAuth, function (req, res) {
+    roomPresence.leave(parseInt(req.params.roomId, 10), req.identity.did);
+    res.json({ ok: true });
   });
 
   // Post an existing (owned) post card to a constellation: tags the card

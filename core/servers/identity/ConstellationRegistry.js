@@ -30,6 +30,19 @@
  *     did:jwk strings), attendee_count, created_by, created_at. See
  *     getNextEvent()/createEvent() below.
  *
+ *   rooms table: one row per Spaces-panel room (ConstellationLounge.js) —
+ *     id, constellation, name, is_video/is_voice (creator-set type labels,
+ *     not live call state), access ('open'|'request'), created_by,
+ *     created_at. Only a constellation controller may create one. Live
+ *     "who's currently in the room" presence is NOT stored here — it's
+ *     ephemeral, kept in-memory by RoomPresence.js, and intentionally does
+ *     not survive a server restart.
+ *
+ *   room_join_requests table: one row per (room_id, did), same
+ *     overwrite-on-re-request shape as join_requests below. Only relevant
+ *     for access:'request' rooms — status='approved' IS the permanent
+ *     room-membership grant, there is no separate room-members list.
+ *
  * The DB file is stored at <WORKSPACE_LK>/identity/constellations.db.
  * Created automatically on first use. withDB() migrates existing DBs that
  * predate the `bots` column via ALTER TABLE, guarded by a PRAGMA
@@ -99,6 +112,49 @@ function withDB(thenDo) {
             '  created_by     TEXT NOT NULL,' +
             '  created_at     TEXT NOT NULL' +
             ')',
+            function(err) { if (err) return thenDo(err); createRooms(); }
+          );
+        }
+
+        function createRooms() {
+          // A room belongs to a constellation, created by a controller only
+          // (POST /c/:name/rooms). is_video/is_voice are creator-set type
+          // labels shown on the room card, not live call state — no
+          // audio/video call infra exists, "joining" is presence/roster
+          // only (see RoomPresence.js). access: 'open' (any signed-in
+          // constellation member can join by clicking) or 'request' (needs
+          // a controller-approved room_join_requests row first, see below).
+          db.run(
+            'CREATE TABLE IF NOT EXISTS rooms (' +
+            '  id             INTEGER PRIMARY KEY AUTOINCREMENT,' +
+            '  constellation  TEXT NOT NULL,' +
+            '  name           TEXT NOT NULL,' +
+            '  is_video       INTEGER NOT NULL DEFAULT 0,' +
+            '  is_voice       INTEGER NOT NULL DEFAULT 0,' +
+            '  access         TEXT NOT NULL DEFAULT \'open\',' +
+            '  created_by     TEXT NOT NULL,' +
+            '  created_at     TEXT NOT NULL' +
+            ')',
+            function(err) { if (err) return thenDo(err); createRoomJoinRequests(); }
+          );
+        }
+
+        function createRoomJoinRequests() {
+          // Mirrors join_requests' exact shape/overwrite-on-re-request
+          // semantics (one row per (room_id, did), a re-request resets to
+          // pending). Unlike the constellation level, there is no separate
+          // "room members" table — a room has no other consumer of
+          // membership besides the join gate itself, so
+          // status = 'approved' IS the permanent grant; canJoinRoom()
+          // reads this table directly.
+          db.run(
+            'CREATE TABLE IF NOT EXISTS room_join_requests (' +
+            '  room_id       INTEGER NOT NULL,' +
+            '  did           TEXT NOT NULL,' +
+            '  requested_at  TEXT NOT NULL,' +
+            '  status        TEXT NOT NULL DEFAULT \'pending\',' +
+            '  PRIMARY KEY (room_id, did)' +
+            ')',
             function(err) { thenDo(err || null, db); }
           );
         }
@@ -155,7 +211,8 @@ var NAME_RE = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/;
 var RESERVED_NAMES = {
   'feed': true, 'wiki': true, 'members': true, 'invites': true,
   'join-requests': true, 'settings': true, 'did.json': true, 'space': true,
-  'canvas': true, 'admin': true, 'api': true, 'www': true, 'events': true
+  'canvas': true, 'admin': true, 'api': true, 'www': true, 'events': true,
+  'rooms': true
 };
 
 function isValidName(name) {
@@ -498,6 +555,145 @@ function getNextEvent(name, thenDo) {
   });
 }
 
+// ─── rooms — Spaces panel ───────────────────────────────────────────────────
+// See the header comment for the rooms/room_join_requests schema. Only a
+// controller may createRoom (enforced at the HTTP route, IdentityServer.js,
+// not here — same division of responsibility as every other permission
+// check in this file). Live presence (who's currently in a room) is NOT
+// tracked here — see RoomPresence.js.
+
+// fields: { constellation, name, isVideo, isVoice, access, createdBy }
+// access: 'open' | 'request'. Calls thenDo(err, roomId).
+function createRoom(fields, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.run(
+      'INSERT INTO rooms (constellation, name, is_video, is_voice, access, created_by, created_at)' +
+      ' VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [
+        fields.constellation,
+        fields.name,
+        fields.isVideo ? 1 : 0,
+        fields.isVoice ? 1 : 0,
+        fields.access === 'request' ? 'request' : 'open',
+        fields.createdBy,
+        new Date().toISOString()
+      ],
+      function(err) { thenDo(err || null, this && this.lastID); }
+    );
+  });
+}
+
+function _rowToRoom(row) {
+  return {
+    id: row.id,
+    constellation: row.constellation,
+    name: row.name,
+    isVideo: !!row.is_video,
+    isVoice: !!row.is_voice,
+    access: row.access,
+    createdBy: row.created_by,
+    createdAt: row.created_at
+  };
+}
+
+// Calls thenDo(null, [room, ...]), creation order (oldest first).
+function listRooms(constellationName, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.all('SELECT * FROM rooms WHERE constellation = ? ORDER BY id ASC', [constellationName], function(err, rows) {
+      if (err) return thenDo(err);
+      thenDo(null, (rows || []).map(_rowToRoom));
+    });
+  });
+}
+
+// Calls thenDo(null, room|null).
+function getRoom(roomId, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.get('SELECT * FROM rooms WHERE id = ?', [roomId], function(err, row) {
+      if (err) return thenDo(err);
+      thenDo(null, row ? _rowToRoom(row) : null);
+    });
+  });
+}
+
+// Same upsert-to-pending idiom as requestJoin. Calls thenDo(err).
+function requestRoomJoin(roomId, did, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.run(
+      'INSERT INTO room_join_requests (room_id, did, requested_at, status) VALUES (?, ?, ?, \'pending\')' +
+      ' ON CONFLICT(room_id, did) DO UPDATE SET requested_at = excluded.requested_at, status = \'pending\'',
+      [roomId, did, new Date().toISOString()],
+      function(err) { thenDo(err || null); }
+    );
+  });
+}
+
+// Calls thenDo(null, 'pending'|'approved'|'declined'|null) — null means no
+// request on file (only meaningful for access:'request' rooms).
+function getRoomJoinRequestStatus(roomId, did, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.get('SELECT status FROM room_join_requests WHERE room_id = ? AND did = ?', [roomId, did], function(err, row) {
+      if (err) return thenDo(err);
+      thenDo(null, row ? row.status : null);
+    });
+  });
+}
+
+// Calls thenDo(null, [{ did, requestedAt }, ...]), oldest first.
+function listPendingRoomJoinRequests(roomId, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.all(
+      'SELECT did, requested_at FROM room_join_requests WHERE room_id = ? AND status = \'pending\' ORDER BY requested_at ASC',
+      [roomId],
+      function(err, rows) {
+        if (err) return thenDo(err);
+        thenDo(null, (rows || []).map(function(r) { return { did: r.did, requestedAt: r.requested_at }; }));
+      }
+    );
+  });
+}
+
+// No addMember-equivalent — unlike constellation-level approval, a room
+// has no membership list beyond this table, so approving is just the
+// status flip. Calls thenDo(err).
+function approveRoomJoinRequest(roomId, did, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.run('UPDATE room_join_requests SET status = \'approved\' WHERE room_id = ? AND did = ?',
+      [roomId, did],
+      function(err) { thenDo(err || null); });
+  });
+}
+
+// Calls thenDo(err).
+function declineRoomJoinRequest(roomId, did, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.run('UPDATE room_join_requests SET status = \'declined\' WHERE room_id = ? AND did = ?',
+      [roomId, did],
+      function(err) { thenDo(err || null); });
+  });
+}
+
+// True if `did` may join this room right now: a real constellation member
+// (canWrite — being able to just read a public constellation isn't
+// enough), and, for access:'request' rooms, a controller-approved
+// room_join_requests row. Calls thenDo(err, bool).
+function canJoinRoom(constellation, room, did, thenDo) {
+  if (!canWrite(constellation, did)) return thenDo(null, false);
+  if (room.access !== 'request') return thenDo(null, true);
+  getRoomJoinRequestStatus(room.id, did, function(err, status) {
+    if (err) return thenDo(err);
+    thenDo(null, status === 'approved');
+  });
+}
+
 module.exports = {
   withDB: withDB,
   isValidName: isValidName,
@@ -517,5 +713,14 @@ module.exports = {
   approveJoinRequest: approveJoinRequest,
   declineJoinRequest: declineJoinRequest,
   createEvent: createEvent,
-  getNextEvent: getNextEvent
+  getNextEvent: getNextEvent,
+  createRoom: createRoom,
+  listRooms: listRooms,
+  getRoom: getRoom,
+  requestRoomJoin: requestRoomJoin,
+  getRoomJoinRequestStatus: getRoomJoinRequestStatus,
+  listPendingRoomJoinRequests: listPendingRoomJoinRequests,
+  approveRoomJoinRequest: approveRoomJoinRequest,
+  declineRoomJoinRequest: declineRoomJoinRequest,
+  canJoinRoom: canJoinRoom
 };

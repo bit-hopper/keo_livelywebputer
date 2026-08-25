@@ -134,6 +134,23 @@ module("lively.identity.ConstellationLounge")
     // search box itself — height hugs the label the same way width does.
     var CREATE_BTN_W = 150, CREATE_BTN_H = 34;
 
+    // Spaces/rooms panel -- "New Room" pill (top-right of the panel header,
+    // same "+ X" single-Text-morph pill idiom as CREATE_BTN above, sized to
+    // hug its own label the same way) and room-card palette. A distinct
+    // accent (blurple, not COMMENT_ACCENT's pink) so Rooms reads as its own
+    // feature rather than reusing the postcard-compose color.
+    var ROOM_ACCENT = Color.rgb(88, 101, 242);
+    var NEW_ROOM_BTN_H = 28;
+    var ROOM_CARD_PAD = 14;
+    // Fixed tile size (not "stretch to fill the panel") — cards wrap into a
+    // grid, Discord-server-directory style, so the panel has visible room
+    // for more rooms beside/below the first rather than one card stretched
+    // edge-to-edge. BANNER_H is proportioned to be a substantial fraction
+    // of the tile's height (not a thin strip) per the reference screenshot.
+    var ROOM_CARD_W = 300;
+    var ROOM_BANNER_H = 70;
+    var ROOM_CARD_GAP = 16;
+
     // Comment thread (Reddit-style, no votes) geometry/palette.
     var COMMENT_INDENT = 30;   // px per nesting depth
     var COMMENT_AVATAR = 22;   // px, square
@@ -180,6 +197,11 @@ module("lively.identity.ConstellationLounge")
         this._spacesBox = null;
 
         this._presenceByDid = {};  // did -> true while online
+
+        this._rooms = [];          // fetched from GET /c/:name/rooms, see _fetchRooms
+        this._amMember = false;
+        this._joinedRoomIds = {};    // roomId -> true while this client has an active heartbeat
+        this._heartbeatTimers = {};  // roomId -> setInterval handle
       },
     },
 
@@ -219,9 +241,18 @@ module("lively.identity.ConstellationLounge")
         this._renderQuickInfo();
         this._renderMemberList();
         this._fetchFeed(null);
+        this._fetchRooms();
         this._connectPresence();
         this._installMenuBarEntry();
         window.addEventListener("resize", this._layout.bind(this));
+        // Best-effort leave for every room this client is currently
+        // heartbeating — both events wired since browser support for
+        // firing one reliably over the other varies; a synchronous XHR is
+        // the one thing reasonably guaranteed to actually send before the
+        // page tears down (sendBeacon has no reliable session-cookie-auth
+        // story for a DELETE).
+        window.addEventListener("pagehide", this._leaveAllRoomsBestEffort.bind(this));
+        window.addEventListener("beforeunload", this._leaveAllRoomsBestEffort.bind(this));
       },
     },
 
@@ -413,26 +444,21 @@ module("lively.identity.ConstellationLounge")
         this._threadContainer.renderContext().shapeNode.classList.add("lounge-comment-thread");
         $world.addMorph(this._threadContainer);
 
-        // Placeholder for a future spaces/rooms feature — occupies the same
-        // footprint the embedded wiki panel used to (below the about panel,
-        // bottoming out level with the comment thread), same panel
-        // treatment (border, radius), no real content behind it yet.
+        // Spaces/rooms panel — occupies the same footprint the embedded
+        // wiki panel used to (below the about panel, bottoming out level
+        // with the comment thread), same panel treatment (border, radius).
+        // Backed by real server routes (GET/POST /c/:name/rooms and the
+        // presence/join-request sub-routes) — _fetchRooms (called from
+        // _start, after _buildChrome) populates this._rooms and re-renders;
+        // this initial render just shows the empty state until that lands.
         this._spacesBox = new lively.morphic.Box(lively.rect(0, 0, 10, 10));
         this._spacesBox.setFill(Color.white);
         this._spacesBox.applyStyle({ borderWidth: 1, borderColor: Color.rgb(238, 238, 238), borderRadius: 8 });
+        this._spacesBox.renderContext().shapeNode.style.overflowY = "auto";
         $world.addMorph(this._spacesBox);
 
-        var spacesTitle = lively.morphic.Text.makeLabel("Spaces", {
-          fontSize: 14, fontWeight: "600", textColor: Color.rgb(30, 30, 30),
-        });
-        spacesTitle.setPosition(lively.pt(14, 14));
-        this._spacesBox.addMorph(spacesTitle);
-
-        var spacesPlaceholder = lively.morphic.Text.makeLabel("Coming soon.", {
-          fontSize: 12, textColor: Color.gray,
-        });
-        spacesPlaceholder.setPosition(lively.pt(14, 42));
-        this._spacesBox.addMorph(spacesPlaceholder);
+        this._rooms = [];
+        this._renderSpaces();
 
         this._membersBox = new lively.morphic.Box(lively.rect(0, 0, 10, 10));
         this._membersBox.setFill(Color.white);
@@ -800,6 +826,536 @@ module("lively.identity.ConstellationLounge")
         var opts = { constellation: this._name };
         lively.require("lively.identity.PostCardEditor").toRun(function () {
           lively.identity.PostCardEditor.newCard(currentUser.handle, opts);
+        });
+      },
+    },
+
+    // ─── spaces / rooms ─────────────────────────────────────────────────────
+
+    "spaces", {
+      // Clears and rebuilds the whole Spaces panel: header row ("Spaces"
+      // title + "New Room" pill, top-right) followed by one card per
+      // this._rooms entry, stacked top-down. Called once at chrome-build
+      // time (before this._rooms is populated — see _fetchRooms) and
+      // again every time _fetchRooms resolves (initial load, and after
+      // create/join/leave/request-access, each of which re-fetches rather
+      // than optimistically patching this._rooms, so the panel always
+      // reflects the server's own view of room config + live presence).
+      _renderSpaces: function () {
+        var self = this;
+        (this._spacesBox.submorphs || []).slice().forEach(function (m) { m.remove(); });
+
+        // QUICK_INFO_W (not a live-measured spacesBox extent) — this panel
+        // is fixed-width like every other panel in this file, and
+        // _renderSpaces runs before _layout on first build, so the box's
+        // own rendered extent isn't set yet at that point.
+        var w = QUICK_INFO_W;
+        var PAD = 14;
+
+        var title = lively.morphic.Text.makeLabel("Spaces", {
+          fontSize: 14, fontWeight: "600", textColor: Color.rgb(30, 30, 30),
+        });
+        title.setPosition(lively.pt(PAD, 16));
+        this._spacesBox.addMorph(title);
+
+        var newRoomBtn = this._buildNewRoomButton();
+        this._spacesBox.addMorph(newRoomBtn);
+        // Controller-only (matches the server's own POST /c/:name/rooms
+        // gate, isController not just canWrite/membership) — fixed here to
+        // match once the real permission model was specified; this button
+        // was originally built gated on _canWrite, before rooms had a
+        // backend to define that requirement against.
+        newRoomBtn.setVisible(!!this._isController);
+        this._fitNewRoomButton(newRoomBtn, w, PAD);
+
+        var TOP_ROW_H = 46;
+        var y = TOP_ROW_H;
+        if (!this._rooms.length) {
+          var empty = lively.morphic.Text.makeLabel("No rooms yet.", { fontSize: 12, textColor: Color.gray });
+          empty.setPosition(lively.pt(PAD, y));
+          this._spacesBox.addMorph(empty);
+        } else {
+          // Fixed-width tiles wrapped into a grid (Discord-server-directory
+          // style) rather than one card stretched to the panel's full
+          // width — as many columns as fit the available content width,
+          // wrapping to a new row (and advancing by the tallest card seen
+          // in that row, since _renderRoomCard's own height varies with
+          // how many type-icon chips/avatars/activity text it ends up
+          // showing).
+          var contentW = w - PAD * 2;
+          var cols = Math.max(1, Math.floor((contentW + ROOM_CARD_GAP) / (ROOM_CARD_W + ROOM_CARD_GAP)));
+          var col = 0, rowMaxH = 0;
+          this._rooms.forEach(function (room) {
+            var x = PAD + col * (ROOM_CARD_W + ROOM_CARD_GAP);
+            var h = self._renderRoomCard(room, x, y, ROOM_CARD_W);
+            rowMaxH = Math.max(rowMaxH, h);
+            col++;
+            if (col >= cols) {
+              col = 0;
+              y += rowMaxH + ROOM_CARD_GAP;
+              rowMaxH = 0;
+            }
+          });
+        }
+      },
+
+      // Built oversized, then shrunk to hug its own label — same idiom as
+      // _buildCreatePostcardButton/_fitCreatePostcardButton, reusing this
+      // file's shared _realTextWidth helper rather than duplicating the
+      // "measure the live-rendered span" logic a third time.
+      _buildNewRoomButton: function () {
+        var self = this;
+        var box = new lively.morphic.Box(lively.rect(0, 0, 120, NEW_ROOM_BTN_H));
+        box.setFill(ROOM_ACCENT);
+        box.applyStyle({ borderWidth: 0, borderRadius: NEW_ROOM_BTN_H / 2 });
+
+        var label = lively.morphic.Text.makeLabel("+ New Room", {
+          fontSize: 12.5, fontWeight: "700", textColor: Color.rgb(255, 255, 255),
+        });
+        label.setExtent(lively.pt(140, 18));
+        label.applyStyle({ borderWidth: 0 });
+        label.eventsAreIgnored = true;
+        box.addMorph(label);
+        box._newRoomLabel = label;
+
+        box.onMouseDown = function () { self._openNewRoom(); };
+        return box;
+      },
+
+      // panelW/pad let this be positioned flush against the panel's own
+      // right edge (panelW - pad - boxW) rather than a hardcoded x, same
+      // top-right-of-header placement _renderSpaces wants regardless of
+      // how wide "+ New Room" ends up rendering.
+      _fitNewRoomButton: function (box, panelW, pad) {
+        var label = box._newRoomLabel;
+        if (!label) return;
+        var PAD = 12, LINE_H = 18, TEXT_PAD = 4;
+        var labelW = this._realTextWidth(label);
+        var boxW = Math.ceil(labelW + PAD * 2);
+
+        label.setExtent(lively.pt(labelW + TEXT_PAD * 2, LINE_H));
+        label.setPosition(lively.pt(PAD - TEXT_PAD, (NEW_ROOM_BTN_H - LINE_H) / 2));
+        box.setExtent(lively.pt(boxW, NEW_ROOM_BTN_H));
+        box.setPosition(lively.pt(panelW - pad - boxW, 12));
+
+        // Vertical centering correction — same "read the live gap
+        // above/below the glyph, nudge by half the difference" idiom as
+        // _fitCreatePostcardButton, since the shapeNode's own fixed
+        // top/bottom padding isn't accounted for by the position formula
+        // above.
+        var boxNode = box.renderContext().shapeNode;
+        var labelSpan = label.renderContext().shapeNode.querySelector("span");
+        if (boxNode && labelSpan) {
+          var boxRect = boxNode.getBoundingClientRect();
+          var spanRect = labelSpan.getBoundingClientRect();
+          var topGap = spanRect.top - boxRect.top;
+          var bottomGap = boxRect.bottom - spanRect.bottom;
+          var correction = (topGap - bottomGap) / 2;
+          if (Math.abs(correction) > 0.25) {
+            label.setPosition(lively.pt(PAD - TEXT_PAD, label.getPosition().y - correction));
+          }
+        }
+      },
+
+      // Renders one room card at (x,y) with the given width, sizing its
+      // own height to its content, and returns that height so
+      // _renderSpaces can stack the next card below it. Layout: a tiny
+      // flat-color banner across the top, the room name below it with the
+      // camera/headset type icons right-aligned on the same row, and a
+      // bottom row of overlapping participant avatars (same stacking
+      // technique as _renderEventCard's attendee row) plus a "+N Others"
+      // count and an activity tag.
+      //
+      // room.participants is a real array of participant DIDs (server-side
+      // live presence, see RoomPresence.js), fed straight into the same
+      // identiconDataUrl deterministic avatar generator every other avatar
+      // in this file already uses. A status/join-affordance row below the
+      // activity tag reflects this viewer's own relationship to the room
+      // (see _roomStatusInfo) — that part IS viewer-specific, unlike the
+      // rest of the card which renders identically for everyone.
+      _renderRoomCard: function (room, x, y, w) {
+        var self = this;
+        var card = new lively.morphic.Box(lively.rect(x, y, w, 10));
+        card.setFill(Color.white);
+        card.applyStyle({ borderWidth: 1, borderColor: Color.rgb(230, 230, 230), borderRadius: 12, clipMode: "hidden" });
+        this._spacesBox.addMorph(card);
+
+        var banner = new lively.morphic.Box(lively.rect(0, 0, w, ROOM_BANNER_H));
+        banner.applyStyle({ fill: Color.rgb(224, 227, 254), borderWidth: 0 });
+        card.addMorph(banner);
+
+        var PAD = ROOM_CARD_PAD;
+        var nameY = ROOM_BANNER_H + 10;
+
+        var nameM = lively.morphic.Text.makeLabel(room.name || "", {
+          fontSize: 15, fontWeight: "bold", textColor: Color.rgb(20, 20, 20), fixedWidth: true, fixedHeight: true,
+        });
+        nameM.setPosition(lively.pt(PAD, nameY));
+        // 1px throwaway height so the min-height:calc(100%-4px) floor
+        // documented in CLAUDE.md's Text-sizing section can't pin the
+        // measurement — same idiom _renderEventCard's title measurement uses.
+        nameM.setExtent(lively.pt(w - PAD * 2, 1));
+        card.addMorph(nameM);
+        var nameInner = nameM.renderContext().shapeNode.querySelector("div");
+        var nameH = nameInner ? nameInner.offsetHeight : 18;
+        var nameSpan = nameM.renderContext().shapeNode.querySelector("span");
+        var nameW = nameSpan ? nameSpan.offsetWidth + 8 : 100;
+        nameM.setExtent(lively.pt(nameW, nameH + 4));
+
+        // Camera/headset type icons — static indicators on the card
+        // itself (the creator toggles these in the New Room dialog, not
+        // here), right-aligned on the name's own row.
+        var ICON = 22, ICON_GAP = 6;
+        var icons = [];
+        if (room.isVideo) icons.push("videocam");
+        if (room.isVoice) icons.push("headset");
+        var totalIconsW = icons.length ? icons.length * ICON + (icons.length - 1) * ICON_GAP : 0;
+        var ix = w - PAD - totalIconsW;
+        icons.forEach(function (glyph) {
+          var chip = new lively.morphic.Box(lively.rect(ix, nameY, ICON, ICON));
+          chip.applyStyle({ fill: Color.rgb(243, 243, 243), borderWidth: 0, borderRadius: ICON / 2 });
+          card.addMorph(chip);
+          var g = lively.morphic.Text.makeLabel(glyph, { fontSize: 12, textColor: Color.rgb(90, 90, 90) });
+          g.applyStyle({ fontFamily: "'Material Symbols Rounded'", borderWidth: 0 });
+          g.eventsAreIgnored = true;
+          g.setExtent(lively.pt(18, 16));
+          g.setPosition(lively.pt(2, 3));
+          chip.addMorph(g);
+          ix += ICON + ICON_GAP;
+        });
+
+        var rowY = nameY + Math.max(nameH + 4, icons.length ? ICON : 0) + 10;
+
+        // Overlapping attendee avatars — same white-ring cutout technique
+        // as _renderEventCard's attendee row.
+        var AV = 24, OVERLAP = 8, RING = 2, MAX_SHOWN = 4;
+        var all = room.participants || [];
+        var totalCount = room.participantCount || all.length;
+        var shown = all.slice(0, MAX_SHOWN);
+        var ax = PAD;
+        shown.forEach(function (seed) {
+          var rs = AV + RING * 2;
+          var ring = new lively.morphic.Box(lively.rect(ax - RING, rowY - RING, rs, rs));
+          ring.applyStyle({ fill: Color.white, borderRadius: rs / 2, borderWidth: 0 });
+          card.addMorph(ring);
+          var av = new lively.morphic.Image(lively.rect(ax, rowY, AV, AV));
+          av.setImageURL(lively.identity.postCardUtils.identiconDataUrl(seed, AV));
+          av.applyStyle({ borderRadius: AV / 2, borderWidth: 0, clipMode: "hidden" });
+          card.addMorph(av);
+          ax += AV - OVERLAP;
+        });
+        if (shown.length) ax += OVERLAP;
+
+        // Both labels below measure their own real rendered height rather
+        // than trust a guessed 16 — confirmed live (2026-08-24) that a
+        // guessed 16 clips the descender of the "g" in "Jamming": the
+        // shapeNode's real content height for 12px italic text is ~19px,
+        // and the card's own clipMode:"hidden" cuts off the 4px overflow.
+        // Same HEIGHT_PAD idiom (and the "measure at height:1 first, a
+        // generous height acts as a floor" reasoning) CLAUDE.md documents
+        // and _renderEventCard already applies to its own labels.
+        var HEIGHT_PAD = 4;
+
+        var extra = Math.max(0, totalCount - shown.length);
+        var afterAvatarsX = ax + (shown.length ? 8 : 0);
+        var countLabelW = 0, countLabelH = 16;
+        if (extra > 0) {
+          var countLbl = lively.morphic.Text.makeLabel("+" + extra + " Others", {
+            fontSize: 12, fontWeight: "700", textColor: Color.rgb(40, 40, 40), fixedWidth: true, fixedHeight: true,
+          });
+          countLbl.setPosition(lively.pt(afterAvatarsX, rowY + 5));
+          countLbl.setExtent(lively.pt(Math.max(30, w - afterAvatarsX), 1));
+          card.addMorph(countLbl);
+          var countInner = countLbl.renderContext().shapeNode.querySelector("div");
+          var countSpan = countLbl.renderContext().shapeNode.querySelector("span");
+          countLabelW = countSpan ? countSpan.offsetWidth : 60;
+          countLabelH = countInner ? countInner.offsetHeight + HEIGHT_PAD : 16;
+          countLbl.setExtent(lively.pt(countLabelW + 8, countLabelH));
+        }
+
+        var afterCountX = afterAvatarsX + (extra > 0 ? countLabelW + 16 : 0);
+        if (room.activity) {
+          var actLbl = lively.morphic.Text.makeLabel("· " + room.activity, {
+            fontSize: 12, textColor: Color.rgb(140, 140, 140), fixedWidth: true, fixedHeight: true,
+          });
+          actLbl.applyStyle({ fontStyle: "italic" });
+          actLbl.setPosition(lively.pt(afterCountX, rowY + 5));
+          actLbl.setExtent(lively.pt(Math.max(30, w - afterCountX - PAD), 1));
+          card.addMorph(actLbl);
+          var actInner = actLbl.renderContext().shapeNode.querySelector("div");
+          var actSpan = actLbl.renderContext().shapeNode.querySelector("span");
+          var actLabelW = actSpan ? actSpan.offsetWidth : Math.max(30, w - afterCountX - PAD);
+          var actLabelH = actInner ? actInner.offsetHeight + HEIGHT_PAD : 16;
+          actLbl.setExtent(lively.pt(actLabelW + 8, actLabelH));
+        }
+
+        // Status/join-affordance row — this viewer's relationship to the
+        // room (open/gated x not-a-member/unjoined/pending/approved/
+        // joined). Purely an affordance: the click handler re-derives
+        // permission server-side (canJoinRoom) before actually joining, so
+        // a stale label here can't grant access it shouldn't. An
+        // "approved" gated room additionally gets a green check-circle
+        // icon ahead of the "Join" text (two Text morphs, same
+        // icon-then-label idiom as the room-type chips above — accepted
+        // baseline mismatch per CLAUDE.md, there's enough visual
+        // separation here too).
+        var statusY = rowY + AV + 8;
+        var statusInfo = this._roomStatusInfo(room);
+        var textX = PAD;
+        if (statusInfo.icon) {
+          var statusIcon = lively.morphic.Text.makeLabel(statusInfo.icon, { fontSize: 12, textColor: statusInfo.color });
+          statusIcon.applyStyle({ fontFamily: "'Material Symbols Rounded'", borderWidth: 0 });
+          statusIcon.eventsAreIgnored = true;
+          statusIcon.setExtent(lively.pt(16, 16));
+          statusIcon.setPosition(lively.pt(PAD, statusY));
+          card.addMorph(statusIcon);
+          textX = PAD + 18;
+        }
+        var statusLbl = lively.morphic.Text.makeLabel(statusInfo.text, {
+          fontSize: 11.5, fontWeight: "700", textColor: statusInfo.color, fixedWidth: true, fixedHeight: true,
+        });
+        statusLbl.setPosition(lively.pt(textX, statusY));
+        statusLbl.setExtent(lively.pt(w - PAD - textX, 1));
+        card.addMorph(statusLbl);
+        var statusInner = statusLbl.renderContext().shapeNode.querySelector("div");
+        var statusH = statusInner ? statusInner.offsetHeight + HEIGHT_PAD : 16;
+        statusLbl.setExtent(lively.pt(w - PAD - textX, statusH));
+
+        var cardH = statusY + statusH + PAD;
+        card.setExtent(lively.pt(w, cardH));
+
+        if (statusInfo.clickable) {
+          card.onMouseDown = function () { self._onRoomCardClick(room); };
+          card.renderContext().shapeNode.style.cursor = "pointer";
+        }
+        return cardH;
+      },
+
+      // Viewer-specific label/color/clickability for a room card's bottom
+      // status row — see _renderRoomCard. Not a member: no affordance at
+      // all. Open room: click to join/leave. Gated ('request') room: walks
+      // through unrequested -> pending -> approved -> joined, with a
+      // declined request shown as re-requestable rather than a dead end.
+      _roomStatusInfo: function (room) {
+        var GREY = Color.rgb(150, 150, 150), MUTED_RED = Color.rgb(180, 90, 90), GREEN = Color.rgb(46, 160, 90);
+        if (!this._amMember) return { text: "Sign in & join to enter", color: GREY, clickable: false };
+        if (room.iJoined) return { text: "Leave", color: ROOM_ACCENT, clickable: true };
+        if (room.access !== "request") return { text: "Join", color: ROOM_ACCENT, clickable: true };
+        if (room.myAccessStatus === "approved") return { text: "Join", color: GREEN, clickable: true, icon: "check_circle" };
+        if (room.myAccessStatus === "pending") return { text: "Request pending…", color: GREY, clickable: false };
+        if (room.myAccessStatus === "declined") return { text: "Declined — click to re-request", color: MUTED_RED, clickable: true };
+        return { text: "Request to join", color: ROOM_ACCENT, clickable: true };
+      },
+
+      // ─── fetching + actions ─────────────────────────────────────────────────
+
+      // Same XHR idiom as _fetchFeed. Re-fetches (rather than optimistic
+      // local patching) after every create/join/leave/request-access
+      // action below, so the panel always reflects the server's own view
+      // of room config + live presence rather than a client-guessed delta.
+      _fetchRooms: function () {
+        var self = this;
+        var base = lively.identity.did.baseUrl();
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", base + "/c/" + encodeURIComponent(this._name) + "/rooms", true);
+        xhr.withCredentials = true;
+        xhr.setRequestHeader("Accept", "application/json");
+        xhr.onload = function () {
+          if (xhr.status !== 200) return self._showError("Failed to load rooms (" + xhr.status + ")");
+          var data;
+          try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
+          self._rooms = data.rooms || [];
+          self._amMember = !!data.amMember;
+          self._renderSpaces();
+        };
+        xhr.onerror = function () { self._showError("Network error loading rooms"); };
+        xhr.send();
+      },
+
+      // Card-click router — dispatches to the one applicable action for
+      // this viewer/room combination. A "pending" gated request has no
+      // clickable status (see _roomStatusInfo), so it never reaches here;
+      // every other combination maps to exactly one of join/leave/request.
+      _onRoomCardClick: function (room) {
+        if (!this._amMember) return;
+        if (room.iJoined) return this._leaveRoom(room);
+        if (room.access === "open") return this._joinRoom(room);
+        if (room.myAccessStatus === "approved") return this._joinRoom(room);
+        return this._requestRoomAccess(room);
+      },
+
+      _joinRoom: function (room) {
+        var self = this;
+        var base = lively.identity.did.baseUrl();
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", base + "/c/" + encodeURIComponent(this._name) + "/rooms/" + room.id + "/presence", true);
+        xhr.withCredentials = true;
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.onload = function () {
+          if (xhr.status !== 200) {
+            var msg = "Could not join room (" + xhr.status + ")";
+            try { var b = JSON.parse(xhr.responseText); if (b.error) msg = b.error; } catch (e) {}
+            return self._showError(msg);
+          }
+          self._joinedRoomIds[room.id] = true;
+          self._startHeartbeat(room.id);
+          self._fetchRooms();
+        };
+        xhr.onerror = function () { self._showError("Network error joining room"); };
+        xhr.send();
+      },
+
+      _leaveRoom: function (room) {
+        var self = this;
+        var base = lively.identity.did.baseUrl();
+        var xhr = new XMLHttpRequest();
+        xhr.open("DELETE", base + "/c/" + encodeURIComponent(this._name) + "/rooms/" + room.id + "/presence", true);
+        xhr.withCredentials = true;
+        xhr.onload = function () {
+          delete self._joinedRoomIds[room.id];
+          self._stopHeartbeat(room.id);
+          self._fetchRooms();
+        };
+        xhr.onerror = function () {};
+        xhr.send();
+      },
+
+      // Identical flow to _requestJoin (constellation-level "Join…" menu
+      // entry) — a real, client-signed postcard riding the same postal
+      // rail, never server-fabricated. Delivers to every controller's
+      // inbox server-side (POST /c/:name/rooms/:roomId/join-requests) the
+      // same way constellation join requests do; there's no in-app
+      // Approve/Decline UI for this yet (that lands with the room-detail
+      // view planned for later), so for now the controller just sees a
+      // plain postcard notification in their mailbox.
+      _requestRoomAccess: function (room) {
+        var self = this;
+        var user = lively.identity.did.currentUser();
+        if (!user) return this._showError("Not signed in.");
+
+        lively.require("lively.identity.PostCardSerializer").toRun(function () {
+          var doc = {
+            type: "doc",
+            content: [{
+              type: "paragraph",
+              content: [{ type: "text", text: "@" + user.handle + " wants to join the \"" + room.name + "\" room in c/" + self._name + "." }],
+            }],
+          };
+          lively.identity.postCardSerializer.serializePlainToEnvelope({
+            doc: doc,
+            title: "Room join request: " + room.name + " (c/" + self._name + ")",
+            titleExplicit: true,
+            constellation: self._name,
+            visibility: "public",
+            stateMeta: { kind: "room-join-request", roomId: room.id, roomName: room.name },
+          }, function (err, envelope) {
+            if (err) return self._showError("Could not create join request: " + err.message);
+
+            var base = lively.identity.did.baseUrl();
+            var putXhr = new XMLHttpRequest();
+            putXhr.open("PUT", base + "/@" + encodeURIComponent(user.handle) + "/" + encodeURIComponent(envelope.objId), true);
+            putXhr.withCredentials = true;
+            putXhr.setRequestHeader("Content-Type", "application/json");
+            putXhr.onload = function () {
+              if (putXhr.status !== 200) return self._showError("Could not save join request card (" + putXhr.status + ")");
+
+              var postXhr = new XMLHttpRequest();
+              postXhr.open("POST", base + "/c/" + encodeURIComponent(self._name) + "/rooms/" + room.id + "/join-requests", true);
+              postXhr.withCredentials = true;
+              postXhr.setRequestHeader("Content-Type", "application/json");
+              postXhr.onload = function () {
+                if (postXhr.status !== 201) {
+                  var msg = "Room join request failed (" + postXhr.status + ")";
+                  try { var b = JSON.parse(postXhr.responseText); if (b.error) msg = b.error; } catch (e) {}
+                  return self._showError(msg);
+                }
+                self._fetchRooms();
+              };
+              postXhr.onerror = function () { self._showError("Network error sending room join request"); };
+              postXhr.send(JSON.stringify({ objId: envelope.objId }));
+            };
+            putXhr.onerror = function () { self._showError("Network error saving join request card"); };
+            putXhr.send(JSON.stringify(envelope));
+          });
+        });
+      },
+
+      // Lazy-require + world-tracked-singleton open, same idiom
+      // _openCreatePostcard already uses for PostCardEditor. onCreate
+      // POSTs to the real /c/:name/rooms route (controller-only — the
+      // button that opens this dialog is itself already _canWrite-gated
+      // in _renderSpaces, but the server re-checks isController
+      // independently) and re-fetches on success rather than
+      // optimistically inserting the dialog's own fields, so the room
+      // gets its real server-assigned id before the card can be clicked.
+      _openNewRoom: function () {
+        var self = this;
+        var opts = {
+          scope: { constellation: this._name },
+          onCreate: function (fields) {
+            var base = lively.identity.did.baseUrl();
+            var xhr = new XMLHttpRequest();
+            xhr.open("POST", base + "/c/" + encodeURIComponent(self._name) + "/rooms", true);
+            xhr.withCredentials = true;
+            xhr.setRequestHeader("Content-Type", "application/json");
+            xhr.onload = function () {
+              if (xhr.status !== 201) {
+                var msg = "Could not create room (" + xhr.status + ")";
+                try { var b = JSON.parse(xhr.responseText); if (b.error) msg = b.error; } catch (e) {}
+                return self._showError(msg);
+              }
+              self._fetchRooms();
+            };
+            xhr.onerror = function () { self._showError("Network error creating room"); };
+            xhr.send(JSON.stringify(fields));
+          },
+        };
+        lively.require("lively.identity.NewRoomDialog").toRun(function () {
+          lively.identity.NewRoomDialog.open(opts);
+        });
+      },
+    },
+
+    // ─── room presence ──────────────────────────────────────────────────────
+    // Heartbeat lifecycle for rooms this client currently has "joined" —
+    // see RoomPresence.js's server-side half. A room stays present in the
+    // live roster only as long as heartbeats keep arriving; this is what
+    // actually keeps them arriving while the tab stays open.
+
+    "room presence", {
+      _startHeartbeat: function (roomId) {
+        var self = this;
+        if (this._heartbeatTimers[roomId]) return;
+        this._heartbeatTimers[roomId] = setInterval(function () { self._sendHeartbeat(roomId); }, 25000);
+      },
+
+      _stopHeartbeat: function (roomId) {
+        if (this._heartbeatTimers[roomId]) {
+          clearInterval(this._heartbeatTimers[roomId]);
+          delete this._heartbeatTimers[roomId];
+        }
+      },
+
+      _sendHeartbeat: function (roomId) {
+        var base = lively.identity.did.baseUrl();
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", base + "/c/" + encodeURIComponent(this._name) + "/rooms/" + roomId + "/presence", true);
+        xhr.withCredentials = true;
+        xhr.send();
+      },
+
+      // Called from pagehide/beforeunload (_start). A synchronous XHR here
+      // is deliberate — the one thing reasonably guaranteed to actually
+      // send before the page tears down; sendBeacon has no reliable
+      // session-cookie-auth story for a DELETE, and an async XHR here
+      // would very likely never complete before the page is gone.
+      _leaveAllRoomsBestEffort: function () {
+        var self = this, base = lively.identity.did.baseUrl();
+        Object.keys(this._joinedRoomIds || {}).forEach(function (roomId) {
+          var xhr = new XMLHttpRequest();
+          xhr.open("DELETE", base + "/c/" + encodeURIComponent(self._name) + "/rooms/" + roomId + "/presence", false);
+          xhr.withCredentials = true;
+          try { xhr.send(); } catch (e) {}
         });
       },
     },
