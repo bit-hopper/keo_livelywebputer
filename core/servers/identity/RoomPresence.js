@@ -49,6 +49,17 @@ function isPresent(roomId, did) {
   return !!(_rooms[roomId] && _rooms[roomId][did]);
 }
 
+// Full roster (not capped like summary's seedDids) — RoomView.js's member
+// list needs everyone currently present, not just enough for a card's
+// stacked-avatar preview. Synchronous (this module has no async storage) —
+// returns [{did, handle}, ...], insertion order.
+function roster(roomId) {
+  var byDid = _rooms[roomId] || {};
+  return Object.keys(byDid).map(function (did) {
+    return { did: did, handle: byDid[did].handle };
+  });
+}
+
 function sweep() {
   var now = Date.now();
   Object.keys(_rooms).forEach(function (roomId) {
@@ -69,6 +80,7 @@ module.exports = {
   leave: leave,
   summary: summary,
   isPresent: isPresent,
+  roster: roster,
   sweep: sweep,
   startSweeping: startSweeping
 };

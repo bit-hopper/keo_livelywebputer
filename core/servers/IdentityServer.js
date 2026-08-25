@@ -696,6 +696,47 @@ function buildConstellationCanvasPage(constellation, spaceEnvelope) {
   );
 }
 
+// Serve a single room's Discord-like live view (chat/members/voice-video,
+// lively.identity.RoomView) as a standalone HTML page. Same boot shape as
+// buildConstellationCanvasPage: manuallyCreateWorld so bootstrap.js builds a
+// blank world instead of trying (and failing) to load a per-user home-world
+// config, then onStartWorld hands off to the live RoomView controller. No
+// static layout snapshot to pre-render here (unlike the canvas) — chat/
+// members/presence all need the live controller's own queries anyway, so
+// the page ships a plain loading placeholder.
+function buildRoomViewPage(constellation, room) {
+  var title = escapeHtml(constellation.name) + " — " + escapeHtml(room.name);
+
+  return (
+    '<!DOCTYPE html><html lang="en"><head>' +
+    '<meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<meta name="apple-mobile-web-app-capable" content="yes">' +
+    '<link rel="shortcut icon" href="/core/media/lively.ico">' +
+    '<title>' + title + '</title>' +
+    '<style>' +
+    'body{margin:0;font-family:system-ui,sans-serif;background:#313338}' +
+    '.room-loader{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);' +
+    'font-size:13px;color:#949ba4}' +
+    '</style>' +
+    '</head><body>' +
+    '<div class="room-loader" id="room-loader">Loading ' + escapeHtml(room.name) + '…</div>' +
+    '<script src="/core/lib/postcard/postcard-runtime.js"></script>' +
+    '<script>window.Config={' +
+    'codeBase:location.protocol+"//"+location.host+"/core/",' +
+    'rootPath:location.protocol+"//"+location.host+"/",' +
+    'manuallyCreateWorld:true,' +
+    'onStartWorld:function(){' +
+    'lively.require("lively.identity.RoomView").toRun(function(){' +
+    'lively.identity.RoomView.open(' + JSON.stringify(constellation.name) + ',' + JSON.stringify(room.id) + ');' +
+    '});' +
+    '}' +
+    '}</script>' +
+    '<script src="/core/lively/bootstrap.js"></script>' +
+    '</body></html>'
+  );
+}
+
 // Serve a constellation's lounge — the fixed-layout landing page at
 // /c/:name (search, postcard turnover reel + reply thread, quick-info
 // panel, embedded wiki, member list) — as a standalone HTML page. Same
@@ -3960,6 +4001,49 @@ module.exports = function (route, app) {
       objectRepo.get(constellation.genesisObjId, function (err, spaceEnvelope) {
         if (err) return res.status(500).json({ error: String(err) });
         res.send(buildConstellationCanvasPage(constellation, spaceEnvelope));
+      });
+    });
+  });
+
+  // A single room's Discord-like live view (lively.identity.RoomView) —
+  // registered before the /:objId wildcard below, same ordering discipline
+  // as every other named sub-route under /c/:constellation. Gated by
+  // canJoinRoom exactly like the presence join route (POST .../presence
+  // above): a non-member, or a non-approved visitor to a 'request'-access
+  // room, gets a plain 404 here and never even boots the world — matching
+  // every other room route's "can't tell a private room exists" posture.
+  app.get("/c/:constellation/rooms/:roomId", auth.optionalAuth, function (req, res) {
+    var name = req.params.constellation;
+    var roomId = parseInt(req.params.roomId, 10);
+    var viewerDid = req.identity ? req.identity.did : null;
+
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+
+      constellationRegistry.getRoom(roomId, function (err, room) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!room || room.constellation !== name) {
+          return res.status(404).json({ error: "Room not found: " + roomId });
+        }
+
+        constellationRegistry.canJoinRoom(constellation, room, viewerDid, function (err, allowed) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (!allowed) return res.status(404).json({ error: "Room not found: " + roomId });
+
+          if (req.accepts(["html", "json"]) === "html") {
+            return res.send(buildRoomViewPage(constellation, room));
+          }
+
+          var roster = roomPresence.roster(roomId);
+          res.json({
+            room: room,
+            participants: roster,
+            participantCount: roster.length,
+            isController: constellationRegistry.isController(constellation, viewerDid),
+            iJoined: viewerDid ? roomPresence.isPresent(roomId, viewerDid) : false
+          });
+        });
       });
     });
   });

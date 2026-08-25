@@ -163,17 +163,96 @@ module("lively.identity.AmbientPresencePanel")
           this.micMuted = !this.micMuted;
         }
         this._updateControls();
+        this._savePersistedPrefs();
+        lively.identity.AmbientPresencePanel._applyTrackState();
       },
 
       toggleDeafen: function toggleDeafen() {
         this.deafened = !this.deafened;
         this.micMuted = this.deafened;
         this._updateControls();
+        this._savePersistedPrefs();
+        lively.identity.AmbientPresencePanel._applyTrackState();
       },
 
       toggleCamera: function toggleCamera() {
         this.cameraOff = !this.cameraOff;
         this._updateControls();
+        this._savePersistedPrefs();
+        lively.identity.AmbientPresencePanel._applyTrackState();
+      },
+
+      // localStorage persistence for mic/deafen/camera prefs — same
+      // try/catch-swallow idiom ConstellationsBrowser.js's _loadKnown/
+      // _saveKnown already use elsewhere in this directory. Loaded once in
+      // onLoad, before the first _updateControls() paints the icons, so a
+      // reload doesn't silently reset to unmuted.
+      _loadPersistedPrefs: function _loadPersistedPrefs() {
+        try {
+          var raw = localStorage.getItem("lively.identity.presenceState");
+          if (!raw) return;
+          var prefs = JSON.parse(raw);
+          this.micMuted = !!prefs.micMuted;
+          this.deafened = !!prefs.deafened;
+          this.cameraOff = !!prefs.cameraOff;
+        } catch (e) {}
+      },
+
+      _savePersistedPrefs: function _savePersistedPrefs() {
+        try {
+          localStorage.setItem("lively.identity.presenceState", JSON.stringify({
+            micMuted: this.micMuted, deafened: this.deafened, cameraOff: this.cameraOff,
+          }));
+        } catch (e) {}
+      },
+
+      // Grows the panel with a second strip showing which room you're in
+      // plus a "leave" glyph — onLeaveRequested is supplied by the caller
+      // (RoomView.js's enterRoom call) so the actual leave-presence/
+      // navigate-away semantics stay owned by that page, not duplicated
+      // here; this panel only shows status and relays the click.
+      _showInRoomRow: function _showInRoomRow(room) {
+        var NS = lively.identity.AmbientPresencePanel;
+        this._hideInRoomRow();
+        var ROW_H = 26;
+        this.setExtent(lively.pt(NS.PANEL_W, NS.PANEL_H + ROW_H));
+
+        var row = new lively.morphic.Box(lively.rect(0, NS.PANEL_H, NS.PANEL_W, ROW_H));
+        row.applyStyle({ fill: Color.rgba(255, 255, 255, 0.05), borderWidth: 0 });
+        this.addMorph(row);
+        this._roomRow = row;
+
+        var label = new lively.morphic.Text(lively.rect(12, 5, NS.PANEL_W - 56, 16));
+        label.textString = "In room: " + (room.roomName || "");
+        label.applyStyle({
+          fontSize: 9, fontWeight: "600", textColor: NS.TEXT_SECONDARY,
+          fill: null, borderWidth: 0, allowInput: false, selectable: false,
+          clipMode: "hidden", whiteSpaceHandling: "pre",
+        });
+        row.addMorph(label);
+
+        var leaveBtn = new lively.morphic.Text(lively.rect(NS.PANEL_W - 40, 2, 28, 22));
+        leaveBtn.textString = "call_end";
+        leaveBtn.applyStyle({
+          fontFamily: "'Material Symbols Rounded'", fontSize: 10, textColor: NS.ICON_DANGER,
+          fill: null, borderWidth: 0, align: "center", allowInput: false, selectable: false,
+          clipMode: "hidden", handStyle: "pointer",
+        });
+        leaveBtn.onMouseDown = function (evt) {
+          if (typeof room.onLeaveRequested === "function") room.onLeaveRequested();
+          evt.stop();
+          return true;
+        };
+        row.addMorph(leaveBtn);
+
+        this.alignInWorld();
+      },
+
+      _hideInRoomRow: function _hideInRoomRow() {
+        var NS = lively.identity.AmbientPresencePanel;
+        if (this._roomRow) { this._roomRow.remove(); this._roomRow = null; }
+        this.setExtent(lively.pt(NS.PANEL_W, NS.PANEL_H));
+        this.alignInWorld();
       },
 
       _updateControls: function _updateControls() {
@@ -226,6 +305,7 @@ module("lively.identity.AmbientPresencePanel")
       },
 
       onLoad: function onLoad() {
+        this._loadPersistedPrefs();
         this._render();
         this._visibilityHandler = this._updateStatus.bind(this);
         if (typeof document !== "undefined") {
@@ -243,6 +323,75 @@ module("lively.identity.AmbientPresencePanel")
     // so normal closures over `self` etc. are safe here.
     Object.extend(lively.identity.AmbientPresencePanel, {
       _panel: null,
+      _localStream: null,
+      _activeRoom: null,   // {constellation, roomId, roomName, onLeaveRequested} | null
+
+      // Called by RoomView.js once it's actually joined a room's presence.
+      // Grows the panel with an "in room" row and (re)acquires local media
+      // matching the current mic/cam prefs — real getUserMedia, since a
+      // room is now genuinely active, but only ever called from the room's
+      // own page (each page load is its own independent world/stream; see
+      // this file's own header on the general BuildSpec/closure caveats,
+      // which don't apply to this plain-extension block).
+      enterRoom: function enterRoom(room) {
+        this._activeRoom = room;
+        this._acquireLocalMedia();
+        // MenuBarEntry.js's own init() call (which normally creates _panel
+        // in response to identityChanged/sync()) races this — a room-boot
+        // page can call enterRoom before that's had a chance to run. open()
+        // is idempotent (returns the existing panel if one's already up),
+        // so calling it here guarantees a panel exists to show the row on,
+        // regardless of which finished loading first.
+        this.open()._showInRoomRow(room);
+      },
+
+      leaveRoom: function leaveRoom() {
+        this._activeRoom = null;
+        this._releaseLocalMedia();
+        if (this._panel) this._panel._hideInRoomRow();
+      },
+
+      getLocalStream: function getLocalStream() {
+        return this._localStream;
+      },
+
+      _acquireLocalMedia: function _acquireLocalMedia() {
+        var self = this;
+        var p = this._panel;
+        var wantAudio = !(p && p.micMuted);
+        var wantVideo = !(p && p.cameraOff);
+        if (!wantAudio && !wantVideo) return;
+        if (typeof navigator === "undefined" || !navigator.mediaDevices) return;
+        navigator.mediaDevices.getUserMedia({ audio: wantAudio, video: wantVideo })
+          .then(function (stream) {
+            // A leaveRoom() (or a second acquire) could have raced this
+            // promise — don't attach a stream for a room we're no longer in.
+            if (!self._activeRoom) { stream.getTracks().forEach(function (t) { t.stop(); }); return; }
+            self._localStream = stream;
+          })
+          .catch(function (err) {
+            console.warn("[AmbientPresencePanel] getUserMedia failed:", err && err.message);
+          });
+      },
+
+      _releaseLocalMedia: function _releaseLocalMedia() {
+        if (this._localStream) {
+          this._localStream.getTracks().forEach(function (t) { t.stop(); });
+          this._localStream = null;
+        }
+      },
+
+      // Called after every mic/deafen/camera toggle. Enables/disables
+      // existing tracks live where possible; if no stream exists yet (e.g.
+      // camera was off when the room was entered) and a room is active,
+      // tries acquiring one now that a track is actually wanted.
+      _applyTrackState: function _applyTrackState() {
+        if (!this._activeRoom) return;
+        if (!this._localStream) { this._acquireLocalMedia(); return; }
+        var p = this._panel;
+        this._localStream.getAudioTracks().forEach(function (t) { t.enabled = !(p && p.micMuted); });
+        this._localStream.getVideoTracks().forEach(function (t) { t.enabled = !(p && p.cameraOff); });
+      },
 
       init: function init() {
         var self = this;

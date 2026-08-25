@@ -151,6 +151,26 @@ module("lively.identity.ConstellationLounge")
     var ROOM_BANNER_H = 70;
     var ROOM_CARD_GAP = 16;
 
+    // Plain Box/Text/Image morphs default to draggable/droppable/grabbable.
+    // Events.js's drag-start check is `targetMorph.draggingEnabled ||
+    // targetMorph.isGrabbable()`, and isGrabbable() (MorphAddons.js) defaults
+    // to *true* whenever grabbingEnabled was never explicitly set — so all
+    // three flags need setting, not just draggingEnabled/droppingEnabled.
+    // This has to be applied to every child morph a card is built from, not
+    // just the outer card Box: drag-start is decided by whichever morph is
+    // actually under the cursor (evt.hand.clickedOnMorph), and a room card's
+    // children (banner, name, icon chips, avatars, labels) visually cover
+    // almost the whole card — confirmed live: fixing only the outer card
+    // left every child still independently draggable, which reads as "the
+    // card is still draggable" since there's barely any bare card
+    // background exposed to click on directly.
+    function noDrag(m) {
+      m.draggingEnabled = false;
+      m.droppingEnabled = false;
+      m.grabbingEnabled = false;
+      return m;
+    }
+
     // Comment thread (Reddit-style, no votes) geometry/palette.
     var COMMENT_INDENT = 30;   // px per nesting depth
     var COMMENT_AVATAR = 22;   // px, square
@@ -975,21 +995,23 @@ module("lively.identity.ConstellationLounge")
       // rest of the card which renders identically for everyone.
       _renderRoomCard: function (room, x, y, w) {
         var self = this;
-        var card = new lively.morphic.Box(lively.rect(x, y, w, 10));
+        var card = noDrag(new lively.morphic.Box(lively.rect(x, y, w, 10)));
         card.setFill(Color.white);
         card.applyStyle({ borderWidth: 1, borderColor: Color.rgb(230, 230, 230), borderRadius: 12, clipMode: "hidden" });
         this._spacesBox.addMorph(card);
 
-        var banner = new lively.morphic.Box(lively.rect(0, 0, w, ROOM_BANNER_H));
+        var banner = noDrag(new lively.morphic.Box(lively.rect(0, 0, w, ROOM_BANNER_H)));
         banner.applyStyle({ fill: Color.rgb(224, 227, 254), borderWidth: 0 });
+        banner.eventsAreIgnored = true;
         card.addMorph(banner);
 
         var PAD = ROOM_CARD_PAD;
         var nameY = ROOM_BANNER_H + 10;
 
-        var nameM = lively.morphic.Text.makeLabel(room.name || "", {
+        var nameM = noDrag(lively.morphic.Text.makeLabel(room.name || "", {
           fontSize: 15, fontWeight: "bold", textColor: Color.rgb(20, 20, 20), fixedWidth: true, fixedHeight: true,
-        });
+        }));
+        nameM.eventsAreIgnored = true;
         nameM.setPosition(lively.pt(PAD, nameY));
         // 1px throwaway height so the min-height:calc(100%-4px) floor
         // documented in CLAUDE.md's Text-sizing section can't pin the
@@ -1012,8 +1034,9 @@ module("lively.identity.ConstellationLounge")
         var totalIconsW = icons.length ? icons.length * ICON + (icons.length - 1) * ICON_GAP : 0;
         var ix = w - PAD - totalIconsW;
         icons.forEach(function (glyph) {
-          var chip = new lively.morphic.Box(lively.rect(ix, nameY, ICON, ICON));
+          var chip = noDrag(new lively.morphic.Box(lively.rect(ix, nameY, ICON, ICON)));
           chip.applyStyle({ fill: Color.rgb(243, 243, 243), borderWidth: 0, borderRadius: ICON / 2 });
+          chip.eventsAreIgnored = true;
           card.addMorph(chip);
           var g = lively.morphic.Text.makeLabel(glyph, { fontSize: 12, textColor: Color.rgb(90, 90, 90) });
           g.applyStyle({ fontFamily: "'Material Symbols Rounded'", borderWidth: 0 });
@@ -1035,12 +1058,14 @@ module("lively.identity.ConstellationLounge")
         var ax = PAD;
         shown.forEach(function (seed) {
           var rs = AV + RING * 2;
-          var ring = new lively.morphic.Box(lively.rect(ax - RING, rowY - RING, rs, rs));
+          var ring = noDrag(new lively.morphic.Box(lively.rect(ax - RING, rowY - RING, rs, rs)));
           ring.applyStyle({ fill: Color.white, borderRadius: rs / 2, borderWidth: 0 });
+          ring.eventsAreIgnored = true;
           card.addMorph(ring);
-          var av = new lively.morphic.Image(lively.rect(ax, rowY, AV, AV));
+          var av = noDrag(new lively.morphic.Image(lively.rect(ax, rowY, AV, AV)));
           av.setImageURL(lively.identity.postCardUtils.identiconDataUrl(seed, AV));
           av.applyStyle({ borderRadius: AV / 2, borderWidth: 0, clipMode: "hidden" });
+          av.eventsAreIgnored = true;
           card.addMorph(av);
           ax += AV - OVERLAP;
         });
@@ -1060,9 +1085,10 @@ module("lively.identity.ConstellationLounge")
         var afterAvatarsX = ax + (shown.length ? 8 : 0);
         var countLabelW = 0, countLabelH = 16;
         if (extra > 0) {
-          var countLbl = lively.morphic.Text.makeLabel("+" + extra + " Others", {
+          var countLbl = noDrag(lively.morphic.Text.makeLabel("+" + extra + " Others", {
             fontSize: 12, fontWeight: "700", textColor: Color.rgb(40, 40, 40), fixedWidth: true, fixedHeight: true,
-          });
+          }));
+          countLbl.eventsAreIgnored = true;
           countLbl.setPosition(lively.pt(afterAvatarsX, rowY + 5));
           countLbl.setExtent(lively.pt(Math.max(30, w - afterAvatarsX), 1));
           card.addMorph(countLbl);
@@ -1075,10 +1101,11 @@ module("lively.identity.ConstellationLounge")
 
         var afterCountX = afterAvatarsX + (extra > 0 ? countLabelW + 16 : 0);
         if (room.activity) {
-          var actLbl = lively.morphic.Text.makeLabel("· " + room.activity, {
+          var actLbl = noDrag(lively.morphic.Text.makeLabel("· " + room.activity, {
             fontSize: 12, textColor: Color.rgb(140, 140, 140), fixedWidth: true, fixedHeight: true,
-          });
+          }));
           actLbl.applyStyle({ fontStyle: "italic" });
+          actLbl.eventsAreIgnored = true;
           actLbl.setPosition(lively.pt(afterCountX, rowY + 5));
           actLbl.setExtent(lively.pt(Math.max(30, w - afterCountX - PAD), 1));
           card.addMorph(actLbl);
@@ -1111,9 +1138,10 @@ module("lively.identity.ConstellationLounge")
           card.addMorph(statusIcon);
           textX = PAD + 18;
         }
-        var statusLbl = lively.morphic.Text.makeLabel(statusInfo.text, {
+        var statusLbl = noDrag(lively.morphic.Text.makeLabel(statusInfo.text, {
           fontSize: 11.5, fontWeight: "700", textColor: statusInfo.color, fixedWidth: true, fixedHeight: true,
-        });
+        }));
+        statusLbl.eventsAreIgnored = true;
         statusLbl.setPosition(lively.pt(textX, statusY));
         statusLbl.setExtent(lively.pt(w - PAD - textX, 1));
         card.addMorph(statusLbl);
@@ -1140,8 +1168,8 @@ module("lively.identity.ConstellationLounge")
         var GREY = Color.rgb(150, 150, 150), MUTED_RED = Color.rgb(180, 90, 90), GREEN = Color.rgb(46, 160, 90);
         if (!this._amMember) return { text: "Sign in & join to enter", color: GREY, clickable: false };
         if (room.iJoined) return { text: "Leave", color: ROOM_ACCENT, clickable: true };
-        if (room.access !== "request") return { text: "Join", color: ROOM_ACCENT, clickable: true };
-        if (room.myAccessStatus === "approved") return { text: "Join", color: GREEN, clickable: true, icon: "check_circle" };
+        if (room.access !== "request") return { text: "Enter", color: ROOM_ACCENT, clickable: true };
+        if (room.myAccessStatus === "approved") return { text: "Enter", color: GREEN, clickable: true, icon: "check_circle" };
         if (room.myAccessStatus === "pending") return { text: "Request pending…", color: GREY, clickable: false };
         if (room.myAccessStatus === "declined") return { text: "Declined — click to re-request", color: MUTED_RED, clickable: true };
         return { text: "Request to join", color: ROOM_ACCENT, clickable: true };
@@ -1174,35 +1202,23 @@ module("lively.identity.ConstellationLounge")
 
       // Card-click router — dispatches to the one applicable action for
       // this viewer/room combination. A "pending" gated request has no
-      // clickable status (see _roomStatusInfo), so it never reaches here;
-      // every other combination maps to exactly one of join/leave/request.
+      // clickable status (see _roomStatusInfo), so it never reaches here.
+      // "Entering" a room (open access, or an approved gated request) now
+      // navigates into the real Discord-like room view (RoomView.js) rather
+      // than joining presence inline and staying on the lounge — that view
+      // does its own presence-join on boot. Leaving stays inline (no reason
+      // to enter a room just to immediately leave it).
       _onRoomCardClick: function (room) {
         if (!this._amMember) return;
         if (room.iJoined) return this._leaveRoom(room);
-        if (room.access === "open") return this._joinRoom(room);
-        if (room.myAccessStatus === "approved") return this._joinRoom(room);
+        if (room.access === "open") return this._enterRoom(room);
+        if (room.myAccessStatus === "approved") return this._enterRoom(room);
         return this._requestRoomAccess(room);
       },
 
-      _joinRoom: function (room) {
-        var self = this;
+      _enterRoom: function (room) {
         var base = lively.identity.did.baseUrl();
-        var xhr = new XMLHttpRequest();
-        xhr.open("POST", base + "/c/" + encodeURIComponent(this._name) + "/rooms/" + room.id + "/presence", true);
-        xhr.withCredentials = true;
-        xhr.setRequestHeader("Content-Type", "application/json");
-        xhr.onload = function () {
-          if (xhr.status !== 200) {
-            var msg = "Could not join room (" + xhr.status + ")";
-            try { var b = JSON.parse(xhr.responseText); if (b.error) msg = b.error; } catch (e) {}
-            return self._showError(msg);
-          }
-          self._joinedRoomIds[room.id] = true;
-          self._startHeartbeat(room.id);
-          self._fetchRooms();
-        };
-        xhr.onerror = function () { self._showError("Network error joining room"); };
-        xhr.send();
+        location.href = base + "/c/" + encodeURIComponent(this._name) + "/rooms/" + room.id;
       },
 
       _leaveRoom: function (room) {
