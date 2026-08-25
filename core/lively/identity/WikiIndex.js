@@ -43,10 +43,43 @@ module("lively.identity.WikiIndex")
     var GRID_TOP_GAP = 24;     // gap between the header row and the card grid
     var SEARCH_W = 280, SEARCH_H = 34;
     var NEW_BTN_W = 150, NEW_BTN_H = 34;
+    var SORT_W = 150, SORT_H = SEARCH_H;   // same row/height as the search box, sits to its left
+    var SORT_GAP = 10;          // gap between the sort-by button and the search box
+    var SORT_ITEM_H = 30;
+    var SORT_OPTIONS = [
+      { key: "modified", label: "last modified" },
+      { key: "created",  label: "last created" },
+      { key: "alpha",    label: "alphabetical" },
+    ];
     var CARD_W = 260, CARD_H = 96; // CARD_H is a floor — _fitCard grows a card taller if its title wraps
     var GRID_GAP = 16;
     var SIDEBAR_W = 260;       // reserved gutter to the left of the wiki view for a future sidebar panel
     var SIDEBAR_GAP = 24;      // gap between that gutter and the wiki view
+    var SIDEBAR_PAD = 12;      // left/top inset for the home button + search row
+    var SIDEBAR_TOOLROW_H = 28; // shared height of the home button and search field
+    var SIDEBAR_HEADER_TOP = SIDEBAR_PAD + SIDEBAR_TOOLROW_H + 10; // "ON THIS PAGE" label y
+    var SIDEBAR_ITEMS_TOP = SIDEBAR_HEADER_TOP + 26;               // first outline item y
+
+    // Reserved gutter to the right of the wiki view — categories/tags
+    // browse panel, always visible (unlike SIDEBAR_W's left gutter, which
+    // only shows once a page is open). Same fixed order as
+    // NewWikiPageDialog.js's own CATEGORIES list (duplicated here rather
+    // than imported — that list is a closure-local var in a BuildSpec
+    // module, not something exported for another file to depend on) so
+    // categories appear in a stable, expected order instead of whatever
+    // order pages happen to be fetched in.
+    var CATEGORY_ORDER = ["Biography", "Place", "Event", "Concept", "Organization", "How-To"];
+    var RIGHT_PANEL_W = 260;
+    var RIGHT_PANEL_GAP = 24;
+    var PANEL_PAD = 14;
+    var PANEL_HEADER_TOP = 14;
+    var PANEL_ITEMS_TOP = PANEL_HEADER_TOP + 26;
+    var CATEGORY_LABEL_H = 20;
+    var CATEGORY_BLOCK_GAP = 16;   // vertical gap after a category's tag pills, before the next category
+    var PILL_H = 24;
+    var PILL_PAD_X = 10;
+    var PILL_GAP_X = 6;
+    var PILL_GAP_Y = 8;
 
     Object.subclass("lively.identity.WikiIndexController",
 
@@ -65,6 +98,14 @@ module("lively.identity.WikiIndex")
         this._didHandleCache = {};
         this._activeContentMorph = null; // a read-only WikiView or an editable WikiEditor
         this._sidebarBox = null;
+        this._sidebarMode = "outline"; // "outline" (current page's headings) | "list" (all wiki pages)
+        this._sidebarOutline = [];     // cached getOutline() result for the active page
+        this._sidebarListQuery = "";
+        this._sortBy = "modified";     // "modified" | "created" | "alpha" — see SORT_OPTIONS
+        this._sortByDropdown = null;
+        this._categoriesPanel = null;
+        this._categoryFilter = null;   // selected category string, or null
+        this._tagFilter = null;        // selected tag string (only meaningful alongside _categoryFilter), or null
       },
     },
 
@@ -147,6 +188,7 @@ module("lively.identity.WikiIndex")
           ? "@" + this._scope.handle + " wiki"
           : "c/" + this._scope.name + " wiki";
         this._buildChrome();
+        this._renderCategoriesPanel();
         this._renderPages();
         this._installMenuBarEntry();
         var self = this;
@@ -174,6 +216,9 @@ module("lively.identity.WikiIndex")
         });
         $world.addMorph(this._titleLabel);
 
+        this._sortByBox = this._buildSortByButton();
+        $world.addMorph(this._sortByBox);
+
         this._searchBox = this._buildSearchField();
         $world.addMorph(this._searchBox);
 
@@ -189,11 +234,19 @@ module("lively.identity.WikiIndex")
         $world.addMorph(this._gridBox);
 
         // Reserved gutter to the left of the wiki view (see SIDEBAR_W) —
-        // built hidden and only shown/populated once a page is actually
-        // open (_renderSidebar), since there's nothing to show before that.
+        // built hidden and only shown once a page is actually open
+        // (_setActiveContentMorph), same as before; it now defaults to
+        // that page's outline but its home button switches it to a
+        // filtered list of every wiki page without leaving the open page.
         this._sidebarBox = this._buildSidebar();
         $world.addMorph(this._sidebarBox);
         this._sidebarBox.setVisible(false);
+
+        // Right-hand categories/tags browse panel — unlike _sidebarBox,
+        // visible from the start (it's a way to find a page, not a
+        // per-open-page outline), see _renderCategoriesPanel.
+        this._categoriesPanel = this._buildCategoriesPanel();
+        $world.addMorph(this._categoriesPanel);
 
         this._layout();
       },
@@ -259,18 +312,170 @@ module("lively.identity.WikiIndex")
         return box;
       },
 
-      // Left-hand "On this page" panel — see _renderSidebar for how it's
-      // populated once a topic is open, and _repositionWikiView for how
-      // it's kept pinned alongside the wiki view.
+      // Sits immediately left of the search box, same row/height — shows
+      // the current sort selection and toggles _sortByDropdown (see the
+      // "sort by" category below) on click. Same rounded-pill styling as
+      // _buildSearchField above rather than ConstellationLounge.js's
+      // pink-accented placeholder version of this button, since this one
+      // actually re-sorts the grid instead of just remembering a label.
+      _buildSortByButton: function () {
+        var self = this;
+        var box = new lively.morphic.Box(lively.rect(0, 0, SORT_W, SORT_H));
+        box.setFill(Color.white);
+        box.applyStyle({ borderWidth: 1, borderColor: Color.rgb(200, 200, 200), borderRadius: 17 });
+
+        var label = lively.morphic.Text.makeLabel(this._sortOptionLabel(), {
+          fontSize: 12, textColor: Color.rgb(70, 70, 70), fixedWidth: true, fixedHeight: true,
+        });
+        label.setPosition(lively.pt(14, 0));
+        label.setExtent(lively.pt(SORT_W - 36, SORT_H));
+        label.applyStyle({ borderWidth: 0 });
+        label.eventsAreIgnored = true;
+        box.addMorph(label);
+        this._sortByLabel = label;
+
+        // fixedWidth/fixedHeight: true — required here, not decorative; see
+        // ConstellationLounge.js's _buildSortByButton comment for why an
+        // icon-font ligature label without them gets its box silently
+        // blown out by Text's own deferred re-layout once it's in the world.
+        var chevron = lively.morphic.Text.makeLabel("expand_more", {
+          fontFamily: "'Material Symbols Rounded'", fontSize: 13.5, textColor: Color.rgb(120, 120, 120),
+          fixedWidth: true, fixedHeight: true,
+        });
+        chevron.setPosition(lively.pt(SORT_W - 24, 0));
+        chevron.setExtent(lively.pt(18, SORT_H));
+        chevron.applyStyle({ borderWidth: 0 });
+        chevron.eventsAreIgnored = true;
+        box.addMorph(chevron);
+
+        box.renderContext().shapeNode.style.cursor = "pointer";
+        box.onMouseDown = function () { self._toggleSortByDropdown(); };
+
+        return box;
+      },
+
+      // Left-hand sidebar panel — a "home" icon button + search field
+      // pinned along its top edge (this method), and below that either the
+      // current page's heading outline or a filtered list of every wiki
+      // page (_renderSidebarOutline/_renderSidebarPageList, switched via
+      // _sidebarMode). _repositionWikiView keeps the whole box pinned
+      // alongside the open wiki view.
       _buildSidebar: function () {
         var box = new lively.morphic.Box(lively.rect(0, 0, SIDEBAR_W, 80));
         box.setFill(Color.white);
         box.applyStyle({ borderWidth: 1, borderColor: Color.rgb(230, 230, 230), borderRadius: 8 });
 
+        var homeBtn = this._buildSidebarHomeButton();
+        homeBtn.setPosition(lively.pt(SIDEBAR_PAD, SIDEBAR_PAD));
+        box.addMorph(homeBtn);
+        this._sidebarHomeBtn = homeBtn;
+
+        var searchBox = this._buildSidebarSearchField();
+        searchBox.setPosition(lively.pt(SIDEBAR_PAD + SIDEBAR_TOOLROW_H + 8, SIDEBAR_PAD));
+        box.addMorph(searchBox);
+        this._sidebarSearchBox = searchBox;
+
         var header = lively.morphic.Text.makeLabel("ON THIS PAGE", {
           fontSize: 11, fontWeight: "700", textColor: Color.rgb(150, 150, 150),
         });
-        header.setPosition(lively.pt(16, 14));
+        header.setPosition(lively.pt(16, SIDEBAR_HEADER_TOP));
+        header.eventsAreIgnored = true;
+        box.addMorph(header);
+        this._sidebarHeader = header;
+
+        box._itemMorphs = [];
+        return box;
+      },
+
+      // Small round icon button matching the Material-Symbols-glyph-as-Text
+      // idiom (CLAUDE.md "Icons" section) — a single Text morph, ligature
+      // name as its content, centered by fixed rect + align:center rather
+      // than measure-and-position (fine here since the glyph is always the
+      // same single "home" character, unlike the variable-length labels
+      // CLAUDE.md's Text-centering gotchas are about).
+      _buildSidebarHomeButton: function () {
+        var self = this;
+        var size = SIDEBAR_TOOLROW_H;
+        var btn = new lively.morphic.Text(lively.rect(0, 0, size, size), "home");
+        btn.applyStyle({
+          fontFamily: "'Material Symbols Rounded'",
+          fontSize: 13.5, // 13.5pt ≈ 18px, see CLAUDE.md's fontSize-is-points note
+          textColor: Color.rgb(90, 90, 90),
+          fill: Color.rgb(245, 245, 245),
+          borderWidth: 0,
+          borderRadius: size / 2,
+          align: "center",
+          padding: lively.Rectangle.inset(0, Math.round((size - 18) / 2), 0, 0),
+          allowInput: false,
+          selectable: false,
+          clipMode: "hidden",
+          whiteSpaceHandling: "pre",
+        });
+        btn.renderContext().shapeNode.style.cursor = "pointer";
+        btn.toolTip = "All wiki pages";
+        btn.onMouseOver = function () { btn.applyStyle({ fill: Color.rgb(230, 230, 230) }); };
+        btn.onMouseOut = function () { btn.applyStyle({ fill: Color.rgb(245, 245, 245) }); };
+        btn.onMouseDown = function () { self._showSidebarPageList(""); };
+        return btn;
+      },
+
+      // Deliberately separate from the top-of-page _searchField/_buildSearchField
+      // above — that one filters the topic grid; this one searches for a
+      // page to jump to from inside the sidebar while a page is already
+      // open (where the grid + its own search box may be scrolled out of
+      // view). Same beInputLine()-based technique, see _buildSearchField.
+      _buildSidebarSearchField: function () {
+        var self = this;
+        var w = SIDEBAR_W - SIDEBAR_PAD * 2 - SIDEBAR_TOOLROW_H - 8;
+        var h = SIDEBAR_TOOLROW_H;
+        var box = new lively.morphic.Box(lively.rect(0, 0, w, h));
+        box.setFill(Color.white);
+        box.applyStyle({ borderWidth: 1, borderColor: Color.rgb(200, 200, 200), borderRadius: h / 2 });
+
+        var fieldRect = lively.rect(10, 4, w - 20, h - 8);
+
+        var placeholder = lively.morphic.Text.makeLabel("Find a page…", {
+          fontSize: 11, textColor: Color.rgb(170, 170, 170),
+        });
+        placeholder.setPosition(fieldRect.topLeft());
+        placeholder.setExtent(fieldRect.extent());
+        placeholder.eventsAreIgnored = true;
+        box.addMorph(placeholder);
+
+        var field = new lively.morphic.Text(fieldRect, "");
+        field.applyStyle({ allowInput: true, fontSize: 11, fill: null, borderWidth: 0 });
+        field.beInputLine();
+        var superKeyDown = field.onKeyDown;
+        field.onKeyDown = function (evt) {
+          var result = superKeyDown.call(this, evt);
+          // Same one-tick defer as _buildSearchField above — reading
+          // field.textString synchronously here lags a character behind.
+          setTimeout(function () {
+            placeholder.setVisible(!field.textString);
+            self._showSidebarPageList(field.textString || "");
+          }, 0);
+          return result;
+        };
+        box.addMorph(field);
+        this._sidebarSearchField = field;
+        this._sidebarSearchPlaceholder = placeholder;
+
+        return box;
+      },
+
+      // Right-hand browse panel — content built/rebuilt by
+      // _renderCategoriesPanel (see the "categories" category below); this
+      // just sets up the box + its static "CATEGORIES" header, same shape
+      // as _buildSidebar's own header.
+      _buildCategoriesPanel: function () {
+        var box = new lively.morphic.Box(lively.rect(0, 0, RIGHT_PANEL_W, 80));
+        box.setFill(Color.white);
+        box.applyStyle({ borderWidth: 1, borderColor: Color.rgb(230, 230, 230), borderRadius: 8 });
+
+        var header = lively.morphic.Text.makeLabel("CATEGORIES", {
+          fontSize: 11, fontWeight: "700", textColor: Color.rgb(150, 150, 150),
+        });
+        header.setPosition(lively.pt(PANEL_PAD, PANEL_HEADER_TOP));
         header.eventsAreIgnored = true;
         box.addMorph(header);
 
@@ -288,48 +493,58 @@ module("lively.identity.WikiIndex")
         this._backBtn.setPosition(lively.pt(SIDE_MARGIN, TOP));
         this._titleLabel.setPosition(lively.pt(SIDE_MARGIN, TOP + 28));
 
-        this._searchBox.setPosition(lively.pt(W - SIDE_MARGIN - NEW_BTN_W - 12 - SEARCH_W, TOP));
+        var searchX = W - SIDE_MARGIN - NEW_BTN_W - 12 - SEARCH_W;
+        this._searchBox.setPosition(lively.pt(searchX, TOP));
         this._newBtn.setPosition(lively.pt(W - SIDE_MARGIN - NEW_BTN_W, TOP + (SEARCH_H - NEW_BTN_H) / 2));
+
+        var sortX = searchX - SORT_GAP - SORT_W;
+        this._sortByBox.setPosition(lively.pt(sortX, TOP));
+        if (this._sortByDropdown) this._sortByDropdown.setPosition(lively.pt(sortX, TOP + SORT_H + 4));
 
         var gridY = TOP + HEADER_H + GRID_TOP_GAP;
         this._gridY = gridY;
         var gridW = Math.max(CARD_W, W - SIDE_MARGIN * 2);
+        this._gridW = gridW;
         this._gridBox.setPosition(lively.pt(SIDE_MARGIN, gridY));
-        this._gridBox.setExtent(lively.pt(gridW, Math.max(200, window.innerHeight - gridY - 20)));
+        // Height is provisional here — _layoutGrid (below) corrects it to
+        // the single shelf row's real (possibly wrapped-title-grown)
+        // height once cards exist; this only matters before the first
+        // _renderPages call.
+        this._gridBox.setExtent(lively.pt(gridW, CARD_H));
 
         this._layoutGrid();
       },
 
-      // Cards can be taller than the CARD_H floor once _fitCard hugs a
-      // wrapped title, so rows are packed shelf-style (each row's height is
-      // its tallest card) instead of assuming a uniform CARD_H — a uniform
-      // assumption would let a wrapped card's second line overlap the row
-      // below it. Tracks the grid's real total content height (not the
-      // _gridBox's own fill-to-bottom-of-window extent, which is generous
-      // padding, not content) so an open WikiView can be placed right below
-      // the actual last row instead of overlapping it.
+      // One shelf row, not a wrapping multi-row grid — this used to pack
+      // cards into as many rows as the page count needed, which could push
+      // the open wiki view (positioned right below the grid, see
+      // _repositionWikiView) far down the page. Now every card sits in a
+      // single row and the row scrolls horizontally (native overflow, via
+      // clipMode) once there are more cards than fit, so the grid's own
+      // height is always just one row tall regardless of how many wiki
+      // pages exist — freeing the rest of the viewport for the actual page
+      // content. Cards can still be taller than the CARD_H floor if
+      // _fitCard hugs a wrapped title, so the row's height is still the
+      // tallest card actually present, not a hardcoded constant.
       _layoutGrid: function () {
-        var gridW = this._gridBox.getExtent().x || CARD_W;
-        var columns = Math.max(1, Math.floor((gridW + GRID_GAP) / (CARD_W + GRID_GAP)));
+        var self = this;
+        var rowH = 0;
+        var x = 0;
+        this._cardMorphs.forEach(function (card) {
+          card.setPosition(lively.pt(x, 0));
+          x += CARD_W + GRID_GAP;
+          rowH = Math.max(rowH, card._cardH || CARD_H);
+        });
+        var contentW = this._cardMorphs.length ? (x - GRID_GAP) : 0;
+        var overflowing = contentW > this._gridW;
 
-        var rowHeights = [];
-        this._cardMorphs.forEach(function (card, i) {
-          var row = Math.floor(i / columns);
-          rowHeights[row] = Math.max(rowHeights[row] || 0, card._cardH || CARD_H);
-        });
-        var rowTops = [];
-        var y = 0;
-        rowHeights.forEach(function (h, row) {
-          rowTops[row] = y;
-          y += h + GRID_GAP;
-        });
-        this._cardMorphs.forEach(function (card, i) {
-          var col = i % columns;
-          var row = Math.floor(i / columns);
-          card.setPosition(lively.pt(col * (CARD_W + GRID_GAP), rowTops[row]));
-        });
+        // +16: room for the native horizontal scrollbar so it doesn't clip
+        // the cards' own bottom edge (clipMode's overflow-y is 'hidden').
+        var boxH = this._cardMorphs.length ? rowH + (overflowing ? 16 : 0) : rowH;
+        this._gridBox.setExtent(lively.pt(this._gridW, boxH));
+        this._gridBox.applyStyle({ clipMode: overflowing ? { x: "auto", y: "hidden" } : "visible" });
 
-        this._gridContentHeight = rowHeights.length ? (y - GRID_GAP) : 0;
+        this._gridContentHeight = this._cardMorphs.length ? rowH : 0;
         this._repositionWikiView();
       },
 
@@ -348,6 +563,291 @@ module("lively.identity.WikiIndex")
         if (this._sidebarBox && this._sidebarBox.world() && this._sidebarBox.isVisible()) {
           this._sidebarBox.setPosition(lively.pt(SIDE_MARGIN, y));
         }
+        if (this._categoriesPanel && this._categoriesPanel.world()) {
+          var rightX = window.innerWidth - SIDE_MARGIN - RIGHT_PANEL_W;
+          this._categoriesPanel.setPosition(lively.pt(rightX, y));
+        }
+      },
+
+      // Shared by _openPage/_createNewPage — available width for the open
+      // wiki view/editor between the left sidebar gutter and the right
+      // categories panel gutter, capped at WikiView's own 1180px default.
+      _contentWidth: function () {
+        var leftEdge = SIDE_MARGIN + SIDEBAR_W + SIDEBAR_GAP;
+        var rightGutter = RIGHT_PANEL_W + RIGHT_PANEL_GAP;
+        return Math.min(1180, window.innerWidth - leftEdge - rightGutter - SIDE_MARGIN);
+      },
+    },
+
+    // ─── sort by ────────────────────────────────────────────────────────────────
+
+    "sort by", {
+      _sortOptionLabel: function () {
+        var self = this;
+        var opt = SORT_OPTIONS.find(function (o) { return o.key === self._sortBy; });
+        return (opt || SORT_OPTIONS[0]).label;
+      },
+
+      _toggleSortByDropdown: function () {
+        if (this._sortByDropdown) return this._closeSortByDropdown();
+
+        var self = this;
+        var itemsH = SORT_OPTIONS.length * SORT_ITEM_H;
+        var dropdown = new lively.morphic.Box(lively.rect(0, 0, SORT_W, itemsH + 8));
+        dropdown.setFill(Color.white);
+        dropdown.applyStyle({ borderWidth: 1, borderColor: Color.rgb(200, 200, 200), borderRadius: 8 });
+
+        SORT_OPTIONS.forEach(function (opt, i) {
+          var isSelected = opt.key === self._sortBy;
+          var row = new lively.morphic.Text(
+            lively.rect(0, 4 + i * SORT_ITEM_H, SORT_W, SORT_ITEM_H),
+            (isSelected ? "✓ " : "   ") + opt.label,
+          );
+          row.applyStyle({
+            fontSize: 12,
+            fontWeight: isSelected ? "600" : "400",
+            textColor: isSelected ? Color.rgb(20, 20, 20) : Color.rgb(90, 90, 90),
+            fill: null, borderWidth: 0, borderColor: null, align: "left",
+          });
+          row.renderContext().shapeNode.style.cursor = "pointer";
+          row.onMouseDown = function () { self._selectSortOption(opt.key); };
+          row.onMouseOver = function () { row.applyStyle({ fill: Color.rgb(245, 245, 245) }); };
+          row.onMouseOut = function () { row.applyStyle({ fill: null }); };
+          dropdown.addMorph(row);
+        });
+
+        $world.addMorph(dropdown);
+        this._sortByDropdown = dropdown;
+        this._layout();
+      },
+
+      _closeSortByDropdown: function () {
+        if (!this._sortByDropdown) return;
+        this._sortByDropdown.remove();
+        this._sortByDropdown = null;
+      },
+
+      _selectSortOption: function (key) {
+        this._sortBy = key;
+        if (this._sortByLabel) this._sortByLabel.setTextString(this._sortOptionLabel());
+        this._closeSortByDropdown();
+        this._renderPages();
+      },
+
+      // Applied after search-filtering, before the grid is built
+      // (_renderPages) — "modified"/"created" both fall back to wikiName
+      // ordering when two pages tie exactly on a timestamp, so the grid
+      // order stays deterministic instead of flapping between renders.
+      _sortPages: function (pages) {
+        var sortBy = this._sortBy;
+        var sorted = pages.slice();
+        if (sortBy === "alpha") {
+          sorted.sort(function (a, b) {
+            return (a.wikiName || "").toLowerCase().localeCompare((b.wikiName || "").toLowerCase());
+          });
+        } else {
+          var field = sortBy === "created" ? "createdAt" : "updatedAt";
+          sorted.sort(function (a, b) {
+            var diff = new Date(b[field] || 0).getTime() - new Date(a[field] || 0).getTime();
+            if (diff) return diff;
+            return (a.wikiName || "").toLowerCase().localeCompare((b.wikiName || "").toLowerCase());
+          });
+        }
+        return sorted;
+      },
+    },
+
+    // ─── categories & tags ──────────────────────────────────────────────────────
+
+    "categories", {
+      // { category -> { count, tagSet } } from every page's own
+      // category/tags fields (both null/empty for a page created before
+      // this existed, or via any path that skips NewWikiPageDialog —
+      // those pages just don't contribute to the panel), then sorted into
+      // [{ category, count, tags }, ...] — known categories in
+      // CATEGORY_ORDER's fixed order first, any others alphabetically
+      // after (defensive: covers legacy/manually-set category strings
+      // outside that list rather than silently dropping them).
+      _categoryTagMap: function () {
+        var map = {};
+        this._pages.forEach(function (p) {
+          if (!p.category) return;
+          if (!map[p.category]) map[p.category] = { count: 0, tagSet: {} };
+          map[p.category].count++;
+          (p.tags || []).forEach(function (t) { if (t) map[p.category].tagSet[t] = true; });
+        });
+        var categories = Object.keys(map);
+        categories.sort(function (a, b) {
+          var ia = CATEGORY_ORDER.indexOf(a); if (ia === -1) ia = CATEGORY_ORDER.length;
+          var ib = CATEGORY_ORDER.indexOf(b); if (ib === -1) ib = CATEGORY_ORDER.length;
+          return ia !== ib ? ia - ib : a.localeCompare(b);
+        });
+        return categories.map(function (cat) {
+          var tags = Object.keys(map[cat].tagSet).sort(function (a, b) { return a.localeCompare(b); });
+          return { category: cat, count: map[cat].count, tags: tags };
+        });
+      },
+
+      // Rebuilds the whole right-hand panel from scratch — cheap enough
+      // (a handful of categories/tags) to just do on every data change or
+      // filter-selection change, same rebuild-heavy approach the sidebar's
+      // outline/page-list rendering already uses. Category labels are
+      // clickable rows; tags render as flow-wrapped pill morphs
+      // (_buildTagPill/_fitPill) beneath their own category, wrapping to a
+      // new line once a row would overflow the panel's content width.
+      _renderCategoriesPanel: function () {
+        var self = this;
+        var box = this._categoriesPanel;
+        (box._itemMorphs || []).forEach(function (m) { m.remove(); });
+        box._itemMorphs = [];
+
+        var groups = this._categoryTagMap();
+        var y = PANEL_ITEMS_TOP;
+
+        if (!groups.length) {
+          var empty = lively.morphic.Text.makeLabel("No categories yet.", {
+            fontSize: 12, textColor: Color.rgb(170, 170, 170),
+          });
+          empty.setPosition(lively.pt(PANEL_PAD, y));
+          box.addMorph(empty);
+          box._itemMorphs.push(empty);
+          y += 22;
+        } else {
+          groups.forEach(function (g) {
+            var isSelectedCat = self._categoryFilter === g.category;
+            var label = new lively.morphic.Text(
+              lively.rect(PANEL_PAD, y, RIGHT_PANEL_W - PANEL_PAD * 2, CATEGORY_LABEL_H),
+              g.category + " (" + g.count + ")",
+            );
+            label.applyStyle({
+              fontSize: 13, fontWeight: isSelectedCat ? "700" : "600",
+              textColor: isSelectedCat ? Color.rgb(20, 20, 20) : Color.rgb(60, 60, 60),
+              fill: null, borderWidth: 0, borderColor: null,
+            });
+            label.renderContext().shapeNode.style.cursor = "pointer";
+            label.onMouseDown = function () { self._selectCategory(g.category); };
+            box.addMorph(label);
+            box._itemMorphs.push(label);
+            y += CATEGORY_LABEL_H + 6;
+
+            var x = PANEL_PAD;
+            g.tags.forEach(function (tag) {
+              var isSelectedTag = isSelectedCat && self._tagFilter === tag;
+              // Pill built empty and added to `box` (already in $world)
+              // *before* its label exists — see _fitPill's comment for why
+              // that order matters.
+              var pill = self._buildTagPill(g.category, tag, isSelectedTag);
+              box.addMorph(pill);
+              var pillW = self._fitPill(pill, g.category, tag, isSelectedTag);
+              if (x + pillW > RIGHT_PANEL_W - PANEL_PAD && x > PANEL_PAD) {
+                x = PANEL_PAD;
+                y += PILL_H + PILL_GAP_Y;
+              }
+              pill.setPosition(lively.pt(x, y));
+              x += pillW + PILL_GAP_X;
+              box._itemMorphs.push(pill);
+            });
+            if (g.tags.length) y += PILL_H;
+            y += CATEGORY_BLOCK_GAP;
+          });
+        }
+
+        box.setExtent(lively.pt(RIGHT_PANEL_W, y + 8));
+      },
+
+      // Builds only the pill's outer Box, with no label child yet — see
+      // _fitPill for why the label has to be added later instead of here.
+      _buildTagPill: function (category, tag, isSelected) {
+        var self = this;
+        var pill = new lively.morphic.Box(lively.rect(0, 0, 10, PILL_H));
+        pill.applyStyle({
+          fill: isSelected ? Color.rgb(55, 55, 55) : Color.rgb(235, 235, 240),
+          borderWidth: 0, borderRadius: PILL_H / 2,
+        });
+        pill.renderContext().shapeNode.style.cursor = "pointer";
+        pill.onMouseDown = function () { self._selectTag(category, tag); };
+        return pill;
+      },
+
+      // Creates the pill's tag-text label and sizes both it and the pill
+      // to hug it. Deliberately split out from _buildTagPill and called
+      // only *after* the caller has already added the (still-empty) pill
+      // to `box` — confirmed live: adding the label as a child of `pill`
+      // while `pill` itself was still a detached morph (not yet in
+      // $world) rendered the label off-document, and its text metrics
+      // came back wrapped ("claude" → "claud"/"e") and stayed wrapped
+      // even after later resizing, despite offsetWidth/style.width
+      // otherwise looking correct — a stricter version of the "must
+      // already be in $world to measure" rule CLAUDE.md documents for
+      // _fitCard, since here even indirect (grandparent-only) world
+      // membership at creation time wasn't enough.
+      //
+      // Mirrors _fitCard's idioms: the label starts at 1px height so
+      // offsetHeight isn't floored by the shapeNode's own min-height, and
+      // the measured height gets +4 added back (2px top + 2px bottom) to
+      // compensate for setExtentHTML subtracting the shapeNode's internal
+      // padding. Width compensation is +10, not the +8 (4px each side)
+      // _buildPageCard/_fitCard's own header comment uses — confirmed
+      // live: +8 (exactly canceling the padding subtraction, zero extra
+      // slack) still wrapped "claude" about half the time depending on
+      // the word, because offsetWidth rounds to a whole CSS px while the
+      // real layout width can be a fraction above that (more visible at
+      // this window's 1.5 devicePixelRatio), and a pill's fit is snug
+      // enough that even a sub-pixel shortfall triggers wrap. +2px of
+      // real slack on top of the padding compensation reliably avoided it
+      // across every word tested ("claude", "verification", "test",
+      // "save-test", a single "a"). _fitCard's own case tolerates the
+      // same rounding fine because its card width has much more slack
+      // than a hug-fit pill does.
+      _fitPill: function (pill, category, tag, isSelected) {
+        var label = new lively.morphic.Text(lively.rect(PILL_PAD_X, 0, 160, 1), tag);
+        label.applyStyle({
+          fontSize: 11, fontWeight: isSelected ? "700" : "500",
+          textColor: isSelected ? Color.white : Color.rgb(70, 70, 70),
+          fill: null, borderWidth: 0, borderColor: null,
+        });
+        label.eventsAreIgnored = true;
+        pill.addMorph(label);
+
+        var innerDiv = label.renderContext().shapeNode.querySelector("div");
+        var span = innerDiv ? innerDiv.querySelector("span") : null;
+        var textW = span ? span.offsetWidth : 30;
+        var textH = innerDiv ? innerDiv.offsetHeight : 14;
+        label.setExtent(lively.pt(textW + 10, textH + 4));
+        label.setPosition(lively.pt(PILL_PAD_X, Math.round((PILL_H - (textH + 4)) / 2)));
+        var pillW = textW + PILL_PAD_X * 2;
+        pill.setExtent(lively.pt(pillW, PILL_H));
+        return pillW;
+      },
+
+      // Clicking a category toggles it as the active filter and clears
+      // any tag filter (a tag only makes sense scoped to the category row
+      // it's rendered under — see _selectTag).
+      _selectCategory: function (category) {
+        if (this._categoryFilter === category) {
+          this._categoryFilter = null;
+          this._tagFilter = null;
+        } else {
+          this._categoryFilter = category;
+          this._tagFilter = null;
+        }
+        this._renderCategoriesPanel();
+        this._renderPages();
+      },
+
+      // Clicking a tag pill selects both its category and the tag
+      // together (that pair is exactly what's shown grouped under the
+      // category label), or clears just the tag if that exact pair is
+      // already active.
+      _selectTag: function (category, tag) {
+        if (this._categoryFilter === category && this._tagFilter === tag) {
+          this._tagFilter = null;
+        } else {
+          this._categoryFilter = category;
+          this._tagFilter = tag;
+        }
+        this._renderCategoriesPanel();
+        this._renderPages();
       },
     },
 
@@ -360,19 +860,37 @@ module("lively.identity.WikiIndex")
         this._cardMorphs = [];
 
         var q = (this._filterQuery || "").toLowerCase();
-        var pages = q
-          ? this._pages.filter(function (p) { return (p.wikiName || "").toLowerCase().indexOf(q) !== -1; })
-          : this._pages;
+        var pages = this._pages;
+        if (this._categoryFilter) {
+          pages = pages.filter(function (p) { return p.category === self._categoryFilter; });
+        }
+        if (this._tagFilter) {
+          pages = pages.filter(function (p) { return (p.tags || []).indexOf(self._tagFilter) !== -1; });
+        }
+        if (q) {
+          pages = pages.filter(function (p) { return (p.wikiName || "").toLowerCase().indexOf(q) !== -1; });
+        }
+        pages = this._sortPages(pages);
         this._pagesFiltered = pages;
 
         if (!pages.length) {
-          var empty = lively.morphic.Text.makeLabel(
-            this._pages.length ? "No wiki pages match “" + this._filterQuery + "”." : "No wiki pages yet.",
-            { fontSize: 13, textColor: Color.gray },
-          );
+          var emptyMsg = "No wiki pages yet.";
+          if (this._pages.length) {
+            if (q) emptyMsg = "No wiki pages match “" + this._filterQuery + "”.";
+            else if (this._tagFilter) emptyMsg = "No wiki pages tagged “" + this._tagFilter + "”.";
+            else if (this._categoryFilter) emptyMsg = "No wiki pages in “" + this._categoryFilter + "”.";
+          }
+          var empty = lively.morphic.Text.makeLabel(emptyMsg, { fontSize: 13, textColor: Color.gray });
           empty.setPosition(lively.pt(0, 0));
           this._gridBox.addMorph(empty);
           this._cardMorphs.push(empty);
+          // Reset back to a plain single-row slot — a previous non-empty
+          // render may have left this box taller/scrollable (_layoutGrid's
+          // +16 scrollbar allowance and clipMode:{x:'auto'}), which would
+          // otherwise linger through a search that temporarily matches
+          // nothing.
+          this._gridBox.setExtent(lively.pt(this._gridW || CARD_W, CARD_H));
+          this._gridBox.applyStyle({ clipMode: "visible" });
           this._gridContentHeight = 0;
           this._repositionWikiView();
           return;
@@ -460,8 +978,7 @@ module("lively.identity.WikiIndex")
       _openPage: function (page) {
         var self = this;
         this._resolveHandle(page.objId, function (handle, envelope) {
-          var leftEdge = SIDE_MARGIN + SIDEBAR_W + SIDEBAR_GAP;
-          var w = Math.min(1180, window.innerWidth - leftEdge - SIDE_MARGIN);
+          var w = self._contentWidth();
           var opts = { bounds: lively.rect(0, 0, w, 780) };
           if (envelope) opts.envelope = envelope;
           self._setActiveContentMorph(lively.identity.WikiView.open(handle, page.objId, opts));
@@ -479,7 +996,13 @@ module("lively.identity.WikiIndex")
         }
         this._activeContentMorph = morph;
         morph.bringToFront();
-        this._renderSidebar(morph);
+        // Opening/re-opening a page always lands the sidebar back on that
+        // page's own outline — the home button (_showSidebarPageList) is
+        // the only way to switch it into "all pages" mode from here.
+        this._sidebarMode = "outline";
+        if (this._sidebarSearchField) this._sidebarSearchField.textString = "";
+        if (this._sidebarSearchPlaceholder) this._sidebarSearchPlaceholder.setVisible(true);
+        this._renderSidebarOutline(morph);
         this._repositionWikiView();
       },
 
@@ -487,13 +1010,15 @@ module("lively.identity.WikiIndex")
       // headings (WikiView#getOutline) — clicking an entry scrolls that
       // exact heading element into view inside the WikiView's own
       // (overflow-y:auto) content area.
-      _renderSidebar: function (view) {
+      _renderSidebarOutline: function (view) {
+        this._sidebarOutline = (view && view.getOutline) ? view.getOutline() : [];
+        if (this._sidebarHeader) this._sidebarHeader.setTextString("ON THIS PAGE");
+
         var box = this._sidebarBox;
+        var outline = this._sidebarOutline;
         (box._itemMorphs || []).forEach(function (m) { m.remove(); });
         box._itemMorphs = [];
-
-        var outline = (view && view.getOutline) ? view.getOutline() : [];
-        var y = 40;
+        var y = SIDEBAR_ITEMS_TOP;
 
         if (!outline.length) {
           var empty = lively.morphic.Text.makeLabel("No headings in this page.", {
@@ -531,6 +1056,69 @@ module("lively.identity.WikiIndex")
             item.onMouseDown = function () {
               if (h.el && h.el.scrollIntoView) h.el.scrollIntoView({ behavior: "smooth", block: "start" });
             };
+            box._itemMorphs.push(item);
+            y += 22;
+          });
+        }
+
+        box.setExtent(lively.pt(SIDEBAR_W, y + 14));
+        box.setVisible(true);
+      },
+
+      // Home button handler — switches the sidebar out of "this page's
+      // outline" mode into a flat, searchable list of every wiki page in
+      // this scope, filtered by `query` (also called live as the sidebar
+      // search field is typed into). Reuses the same wikiName substring
+      // match _renderPages uses for the top-of-page grid search.
+      _showSidebarPageList: function (query) {
+        this._sidebarMode = "list";
+        this._renderSidebarPageList(query || "");
+      },
+
+      _renderSidebarPageList: function (query) {
+        var self = this;
+        this._sidebarListQuery = query || "";
+        if (this._sidebarHeader) this._sidebarHeader.setTextString("ALL WIKI PAGES");
+
+        var box = this._sidebarBox;
+        (box._itemMorphs || []).forEach(function (m) { m.remove(); });
+        box._itemMorphs = [];
+        var y = SIDEBAR_ITEMS_TOP;
+
+        var q = this._sidebarListQuery.toLowerCase();
+        var pages = q
+          ? this._pages.filter(function (p) { return (p.wikiName || "").toLowerCase().indexOf(q) !== -1; })
+          : this._pages;
+
+        if (!pages.length) {
+          var empty = lively.morphic.Text.makeLabel(
+            this._pages.length ? "No pages match “" + this._sidebarListQuery + "”." : "No wiki pages yet.",
+            { fontSize: 12, textColor: Color.rgb(170, 170, 170) },
+          );
+          empty.setPosition(lively.pt(16, y));
+          box.addMorph(empty);
+          box._itemMorphs.push(empty);
+          y += 22;
+        } else {
+          pages.forEach(function (page) {
+            var item = new lively.morphic.Text(
+              lively.rect(16, y, SIDEBAR_W - 32, 18),
+              page.wikiName,
+            );
+            item.applyStyle({
+              fontSize: 13, fontWeight: "500", textColor: Color.rgb(50, 50, 50),
+              fill: null, borderWidth: 0, borderColor: null,
+            });
+            box.addMorph(item);
+            var itemNode = item.renderContext().shapeNode;
+            itemNode.style.cursor = "pointer";
+            var itemDiv = itemNode.querySelector("div");
+            if (itemDiv) {
+              itemDiv.style.whiteSpace = "nowrap";
+              itemDiv.style.overflow = "hidden";
+              itemDiv.style.textOverflow = "ellipsis";
+            }
+            item.onMouseDown = function () { self._openPage(page); };
             box._itemMorphs.push(item);
             y += 22;
           });
@@ -638,8 +1226,7 @@ module("lively.identity.WikiIndex")
       _createNewPage: function (handle, fields) {
         var self = this;
         lively.require("lively.identity.WikiEditor").toRun(function () {
-          var leftEdge = SIDE_MARGIN + SIDEBAR_W + SIDEBAR_GAP;
-          var w = Math.min(1180, window.innerWidth - leftEdge - SIDE_MARGIN);
+          var w = self._contentWidth();
           var newCardOpts = {
             wikiName: fields.wikiName,
             category: fields.category,
@@ -680,7 +1267,10 @@ module("lively.identity.WikiIndex")
           if (editor._objId) {
             self._fetchWikiIndexSilently(function () {
               var found = self._pages.some(function (p) { return p.wikiName === wikiName; });
-              if (found) self._renderPages();
+              if (found) {
+                self._renderCategoriesPanel();
+                self._renderPages();
+              }
             });
             return;
           }

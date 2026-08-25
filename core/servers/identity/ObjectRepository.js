@@ -775,13 +775,25 @@ function getWikiPageObjId(constellation, wikiName, thenDo) {
 // shape as listPostcardsForConstellation, filtered on type = 'wikipage'
 // instead. No pagination — wiki-page counts per constellation are small;
 // add it if that stops being true.
-// Calls thenDo(null, [{ objId, wikiName, updatedAt }, ...]).
+// updatedAt is the latest version row's created_at (an edit is a new row,
+// see WikiSerializer.js); createdAt is a second join on the same obj_id
+// grouping by MIN(created_at) instead of MAX(id) — the genesis row's own
+// timestamp, which the "latest version" join above discards. Both are
+// needed so the wiki index's sort-by dropdown (WikiIndex.js) can offer
+// "last modified" and "last created" as genuinely different orderings —
+// for a page that's never been edited the two are equal anyway.
+// category/tags are pulled the same way listWikiPagesForUser's version
+// below does — WikiIndex.js's right-hand categories/tags panel needs them
+// for constellation-scoped wikis too, not just personal ones.
+// Calls thenDo(null, [{ objId, wikiName, category, tags, updatedAt, createdAt }, ...]).
 function listWikiPages(constellation, thenDo) {
   withDB(function (err, db) {
     if (err) return thenDo(err);
     db.all(
-      'SELECT o.obj_id, o.created_at,' +
-      '       json_extract(o.envelope, \'$.state.wikiName\') AS wiki_name' +
+      'SELECT o.obj_id, o.created_at AS updated_at, genesis.created_at AS created_at,' +
+      '       json_extract(o.envelope, \'$.state.wikiName\') AS wiki_name,' +
+      '       json_extract(o.envelope, \'$.state.category\') AS category,' +
+      '       json_extract(o.envelope, \'$.state.tags\') AS tags_json' +
       ' FROM objects o' +
       ' INNER JOIN (' +
       '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
@@ -789,14 +801,27 @@ function listWikiPages(constellation, thenDo) {
       '         AND json_extract(envelope, \'$.constellation\') = ?' +
       '   GROUP BY obj_id' +
       ' ) latest ON o.id = latest.max_id' +
+      ' INNER JOIN (' +
+      '   SELECT obj_id, MIN(created_at) AS created_at FROM objects' +
+      '   WHERE type = \'wikipage\'' +
+      '         AND json_extract(envelope, \'$.constellation\') = ?' +
+      '   GROUP BY obj_id' +
+      ' ) genesis ON genesis.obj_id = o.obj_id' +
       ' WHERE (json_extract(o.envelope, \'$.state.deleted\') IS NULL' +
       '        OR json_extract(o.envelope, \'$.state.deleted\') != 1)' +
       ' ORDER BY wiki_name ASC',
-      [constellation],
+      [constellation, constellation],
       function (err, rows) {
         if (err) return thenDo(err);
         thenDo(null, (rows || []).map(function (r) {
-          return { objId: r.obj_id, wikiName: r.wiki_name, updatedAt: r.created_at };
+          var tags = [];
+          if (r.tags_json) {
+            try { tags = JSON.parse(r.tags_json) || []; } catch (e) { tags = []; }
+          }
+          return {
+            objId: r.obj_id, wikiName: r.wiki_name, category: r.category || null, tags: tags,
+            updatedAt: r.updated_at, createdAt: r.created_at,
+          };
         }));
       }
     );
@@ -851,13 +876,14 @@ function getWikiPageObjIdForUser(did, wikiName, thenDo) {
 // personal wiki index (GET /@:handle/wiki). Same no-pagination precedent as
 // listWikiPages (small per-scope counts). Also surfaces category/tags for
 // the index cards — listWikiPages doesn't need these today but there's no
-// reason the personal listing shouldn't carry them.
-// Calls thenDo(null, [{ objId, wikiName, category, tags, updatedAt }, ...]).
+// reason the personal listing shouldn't carry them. Same updatedAt/createdAt
+// two-join shape as listWikiPages above — see that function's comment.
+// Calls thenDo(null, [{ objId, wikiName, category, tags, updatedAt, createdAt }, ...]).
 function listWikiPagesForUser(did, thenDo) {
   withDB(function (err, db) {
     if (err) return thenDo(err);
     db.all(
-      'SELECT o.obj_id, o.created_at,' +
+      'SELECT o.obj_id, o.created_at AS updated_at, genesis.created_at AS created_at,' +
       '       json_extract(o.envelope, \'$.state.wikiName\') AS wiki_name,' +
       '       json_extract(o.envelope, \'$.state.category\') AS category,' +
       '       json_extract(o.envelope, \'$.state.tags\') AS tags_json' +
@@ -869,10 +895,17 @@ function listWikiPagesForUser(did, thenDo) {
       '         AND json_extract(envelope, \'$.constellation\') IS NULL' +
       '   GROUP BY obj_id' +
       ' ) latest ON o.id = latest.max_id' +
+      ' INNER JOIN (' +
+      '   SELECT obj_id, MIN(created_at) AS created_at FROM objects' +
+      '   WHERE type = \'wikipage\'' +
+      '         AND did = ?' +
+      '         AND json_extract(envelope, \'$.constellation\') IS NULL' +
+      '   GROUP BY obj_id' +
+      ' ) genesis ON genesis.obj_id = o.obj_id' +
       ' WHERE (json_extract(o.envelope, \'$.state.deleted\') IS NULL' +
       '        OR json_extract(o.envelope, \'$.state.deleted\') != 1)' +
       ' ORDER BY wiki_name ASC',
-      [did],
+      [did, did],
       function (err, rows) {
         if (err) return thenDo(err);
         thenDo(null, (rows || []).map(function (r) {
@@ -882,7 +915,7 @@ function listWikiPagesForUser(did, thenDo) {
           }
           return {
             objId: r.obj_id, wikiName: r.wiki_name, category: r.category || null,
-            tags: tags, updatedAt: r.created_at,
+            tags: tags, updatedAt: r.updated_at, createdAt: r.created_at,
           };
         }));
       }
