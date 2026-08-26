@@ -13,15 +13,21 @@
  * see those files' own header comments for why (no per-user home-world
  * config to fall back on for a bare boot page).
  *
- * Scope this session (see the rooms-UI planning doc): chat is mock/local-
- * only (no persistence — a future session rides the same objects-envelope
- * rail postcards/wiki pages already use, `state.kind:'room-message'`, see
- * the design note at the bottom of this file); the member list and
- * presence join/heartbeat are real (RoomPresence.js); your own video
- * circle streams a real getUserMedia camera preview (via
+ * Chat and video are both real as of the 2026-08-25 session: chat messages
+ * ride the same objects-envelope/postal rail every other postcard uses
+ * (`state.kind:'room-message'`, ObjectRepository.listMessagesForRoom) —
+ * sent via PostCardSerializer.serializePlainToEnvelope + PUT to your own
+ * /@handle/objId, then POSTed to /c/:name/rooms/:roomId/messages for
+ * server-side validation, exactly like a room-join-request postcard.
+ * Other participants' messages arrive via short-interval polling (no
+ * persistent chat channel — see the "chat" category below). Video/voice is
+ * a real mesh WebRTC call (RoomSignalingServer.js relays offer/answer/ICE,
+ * grouped by roomId and gated by canJoinRoom via a short-lived token) —
+ * your own video circle streams a real getUserMedia camera preview (via
  * lively.identity.AmbientPresencePanel.enterRoom/getLocalStream — no
- * duplicate media acquisition here), other participants render as static
- * identicon-avatar circles until real peer WebRTC signaling exists.
+ * duplicate media acquisition here) and so does every other participant's,
+ * via a direct RTCPeerConnection to each of them (see the "webrtc"
+ * category below).
  *
  * Rendering convention: every visible element is a real Lively morph
  * (Box/Text/Image), added to $world — same "no raw DOM overlay" discipline
@@ -36,7 +42,9 @@ module("lively.identity.RoomView")
   .requires(
     "lively.identity.DID",
     "lively.identity.PostCardUtils",
+    "lively.identity.PostCardSerializer",
     "lively.identity.AmbientPresencePanel",
+    "lively.Network",
     "lively.morphic.Complete",
   )
   .toRun(function () {
@@ -71,6 +79,8 @@ module("lively.identity.RoomView")
     var INPUT_H = 52;
     var AVATAR_MSG = 28, AVATAR_MEMBER = 28;
     var VIDEO_CIRCLE = 96;
+    var MESSAGE_POLL_MS = 4000;
+    var ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
 
     // Plain Box/Text/Image morphs default to draggable/droppable/grabbable —
     // fine for the video circles (draggable by design), wrong for every
@@ -106,12 +116,24 @@ module("lively.identity.RoomView")
         this._room = null;
         this._isController = false;
         this._participants = [];  // [{did, handle}]
-        this._messages = [];      // mock/local-only this session, see file header
+        this._messages = [];      // [{objId, did, handle, text, created}], real (see "chat" category)
+        this._messagePollTimer = null;
+        this._sendingMessage = false;
         this._heartbeatTimer = null;
         this._videoCircles = {};  // did -> morph
         this._boundLeaveBestEffort = null;
         this._originX = 0;        // set for real by _computeOrigin before anything renders
         this._originY = 0;
+
+        // WebRTC mesh state (see "webrtc" category)
+        this._signalingWs = null;
+        this._signalingIntentionallyClosed = false;
+        this._pendingSignalingToken = null;
+        this._mySignalingPeerId = null;
+        this._peerMeta = {};        // signaling peerId -> {did, handle}, known as soon as a peer is announced
+        this._signalingPeers = {};  // signaling peerId -> {pc, did, handle, pendingIce}, only once a pc exists
+        this._didToPeerId = {};     // did -> signaling peerId, for looking up a peer by roster identity
+        this._remoteStreams = {};   // did -> MediaStream, latest known remote stream per participant
       },
     },
 
@@ -175,17 +197,18 @@ module("lively.identity.RoomView")
 
       _start: function () {
         this._computeOrigin();
-        this._seedMockMessages();
         this._buildHeader();
         this._buildRoomsPanel();
         this._buildChatPanel();
         this._buildMembersPanel();
         this._buildVideoLayer();
-        this._renderMessages();
         this._renderMembers();
         this._renderVideoCircles();
         this._joinPresence();
         this._startHeartbeat();
+        this._loadMessages();
+        this._startMessagePolling();
+        this._connectSignaling();
 
         this._boundLeaveBestEffort = this._leaveBestEffort.bind(this);
         window.addEventListener("pagehide", this._boundLeaveBestEffort);
@@ -200,7 +223,10 @@ module("lively.identity.RoomView")
           // getUserMedia resolves asynchronously (real permission prompt) —
           // the self video circle already exists (blank) from
           // _renderVideoCircles above, so poll briefly for the stream and
-          // fill it in once ready rather than re-creating the circle.
+          // fill it in once ready rather than re-creating the circle. Also
+          // pushes the now-ready local tracks onto any peer connections
+          // that were already established before the stream resolved (see
+          // _waitForLocalStreamThenFill below).
           self._waitForLocalStreamThenFill(20);
         });
       },
@@ -209,7 +235,14 @@ module("lively.identity.RoomView")
         var user = lively.identity.did.currentUser();
         var myDid = user ? user.did : null;
         var circle = myDid && this._videoCircles[myDid];
-        if (circle && !circle._hasLocalVideo && this._fillWithLocalStream(circle)) return;
+        var filledOwnCircle = circle && !circle._hasLocalVideo && this._fillWithLocalStream(circle);
+        // Any peer connection already established (webrtc category, below)
+        // before getUserMedia resolved was created with recvonly-capable
+        // transceivers and no local tracks yet — push them in now that the
+        // stream is ready, same one-time "fill in once ready" idea as the
+        // self circle above.
+        var pushedToPeers = this._applyLocalTracksToAllPeers();
+        if (filledOwnCircle && pushedToPeers) return;
         if (attemptsLeft <= 0) return;
         var self = this;
         setTimeout(function () { self._waitForLocalStreamThenFill(attemptsLeft - 1); }, 300);
@@ -292,6 +325,8 @@ module("lively.identity.RoomView")
 
       _leaveRoomAndReturn: function () {
         var self = this;
+        if (this._messagePollTimer) { clearInterval(this._messagePollTimer); this._messagePollTimer = null; }
+        this._teardownSignaling();
         var base = lively.identity.did.baseUrl();
         var xhr = new XMLHttpRequest();
         xhr.open("DELETE", base + "/c/" + encodeURIComponent(this._name) + "/rooms/" + this._roomId + "/presence", true);
@@ -310,6 +345,8 @@ module("lively.identity.RoomView")
       // own _leaveAllRoomsBestEffort (pagehide/beforeunload need something that's
       // actually guaranteed to send before the page tears down).
       _leaveBestEffort: function () {
+        if (this._messagePollTimer) { clearInterval(this._messagePollTimer); this._messagePollTimer = null; }
+        try { this._teardownSignaling(); } catch (e) {}
         var base = lively.identity.did.baseUrl();
         var xhr = new XMLHttpRequest();
         xhr.open("DELETE", base + "/c/" + encodeURIComponent(this._name) + "/rooms/" + this._roomId + "/presence", false);
@@ -485,20 +522,55 @@ module("lively.identity.RoomView")
     },
 
     // ─── chat panel ─────────────────────────────────────────────────────────────
-    // Mock/local-only this session (see file header) — messages live only in
-    // this._messages and vanish on reload. Sending appends locally; there is
-    // no server round-trip yet.
+    // Real, persisted messages (see file header) — a message is a plain
+    // postcard (state.kind:'room-message') riding the same postal rail
+    // every other postcard in this app uses. There is no live push
+    // channel; other participants' messages arrive via short-interval
+    // polling (_startMessagePolling), same tradeoff RoomPresence's own
+    // heartbeat/roster-refresh already makes for membership.
 
     "chat", {
 
-      _seedMockMessages: function () {
-        var user = lively.identity.did.currentUser();
-        var me = user ? user.handle : "you";
-        this._messages = [
-          { handle: "sable",  text: "hey, anyone want to hop in?", ts: Date.now() - 9 * 60000 },
-          { handle: "quartz", text: "just got here, mic's a little echoey today", ts: Date.now() - 6 * 60000 },
-          { handle: me,       text: "joining now 👋", ts: Date.now() - 30000 },
-        ];
+      // Initial load (boot) and every poll tick both call this — always
+      // refetches the latest MESSAGE page rather than tracking an
+      // incremental "since" cursor, simplest correct thing for the small
+      // per-room message volumes this app targets. Merges into
+      // this._messages by objId (new ones only) so a poll tick doesn't
+      // clobber whatever the user is mid-scrolling.
+      _loadMessages: function () {
+        var self = this;
+        var base = lively.identity.did.baseUrl();
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", base + "/c/" + encodeURIComponent(this._name) + "/rooms/" + this._roomId + "/messages?limit=50", true);
+        xhr.withCredentials = true;
+        xhr.setRequestHeader("Accept", "application/json");
+        xhr.onload = function () {
+          if (xhr.status !== 200) return;
+          var data;
+          try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
+          var fetched = (data.messages || []).slice().reverse(); // server returns newest-first; display oldest-first
+          var known = {};
+          self._messages.forEach(function (m) { known[m.objId] = true; });
+          var changed = false;
+          fetched.forEach(function (m) {
+            if (known[m.objId]) return;
+            self._messages.push(m);
+            changed = true;
+          });
+          if (changed) {
+            self._messages.sort(function (a, b) { return new Date(a.created) - new Date(b.created); });
+            self._renderMessages();
+          }
+        };
+        xhr.send();
+      },
+
+      _startMessagePolling: function () {
+        var self = this;
+        this._messagePollTimer = setInterval(function () {
+          if (self._sendingMessage) return; // avoid racing an in-flight send's own refresh
+          self._loadMessages();
+        }, MESSAGE_POLL_MS);
       },
 
       _buildChatPanel: function () {
@@ -557,18 +629,70 @@ module("lively.identity.RoomView")
         };
       },
 
+      // Same build-envelope -> PUT to own /@handle/objId -> POST {objId} to
+      // the validating route sequence ConstellationLounge.js's
+      // _requestRoomAccess/_submitReply already use for every other
+      // client-authored postcard. Clears the input immediately (so the box
+      // doesn't feel stuck) but only appends the message to this._messages
+      // once the round trip actually succeeds — a real signing+two-XHR
+      // trip has enough latency (WebAuthn/crypto involved) that showing an
+      // optimistic local echo and later reconciling it against the real
+      // objId isn't worth the complexity for a first real implementation;
+      // _sendingMessage just blocks the next poll tick from racing this one.
       _onSendMessage: function () {
         var text = (this._inputM.textString || "").trim();
-        if (!text) return;
+        if (!text || this._sendingMessage) return;
         var user = lively.identity.did.currentUser();
-        this._messages.push({ handle: user ? user.handle : "you", text: text, ts: Date.now() });
+        if (!user) return;
+        this._sendingMessage = true;
         this._inputM.textString = "";
         this._placeholderM.setVisible(true);
-        this._renderMessages();
+
+        var self = this;
+        var doc = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: text }] }] };
+        lively.identity.postCardSerializer.serializePlainToEnvelope({
+          doc: doc,
+          constellation: self._name,
+          visibility: "public",
+          stateMeta: { kind: "room-message", roomId: self._roomId },
+        }, function (err, envelope) {
+          if (err) return self._onSendMessageFailed(text, err);
+          var base = lively.identity.did.baseUrl();
+          var xhr = new XMLHttpRequest();
+          xhr.open("PUT", base + "/@" + encodeURIComponent(user.handle) + "/" + encodeURIComponent(envelope.objId), true);
+          xhr.withCredentials = true;
+          xhr.setRequestHeader("Content-Type", "application/json");
+          xhr.onload = function () {
+            if (xhr.status !== 200) return self._onSendMessageFailed(text, new Error("save failed (" + xhr.status + ")"));
+            var xhr2 = new XMLHttpRequest();
+            xhr2.open("POST", base + "/c/" + encodeURIComponent(self._name) + "/rooms/" + self._roomId + "/messages", true);
+            xhr2.withCredentials = true;
+            xhr2.setRequestHeader("Content-Type", "application/json");
+            xhr2.onload = function () {
+              self._sendingMessage = false;
+              if (xhr2.status !== 201) return self._onSendMessageFailed(text, new Error("send failed (" + xhr2.status + ")"));
+              self._loadMessages();
+            };
+            xhr2.onerror = function () { self._onSendMessageFailed(text, new Error("network error")); };
+            xhr2.send(JSON.stringify({ objId: envelope.objId }));
+          };
+          xhr.onerror = function () { self._onSendMessageFailed(text, new Error("network error")); };
+          xhr.send(JSON.stringify(envelope));
+        });
       },
 
-      _formatTime: function (ts) {
-        var d = new Date(ts);
+      // Restores the typed text into the input on failure — losing a
+      // half-typed message to a transient network/signing error would be a
+      // worse experience than the recipient list waiting a moment longer.
+      _onSendMessageFailed: function (text, err) {
+        console.error("[RoomView] Failed to send message:", err);
+        this._sendingMessage = false;
+        this._inputM.textString = text;
+        this._placeholderM.setVisible(!text);
+      },
+
+      _formatTime: function (isoOrTs) {
+        var d = new Date(isoOrTs);
         var h = d.getHours(), m = d.getMinutes();
         var ampm = h >= 12 ? "PM" : "AM";
         h = h % 12; if (h === 0) h = 12;
@@ -584,11 +708,11 @@ module("lively.identity.RoomView")
         this._messages.forEach(function (msg) {
           var av = noDrag(new lively.morphic.Image(lively.rect(PAD, y, AVATAR_MSG, AVATAR_MSG)));
           av.applyStyle({ borderRadius: AVATAR_MSG / 2, borderWidth: 0, clipMode: "hidden" });
-          av.setImageURL(lively.identity.postCardUtils.identiconDataUrl(msg.handle, AVATAR_MSG));
+          av.setImageURL(lively.identity.postCardUtils.identiconDataUrl(msg.handle || msg.did || "unknown", AVATAR_MSG));
           av.eventsAreIgnored = true;
           self._msgListBox.addMorph(av);
 
-          var headM = noDrag(lively.morphic.Text.makeLabel("@" + msg.handle + "   " + self._formatTime(msg.ts), {
+          var headM = noDrag(lively.morphic.Text.makeLabel("@" + (msg.handle || "unknown") + "   " + self._formatTime(msg.created), {
             fontSize: 12, fontWeight: "700", textColor: TEXT_PRIMARY, fixedWidth: true, fixedHeight: true,
           }));
           headM.eventsAreIgnored = true;
@@ -697,11 +821,14 @@ module("lively.identity.RoomView")
     // Floating, draggable, loom-style circles — one per present participant.
     // Your own circle streams a real getUserMedia camera preview (obtained via
     // AmbientPresencePanel.enterRoom/getLocalStream, not acquired separately
-    // here); everyone else's is a static identicon placeholder until real
-    // peer WebRTC signaling exists (see the design note at the bottom of this
-    // file). Added directly to $world (not clipped inside the chat box) so
-    // they can be dragged anywhere across the page — plain morphic dragging,
-    // no custom drag code needed.
+    // here); everyone else's streams a real remote MediaStream over a direct
+    // RTCPeerConnection (see the "webrtc" category below) once that peer's
+    // signaling handshake completes — until then (or if it never completes:
+    // camera/mic both off on their end, connection still negotiating, ICE
+    // failed) the circle shows a static identicon placeholder instead. Added
+    // directly to $world (not clipped inside the chat box) so they can be
+    // dragged anywhere across the page — plain morphic dragging, no custom
+    // drag code needed.
 
     "video", {
 
@@ -719,7 +846,25 @@ module("lively.identity.RoomView")
         var x = this._originX + CHAT_X_OFFSET + 24, y = this._originY + HEADER_H + 24;
         this._participants.forEach(function (p, i) {
           stillPresent[p.did] = true;
-          if (self._videoCircles[p.did]) return; // already showing, leave its dragged position alone
+          var existingCircle = self._videoCircles[p.did];
+          if (existingCircle) {
+            // Already showing — leave its dragged position alone, but still
+            // worth re-checking for a remote stream that arrived since this
+            // circle was created: ontrack (webrtc category) fires whenever
+            // ICE/DTLS negotiation happens to finish, which is NOT
+            // guaranteed to be before presence/roster created this circle
+            // (confirmed live: the more common ordering is actually the
+            // other way around — presence resolves faster than a full
+            // WebRTC handshake) — ontrack's own direct attach only covers
+            // the case where the circle already existed at that moment, so
+            // this is the other half of that same catch-up logic. Idempotent
+            // no-op if already attached to this exact stream (see
+            // _attachRemoteStream's own early-return guard).
+            if (p.did !== myDid && self._remoteStreams[p.did]) {
+              self._attachRemoteStream(existingCircle, self._remoteStreams[p.did]);
+            }
+            return;
+          }
 
           var circle = new lively.morphic.Box(lively.rect(x + i * (VIDEO_CIRCLE + 16), y, VIDEO_CIRCLE, VIDEO_CIRCLE));
           circle.applyStyle({
@@ -736,14 +881,12 @@ module("lively.identity.RoomView")
           if (p.did === myDid) {
             self._fillWithLocalStream(circle);
           } else {
-            var av = new lively.morphic.Image(lively.rect(0, 0, VIDEO_CIRCLE, VIDEO_CIRCLE));
-            av.applyStyle({ borderWidth: 0 });
-            av.setImageURL(lively.identity.postCardUtils.identiconDataUrl(p.handle || p.did, VIDEO_CIRCLE));
-            // eventsAreIgnored (not just noDrag) — a mousedown here must
-            // bubble up to the circle itself so the whole circle drags as
-            // one piece, rather than this avatar image capturing the drag.
-            av.eventsAreIgnored = true;
-            circle.addMorph(av);
+            self._showAvatarPlaceholder(circle, p.handle || p.did);
+            // A peer connection to this did may already have produced a
+            // remote stream before this roster refresh got around to
+            // creating their circle (e.g. signaling raced presence) —
+            // attach it immediately instead of waiting for another ontrack.
+            if (self._remoteStreams[p.did]) self._attachRemoteStream(circle, self._remoteStreams[p.did]);
           }
 
           var label = lively.morphic.Text.makeLabel(p.did === myDid ? "you" : ("@" + (p.handle || "?")), {
@@ -787,6 +930,515 @@ module("lively.identity.RoomView")
         return true;
       },
 
+      // Static identicon placeholder for a non-self circle — used both at
+      // initial creation and when reverting a circle that had a real remote
+      // stream after that peer connection drops (_teardownPeerConnection,
+      // webrtc category). insertBefore (not addMorph's default append)
+      // keeps the circle's own name label on top regardless of when this
+      // runs, same reasoning as _attachRemoteStream's insertBefore below.
+      _showAvatarPlaceholder: function (circle, handleOrDid) {
+        if (circle._avatarMorph) return;
+        var av = new lively.morphic.Image(lively.rect(0, 0, VIDEO_CIRCLE, VIDEO_CIRCLE));
+        av.applyStyle({ borderWidth: 0 });
+        av.setImageURL(lively.identity.postCardUtils.identiconDataUrl(handleOrDid, VIDEO_CIRCLE));
+        // eventsAreIgnored (not just noDrag) — a mousedown here must bubble
+        // up to the circle itself so the whole circle drags as one piece,
+        // rather than this avatar image capturing the drag.
+        av.eventsAreIgnored = true;
+        circle.addMorph(av);
+        circle._avatarMorph = av;
+        var shapeNode = circle.renderContext().shapeNode;
+        shapeNode.insertBefore(av.renderContext().shapeNode, shapeNode.firstChild);
+      },
+
+      // Attaches a remote participant's real MediaStream (from the webrtc
+      // category's ontrack handler) into their circle, replacing the static
+      // identicon placeholder. Same plain-<video>-in-a-morph's-own-shapeNode
+      // idiom as _fillWithLocalStream — not muted (we want to hear them),
+      // no mirror transform (that's only correct for your own reflected
+      // self-view). Idempotent no-op if this exact stream is already
+      // attached (ontrack can fire more than once for the same stream on
+      // renegotiation).
+      _attachRemoteStream: function (circle, stream) {
+        if (circle._remoteStream === stream) return;
+        circle._remoteStream = stream;
+        if (circle._avatarMorph) { circle._avatarMorph.remove(); circle._avatarMorph = null; }
+        var shapeNode = circle.renderContext().shapeNode;
+        // Defensive DOM-level cleanup, not just the JS reference above —
+        // confirmed live that a stray identicon <img> can still be present
+        // in the DOM here (circle._avatarMorph.remove() alone didn't
+        // reliably clear it across a renegotiation cycle, e.g. ontrack
+        // firing more than once as local media attaches asynchronously
+        // after the initial answer already went out — see
+        // _applyLocalTracksToPeer's own comment for that whole story).
+        // A leftover identicon rendered on top of real video is exactly
+        // the "still shows the placeholder" symptom this method exists to
+        // prevent, so belt-and-suspenders here is worth it.
+        var strayAvatars = shapeNode.querySelectorAll(".Morph.Image");
+        for (var i = 0; i < strayAvatars.length; i++) strayAvatars[i].remove();
+        var existingVideo = shapeNode.querySelector("video");
+        if (existingVideo) existingVideo.remove();
+        var videoEl = document.createElement("video");
+        videoEl.autoplay = true;
+        videoEl.playsInline = true;
+        videoEl.style.cssText = "width:100%;height:100%;object-fit:cover;";
+        videoEl.srcObject = stream;
+        // insertBefore (not appendChild) — this can run well after the
+        // circle's label submorph DOM node already exists (a late-arriving
+        // ontrack, not the initial render), and the label must stay on top
+        // of the video rather than getting covered by it.
+        shapeNode.insertBefore(videoEl, shapeNode.firstChild);
+      },
+
+    },
+
+    // ─── webrtc — real peer mesh call ──────────────────────────────────────────
+    // Every participant opens a direct RTCPeerConnection to every other
+    // participant (mesh, not an SFU — see RoomSignalingServer.js's own
+    // header for why that's an acceptable tradeoff at this app's room
+    // sizes). Signaling (offer/answer/ICE) is relayed over a WebSocket to
+    // RoomSignalingServer.js, grouped server-side by roomId and gated by a
+    // short-lived one-time token (see _connectSignaling) — the server never
+    // inspects the SDP/ICE payloads it relays.
+    //
+    // Exactly one side of each pair initiates the offer: whichever peer has
+    // the lexicographically smaller server-assigned signaling peerId (see
+    // _maybeInitiateTo) — a deterministic rule both sides apply
+    // independently, so there's never a glare/collision to resolve (unlike
+    // WarpDrop.js's file-transfer peers, where either side can spontaneously
+    // start a NEW transfer at any time; here every pairing is decided once,
+    // right when the two peers become mutually visible).
+    //
+    // The signaling WebSocket itself reconnects automatically if it drops
+    // (see _onSignalingClosed) and re-establishes peer connections with
+    // whoever's still in the room. What's NOT handled: an individual
+    // peer's RTCPeerConnection failing ICE while the signaling connection
+    // to everyone else stays healthy — that one connection just tears down
+    // and reverts to the static identicon placeholder until a fresh
+    // negotiation happens to get triggered some other way (e.g. that peer
+    // leaving and rejoining).
+
+    "webrtc", {
+
+      _connectSignaling: function () {
+        var self = this;
+        var base = lively.identity.did.baseUrl();
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", base + "/c/" + encodeURIComponent(this._name) + "/rooms/" + this._roomId + "/signaling-token", true);
+        xhr.withCredentials = true;
+        xhr.onload = function () {
+          if (xhr.status !== 200) { console.warn("[RoomView] Could not get signaling token (" + xhr.status + ")"); return; }
+          var data;
+          try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
+          self._openSignalingSocket(data.token, data.wsPath);
+        };
+        xhr.onerror = function () { console.warn("[RoomView] Network error requesting signaling token"); };
+        xhr.send();
+      },
+
+      _openSignalingSocket: function (token, wsPath) {
+        var self = this;
+        this._signalingIntentionallyClosed = false;
+        this._pendingSignalingToken = token;
+        var url = URL.nodejsBase.withFilename(wsPath).toString();
+        var ws = new lively.net.WebSocket(url, { protocol: "lively-json" });
+        this._signalingWs = ws;
+        lively.bindings.connect(ws, "opened", self, "_onSignalingOpened");
+        lively.bindings.connect(ws, "closed", self, "_onSignalingClosed");
+        lively.bindings.connect(ws, "lively-message", self, "_onSignalingMessage");
+        ws.connect();
+      },
+
+      _onSignalingOpened: function () {
+        if (!this._signalingWs || !this._pendingSignalingToken) return;
+        this._signalingWs.send({ action: "join", data: { token: this._pendingSignalingToken } });
+        this._pendingSignalingToken = null;
+      },
+
+      // Confirmed live (chrome-devtools-mcp, a real two-account test call)
+      // that this connection can drop on its own — dev-machine networking
+      // with several simultaneous interfaces (WSL/VPN/host-only adapters,
+      // visible as multiple ICE candidates in the same session) is the
+      // likely cause, not anything specific to this code — and with no
+      // reconnect handler at all, a drop here silently and permanently cut
+      // off all of this room's peer video/audio for the rest of the page's
+      // life. Same unconditional-retry idiom as WarpDrop.js's own
+      // onWsClosed: every existing RTCPeerConnection is torn down (their
+      // peerIds are gone the moment the signaling connection that assigned
+      // them drops — nothing to salvage) and a full fresh
+      // token+socket+rejoin cycle starts, which naturally re-establishes
+      // peer connections with whoever's still in the room via the normal
+      // 'joined'/peer-joined flow.
+      _onSignalingClosed: function () {
+        if (this._signalingIntentionallyClosed) return;
+        var self = this;
+        Object.keys(this._signalingPeers).forEach(function (peerId) { self._teardownPeerConnection(peerId); });
+        this._signalingWs = null;
+        this._mySignalingPeerId = null;
+        setTimeout(function () {
+          if (self._signalingIntentionallyClosed) return;
+          self._connectSignaling();
+        }, 1500);
+      },
+
+      _onSignalingMessage: function (msg) {
+        switch (msg.action) {
+          case "joined":      this._onSignalingJoined(msg.data); break;
+          case "peer-joined": this._onSignalingPeerJoined(msg.data); break;
+          case "peer-left":   this._onSignalingPeerLeft(msg.data); break;
+          case "signal":      this._onSignalingSignal(msg.data); break;
+          case "join-rejected":
+            // Token expired/invalid (e.g. this socket sat mid-handshake too
+            // long) — mint a fresh one and reconnect from scratch.
+            console.warn("[RoomView] Signaling token rejected — retrying");
+            try { this._signalingWs.close(); } catch (e) {}
+            this._signalingWs = null;
+            var self = this;
+            setTimeout(function () { self._connectSignaling(); }, 1000);
+            break;
+        }
+      },
+
+      _onSignalingJoined: function (data) {
+        this._mySignalingPeerId = data.peerId;
+        var self = this;
+        (data.peers || []).forEach(function (p) {
+          self._peerMeta[p.peerId] = { did: p.did, handle: p.handle };
+          self._didToPeerId[p.did] = p.peerId;
+          self._maybeInitiateTo(p.peerId);
+        });
+      },
+
+      _onSignalingPeerJoined: function (data) {
+        this._peerMeta[data.peerId] = { did: data.did, handle: data.handle };
+        this._didToPeerId[data.did] = data.peerId;
+        this._maybeInitiateTo(data.peerId);
+      },
+
+      _onSignalingPeerLeft: function (data) {
+        this._teardownPeerConnection(data.peerId);
+      },
+
+      // Deterministic offerer choice — see this category's own header
+      // comment. No-op if we already have a pc for this peer (a duplicate
+      // peer-joined, or we're already mid-handshake).
+      _maybeInitiateTo: function (peerId) {
+        if (!this._mySignalingPeerId || this._signalingPeers[peerId]) return;
+        if (this._mySignalingPeerId < peerId) this._createPeerConnection(peerId, true);
+      },
+
+      _createPeerConnection: function (peerId, amInitiator) {
+        var self = this;
+        var meta = this._peerMeta[peerId] || {};
+        var pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+        var peer = { pc: pc, did: meta.did, handle: meta.handle, pendingIce: [] };
+        this._signalingPeers[peerId] = peer;
+
+        pc.onicecandidate = function (e) {
+          if (e.candidate) self._sendSignalTo(peerId, { type: "ice", candidate: e.candidate });
+        };
+        pc.ontrack = function (e) {
+          if (!peer.did) return;
+          // e.streams[0] should always be populated now that
+          // _applyLocalTracksToPeer calls sender.setStreams() on the
+          // sending side (see that method's own comment for why this
+          // wasn't previously true) — this fallback is a safety net, not
+          // the primary path: build/reuse a synthetic stream from the raw
+          // track rather than ever storing undefined again.
+          var stream = e.streams[0];
+          if (!stream) {
+            stream = self._remoteStreams[peer.did] instanceof MediaStream ? self._remoteStreams[peer.did] : new MediaStream();
+            if (!stream.getTracks().some(function (t) { return t.id === e.track.id; })) stream.addTrack(e.track);
+          }
+          self._remoteStreams[peer.did] = stream;
+          var circle = self._videoCircles[peer.did];
+          if (circle) self._attachRemoteStream(circle, stream);
+        };
+        pc.oniceconnectionstatechange = function () {
+          var state = pc.iceConnectionState;
+          if (state === "failed" || state === "closed") self._teardownPeerConnection(peerId);
+        };
+        // Fires whenever THIS side's own local state changes in a way that
+        // needs a new SDP round — the case that actually matters here is
+        // _applyLocalTracksToPeer upgrading a transceiver's direction from
+        // "recvonly" to "sendrecv" once local media becomes available
+        // *after* this pc's initial offer/answer already went out without
+        // it (confirmed live: this genuinely happens — local getUserMedia
+        // and the signaling handshake race each other, and the handshake
+        // sometimes wins). Fires for either role, not just the original
+        // offerer — WebRTC renegotiation isn't tied to who offered first.
+        pc.onnegotiationneeded = function () { self._onNegotiationNeeded(peerId, peer); };
+
+        if (amInitiator) {
+          // sendrecv up front regardless of whether our own local tracks
+          // are ready yet (getUserMedia is async — see
+          // _waitForLocalStreamThenFill) so we still receive the other
+          // side's media even before ours resolves; _applyLocalTracksToPeer
+          // fills in real tracks whenever they're available, now or later.
+          //
+          // Only the OFFERER pre-creates transceivers this way — confirmed
+          // live (chrome-devtools-mcp, inspecting real getTransceivers()/SDP
+          // on both sides of an actual two-account test call) that doing
+          // the same on the ANSWERER side does NOT get reused by
+          // setRemoteDescription(offer) the way the usual "pre-create
+          // before receiving an offer" idiom assumes: it silently created
+          // 4 transceivers instead of 2 (the 2 pre-created ones stayed
+          // stuck at mid:null, unused; 2 new auto-created ones appeared to
+          // match the offer's m-lines, defaulted to recvonly since they
+          // had no track) — so the answer always negotiated recvonly on
+          // both m-lines regardless of local media being ready. See
+          // _onOffer below for the answerer's own (working) path instead.
+          pc.addTransceiver("audio", { direction: "sendrecv" });
+          pc.addTransceiver("video", { direction: "sendrecv" });
+          this._applyLocalTracksToPeer(peer);
+
+          pc.createOffer().then(function (offer) {
+            return pc.setLocalDescription(offer);
+          }).then(function () {
+            self._sendSignalTo(peerId, { type: "offer", sdp: pc.localDescription });
+          }).catch(function (e) {
+            console.error("[RoomView] createOffer failed", e);
+            self._teardownPeerConnection(peerId);
+          });
+        }
+        // amInitiator===false: deliberately no addTransceiver call here —
+        // _onOffer's setRemoteDescription(offer) auto-creates the matching
+        // transceivers (recvonly by default, no track), and upgrades them
+        // to sendrecv + attaches local tracks itself right before
+        // createAnswer(), once they actually exist.
+
+        return peer;
+      },
+
+      // Pushes whatever local audio/video tracks are currently available
+      // onto one peer's already-existing transceivers via replaceTrack —
+      // safe to call before OR after local media is ready (a no-op if the
+      // stream isn't there yet). Matches transceivers by their receiver's
+      // track kind, which (per spec) is set from the transceiver's own
+      // media kind immediately at creation — whether that transceiver was
+      // explicitly pre-created (the offerer's own addTransceiver call) or
+      // auto-created by setRemoteDescription(offer) (the answerer's case,
+      // see _onOffer) — not only after negotiation completes.
+      //
+      // Also upgrades .direction to "sendrecv" for any transceiver getting
+      // a real track — load-bearing for the answerer's auto-created
+      // transceivers, which default to "recvonly" (no track = nothing to
+      // send), and would otherwise negotiate recvonly forever even once a
+      // track becomes available. Harmless no-op for the offerer's own
+      // transceivers, which are already "sendrecv" from creation.
+      //
+      // ALSO calls sender.setStreams(stream) — confirmed live (chrome-
+      // devtools-mcp, wrapping RTCPeerConnection to log every real ontrack
+      // event on both sides of an actual two-account call) that
+      // replaceTrack() alone never associates the track with a
+      // MediaStream/msid the way addTrack(track, stream) does. Without
+      // this, the RECEIVING side's ontrack fires with a genuinely EMPTY
+      // e.streams array every time (not flaky — 100% reproducible), so
+      // self._remoteStreams[peer.did] silently got set to
+      // e.streams[0]===undefined instead of a real stream, and every video
+      // circle stayed on its identicon placeholder forever despite the
+      // underlying RTCPeerConnection reporting "connected" with live send/
+      // receive tracks. setStreams() is the API specifically added to
+      // Unified Plan for this gap (replaceTrack was never meant to carry
+      // stream association) — feature-detected since it's newer than
+      // addTransceiver/replaceTrack themselves.
+      _applyLocalTracksToPeer: function (peer) {
+        var stream = lively.identity.AmbientPresencePanel.getLocalStream();
+        if (!stream || !peer.pc) return false;
+        peer.pc.getTransceivers().forEach(function (t) {
+          var kind = t.receiver && t.receiver.track && t.receiver.track.kind;
+          if (!kind) return;
+          var track = kind === "audio" ? stream.getAudioTracks()[0] : stream.getVideoTracks()[0];
+          if (!track) return;
+          if (t.direction !== "sendrecv") t.direction = "sendrecv";
+          if (t.sender.track !== track) t.sender.replaceTrack(track);
+          if (t.sender.setStreams) t.sender.setStreams(stream);
+        });
+        return true;
+      },
+
+      // Returns true once local media is available (regardless of whether
+      // there were any peers yet to push it to) — the return value is only
+      // used by _waitForLocalStreamThenFill to know whether to keep
+      // polling, same contract as _fillWithLocalStream's own return value.
+      _applyLocalTracksToAllPeers: function () {
+        var stream = lively.identity.AmbientPresencePanel.getLocalStream();
+        if (!stream) return false;
+        var self = this;
+        Object.keys(this._signalingPeers).forEach(function (peerId) {
+          self._applyLocalTracksToPeer(self._signalingPeers[peerId]);
+        });
+        return true;
+      },
+
+      _sendSignalTo: function (peerId, signal) {
+        if (!this._signalingWs) return;
+        this._signalingWs.send({ action: "signal", data: { to: peerId, signal: signal } });
+      },
+
+      _onSignalingSignal: function (data) {
+        var peerId = data.from;
+        var signal = data.signal;
+        if (signal.type === "offer") return this._onOffer(peerId, signal);
+        var peer = this._signalingPeers[peerId];
+        if (!peer) return; // for a peer we no longer have a pc for -- drop
+        if (signal.type === "answer") return this._onAnswer(peer, signal);
+        if (signal.type === "ice") return this._onIce(peer, signal);
+      },
+
+      // Fires either for a brand-new pairing (no peer yet) or a follow-up
+      // renegotiation on an already-stable pc (see _onNegotiationNeeded) --
+      // and, rarely, glare: both sides' onnegotiationneeded firing close
+      // together, each already mid-way through sending their OWN offer
+      // when the other's arrives. Simplified "perfect negotiation" (per
+      // the WebRTC spec's own recommended pattern): the "polite" side
+      // (larger signaling peerId — same tie-break _maybeInitiateTo already
+      // uses, just inverted) rolls back its own in-flight offer and
+      // accepts theirs; the "impolite" side ignores the incoming offer and
+      // trusts its own to be answered. Both sides reach this decision
+      // independently from the same deterministic rule, so it can't
+      // deadlock.
+      _onOffer: function (peerId, signal) {
+        var self = this;
+        var peer = this._signalingPeers[peerId];
+        var isPolite = this._mySignalingPeerId > peerId;
+
+        if (peer && peer.pc.signalingState === "have-local-offer") {
+          if (!isPolite) return; // impolite: ignore theirs, ours will win
+          peer.pc.setLocalDescription({ type: "rollback" }).then(function () {
+            self._answerOffer(peerId, peer, signal);
+          }).catch(function (e) { console.error("[RoomView] Glare rollback failed", e); });
+          return;
+        }
+
+        if (!peer) peer = this._createPeerConnection(peerId, false);
+        self._answerOffer(peerId, peer, signal);
+      },
+
+      _answerOffer: function (peerId, peer, signal) {
+        var self = this;
+        peer.pc.setRemoteDescription(new RTCSessionDescription(signal.sdp)).then(function () {
+          self._flushPendingIce(peer);
+          // Transceivers now exist (auto-created to match the offer's
+          // m-lines on a fresh pairing, or already there on a
+          // renegotiation) — upgrade to sendrecv + attach local tracks
+          // before answering, see _applyLocalTracksToPeer's own comment
+          // for why this can't happen earlier on the answerer's side of a
+          // fresh pairing.
+          self._applyLocalTracksToPeer(peer);
+          return peer.pc.createAnswer();
+        }).then(function (answer) {
+          return peer.pc.setLocalDescription(answer);
+        }).then(function () {
+          self._sendSignalTo(peerId, { type: "answer", sdp: peer.pc.localDescription });
+        }).catch(function (e) {
+          console.error("[RoomView] Failed to answer offer", e);
+          self._teardownPeerConnection(peerId);
+        });
+      },
+
+      // Triggered by RTCPeerConnection's own onnegotiationneeded (see
+      // _createPeerConnection) — a fresh pairing's very first
+      // negotiation is driven by _maybeInitiateTo/createOffer instead, not
+      // this; this fires for later renegotiations only (signalingState is
+      // "stable" for those, guarded below so a negotiationneeded firing
+      // mid-handshake — e.g. right after the initial createOffer — is a
+      // no-op rather than an interfering second offer).
+      _onNegotiationNeeded: function (peerId, peer) {
+        var self = this;
+        var pc = peer.pc;
+        if (pc.signalingState !== "stable") return;
+        pc.createOffer().then(function (offer) {
+          return pc.setLocalDescription(offer);
+        }).then(function () {
+          self._sendSignalTo(peerId, { type: "offer", sdp: pc.localDescription });
+        }).catch(function (e) {
+          // Observed live once, non-fatal: Chrome's own "order of m-lines
+          // in subsequent offer doesn't match order from previous offer/
+          // answer" InvalidAccessError, on a renegotiation triggered close
+          // together with other negotiation activity on the same pc (a
+          // heavy multi-reload debugging session, not a normal single
+          // fresh call). The failed attempt here is just abandoned —
+          // whatever the pc's last successfully negotiated state was
+          // stands — and in the one case this fired, the call still ended
+          // up fully connected afterward. Not chased further since it's a
+          // narrow edge case and the call itself is unaffected; if this
+          // starts happening on ordinary (non-debugging) connections it'd
+          // be worth a proper fix.
+          console.error("[RoomView] Renegotiation offer failed", e);
+        });
+      },
+
+      _onAnswer: function (peer, signal) {
+        var self = this;
+        peer.pc.setRemoteDescription(new RTCSessionDescription(signal.sdp)).then(function () {
+          self._flushPendingIce(peer);
+        }).catch(function (e) { console.error("[RoomView] setRemoteDescription (answer) failed", e); });
+      },
+
+      _onIce: function (peer, signal) {
+        if (peer.pc.remoteDescription && peer.pc.remoteDescription.type) {
+          peer.pc.addIceCandidate(new RTCIceCandidate(signal.candidate)).catch(function (e) {
+            console.warn("[RoomView] addIceCandidate failed", e);
+          });
+        } else {
+          peer.pendingIce.push(signal.candidate);
+        }
+      },
+
+      _flushPendingIce: function (peer) {
+        var candidates = peer.pendingIce;
+        peer.pendingIce = [];
+        candidates.forEach(function (c) {
+          peer.pc.addIceCandidate(new RTCIceCandidate(c)).catch(function (e) {
+            console.warn("[RoomView] addIceCandidate (flush) failed", e);
+          });
+        });
+      },
+
+      // Closes one peer's RTCPeerConnection and, if their video circle is
+      // currently showing real remote video, reverts it to the static
+      // identicon placeholder — presence and signaling are independent, so
+      // a dropped peer connection doesn't necessarily mean they've left the
+      // room (roster-driven circle removal is handled separately by
+      // _renderVideoCircles).
+      _teardownPeerConnection: function (peerId) {
+        var peer = this._signalingPeers[peerId];
+        if (!peer) return;
+        delete this._signalingPeers[peerId];
+        delete this._peerMeta[peerId];
+
+        if (peer.did) {
+          delete this._remoteStreams[peer.did];
+          if (this._didToPeerId[peer.did] === peerId) delete this._didToPeerId[peer.did];
+          var circle = this._videoCircles[peer.did];
+          if (circle && circle._remoteStream) {
+            var v = circle.renderContext().shapeNode.querySelector("video");
+            if (v) v.remove();
+            circle._remoteStream = null;
+            this._showAvatarPlaceholder(circle, peer.handle || peer.did);
+          }
+        }
+
+        if (peer.pc) {
+          peer.pc.onicecandidate = null;
+          peer.pc.ontrack = null;
+          peer.pc.oniceconnectionstatechange = null;
+          peer.pc.onnegotiationneeded = null;
+          try { peer.pc.close(); } catch (e) {}
+        }
+      },
+
+      _teardownSignaling: function () {
+        var self = this;
+        this._signalingIntentionallyClosed = true; // stop _onSignalingClosed from reconnecting
+        Object.keys(this._signalingPeers).forEach(function (peerId) { self._teardownPeerConnection(peerId); });
+        if (this._signalingWs) {
+          try { this._signalingWs.close(); } catch (e) {}
+          this._signalingWs = null;
+        }
+      },
+
     });
 
     // Static open helper — constructs a fresh controller bound to $world.
@@ -805,17 +1457,21 @@ module("lively.identity.RoomView")
 /**
  * Design notes for future sessions (documented, not implemented):
  *
- * Chat persistence — a plain-postcard-shaped envelope via
- * PostCardSerializer.serializePlainToEnvelope, state.kind:'room-message',
- * constellation + state.roomId fields, plus a new
- * ObjectRepository.listMessagesForRoom(roomId, opts, thenDo) modeled
- * directly on listPostcardsForConstellation's "latest-version join +
- * json_extract filter + cursor-by-internal-id" pattern.
+ * The controller-facing approve/decline UI for room-join-request postcards
+ * (deferred in an earlier session — PostCardView.js's
+ * _renderMembershipActions only special-cases
+ * state.kind==='constellation-join-request') is still unaddressed.
  *
- * Real peer WebRTC — a RoomSignalingServer.js modeled on
- * WarpDropSignalingServer.js's WebSocketServer-based offer/answer/ICE relay
- * (server never inspects signal payloads), grouped by roomId + gated by
- * canJoinRoom instead of by observed IP; client-side wiring modeled on
- * WarpDrop.js's RTCPeerConnection setup, extended from 1:1 to a mesh (or
- * SFU, undecided) for N participants.
+ * Chat message length is capped at 200 chars — listMessagesForRoom reads
+ * state.title (the same auto-extracted-first-block-text every postcard
+ * gets), not the full payload, to keep the room's message listing as cheap
+ * as any other feed listing here. Fine for a chat line; would need a real
+ * payload fetch per message (or a dedicated text field) if longer messages
+ * ever matter.
+ *
+ * No message edit/delete UI. No read receipts/typing indicators. No
+ * automatic WebRTC reconnect after an ICE failure (see the "webrtc"
+ * category's own header comment) — a dropped peer connection just reverts
+ * that participant's circle to a static placeholder until they leave/
+ * rejoin the room.
  */

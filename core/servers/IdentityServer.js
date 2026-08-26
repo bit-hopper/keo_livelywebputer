@@ -3779,6 +3779,92 @@ module.exports = function (route, app) {
     res.json({ ok: true });
   });
 
+  // ─── rooms — chat (RoomView.js) ─────────────────────────────────────────
+  // Messages ride the same postal/objects rail every other postcard uses
+  // (state.kind:'room-message'), not a dedicated table — see
+  // ObjectRepository.listMessagesForRoom. The client (RoomView.js's
+  // _onSendMessage) builds+signs a plain postcard and PUTs it to its own
+  // /@handle/objId first, exactly like every other client-authored postcard
+  // in this app, then POSTs {objId} here so the server can verify
+  // ownership/shape/room-access before treating it as a real room message —
+  // same two-step pattern as the room-join-request routes above. Unlike
+  // join-requests, there's no delivery step: the message is already
+  // globally queryable via listMessagesForRoom's roomId index, so this
+  // route's only job is validation.
+
+  app.get("/c/:name/rooms/:roomId/messages", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var roomId = parseInt(req.params.roomId, 10);
+    var limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
+    var cursor = req.query.cursor || null;
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      constellationRegistry.getRoom(roomId, function (err, room) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!room || room.constellation !== name) return res.status(404).json({ error: "Room not found" });
+        constellationRegistry.canJoinRoom(constellation, room, req.identity.did, function (err, allowed) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (!allowed) return res.status(403).json({ error: "Forbidden: join not permitted for this room" });
+          objectRepo.listMessagesForRoom(roomId, { limit: limit, cursor: cursor }, function (err, result) {
+            if (err) return res.status(500).json({ error: String(err) });
+            var dids = result.postcards.map(function (m) { return m.did; });
+            _resolveHandlesForDids(dids, function (err, didToHandle) {
+              if (err) return res.status(500).json({ error: String(err) });
+              var messages = result.postcards.map(function (m) {
+                return {
+                  objId: m.objId,
+                  did: m.did,
+                  handle: didToHandle[m.did] || null,
+                  text: (m.state && m.state.title) || "",
+                  created: m.created,
+                };
+              });
+              res.json({ messages: messages, cursor: result.cursor });
+            });
+          });
+        });
+      });
+    });
+  });
+
+  app.post("/c/:name/rooms/:roomId/messages", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var roomId = parseInt(req.params.roomId, 10);
+    var objId = req.body && req.body.objId;
+    if (!objId) return res.status(400).json({ error: "Missing required field: objId" });
+
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      constellationRegistry.getRoom(roomId, function (err, room) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!room || room.constellation !== name) return res.status(404).json({ error: "Room not found" });
+        constellationRegistry.canJoinRoom(constellation, room, req.identity.did, function (err, allowed) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (!allowed) return res.status(403).json({ error: "Forbidden: join not permitted for this room" });
+
+          objectRepo.get(objId, function (err, envelope) {
+            if (err) return res.status(500).json({ error: String(err) });
+            if (!envelope) return res.status(404).json({ error: "Post card not found: " + objId });
+            if (envelope.did !== req.identity.did) {
+              return res.status(403).json({ error: "Forbidden: you do not own this post card" });
+            }
+            if (envelope.type !== "postcard" ||
+                !envelope.state || envelope.state.kind !== "room-message" ||
+                envelope.constellation !== name ||
+                Number(envelope.state.roomId) !== roomId) {
+              return res.status(400).json({
+                error: "objId must be a postcard with state.kind='room-message', constellation='" + name + "', and matching roomId",
+              });
+            }
+            res.status(201).json({ ok: true });
+          });
+        });
+      });
+    });
+  });
+
   // Post an existing (owned) post card to a constellation: tags the card
   // with this constellation (so it shows in the feed, same as the original
   // stub routes already relied on) and adds it to the live space's layout

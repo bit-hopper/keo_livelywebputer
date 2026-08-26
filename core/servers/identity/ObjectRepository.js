@@ -699,10 +699,13 @@ function listPostcardsForConstellation(constellation, opts, thenDo) {
       // join requests (state.kind:'room-join-request', see
       // ConstellationLounge.js's _requestRoomAccess) ride the same rail and
       // were missing from this exclusion, so they rendered as ordinary
-      // postcards in the feed.
+      // postcards in the feed. Room chat messages (state.kind:'room-message',
+      // RoomView.js, see listMessagesForRoom below) ride it too — same
+      // exclusion, or every chat line would flood the constellation's
+      // public postcard reel.
       '        AND (json_extract(o.envelope, \'$.state.kind\') IS NULL' +
       '             OR json_extract(o.envelope, \'$.state.kind\') NOT IN' +
-      '                 (\'constellation-join-request\', \'room-join-request\'))' +
+      '                 (\'constellation-join-request\', \'room-join-request\', \'room-message\'))' +
       // Replies (comment-thread postcards carrying a replyTo) are not
       // top-level postcards either — confirmed live via objects.db that
       // every reply also carries this constellation's name, so without
@@ -736,6 +739,63 @@ function listPostcardsForConstellation(constellation, opts, thenDo) {
     } else {
       sql = baseSql + ' ORDER BY o.id DESC LIMIT ?';
       params = qLike ? [constellation, qLike, limit + 1] : [constellation, limit + 1];
+      _runPostcardQuery(db, sql, params, limit, thenDo);
+    }
+  });
+}
+
+// List the latest room-message postcard envelopes for a room, newest first
+// — same "latest version per obj_id" join shape as listPostcardsForConstellation
+// (RoomView.js's chat rides the same objects-table/postal rail every other
+// postcard uses: state.kind:'room-message', state.roomId:<roomId>, rather
+// than a dedicated messages table), scoped to a roomId instead of a
+// constellation. Metadata only (state.title, the auto-extracted first-block
+// text — plenty for a short chat line, capped at 200 chars same as any
+// other postcard's title extraction) — no separate payload fetch needed per
+// message, keeping a chat page's listing call as cheap as any other feed
+// listing here.
+// opts: { limit, cursor } — same pagination shape as listPostcardsForConstellation.
+// Calls thenDo(null, { postcards: [envelopeMetadata...], cursor: String|null }).
+function listMessagesForRoom(roomId, opts, thenDo) {
+  var limit = (opts && opts.limit) || 50;
+  var cursor = (opts && opts.cursor) || null;
+
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+
+    var baseSql =
+      'SELECT o.envelope, o.obj_id, o.id FROM objects o' +
+      ' INNER JOIN (' +
+      '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
+      '   WHERE type = \'postcard\'' +
+      '         AND json_extract(envelope, \'$.state.kind\') = \'room-message\'' +
+      '         AND json_extract(envelope, \'$.state.roomId\') = ?' +
+      '   GROUP BY obj_id' +
+      ' ) latest ON o.id = latest.max_id' +
+      ' WHERE (json_extract(o.envelope, \'$.state.deleted\') IS NULL' +
+      '        OR json_extract(o.envelope, \'$.state.deleted\') != 1)';
+
+    var params, sql;
+    if (cursor) {
+      db.get(
+        'SELECT MAX(id) AS pivot FROM objects WHERE obj_id = ? AND type = \'postcard\'',
+        [cursor],
+        function(err, pivotRow) {
+          if (err) return thenDo(err);
+          var pivotId = pivotRow ? pivotRow.pivot : null;
+          if (pivotId) {
+            sql = baseSql + ' AND o.id < ? ORDER BY o.id DESC LIMIT ?';
+            params = [roomId, pivotId, limit + 1];
+          } else {
+            sql = baseSql + ' ORDER BY o.id DESC LIMIT ?';
+            params = [roomId, limit + 1];
+          }
+          _runPostcardQuery(db, sql, params, limit, thenDo);
+        }
+      );
+    } else {
+      sql = baseSql + ' ORDER BY o.id DESC LIMIT ?';
+      params = [roomId, limit + 1];
       _runPostcardQuery(db, sql, params, limit, thenDo);
     }
   });
@@ -1487,6 +1547,7 @@ module.exports = {
   resolvePartAlias:              resolvePartAlias,
   listPostcardsForUser:          listPostcardsForUser,
   listPostcardsForConstellation: listPostcardsForConstellation,
+  listMessagesForRoom:           listMessagesForRoom,
   getWikiPageObjId:              getWikiPageObjId,
   listWikiPages:                 listWikiPages,
   getWikiPageObjIdForUser:       getWikiPageObjIdForUser,
