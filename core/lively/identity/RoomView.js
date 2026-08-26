@@ -115,6 +115,7 @@ module("lively.identity.RoomView")
         this._roomId = null;
         this._room = null;
         this._isController = false;
+        this._roomLeft = false;   // stops _waitForLocalStreamThenFill's indefinite poll once the room is actually left
         this._participants = [];  // [{did, handle}]
         this._messages = [];      // [{objId, did, handle, text, created}], real (see "chat" category)
         this._messagePollTimer = null;
@@ -231,7 +232,24 @@ module("lively.identity.RoomView")
         });
       },
 
+      // attemptsLeft drives a fast ~6s burst (20 x 300ms) for the common
+      // case — getUserMedia resolving quickly, or mic/cam permission
+      // already granted in an earlier session — but never actually gives
+      // up: once attemptsLeft reaches 0 this keeps polling indefinitely,
+      // just at a slower 3s cadence, until the room is left (_roomLeft) or
+      // the stream shows up. Confirmed live with a real human tester: an
+      // actual person reliably takes longer than 6s to respond to the
+      // browser's camera/mic permission prompt (unlike every account
+      // tested so far, which had permissions pre-granted on the
+      // automation profile) — any peer connection already established
+      // before that point got stuck permanently recvonly for that
+      // person's outbound audio/video once the old bounded loop gave up,
+      // since nothing else ever calls _applyLocalTracksToAllPeers again.
+      // The WebRTC renegotiation logic itself was never the problem here
+      // (see _applyLocalTracksToPeer/_onNegotiationNeeded) — it just never
+      // got a chance to run.
       _waitForLocalStreamThenFill: function (attemptsLeft) {
+        if (this._roomLeft) return;
         var user = lively.identity.did.currentUser();
         var myDid = user ? user.did : null;
         var circle = myDid && this._videoCircles[myDid];
@@ -243,9 +261,10 @@ module("lively.identity.RoomView")
         // self circle above.
         var pushedToPeers = this._applyLocalTracksToAllPeers();
         if (filledOwnCircle && pushedToPeers) return;
-        if (attemptsLeft <= 0) return;
         var self = this;
-        setTimeout(function () { self._waitForLocalStreamThenFill(attemptsLeft - 1); }, 300);
+        var remaining = attemptsLeft > 0 ? attemptsLeft - 1 : 0;
+        var delay = attemptsLeft > 0 ? 300 : 3000;
+        setTimeout(function () { self._waitForLocalStreamThenFill(remaining); }, delay);
       },
 
       _showFatalError: function (msg) {
@@ -325,6 +344,7 @@ module("lively.identity.RoomView")
 
       _leaveRoomAndReturn: function () {
         var self = this;
+        this._roomLeft = true;
         if (this._messagePollTimer) { clearInterval(this._messagePollTimer); this._messagePollTimer = null; }
         this._teardownSignaling();
         var base = lively.identity.did.baseUrl();
@@ -345,6 +365,7 @@ module("lively.identity.RoomView")
       // own _leaveAllRoomsBestEffort (pagehide/beforeunload need something that's
       // actually guaranteed to send before the page tears down).
       _leaveBestEffort: function () {
+        this._roomLeft = true;
         if (this._messagePollTimer) { clearInterval(this._messagePollTimer); this._messagePollTimer = null; }
         try { this._teardownSignaling(); } catch (e) {}
         var base = lively.identity.did.baseUrl();
