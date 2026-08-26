@@ -290,6 +290,26 @@ lively.morphic.Box.subclass('lively.morphic.PartsBinItem',
             var htmlLogo = this.partItem.envelope.state && this.partItem.envelope.state.htmlLogo;
             if (htmlLogo) {
                 this.setupIdentityHTMLLogo(htmlLogo);
+            } else if (typeof this.partItem.fetchHtmlLogo === 'function') {
+                // Cross-user listing items (Inventory browser,
+                // core/lively/identity/Inventory.js) are built from
+                // /parts/public rows, which deliberately omit htmlLogo to
+                // keep listing responses light — see that route's own
+                // comment. fetchHtmlLogo (set by the Inventory browser when
+                // constructing the item) lazily fetches the full envelope
+                // for just THIS tile, mirroring setupHTMLLogo's own
+                // fetch-then-paint pattern for WebDAV parts below. Render
+                // the placeholder immediately so the grid doesn't block on
+                // the fetch, then swap in the real logo once it lands.
+                var placeholder = this.setupIdentityPlaceholderLogo();
+                var self = this;
+                this.partItem.fetchHtmlLogo(function(err, logo) {
+                    // Tile may have been removed (category switched, grid
+                    // reloaded) before this resolved — don't resurrect it.
+                    if (err || !logo || !self.owner) return;
+                    placeholder.remove();
+                    self.setupIdentityHTMLLogo(logo);
+                });
             } else {
                 // Parts published before this fix stored no snapshot — fall
                 // back to a plain placeholder rather than a permanently blank icon.

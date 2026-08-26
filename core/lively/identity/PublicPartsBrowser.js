@@ -1,5 +1,16 @@
 module('lively.identity.PublicPartsBrowser').requires('lively.persistence.BuildSpec', 'lively.PartsBin', 'lively.identity.IdentityPartsSpace').toRun(function() {
 
+// SUPERSEDED by lively.identity.Inventory (core/lively/identity/Inventory.js)
+// — full layout/feature parity with the classic PartsBin browser (instance
+// chooser, category sidebar, thumbnail grid, collapsible info panel with
+// Share Link/Inspect/version history). The "Browse Public Inventory" menu
+// entry (core/lively/morphic/Widgets.js) now opens that instead. This file
+// is kept on disk (not deleted) only because start.html — a live serialized
+// world snapshot, not source — still has a leftover serialized
+// PublicPartsBrowser window instance from a previous session; deleting the
+// module would break that snapshot's deserialization on boot. Do not open
+// this from new code.
+
 // A small window for browsing/searching every publicly "Published to
 // Inventory" part across ALL users — the classic PartsBinBrowser's
 // "*myparts*"/"#tag" categories and its WebDAV-backed Search command can

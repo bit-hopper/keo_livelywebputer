@@ -2528,6 +2528,13 @@ module.exports = function (route, app) {
   // ─── GET object ────────────────────────────────────────────────────────────
 
   app.get("/@:handle/:objId", auth.optionalAuth, function (req, res) {
+    // Cross-origin reads of this route are safe to allow anonymously: the
+    // access check below (_canReadEnvelope) is untouched and still runs —
+    // a cross-origin caller sends no cookies, so it only ever sees exactly
+    // what an anonymous same-origin caller could already see. Enables the
+    // Inventory browser (core/lively/identity/Inventory.js) to fetch a full
+    // part envelope from a different identity-server instance.
+    res.header("Access-Control-Allow-Origin", "*");
     var handle = req.params.handle;
     var objId = req.params.objId;
 
@@ -2951,6 +2958,10 @@ module.exports = function (route, app) {
   // ─── version history ───────────────────────────────────────────────────────
 
   app.get("/@:handle/:objId/versions", auth.optionalAuth, function (req, res) {
+    // Same reasoning as the CORS header on GET /@:handle/:objId above —
+    // needed so the Inventory browser can show version history for an
+    // item browsed from a different instance.
+    res.header("Access-Control-Allow-Origin", "*");
     var handle = req.params.handle;
     var objId  = req.params.objId;
 
@@ -3958,11 +3969,17 @@ module.exports = function (route, app) {
   // exact objId, so pasting an objId (e.g. from a share link) works the
   // same as typing a name.
   app.get("/parts/public", auth.optionalAuth, function (req, res) {
+    // Anonymous cross-origin reads are safe here — see the identical note
+    // on GET /@:handle/:objId above. Lets the Inventory browser
+    // (core/lively/identity/Inventory.js) list public parts from a
+    // different identity-server instance via its instance chooser.
+    res.header("Access-Control-Allow-Origin", "*");
     var limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
     var cursor = req.query.cursor || null;
     var q = typeof req.query.q === "string" ? req.query.q.trim().slice(0, 200) : null;
+    var tag = typeof req.query.tag === "string" ? req.query.tag.trim().slice(0, 200) : null;
 
-    objectRepo.listPublicParts({ limit: limit, cursor: cursor, q: q || null }, function (err, result) {
+    objectRepo.listPublicParts({ limit: limit, cursor: cursor, q: q || null, tag: tag || null }, function (err, result) {
       if (err) return res.status(500).json({ error: String(err) });
       // visibility:'public' is already filtered at the SQL level — this is
       // defense-in-depth matching /postcards/nearby's own pattern.
@@ -3975,6 +3992,18 @@ module.exports = function (route, app) {
         });
         res.json(result);
       });
+    });
+  });
+
+  // Distinct tags across every public part, for the Inventory browser's
+  // "#tag" category sidebar (core/lively/identity/Inventory.js) — mirrors
+  // /parts/public's own CORS/anonymous-read posture. Backed by
+  // ObjectRepository.listPublicPartTags (SQLite JSON1 json_each aggregation).
+  app.get("/parts/public/tags", auth.optionalAuth, function (req, res) {
+    res.header("Access-Control-Allow-Origin", "*");
+    objectRepo.listPublicPartTags(function (err, tags) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json({ tags: tags });
     });
   });
 

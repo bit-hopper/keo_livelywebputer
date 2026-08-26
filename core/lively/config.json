@@ -477,6 +477,10 @@
     ["partsbinURLs", ["https://smalltalkzoo.computerhistory.org/PartsBin/"], "What PartsBins to offer for upload and download except for the local"]
   ],
 
+  "lively.identity.Inventory": [
+    ["instanceURLs", [], "Other known identity-server instances to offer for browsing public Inventory from, in addition to this one."]
+  ],
+
   "lively.morphic.Windows": [
     ["useWindowSwitcher", true, "Use the window switcher (F5/CMD+`/CTRL+`)."]
   ],

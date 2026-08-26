@@ -420,6 +420,7 @@ function listPublicParts(opts, thenDo) {
   var limit = (opts && opts.limit) || 20;
   var cursor = (opts && opts.cursor) || null;
   var q = (opts && opts.q) || null;
+  var tag = (opts && opts.tag) || null;
 
   withDB(function (err, db) {
     if (err) return thenDo(err);
@@ -440,6 +441,13 @@ function listPublicParts(opts, thenDo) {
       if (q) {
         conditions.push('(json_extract(o.envelope, \'$.state.partName\') LIKE ? ESCAPE \'\\\' OR o.obj_id = ?)');
         params.push('%' + _escapeLikePrefix(q) + '%', q);
+      }
+      // Category filtering (Inventory browser's "#tag" sidebar entries) —
+      // membership test against the JSON array at state.tags via the same
+      // JSON1 json_each() extension listPublicPartTags uses for aggregation.
+      if (tag) {
+        conditions.push('EXISTS (SELECT 1 FROM json_each(json_extract(o.envelope, \'$.state.tags\')) je WHERE je.value = ?)');
+        params.push(tag);
       }
       if (pivotId) {
         conditions.push('o.id < ?');
@@ -484,6 +492,37 @@ function listPublicParts(opts, thenDo) {
         var nextCursor = hasMore ? rows[rows.length - 1].obj_id : null;
         thenDo(null, { parts: parts, cursor: nextCursor });
       });
+    });
+  });
+}
+
+// Aggregate distinct tags across every latest-version public part, for the
+// Inventory browser's "#tag" category sidebar (core/lively/identity/Inventory.js).
+// Same "latest row per obj_id, type='part' AND visibility='public'" subquery
+// as listPublicParts above, joined against json_each() (SQLite JSON1 —
+// confirmed available in this DB) to explode each part's state.tags array
+// into rows before grouping. Capped at 100 tags so a pathological number of
+// distinct tags can't blow up the response; ordered by usage count so the
+// most useful categories sort first if a caller ever truncates the list.
+// Calls thenDo(err, [{tag, count}, ...]).
+function listPublicPartTags(thenDo) {
+  withDB(function (err, db) {
+    if (err) return thenDo(err);
+    var sql =
+      'SELECT je.value AS tag, COUNT(*) AS count FROM objects o' +
+      ' INNER JOIN (' +
+      '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
+      '   WHERE type = \'part\' AND visibility = \'public\'' +
+      '   GROUP BY obj_id' +
+      ' ) latest ON o.id = latest.max_id' +
+      ' , json_each(json_extract(o.envelope, \'$.state.tags\')) je' +
+      ' WHERE je.value IS NOT NULL AND je.value != \'\'' +
+      ' GROUP BY je.value' +
+      ' ORDER BY count DESC, tag ASC' +
+      ' LIMIT 100';
+    db.all(sql, [], function (err, rows) {
+      if (err) return thenDo(err);
+      thenDo(null, rows.map(function (r) { return { tag: r.tag, count: r.count }; }));
     });
   });
 }
@@ -1536,6 +1575,7 @@ module.exports = {
   getVersionsSince:              getVersionsSince,
   listForUser:                   listForUser,
   listPublicParts:               listPublicParts,
+  listPublicPartTags:            listPublicPartTags,
   getProfileForDid:              getProfileForDid,
   getRecoveryWorldForDid:        getRecoveryWorldForDid,
   getSettingsForDid:             getSettingsForDid,

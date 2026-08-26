@@ -84,20 +84,39 @@ module("lively.identity.IdentityPartsSpace")
           var self = this;
           var envelope = this.envelope;
           var space = this.getPartsSpace();
-          var handle = space && space.handle;
+          var handle = this.handle || (space && space.handle);
           if (!envelope || !envelope.objId || !handle ||
               typeof lively === "undefined" || !lively.identity || !lively.identity.did) {
             this.partVersions = [];
             return this;
           }
 
-          var base = lively.identity.did.baseUrl();
+          // Inventory browser (core/lively/identity/Inventory.js) sets
+          // _instanceBaseUrl on items constructed for a non-local chosen
+          // instance, so version history is fetched from the same
+          // instance the item's data actually came from rather than
+          // always the local origin. Also prefer this.handle (set
+          // directly by both IdentityPartsSpace.createPartItemFromEnvelope
+          // and the Inventory browser's own item construction) over
+          // space.handle — a *public* item built without a real owning
+          // IdentityPartsSpace has no space.handle to fall back on.
+          var base = this._instanceBaseUrl || lively.identity.did.baseUrl();
           var url = base + "/@" + encodeURIComponent(handle) + "/" +
             encodeURIComponent(envelope.objId) + "/versions";
           var xhr = new XMLHttpRequest();
           xhr.open("GET", url, true);
           xhr.setRequestHeader("Accept", "application/json");
-          xhr.withCredentials = true;
+          // A cross-origin request can't combine withCredentials:true with
+          // the server's wildcard Access-Control-Allow-Origin:* (the
+          // browser rejects that combination outright per the CORS spec —
+          // wildcard-origin responses are only valid for *credential-less*
+          // requests). Same-origin (browsing the local instance) keeps
+          // credentials so an owner viewing their own non-public items
+          // still authenticates as before; a different instance is always
+          // fetched anonymously.
+          var isCrossOrigin = typeof window !== "undefined" && window.location &&
+            base && base !== window.location.origin;
+          xhr.withCredentials = !isCrossOrigin;
           xhr.onload = function () {
             if (xhr.status !== 200) { self.partVersions = []; return; }
             var data;

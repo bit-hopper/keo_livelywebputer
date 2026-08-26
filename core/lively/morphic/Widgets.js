@@ -1766,8 +1766,8 @@ lively.morphic.World.addMethods(
         });
     },
     openPublicPartsBrowser: function() {
-        lively.require('lively.identity.PublicPartsBrowser').toRun(function() {
-            lively.identity.PublicPartsBrowser.open();
+        lively.require('lively.identity.Inventory').toRun(function() {
+            lively.identity.Inventory.open();
         });
     },
     openEntanglementInspectorFor: function(object, evt) {
