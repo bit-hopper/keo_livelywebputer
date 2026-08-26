@@ -749,7 +749,12 @@ module("lively.identity.RoomView")
             fontSize: 12, fontWeight: "700", textColor: TEXT_PRIMARY, fixedWidth: true, fixedHeight: true,
           }));
           headM.eventsAreIgnored = true;
-          headM.setExtent(lively.pt(CHAT_W - PAD * 2 - AVATAR_MSG - 8, 16));
+          // 16 clipped the bottom of any descender (g/y/p in a handle) —
+          // confirmed live via the shapeNode's own scrollHeight (~19px
+          // for 12px bold text, same shapeNode-padding story as
+          // ConstellationLounge.js's own label-height gotchas): 20 covers
+          // it with a little headroom rather than the exact measured min.
+          headM.setExtent(lively.pt(CHAT_W - PAD * 2 - AVATAR_MSG - 8, 20));
           headM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, y));
           self._msgListBox.addMorph(headM);
 
@@ -763,9 +768,9 @@ module("lively.identity.RoomView")
           var inner = bodyM.renderContext().shapeNode.querySelector("div");
           var bh = inner ? inner.offsetHeight : 18;
           bodyM.setExtent(lively.pt(bw, bh + 4));
-          bodyM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, y + 18));
+          bodyM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, y + 20));
 
-          y += 18 + bh + 4 + ROW_GAP;
+          y += 20 + bh + 4 + ROW_GAP;
         });
 
         var scrollNode = this._msgListBox.renderContext().shapeNode;
@@ -832,8 +837,12 @@ module("lively.identity.RoomView")
             { fontSize: 13, fontWeight: "600", textColor: TEXT_PRIMARY, fixedWidth: true, fixedHeight: true }
           ));
           nameM.eventsAreIgnored = true;
-          nameM.setExtent(lively.pt(MEMBERS_W - 16 - AVATAR_MEMBER - 16, 18));
-          nameM.setPosition(lively.pt(8 + AVATAR_MEMBER + 8, 11));
+          // 18 clipped the bottom of any descender (e.g. the "y" in
+          // "@gameboy") — confirmed live via the shapeNode's own
+          // scrollHeight (~21px for 13px bold text); 22 covers it with a
+          // little headroom rather than the exact measured minimum.
+          nameM.setExtent(lively.pt(MEMBERS_W - 16 - AVATAR_MEMBER - 16, 22));
+          nameM.setPosition(lively.pt(8 + AVATAR_MEMBER + 8, 9));
           row.addMorph(nameM);
 
           y += 44;
