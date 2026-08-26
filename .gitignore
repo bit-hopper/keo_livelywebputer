@@ -81,6 +81,9 @@ R-libraries/
 # Github API
 core/apis/github-api.json
 
+# Klipy API (GIF/sticker search) — see core/servers/KlipyProxyServer.js
+core/apis/klipy-api.json
+
 # HTTP / server #
 htpasswd
 .htpasswd

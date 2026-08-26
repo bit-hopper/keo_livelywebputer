@@ -3546,7 +3546,7 @@ module.exports = function (route, app) {
       var amMember = constellationRegistry.canWrite(constellation, viewerDid);
       constellationRegistry.listRooms(name, function (err, rooms) {
         if (err) return res.status(500).json({ error: String(err) });
-        if (!rooms.length) return res.json({ rooms: [], amMember: amMember });
+        if (!rooms.length) return res.json({ rooms: [], amMember: amMember, signedIn: !!viewerDid });
         var remaining = rooms.length;
         var firstErr = null;
         var out = [];
@@ -3563,7 +3563,7 @@ module.exports = function (route, app) {
             if (--remaining === 0) {
               if (firstErr) return res.status(500).json({ error: String(firstErr) });
               out.sort(function (a, b) { return a.id - b.id; });
-              res.json({ rooms: out, amMember: amMember });
+              res.json({ rooms: out, amMember: amMember, signedIn: !!viewerDid });
             }
           }
           if (!viewerDid || room.access !== "request") return withStatus(null);

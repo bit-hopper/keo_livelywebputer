@@ -1,7 +1,7 @@
 /**
  * lively.identity.RoomView
  *
- * A single room's Discord-like live view: chat, a real-presence member
+ * A single room's live view: chat, a real-presence member
  * list, and voice/video controls — the "enter a room" destination that
  * ConstellationLounge.js's Spaces panel cards previously had no real place
  * to send you (joining there only ever touched an in-memory heartbeat/
@@ -44,6 +44,7 @@ module("lively.identity.RoomView")
     "lively.identity.PostCardUtils",
     "lively.identity.PostCardSerializer",
     "lively.identity.AmbientPresencePanel",
+    "lively.identity.MediaPickerDialog",
     "lively.Network",
     "lively.morphic.Complete",
   )
@@ -78,6 +79,12 @@ module("lively.identity.RoomView")
     var TOTAL_H = HEADER_H + BODY_H;
     var INPUT_H = 52;
     var AVATAR_MSG = 28, AVATAR_MEMBER = 28;
+    // Reserved row height for a GIF/sticker message bubble (_isMediaMessage)
+    // — fixed rather than measured, so _renderMessages' cumulative y-layout
+    // stays synchronous despite the image itself loading asynchronously;
+    // see the comment at its one call site for why this can only shrink an
+    // image, never grow one into the next message.
+    var MEDIA_ROW_H = 190;
     var VIDEO_CIRCLE = 96;
     // Rooms-rail stacked-participant-avatars row — same overlapping-ring
     // technique as ConstellationLounge.js's _renderRoomCard/_renderEventCard,
@@ -125,6 +132,7 @@ module("lively.identity.RoomView")
         this._messages = [];      // [{objId, did, handle, text, created}], real (see "chat" category)
         this._messagePollTimer = null;
         this._sendingMessage = false;
+        this._mediaPicker = null; // lazily created by _getMediaPicker on first emoji/GIF button click
         this._heartbeatTimer = null;
         this._videoCircles = {};  // did -> morph
         this._boundLeaveBestEffort = null;
@@ -660,6 +668,7 @@ module("lively.identity.RoomView")
         var inputRow = noDrag(new lively.morphic.Box(lively.rect(0, listH, CHAT_W, INPUT_H)));
         inputRow.applyStyle({ fill: BG_MAIN, borderWidth: 0 });
         chat.addMorph(inputRow);
+        this._inputRowM = inputRow;
 
         var pill = noDrag(new lively.morphic.Box(lively.rect(16, 8, CHAT_W - 32, 36)));
         pill.applyStyle({ fill: BG_INPUT, borderWidth: 0, borderRadius: 8 });
@@ -671,7 +680,7 @@ module("lively.identity.RoomView")
         // 24 covers it with a little headroom rather than the exact
         // measured minimum. placeholder below is sized to match so the
         // two stay pixel-aligned regardless of which one is visible.
-        var input = noDrag(new lively.morphic.Text(lively.rect(12, 6, CHAT_W - 32 - 60, 24)));
+        var input = noDrag(new lively.morphic.Text(lively.rect(12, 6, CHAT_W - 32 - 72, 24)));
         input.beInputLine({
           fontSize: 13, fontFamily: "Helvetica", textColor: TEXT_PRIMARY,
           fill: null, borderWidth: 0, whiteSpaceHandling: "pre",
@@ -682,7 +691,7 @@ module("lively.identity.RoomView")
         var placeholder = lively.morphic.Text.makeLabel("Message #" + (this._room.name || "room"), {
           fontSize: 13, textColor: TEXT_FAINT,
         });
-        placeholder.setExtent(lively.pt(CHAT_W - 32 - 60, 24));
+        placeholder.setExtent(lively.pt(CHAT_W - 32 - 72, 24));
         placeholder.setPosition(lively.pt(12, 6));
         placeholder.eventsAreIgnored = true;
         pill.addMorph(placeholder);
@@ -699,6 +708,14 @@ module("lively.identity.RoomView")
         // actually received focus/keystrokes despite looking clickable.
         // Real CSS pointer-events: none is the actual fix.
         placeholder.renderContext().shapeNode.style.pointerEvents = "none";
+
+        // Emoji + GIF/Sticker picker buttons, in the ~60px gap the pill's
+        // own width already reserves past the input's right edge (pill is
+        // CHAT_W-32 wide, input only CHAT_W-32-72) — widened from an
+        // original 48px because the "gif" glyph (a rounded-rect badge with
+        // "GIF" lettering inside, more detail than "mood"'s plain smiley
+        // outline) read as too small/cramped at the size that gap allowed.
+        this._buildPickerButtons(pill);
 
         // Plain property assignment (not addScript) — this controller isn't
         // a lively.BuildSpec, so a normal closure over `self` here is safe
@@ -718,6 +735,80 @@ module("lively.identity.RoomView")
         };
       },
 
+      // Small trailing pair of Material Symbols icon buttons inside the
+      // input pill (see the vendored font + ligature-as-Text-morph
+      // technique documented in CLAUDE.md / AmbientPresencePanel.js) —
+      // "mood" opens the picker on its Emoji tab, "gif" opens it on GIFs.
+      // Sized to fit the ~60px gap already reserved past the input's own
+      // right edge (see _buildChatPanel). The "gif" glyph is a compound
+      // badge shape (rounded-rect outline + "GIF" lettering) rather than a
+      // simple icon outline like "mood"'s smiley, so it gets a noticeably
+      // bigger box/fontSize to stay legible rather than sharing "mood"'s size.
+      _buildPickerButtons: function (pill) {
+        var self = this;
+        function pickerIconButton(rect, fontSize, glyph, tab) {
+          var btn = noDrag(new lively.morphic.Text(rect));
+          btn.textString = glyph;
+          btn.applyStyle({
+            fontFamily: "'Material Symbols Rounded'", fontSize: fontSize, textColor: TEXT_FAINT,
+            fill: null, borderWidth: 0, align: "center", allowInput: false, selectable: false,
+            clipMode: "hidden", whiteSpaceHandling: "pre", handStyle: "pointer",
+          });
+          btn.onMouseOver = function () { this.applyStyle({ textColor: TEXT_PRIMARY }); };
+          btn.onMouseOut = function () { this.applyStyle({ textColor: TEXT_FAINT }); };
+          btn.onMouseUp = function (evt) { self._openMediaPicker(tab); evt.stop(); return true; };
+          pill.addMorph(btn);
+          return btn;
+        }
+        pickerIconButton(lively.rect(672, 8, 20, 20), 13, "mood", "emoji");
+        pickerIconButton(lively.rect(698, 4, 28, 28), 18, "gif", "gif");
+      },
+
+      _getMediaPicker: function () {
+        if (!this._mediaPicker) this._mediaPicker = new lively.identity.MediaPickerController();
+        return this._mediaPicker;
+      },
+
+      _openMediaPicker: function (initialTab) {
+        var self = this;
+        var picker = this._getMediaPicker();
+        if (picker.isOpen() && picker._activeTab === initialTab) { picker.close(); return; } // same button again toggles shut
+        if (picker.isOpen()) { picker._selectTab(initialTab); return; } // other button while open just switches tabs
+        picker.open(this._inputRowM.globalBounds(), {
+          initialTab: initialTab,
+          onPick: function (payload) { self._onMediaPicked(payload); },
+        });
+      },
+
+      _onMediaPicked: function (payload) {
+        if (payload.type === "emoji") this._insertEmoji(payload.value);
+        else this._sendMediaMessage(payload.value);
+      },
+
+      _insertEmoji: function (glyph) {
+        this._inputM.textString = (this._inputM.textString || "") + glyph;
+        this._placeholderM.setVisible(!this._inputM.textString);
+        if (this._inputM.focus) this._inputM.focus();
+      },
+
+      // Sends a GIF/sticker pick immediately on click (common chat-app
+      // behavior) rather than dropping the URL into the input for the user
+      // to hit Enter on — reuses _sendText, the same envelope/XHR path
+      // typed messages go through, just with the media URL as the body.
+      // NOTE: PostCardSerializer._extractFirstBlockText caps state.title at
+      // 200 chars. Confirmed live against real Klipy responses that its
+      // static CDN URLs (e.g. https://static.klipy.com/ii/<hash>/<a>/<b>/
+      // <file>.gif) run ~80-90 chars with no query string, so this cap
+      // isn't actually in play in practice — if that ever changes,
+      // _isMediaMessage's regex requires the extension right at the end of
+      // string, so a mid-URL truncation would just fail that check and the
+      // message would fall back to rendering as plain (broken-link) text
+      // rather than a broken image.
+      _sendMediaMessage: function (url) {
+        if (this._sendingMessage) return;
+        this._sendText(url);
+      },
+
       // Same build-envelope -> PUT to own /@handle/objId -> POST {objId} to
       // the validating route sequence ConstellationLounge.js's
       // _requestRoomAccess/_submitReply already use for every other
@@ -731,11 +822,20 @@ module("lively.identity.RoomView")
       _onSendMessage: function () {
         var text = (this._inputM.textString || "").trim();
         if (!text || this._sendingMessage) return;
+        this._inputM.textString = "";
+        this._placeholderM.setVisible(true);
+        this._sendText(text);
+      },
+
+      // Factored out of _onSendMessage so a GIF/sticker/emoji pick
+      // (_sendMediaMessage) can post through the exact same envelope/XHR
+      // path a typed message uses, just with a different `text` body — the
+      // input box itself is never touched here, only by callers that read
+      // from it first (_onSendMessage).
+      _sendText: function (text) {
         var user = lively.identity.did.currentUser();
         if (!user) return;
         this._sendingMessage = true;
-        this._inputM.textString = "";
-        this._placeholderM.setVisible(true);
 
         var self = this;
         var doc = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: text }] }] };
@@ -780,6 +880,66 @@ module("lively.identity.RoomView")
         this._placeholderM.setVisible(!text);
       },
 
+      // A message's own "text" is a Klipy GIF/sticker URL when it was sent
+      // via _sendMediaMessage rather than typed — deliberately scoped to
+      // gif/webp/mp4 (not png/jpg) so an ordinary typed message that
+      // happens to paste some other image link doesn't get auto-embedded.
+      _isMediaMessage: function (text) {
+        return /^https?:\/\/\S+\.(gif|webp|mp4)(\?[^\s]*)?$/i.test(text || "");
+      },
+
+      // Country/subdivision flags render as literal two-letter text (or
+      // nothing at all) via native Text morphs on this Windows/Chrome
+      // environment — the same platform emoji-font gap
+      // MediaPickerDialog.js's picker grid works around by swapping in a
+      // vendored image per flag (confirmed live there: a raw non-Lively
+      // <div> shows the identical failure, so this isn't a Lively/morphic
+      // bug — see that file's own notes). A chat message is free-form
+      // text though — a flag can sit anywhere inside arbitrary
+      // surrounding words — so the picker's "swap the whole cell to an
+      // Image morph" approach doesn't apply here. Instead this splits the
+      // message into text/flag runs and renders the whole body as one
+      // small chunk of raw HTML (a Box morph's shapeNode.innerHTML, the
+      // same "rich content as HTML instead of a pure Text morph" pattern
+      // PostCardUtils.js's own postcard rendering already uses elsewhere
+      // in this app) with an inline <img> per flag run, letting the
+      // browser's normal text-wrap flow mix them with surrounding words
+      // for free — no manual line-layout code needed. Same regional-
+      // indicator-pair / Tag-sequence detection as MediaPickerDialog.js's
+      // needsFlagImage/flagImageUrl, duplicated rather than shared since
+      // RoomView.js doesn't otherwise depend on that module.
+      _splitFlagRuns: function (text) {
+        var re = /[\u{1F1E6}-\u{1F1FF}]{2}|\u{1F3F4}[\u{E0000}-\u{E007F}]+/gu;
+        var segments = [];
+        var lastIndex = 0;
+        var m;
+        while ((m = re.exec(text))) {
+          if (m.index > lastIndex) segments.push({ flag: false, value: text.slice(lastIndex, m.index) });
+          segments.push({ flag: true, value: m[0] });
+          lastIndex = m.index + m[0].length;
+        }
+        if (lastIndex < text.length) segments.push({ flag: false, value: text.slice(lastIndex) });
+        return segments;
+      },
+
+      // Vendored image filenames are their own emoji's codepoints, hex,
+      // hyphen-joined — see MediaPickerDialog.js's flagImageUrl for the
+      // same computation and the completeness check confirming every
+      // flag this could ever produce actually has a vendored file.
+      _flagImageUrl: function (glyph) {
+        var hex = Array.from(glyph).map(function (ch) { return ch.codePointAt(0).toString(16); }).join("-");
+        return "/core/media/emoji-picker/flags/" + hex + ".png";
+      },
+
+      _messageBodyHtml: function (segments) {
+        var self = this;
+        return segments.map(function (s) {
+          if (!s.flag) return lively.identity.postCardUtils.escapeHtml(s.value);
+          return '<img src="' + self._flagImageUrl(s.value) + '" alt="" ' +
+            'style="width:16px;height:16px;vertical-align:-3px;border-radius:2px;display:inline-block;">';
+        }).join("");
+      },
+
       _formatTime: function (isoOrTs) {
         var d = new Date(isoOrTs);
         var h = d.getHours(), m = d.getMinutes();
@@ -814,19 +974,61 @@ module("lively.identity.RoomView")
           headM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, y));
           self._msgListBox.addMorph(headM);
 
-          var bodyM = noDrag(lively.morphic.Text.makeLabel(msg.text, {
-            fontSize: 13, textColor: Color.rgb(219, 222, 225), fixedWidth: true, fixedHeight: true,
-          }));
-          bodyM.eventsAreIgnored = true;
           var bw = CHAT_W - PAD * 2 - AVATAR_MSG - 8;
-          bodyM.setExtent(lively.pt(bw, 1));
-          self._msgListBox.addMorph(bodyM);
-          var inner = bodyM.renderContext().shapeNode.querySelector("div");
-          var bh = inner ? inner.offsetHeight : 18;
-          bodyM.setExtent(lively.pt(bw, bh + 4));
-          bodyM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, y + 20));
+          var bh;
+          if (self._isMediaMessage(msg.text)) {
+            // A GIF/sticker sent via the picker (_sendMediaMessage) — its
+            // own message "text" is just the media's own URL (no schema
+            // change needed: the room-message envelope's state.title is
+            // already a plain string, see ObjectRepository.js's
+            // listMessagesForRoom). MEDIA_ROW_H is reserved up front (not
+            // measured after load) so the cumulative `y` layout below stays
+            // synchronous even though the image itself loads async;
+            // keepAspectRatio + matching maxWidth/maxHeight only ever
+            // shrinks the morph to fit inside that reserved box, never
+            // grows it into the next message.
+            bh = MEDIA_ROW_H;
+            var mediaM = noDrag(new lively.morphic.Image(lively.rect(PAD + AVATAR_MSG + 8, y + 20, bw, bh)));
+            mediaM.applyStyle({ borderRadius: 6, borderWidth: 0, clipMode: "hidden" });
+            mediaM.eventsAreIgnored = true;
+            mediaM.setImageURL(msg.text, { maxWidth: Math.min(bw, 220), maxHeight: bh, keepAspectRatio: true });
+            self._msgListBox.addMorph(mediaM);
+          } else {
+            var flagSegments = self._splitFlagRuns(msg.text);
+            var hasFlag = flagSegments.some(function (s) { return s.flag; });
+            if (hasFlag) {
+              // Raw-HTML path (see _messageBodyHtml's own comment) — a
+              // plain Box, not a Text morph, since the flag <img>s need to
+              // sit inline in the browser's own native text flow.
+              var bodyBox = noDrag(new lively.morphic.Box(lively.rect(PAD + AVATAR_MSG + 8, y + 20, bw, 1)));
+              bodyBox.applyStyle({ fill: null, borderWidth: 0 });
+              bodyBox.eventsAreIgnored = true;
+              self._msgListBox.addMorph(bodyBox);
+              var flagNode = bodyBox.renderContext().shapeNode;
+              flagNode.style.fontFamily = "Helvetica";
+              flagNode.style.fontSize = "13px";
+              flagNode.style.color = "rgb(219, 222, 225)";
+              flagNode.style.wordBreak = "break-word";
+              flagNode.innerHTML = self._messageBodyHtml(flagSegments);
+              bh = flagNode.scrollHeight || 18;
+              bodyBox.setExtent(lively.pt(bw, bh + 4));
+              bh = bh + 4;
+            } else {
+              var bodyM = noDrag(lively.morphic.Text.makeLabel(msg.text, {
+                fontSize: 13, textColor: Color.rgb(219, 222, 225), fixedWidth: true, fixedHeight: true,
+              }));
+              bodyM.eventsAreIgnored = true;
+              bodyM.setExtent(lively.pt(bw, 1));
+              self._msgListBox.addMorph(bodyM);
+              var inner = bodyM.renderContext().shapeNode.querySelector("div");
+              bh = inner ? inner.offsetHeight : 18;
+              bodyM.setExtent(lively.pt(bw, bh + 4));
+              bodyM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, y + 20));
+              bh = bh + 4;
+            }
+          }
 
-          y += 20 + bh + 4 + ROW_GAP;
+          y += 20 + bh + ROW_GAP;
         });
 
         var scrollNode = this._msgListBox.renderContext().shapeNode;

@@ -19,7 +19,7 @@
  *     same technique PostCardView.js's own front/back flip uses, applied
  *     here to stack navigation instead) — prev/next buttons, and arrow
  *     keys turn it. Reply-driven activity never reorders the stack.
- *   - below the active card: a Reddit-style recursively nested, lazily
+ *   - below the active card: a recursively nested, lazily
  *     expanded reply tree (GET /@:handle/:objId/replies is objId-generic —
  *     the :handle path segment is unused server-side, confirmed by reading
  *     IdentityServer.js, so the same route recurses to any depth). Clicking
@@ -173,7 +173,7 @@ module("lively.identity.ConstellationLounge")
       return m;
     }
 
-    // Comment thread (Reddit-style, no votes) geometry/palette.
+    // Comment thread (nested, no votes) geometry/palette.
     var COMMENT_INDENT = 30;   // px per nesting depth
     var COMMENT_AVATAR = 22;   // px, square
     // Left/right inset for the whole thread's content — same fix as the
@@ -222,6 +222,7 @@ module("lively.identity.ConstellationLounge")
 
         this._rooms = [];          // fetched from GET /c/:name/rooms, see _fetchRooms
         this._amMember = false;
+        this._signedIn = false;   // distinguishes "not signed in" from "signed in, not a member" (see _roomStatusInfo)
         this._joinedRoomIds = {};    // roomId -> true while this client has an active heartbeat
         this._heartbeatTimers = {};  // roomId -> setInterval handle
       },
@@ -634,7 +635,7 @@ module("lively.identity.ConstellationLounge")
       },
     },
 
-    // ─── sort by (placeholder — Reddit-style dropdown, not wired to any
+    // ─── sort by (placeholder — a sort-order dropdown, not wired to any
     // actual re-sorting yet) ─────────────────────────────────────────────────
 
     "sort by", {
@@ -1168,7 +1169,11 @@ module("lively.identity.ConstellationLounge")
       // declined request shown as re-requestable rather than a dead end.
       _roomStatusInfo: function (room) {
         var GREY = Color.rgb(150, 150, 150), MUTED_RED = Color.rgb(180, 90, 90);
-        if (!this._amMember) return { text: "Sign in required", color: GREY, clickable: false };
+        if (!this._amMember) {
+          return this._signedIn
+            ? { text: "Membership required", color: GREY, clickable: false }
+            : { text: "Sign in required", color: GREY, clickable: false };
+        }
         if (room.iJoined) return { text: "Leave", color: ROOM_ACCENT, clickable: true };
         if (room.access !== "request") return { text: "Enter", color: ROOM_GREEN, clickable: true };
         if (room.myAccessStatus === "approved") return { text: "Enter", color: ROOM_GREEN, clickable: true, icon: "check_circle" };
@@ -1196,6 +1201,7 @@ module("lively.identity.ConstellationLounge")
           try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
           self._rooms = data.rooms || [];
           self._amMember = !!data.amMember;
+          self._signedIn = !!data.signedIn;
           self._renderSpaces();
         };
         xhr.onerror = function () { self._showError("Network error loading rooms"); };
@@ -2107,7 +2113,7 @@ module("lively.identity.ConstellationLounge")
       },
     },
 
-    // ─── comment thread — Reddit-style, inline, no votes ───────────────────────
+    // ─── comment thread — nested, inline, no votes ───────────────────────
     // Every comment renders inline (avatar, handle, relative time, full body,
     // Reply/collapse actions) — there's no "click to focus into the main card
     // slot" anymore; the twisty only shows/hides a comment's own children.
@@ -2247,8 +2253,8 @@ module("lively.identity.ConstellationLounge")
       // this._threadExpanded + this._threadChildrenCache — simplest correct
       // way to keep an expand/collapse-anywhere tree in the right visual
       // order without hand-patching morph insertion points. A "join the
-      // conversation" composer always sits first, same as a real Reddit
-      // thread's top-level comment box.
+      // conversation" composer always sits first, same as a typical
+      // nested-comment thread's top-level comment box.
       _renderThreadTree: function () {
         var container = this._threadContainer;
         var containerNode = container.renderContext().shapeNode;
@@ -2295,7 +2301,7 @@ module("lively.identity.ConstellationLounge")
       // reply composer if open, its children if expanded, and — if it has
       // any visible children — a single vertical guideline box connecting
       // its avatar down to its last child, the same continuous-thread-line
-      // idiom a real Reddit comment tree uses. Returns the y position just
+      // idiom real nested-comment trees use. Returns the y position just
       // below everything this node (and its subtree) occupied.
       _renderCommentNode: function (container, reply, depth, y, w) {
         var self = this;
