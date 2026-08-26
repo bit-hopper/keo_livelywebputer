@@ -610,6 +610,18 @@ module("lively.identity.RoomView")
         placeholder.eventsAreIgnored = true;
         pill.addMorph(placeholder);
         this._placeholderM = placeholder;
+        // eventsAreIgnored only makes a morph transparent to LIVELY's own
+        // morphic mouse dispatch (Events.js) — it is not a CSS property
+        // and does nothing for the browser's own native hit-testing
+        // (elementFromPoint, native click-to-focus). Confirmed live: the
+        // placeholder renders on top of `input` (added to `pill` after
+        // it) at the exact same position, and a real click there focused
+        // nothing — document.elementFromPoint() at the input's own
+        // center resolved to the placeholder's DOM node, not the
+        // contenteditable input underneath, so the chat box never
+        // actually received focus/keystrokes despite looking clickable.
+        // Real CSS pointer-events: none is the actual fix.
+        placeholder.renderContext().shapeNode.style.pointerEvents = "none";
 
         // Plain property assignment (not addScript) — this controller isn't
         // a lively.BuildSpec, so a normal closure over `self` here is safe
