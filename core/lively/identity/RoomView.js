@@ -398,8 +398,12 @@ module("lively.identity.RoomView")
           fontSize: 15, fontWeight: "700", textColor: TEXT_PRIMARY, fixedWidth: true, fixedHeight: true,
         }));
         nameM.eventsAreIgnored = true;
-        nameM.setPosition(lively.pt(16, 14));
-        nameM.setExtent(lively.pt(300, 20));
+        nameM.setPosition(lively.pt(16, 13));
+        // 20 clipped the bottom of any descender (g/y/p in a room name) —
+        // confirmed live via the shapeNode's own scrollHeight (~23px for
+        // 15px bold text); 24 covers it with a little headroom rather
+        // than the exact measured minimum.
+        nameM.setExtent(lively.pt(300, 24));
         header.addMorph(nameM);
 
         var ICON = 18, ICON_GAP = 6;
@@ -423,8 +427,10 @@ module("lively.identity.RoomView")
           fontSize: 12, textColor: TEXT_MUTED, fixedWidth: true, fixedHeight: true,
         }));
         this._countM.eventsAreIgnored = true;
-        this._countM.setExtent(lively.pt(160, 18));
-        this._countM.setPosition(lively.pt(ix + 8, 15));
+        // 18 clipped the bottom of any descender in "N here" — confirmed
+        // live (~19px real content height for 12px text); 20 covers it.
+        this._countM.setExtent(lively.pt(160, 20));
+        this._countM.setPosition(lively.pt(ix + 8, 14));
         header.addMorph(this._countM);
         this._updateParticipantCount();
 
@@ -434,8 +440,11 @@ module("lively.identity.RoomView")
         var leaveLabel = lively.morphic.Text.makeLabel("Leave Room", {
           fontSize: 12.5, fontWeight: "700", textColor: Color.white, fixedWidth: true, fixedHeight: true,
         });
-        leaveLabel.setExtent(lively.pt(110, 18));
-        leaveLabel.setPosition(lively.pt(0, 6));
+        // 18 clipped the bottom of the "e"/descender-adjacent glyphs —
+        // confirmed live (~19px real content height for 12.5px bold
+        // text); 20 covers it, re-centered in the 30px-tall button.
+        leaveLabel.setExtent(lively.pt(110, 20));
+        leaveLabel.setPosition(lively.pt(0, 5));
         leaveLabel.applyStyle({ align: "center", borderWidth: 0 });
         leaveLabel.eventsAreIgnored = true;
         leaveBtn.addMorph(leaveLabel);
@@ -656,7 +665,13 @@ module("lively.identity.RoomView")
         pill.applyStyle({ fill: BG_INPUT, borderWidth: 0, borderRadius: 8 });
         inputRow.addMorph(pill);
 
-        var input = noDrag(new lively.morphic.Text(lively.rect(12, 8, CHAT_W - 32 - 60, 20)));
+        // 20 clipped the bottom of any descender (g/y/p) typed into the
+        // box — confirmed live by actually typing "gyp qj" and reading
+        // the real contenteditable's scrollHeight (~21px for 13px text);
+        // 24 covers it with a little headroom rather than the exact
+        // measured minimum. placeholder below is sized to match so the
+        // two stay pixel-aligned regardless of which one is visible.
+        var input = noDrag(new lively.morphic.Text(lively.rect(12, 6, CHAT_W - 32 - 60, 24)));
         input.beInputLine({
           fontSize: 13, fontFamily: "Helvetica", textColor: TEXT_PRIMARY,
           fill: null, borderWidth: 0, whiteSpaceHandling: "pre",
@@ -667,8 +682,8 @@ module("lively.identity.RoomView")
         var placeholder = lively.morphic.Text.makeLabel("Message #" + (this._room.name || "room"), {
           fontSize: 13, textColor: TEXT_FAINT,
         });
-        placeholder.setExtent(lively.pt(CHAT_W - 32 - 60, 20));
-        placeholder.setPosition(lively.pt(12, 8));
+        placeholder.setExtent(lively.pt(CHAT_W - 32 - 60, 24));
+        placeholder.setPosition(lively.pt(12, 6));
         placeholder.eventsAreIgnored = true;
         pill.addMorph(placeholder);
         this._placeholderM = placeholder;
