@@ -3,8 +3,9 @@
  *
  * An original click-wheel music player morph: pink metal body, small
  * screen (Menu / Now Playing / Queue), jog ring with drag/scroll physics,
- * and Prev/Center/Next buttons. Wired to a fixed YouTube playlist via the
- * YouTube IFrame Player API for real audio playback — not a visual mockup.
+ * and Prev/Center/Next buttons. Wired to a fixed playlist via a
+ * third-party video platform's embeddable player API for real audio
+ * playback — not a visual mockup.
  * Ported from the runnable design-comp prototype "PinkPod Player.dc.html"
  * (companion spec: "PinkPod Design Spec.dc.html") — those source docs use
  * the original working name "PinkPod"; this implementation is named
