@@ -79,6 +79,11 @@ module("lively.identity.RoomView")
     var INPUT_H = 52;
     var AVATAR_MSG = 28, AVATAR_MEMBER = 28;
     var VIDEO_CIRCLE = 96;
+    // Rooms-rail stacked-participant-avatars row — same overlapping-ring
+    // technique as ConstellationLounge.js's _renderRoomCard/_renderEventCard,
+    // sized down for this panel's much narrower width (220px vs a full
+    // room card).
+    var ROOM_ROW_AV = 16, ROOM_ROW_OVERLAP = 6, ROOM_ROW_RING = 2, ROOM_ROW_MAX_SHOWN = 3;
     var MESSAGE_POLL_MS = 4000;
     var ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
 
@@ -497,10 +502,14 @@ module("lively.identity.RoomView")
         (panel._roomItemMorphs || []).forEach(function (m) { m.remove(); });
         panel._roomItemMorphs = [];
 
+        // Row height grew (40 -> 60) to fit the new stacked-avatar row
+        // below the name; ROW_GAP is the visible space between rows
+        // (previously baked wordlessly into a flat 44px increment).
+        var ROW_H = 60, ROW_GAP = 6;
         var y = 44;
         rooms.forEach(function (room) {
           var isCurrent = room.id === self._roomId;
-          var row = noDrag(new lively.morphic.Box(lively.rect(8, y, ROOMS_PANEL_W - 16, 40)));
+          var row = noDrag(new lively.morphic.Box(lively.rect(8, y, ROOMS_PANEL_W - 16, ROW_H)));
           row.applyStyle({ fill: isCurrent ? ACCENT : null, borderWidth: 0, borderRadius: 6 });
           panel.addMorph(row);
           panel._roomItemMorphs.push(row);
@@ -511,8 +520,38 @@ module("lively.identity.RoomView")
           }));
           nameM.eventsAreIgnored = true;
           nameM.setPosition(lively.pt(10, 6));
-          nameM.setExtent(lively.pt(ROOMS_PANEL_W - 16 - 20, 16));
+          // 16 clipped the bottom of any descender (g/y/p in a room name)
+          // — confirmed live via the shapeNode's own scrollHeight (~21px
+          // for 13px bold text, same shapeNode-padding story as
+          // ConstellationLounge.js's own label-height gotchas); 22 covers
+          // it with a little headroom rather than the exact measured min.
+          nameM.setExtent(lively.pt(ROOMS_PANEL_W - 16 - 20, 22));
           row.addMorph(nameM);
+
+          // Stacked participant avatars — same overlapping white-ring-
+          // cutout technique as ConstellationLounge.js's _renderRoomCard,
+          // sized down for this rail's width. `room.participants` is
+          // already capped server-side (roomPresence.summary's maxSeed,
+          // same GET /c/:name/rooms response RoomView.js's own rooms
+          // panel already fetches) — no new server work needed.
+          var avatarRowY = 32;
+          var seeds = room.participants || [];
+          var shown = seeds.slice(0, ROOM_ROW_MAX_SHOWN);
+          var ax = 10;
+          shown.forEach(function (seed) {
+            var rs = ROOM_ROW_AV + ROOM_ROW_RING * 2;
+            var ring = noDrag(new lively.morphic.Box(lively.rect(ax - ROOM_ROW_RING, avatarRowY - ROOM_ROW_RING, rs, rs)));
+            ring.applyStyle({ fill: isCurrent ? ACCENT : BG_SIDEBAR, borderRadius: rs / 2, borderWidth: 0 });
+            ring.eventsAreIgnored = true;
+            row.addMorph(ring);
+            var av = noDrag(new lively.morphic.Image(lively.rect(ax, avatarRowY, ROOM_ROW_AV, ROOM_ROW_AV)));
+            av.setImageURL(lively.identity.postCardUtils.identiconDataUrl(seed, ROOM_ROW_AV));
+            av.applyStyle({ borderRadius: ROOM_ROW_AV / 2, borderWidth: 0, clipMode: "hidden" });
+            av.eventsAreIgnored = true;
+            row.addMorph(av);
+            ax += ROOM_ROW_AV - ROOM_ROW_OVERLAP;
+          });
+          if (shown.length) ax += ROOM_ROW_OVERLAP + 6;
 
           var count = room.participantCount || 0;
           var countM = noDrag(lively.morphic.Text.makeLabel(
@@ -523,8 +562,10 @@ module("lively.identity.RoomView")
             }
           ));
           countM.eventsAreIgnored = true;
-          countM.setPosition(lively.pt(10, 22));
-          countM.setExtent(lively.pt(ROOMS_PANEL_W - 16 - 20, 14));
+          countM.setPosition(lively.pt(ax, avatarRowY + 1));
+          // Same descender-clip fix as nameM above — 11px text measured
+          // needing ~17px, 18 gives a little headroom.
+          countM.setExtent(lively.pt(Math.max(30, ROOMS_PANEL_W - 16 - ax - 10), 18));
           row.addMorph(countM);
 
           if (!isCurrent) {
@@ -536,7 +577,7 @@ module("lively.identity.RoomView")
             };
           }
 
-          y += 44;
+          y += ROW_H + ROW_GAP;
         });
       },
 
