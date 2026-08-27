@@ -43,6 +43,17 @@
  *     for access:'request' rooms — status='approved' IS the permanent
  *     room-membership grant, there is no separate room-members list.
  *
+ *   constellation_invites table: the "Invites" door (§4.2's counterpart to
+ *     join_requests below, reversed direction — a controller sends, the
+ *     target accepts/declines). One row per (constellation, did); a
+ *     re-invite after a decline overwrites the old row back to pending,
+ *     same semantics as join_requests. obj_id is the postal-rail postcard
+ *     (state.kind:'constellation-invite') the invite was delivered as —
+ *     kept for symmetry with join_requests' own audit trail even though no
+ *     current route re-reads it. Accepting adds the target to members, via
+ *     the same addMember() join_requests' approve path uses.
+ *
+
  * The DB file is stored at <WORKSPACE_LK>/identity/constellations.db.
  * Created automatically on first use. withDB() migrates existing DBs that
  * predate the `bots` column via ALTER TABLE, guarded by a PRAGMA
@@ -170,6 +181,24 @@ function withDB(thenDo) {
             '  requested_at  TEXT NOT NULL,' +
             '  status        TEXT NOT NULL DEFAULT \'pending\',' +
             '  PRIMARY KEY (room_id, did)' +
+            ')',
+            function(err) { if (err) return thenDo(err); createInvites(); }
+          );
+        }
+
+        function createInvites() {
+          // See this file's own header comment for the "Invites door"
+          // shape — a controller-issued counterpart to join_requests.
+          db.run(
+            'CREATE TABLE IF NOT EXISTS constellation_invites (' +
+            '  constellation TEXT NOT NULL,' +
+            '  did           TEXT NOT NULL,' +
+            '  invited_by    TEXT NOT NULL,' +
+            '  obj_id        TEXT NOT NULL,' +
+            '  status        TEXT NOT NULL DEFAULT \'pending\',' +
+            '  created_at    TEXT NOT NULL,' +
+            '  responded_at  TEXT DEFAULT NULL,' +
+            '  PRIMARY KEY (constellation, did)' +
             ')',
             function(err) { thenDo(err || null, db); }
           );
@@ -501,6 +530,97 @@ function declineJoinRequest(name, did, thenDo) {
   });
 }
 
+// ─── invites — the "Invites" door (controller sends, target responds) ──────
+// Mirrors join_requests above with the direction reversed: a controller
+// creates the row and delivers the postcard, the target (not a controller)
+// approves/declines it.
+
+// Used to build a "which constellation do you control" picker (e.g.
+// ProfileCard.js's friend nameplate menu) — there's no dedicated members
+// table to query, so this scans `controllers` (a JSON-array TEXT column)
+// with a LIKE prefilter, then confirms real membership by parsing each
+// candidate row's JSON rather than trusting the substring match (a LIKE hit
+// on a truncated/adjacent did:jwk string is possible in principle).
+// Calls thenDo(null, [{ name, visibility, memberCount }, ...]).
+function listByController(did, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.all('SELECT name, controllers, members, visibility FROM constellations WHERE controllers LIKE ?',
+      ['%' + did + '%'],
+      function(err, rows) {
+        if (err) return thenDo(err);
+        try {
+          var out = (rows || []).filter(function(row) {
+            var controllers;
+            try { controllers = JSON.parse(row.controllers); } catch (e) { return false; }
+            return controllers.indexOf(did) !== -1;
+          }).map(function(row) {
+            var members;
+            try { members = JSON.parse(row.members); } catch (e) { members = []; }
+            return { name: row.name, visibility: row.visibility, memberCount: members.length };
+          });
+          thenDo(null, out);
+        } catch (e) {
+          thenDo(e);
+        }
+      }
+    );
+  });
+}
+
+// Upserts a pending invite — a re-invite after a decline resets status to
+// pending, same overwrite semantics as requestJoin(). Calls thenDo(err).
+function createInvite(name, did, invitedBy, objId, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.run(
+      'INSERT INTO constellation_invites (constellation, did, invited_by, obj_id, created_at, status)' +
+      ' VALUES (?, ?, ?, ?, ?, \'pending\')' +
+      ' ON CONFLICT(constellation, did) DO UPDATE SET' +
+      '   invited_by = excluded.invited_by, obj_id = excluded.obj_id,' +
+      '   created_at = excluded.created_at, status = \'pending\', responded_at = NULL',
+      [name, did, invitedBy, objId, new Date().toISOString()],
+      function(err) { thenDo(err || null); }
+    );
+  });
+}
+
+// Calls thenDo(null, 'pending'|'accepted'|'declined'|null) — null means no invite on file.
+function getInviteStatus(name, did, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.get('SELECT status FROM constellation_invites WHERE constellation = ? AND did = ?', [name, did], function(err, row) {
+      if (err) return thenDo(err);
+      thenDo(null, row ? row.status : null);
+    });
+  });
+}
+
+// Same crash-safety ordering as approveJoinRequest: membership first, then
+// the invite row, so a crash between the two leaves a stray 'accepted' row
+// with no membership rather than the reverse. Calls thenDo(err).
+function approveInvite(name, did, thenDo) {
+  addMember(name, did, function(err) {
+    if (err) return thenDo(err);
+    withDB(function(err, db) {
+      if (err) return thenDo(err);
+      db.run('UPDATE constellation_invites SET status = \'accepted\', responded_at = ? WHERE constellation = ? AND did = ?',
+        [new Date().toISOString(), name, did],
+        function(err) { thenDo(err || null); });
+    });
+  });
+}
+
+// Calls thenDo(err).
+function declineInvite(name, did, thenDo) {
+  withDB(function(err, db) {
+    if (err) return thenDo(err);
+    db.run('UPDATE constellation_invites SET status = \'declined\', responded_at = ? WHERE constellation = ? AND did = ?',
+      [new Date().toISOString(), name, did],
+      function(err) { thenDo(err || null); });
+  });
+}
+
 // ─── events — quick-info panel's event card ─────────────────────────────────
 // No creation UI exists yet (same gap as bots/moderators) — createEvent is a
 // real write path for whenever one gets built, but rows can also be inserted
@@ -734,6 +854,11 @@ module.exports = {
   listPendingJoinRequests: listPendingJoinRequests,
   approveJoinRequest: approveJoinRequest,
   declineJoinRequest: declineJoinRequest,
+  listByController: listByController,
+  createInvite: createInvite,
+  getInviteStatus: getInviteStatus,
+  approveInvite: approveInvite,
+  declineInvite: declineInvite,
   createEvent: createEvent,
   getNextEvent: getNextEvent,
   createRoom: createRoom,

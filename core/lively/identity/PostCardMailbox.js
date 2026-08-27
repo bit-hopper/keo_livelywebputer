@@ -446,19 +446,65 @@ module('lively.identity.PostCardMailbox')
           // server-side onto this page's records only (bounded to the page
           // size, not the whole inbox log) — see ObjectRepository.js's
           // _enrichWithConstellationTag.
+          var isInvite = rec.kind === 'constellation-invite';
           if (rec.constellation) {
             var isJoinRequest = rec.kind === 'constellation-join-request';
             var tag = document.createElement('div');
             tag.style.cssText = 'display:inline-block;margin-bottom:4px;padding:2px 7px;' +
               'font-size:10px;border-radius:9px;' +
-              (isJoinRequest
+              (isJoinRequest || isInvite
                 ? 'background:#fff3cd;color:#8a6d1f;font-weight:600;'
                 : 'background:#eef0ff;color:#4a55c4;');
-            tag.textContent = (isJoinRequest ? '📨 join request · ' : '') + 'c/' + rec.constellation;
+            tag.textContent = (isJoinRequest ? '📨 join request · ' : isInvite ? '✉️ invite · ' : '') + 'c/' + rec.constellation;
             card.appendChild(tag);
           }
           card.appendChild(id);
           card.appendChild(when);
+
+          // Invite accept/decline — inline on the card, per the "Invites"
+          // door's design (see IdentityServer.js's /c/:name/invites routes):
+          // unlike a join-request (whose Approve/Decline lives in
+          // PostCardView.js, opened via this card's Open button), an invite
+          // is addressed straight at the viewer, so acting on it belongs
+          // right here rather than behind an extra click. There's no
+          // pre-fetch of the invite's live status before rendering these
+          // (unlike PostCardView.js's join-request check) — clicking
+          // Accept/Decline on an already-resolved invite just surfaces the
+          // server's 409 via _showError rather than silently no-opping, so
+          // double-acting is safe even though a stale row (from before a
+          // reload) still shows the buttons.
+          if (isInvite) {
+            var statusLine = document.createElement('div');
+            statusLine.style.cssText = 'font-size:11px;color:#34c759;font-weight:600;margin-top:4px;display:none;';
+            card.appendChild(statusLine);
+
+            var declineInviteBtn = self._makeIconTextButton('close', 'Decline', '#ff3b30');
+            var acceptInviteBtn  = self._makeIconTextButton('check', 'Accept', '#34c759');
+            function respond(action, btn, otherBtn, resultLabel) {
+              btn.disabled = true;
+              otherBtn.disabled = true;
+              self._respondConstellationInvite(rec.constellation, action, function (err) {
+                if (err) {
+                  btn.disabled = false;
+                  otherBtn.disabled = false;
+                  return self._showError(err.message || 'Failed to respond to invite');
+                }
+                actionsCluster.style.display = 'none';
+                statusLine.textContent = resultLabel;
+                statusLine.style.display = 'block';
+              });
+            }
+            declineInviteBtn.addEventListener('click', function () {
+              respond('decline', declineInviteBtn, acceptInviteBtn, 'Declined.');
+            });
+            acceptInviteBtn.addEventListener('click', function () {
+              respond('approve', acceptInviteBtn, declineInviteBtn, '✓ Joined c/' + rec.constellation + '.');
+            });
+            var actionsCluster = self._makeActionsCluster([declineInviteBtn, acceptInviteBtn]);
+            card.appendChild(actionsCluster);
+            content.appendChild(card);
+            return;
+          }
 
           var buttons = [];
           buttons.push(self._makeMenuBtn(function (anchorBtn) {
@@ -1165,6 +1211,28 @@ module('lively.identity.PostCardMailbox')
         var base   = lively.identity.did.baseUrl();
         var xhr    = new XMLHttpRequest();
         xhr.open('PUT', base + '/@' + handle + '/friend-requests/' + encodeURIComponent(requesterDid), true);
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.withCredentials = true;
+        xhr.onload = function () {
+          if (xhr.status !== 200) {
+            var msg = 'Request failed (' + xhr.status + ')';
+            try { msg = JSON.parse(xhr.responseText).error || msg; } catch (e) {}
+            return thenDo(new Error(msg));
+          }
+          thenDo(null);
+        };
+        xhr.onerror = function () { thenDo(new Error('Network error')); };
+        xhr.send(JSON.stringify({ action: action }));
+      },
+
+      // action: 'approve' or 'decline'. The invite is keyed by the current
+      // viewer's own DID (they're the invitee, not a controller) — see
+      // IdentityServer.js's PUT /c/:name/invites/:did. Calls thenDo(err).
+      _respondConstellationInvite: function (constellationName, action, thenDo) {
+        var did  = lively.identity.did.currentUser().did;
+        var base = lively.identity.did.baseUrl();
+        var xhr  = new XMLHttpRequest();
+        xhr.open('PUT', base + '/c/' + encodeURIComponent(constellationName) + '/invites/' + encodeURIComponent(did), true);
         xhr.setRequestHeader('Content-Type', 'application/json');
         xhr.withCredentials = true;
         xhr.onload = function () {

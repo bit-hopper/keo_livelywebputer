@@ -1207,6 +1207,28 @@ function _resolveHandlesForDids(dids, thenDo) {
   });
 }
 
+// Batch-resolves DIDs to their profile avatarUrl (or null) — same
+// fan-out/join shape as _resolveHandlesForDids above, reusing the same
+// objectRepo.getProfileForDid lookup GET /@:handle/profile already uses.
+// Only used for ProfileCard.js's owner-view friends nameplate list so far;
+// a friend with no avatarUrl set falls back client-side to the identicon
+// generator, same as any other profile with no avatar.
+function _resolveAvatarsForDids(dids, thenDo) {
+  var uniqueDids = dids.filter(function (d, i, a) { return d && a.indexOf(d) === i; });
+  if (!uniqueDids.length) return thenDo(null, {});
+  var map = {};
+  var remaining = uniqueDids.length;
+  var firstErr = null;
+  uniqueDids.forEach(function (did) {
+    objectRepo.getProfileForDid(did, function (err, envelope) {
+      if (err) firstErr = firstErr || err;
+      var payload = envelope && envelope.record && envelope.record.payload;
+      map[did] = (payload && payload.avatarUrl) || null;
+      if (--remaining === 0) thenDo(firstErr, map);
+    });
+  });
+}
+
 module.exports = function (route, app) {
   // Keep domain-handle verification status fresh (ProfileCard.js's green
   // tick / yellow "?" badge) — a domain's hosted .well-known file can
@@ -2446,12 +2468,19 @@ module.exports = function (route, app) {
       return res.status(403).json({ error: "Forbidden: not your friends list" });
     friendRegistry.listFriends(req.identity.did, function (err, friends) {
       if (err) return res.status(500).json({ error: String(err) });
-      _resolveHandlesForDids(friends.map(function (f) { return f.did; }), function (err, didToHandle) {
+      var dids = friends.map(function (f) { return f.did; });
+      _resolveHandlesForDids(dids, function (err, didToHandle) {
         if (err) return res.status(500).json({ error: String(err) });
-        res.json({
-          friends: friends.map(function (f) {
-            return { did: f.did, handle: didToHandle[f.did] || null, since: f.since };
-          }),
+        _resolveAvatarsForDids(dids, function (err, didToAvatar) {
+          if (err) return res.status(500).json({ error: String(err) });
+          res.json({
+            friends: friends.map(function (f) {
+              return {
+                did: f.did, handle: didToHandle[f.did] || null, since: f.since,
+                avatarUrl: didToAvatar[f.did] || null,
+              };
+            }),
+          });
         });
       });
     });
@@ -2464,6 +2493,22 @@ module.exports = function (route, app) {
     friendRegistry.removeFriendship(req.identity.did, req.params.did, function (err) {
       if (err) return res.status(500).json({ error: String(err) });
       res.json({ ok: true });
+    });
+  });
+
+  // Constellations the caller controls — backs ProfileCard.js's "Invite to
+  // constellation" picker on a friend's nameplate menu (there's no other
+  // route that lists membership by DID; ConstellationsBrowser.js's own list
+  // is a localStorage-only "known constellations" convenience, not an
+  // authoritative membership query). Owner-only, same convention as
+  // /@:handle/friends above.
+  app.get("/@:handle/constellations", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your constellation list" });
+    constellationRegistry.listByController(req.identity.did, function (err, constellations) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json({ constellations: constellations });
     });
   });
 
@@ -3722,6 +3767,118 @@ module.exports = function (route, app) {
         apply(name, did, function (err) {
           if (err) return res.status(500).json({ error: String(err) });
           res.json({ ok: true, status: action === "approve" ? "approved" : "declined" });
+        });
+      });
+    });
+  });
+
+  // ─── membership — invites (the "Invites" door, §4.2's reverse direction) ───
+  // A controller sends (ProfileCard.js's "Invite to constellation" friend-
+  // nameplate menu); the invited DID accepts/declines, inline on the
+  // received postcard in their own mailbox (PostCardMailbox.js). Same
+  // never-server-fabricated postal-rail shape as join-requests above: the
+  // controller signs+PUTs the invite postcard to their own objId first,
+  // then POSTs the objId here to (1) record the constellation_invites row
+  // and (2) deliver it to the target's inbox.
+
+  // Body: { objId, targetDid }. Controller-only.
+  app.post("/c/:name/invites", auth.requireAuth, function (req, res) {
+    var name      = req.params.name;
+    var objId     = req.body && req.body.objId;
+    var targetDid = req.body && req.body.targetDid;
+    if (!objId || !targetDid) {
+      return res.status(400).json({ error: "Missing required field(s): objId, targetDid" });
+    }
+
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.isController(constellation, req.identity.did)) {
+        return res.status(403).json({ error: "Forbidden: controllers only" });
+      }
+      if (constellationRegistry.canWrite(constellation, targetDid)) {
+        return res.status(409).json({ error: "Already a member of " + name });
+      }
+
+      objectRepo.get(objId, function (err, envelope) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!envelope) return res.status(404).json({ error: "Post card not found: " + objId });
+        if (envelope.did !== req.identity.did) {
+          return res.status(403).json({ error: "Forbidden: you do not own this post card" });
+        }
+        if (envelope.type !== "postcard" ||
+            !envelope.state || envelope.state.kind !== "constellation-invite" ||
+            envelope.constellation !== name) {
+          return res.status(400).json({
+            error: "objId must be a postcard with state.kind='constellation-invite' and constellation='" + name + "'",
+          });
+        }
+
+        constellationRegistry.createInvite(name, targetDid, req.identity.did, objId, function (err) {
+          if (err) return res.status(500).json({ error: String(err) });
+
+          _resolveHandlesForDids([targetDid], function (err, didToHandle) {
+            if (err) return res.status(500).json({ error: String(err) });
+            var targetHandle = didToHandle[targetDid];
+            if (!targetHandle) return res.status(201).json({ ok: true, status: "pending" });
+            var record = {
+              objId: objId,
+              senderDid: req.identity.did,
+              senderHandle: req.identity.handle,
+              sentAt: new Date().toISOString(),
+            };
+            objectRepo.putInboxRecord(targetHandle, record, function (err) {
+              if (err) return res.status(500).json({ error: String(err) });
+              res.status(201).json({ ok: true, status: "pending" });
+            });
+          });
+        });
+      });
+    });
+  });
+
+  // Lets the invitee check whether their invite is still live before the
+  // mailbox shows Accept/Decline on it — same "resolved status" precedent
+  // as GET /c/:name/join-requests/:did. Invitee-only (not controller-only:
+  // unlike join-requests, the caller here is the person the row is about).
+  app.get("/c/:name/invites/:did", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var did  = req.params.did;
+    if (req.identity.did !== did) {
+      return res.status(403).json({ error: "Forbidden: not your invite" });
+    }
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      constellationRegistry.getInviteStatus(name, did, function (err, status) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({ status: status });
+      });
+    });
+  });
+
+  app.put("/c/:name/invites/:did", auth.requireAuth, function (req, res) {
+    var name   = req.params.name;
+    var did    = req.params.did;
+    var action = req.body && req.body.action;
+    if (req.identity.did !== did) {
+      return res.status(403).json({ error: "Forbidden: not your invite" });
+    }
+    if (action !== "approve" && action !== "decline") {
+      return res.status(400).json({ error: 'Missing/invalid required field: action ("approve" or "decline")' });
+    }
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      constellationRegistry.getInviteStatus(name, did, function (err, status) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (status !== "pending") {
+          return res.status(409).json({ error: "Already resolved (status: " + (status || "none") + ")" });
+        }
+        var apply = action === "approve" ? constellationRegistry.approveInvite : constellationRegistry.declineInvite;
+        apply(name, did, function (err) {
+          if (err) return res.status(500).json({ error: String(err) });
+          res.json({ ok: true, status: action === "approve" ? "accepted" : "declined" });
         });
       });
     });

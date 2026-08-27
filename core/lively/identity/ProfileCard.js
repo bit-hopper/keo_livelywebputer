@@ -126,6 +126,91 @@ module("lively.identity.ProfileCard")
         pane.addMorph(t);
       },
 
+      // ── invite-to-constellation (friend nameplate menu) ─────────────────────
+      // Real top-level BuildSpec methods (not addScript handlers), so they're
+      // reachable as plain `win._openInviteToConstellationPicker(...)` calls
+      // from inside a friend nameplate's addScript-reconstructed three-dot
+      // menu handler — same "closure is lost, but a real method call on the
+      // object graph isn't" idiom loadProfile/_renderEdit already rely on
+      // elsewhere in this file.
+
+      _openInviteToConstellationPicker: function _openInviteToConstellationPicker(targetDid, targetHandle, screenPos) {
+        var self = this;
+        var user = lively.identity.did.currentUser();
+        if (!user) return;
+        fetch('/@' + user.handle + '/constellations', { credentials: 'include' })
+          .then(function (r) { return r.ok ? r.json() : { constellations: [] }; })
+          .then(function (r) {
+            var list = r.constellations || [];
+            if (!list.length) {
+              $world.alert("You don't control any constellations to invite @" + (targetHandle || targetDid) + " to.");
+              return;
+            }
+            var items = list.map(function (c) {
+              return [c.name + ' (' + c.memberCount + ' member' + (c.memberCount === 1 ? '' : 's') + ')',
+                function () { self._sendConstellationInvite(c.name, targetDid, targetHandle); }];
+            });
+            lively.morphic.Menu.openAt(screenPos, 'Invite @' + (targetHandle || targetDid) + ' to…', items);
+          })
+          .catch(function () { $world.alert('Could not load your constellations.'); });
+      },
+
+      // Identical postal-rail flow to ConstellationLounge.js's _requestJoin
+      // (a real, client-signed postcard, never server-fabricated) with the
+      // direction reversed: the controller signs+PUTs the card, then POSTs
+      // its objId + the target's DID to /c/:name/invites, which records the
+      // invite and delivers the card to the target's own inbox.
+      _sendConstellationInvite: function _sendConstellationInvite(constellationName, targetDid, targetHandle) {
+        var user = lively.identity.did.currentUser();
+        if (!user) return;
+        lively.require("lively.identity.PostCardSerializer").toRun(function () {
+          var doc = {
+            type: "doc",
+            content: [{
+              type: "paragraph",
+              content: [{ type: "text",
+                text: "@" + user.handle + " invited @" + (targetHandle || targetDid) + " to join c/" + constellationName + "." }],
+            }],
+          };
+          lively.identity.postCardSerializer.serializePlainToEnvelope({
+            doc: doc,
+            title: "Invitation to join c/" + constellationName,
+            titleExplicit: true,
+            constellation: constellationName,
+            visibility: "public",
+            stateMeta: { kind: "constellation-invite" },
+          }, function (err, envelope) {
+            if (err) return $world.alert("Could not create invite: " + err.message);
+
+            var base = lively.identity.did.baseUrl();
+            var putXhr = new XMLHttpRequest();
+            putXhr.open("PUT", base + "/@" + encodeURIComponent(user.handle) + "/" + encodeURIComponent(envelope.objId), true);
+            putXhr.withCredentials = true;
+            putXhr.setRequestHeader("Content-Type", "application/json");
+            putXhr.onload = function () {
+              if (putXhr.status !== 200) return $world.alert("Could not save invite card (" + putXhr.status + ")");
+
+              var postXhr = new XMLHttpRequest();
+              postXhr.open("POST", base + "/c/" + encodeURIComponent(constellationName) + "/invites", true);
+              postXhr.withCredentials = true;
+              postXhr.setRequestHeader("Content-Type", "application/json");
+              postXhr.onload = function () {
+                if (postXhr.status !== 201) {
+                  var msg = "Invite failed (" + postXhr.status + ")";
+                  try { var body = JSON.parse(postXhr.responseText); if (body.error) msg = body.error; } catch (e) {}
+                  return $world.alert(msg);
+                }
+                $world.alert("Invite sent to @" + (targetHandle || targetDid) + ".");
+              };
+              postXhr.onerror = function () { $world.alert("Network error sending invite"); };
+              postXhr.send(JSON.stringify({ objId: envelope.objId, targetDid: targetDid }));
+            };
+            putXhr.onerror = function () { $world.alert("Network error saving invite card"); };
+            putXhr.send(JSON.stringify(envelope));
+          });
+        });
+      },
+
       // ── read view ────────────────────────────────────────────────────────────
 
       _renderView: function _renderView(handle, payload, didDoc, did, domains, friendInfo) {
@@ -544,15 +629,23 @@ module("lively.identity.ProfileCard")
           friendsBtn.addScript(function doAction() {
             var pane = this.owner;
             var win  = pane && pane.owner;
-            var FW   = 280;
             var status = this._status;
+            // Owner's list renders one nameplate row (avatar + handle + chat
+            // icon + three-dot menu) per friend rather than a plain text
+            // line, so it gets its own wider panel and taller row height —
+            // ROWH matches the nameplate build below exactly (32px avatar +
+            // 6px top/bottom breathing room).
+            var FW   = status === 'owner' ? 320 : 280;
+            var ROWH = 44;
             var rows = status === 'owner' ? Math.min(this._friends.length, 5) : 0;
             // Each status renders a fixed, known set of rows below the
             // title (msg line(s) + 0-2 stacked action buttons) — heights
             // below match that layout exactly rather than guessing, same
             // "measure/derive, don't assume" discipline as elsewhere in
             // this file's own layout code.
-            var FH = { owner: Math.max(80, 44 + rows * 20 + (this._friends.length > 5 ? 16 : 0)),
+            var FH = { owner: this._friends.length
+                ? (34 + rows * ROWH + (this._friends.length > 5 ? 20 : 0) + 10)
+                : 80,
               friends: 120, 'pending-outgoing': 120, 'pending-incoming': 160,
               'signed-out': 96 }[status];
             if (FH == null) FH = 120; // 'none' — msg + one action button
@@ -593,11 +686,154 @@ module("lively.identity.ProfileCard")
               if (!this._friends.length) {
                 msg('No friends yet.', 36, 20).applyStyle({ textColor: Color.rgb(150, 150, 150) });
               } else {
+                // Nameplate row: avatar circle, @handle, a disabled chat-icon
+                // placeholder (no 1:1 DM system exists yet — this just marks
+                // the spot for when one does), and a three-dot menu (Invite
+                // to constellation / Remove friend) opened via the
+                // framework's own lively.morphic.Menu.openAt, same idiom
+                // ConstellationLounge.js's _openMembershipMenu uses — it
+                // handles click-outside-to-close for free, unlike a
+                // hand-rolled dropdown box would.
+                var AVSZ = 32;
+                var rowW = FW - 16;
                 this._friends.slice(0, 5).forEach(function (f, i) {
-                  msg('@' + (f.handle || f.did), 36 + i * 20, 18);
+                  var row = new lively.morphic.Box(lively.rect(8, 34 + i * ROWH, rowW, ROWH - 4));
+                  row.applyStyle({ fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
+                  row.draggingEnabled = false; row.droppingEnabled = false; row.grabbingEnabled = false;
+                  panel.addMorph(row);
+
+                  var avatarImg = new lively.morphic.Image(
+                    lively.rect(0, Math.round((ROWH - 4 - AVSZ) / 2), AVSZ, AVSZ));
+                  avatarImg.setImageURL(f.avatarUrl ||
+                    lively.identity.postCardUtils.identiconDataUrl(f.handle || f.did, AVSZ));
+                  avatarImg.applyStyle({ borderRadius: AVSZ / 2, borderWidth: 0, clipMode: 'hidden' });
+                  avatarImg.draggingEnabled = false; avatarImg.droppingEnabled = false; avatarImg.grabbingEnabled = false;
+                  avatarImg.eventsAreIgnored = true;
+                  row.addMorph(avatarImg);
+
+                  var DOTSZ  = 20;
+                  var CHATSZ = 28;
+                  var dotX   = rowW - DOTSZ;
+                  var nameH  = 16;
+                  var nameX  = AVSZ + 8;
+                  var nameW  = 100;
+                  var chatX  = nameX + nameW + 6;
+                  // y is nudged 4.33px above the box-center formula every
+                  // other row element uses — a plain Text morph's glyph
+                  // renders with its visual vertical center sitting lower
+                  // than its own box's geometric center (font line-height,
+                  // not a bug in the box math), confirmed by measuring the
+                  // live rendered span's getBoundingClientRect against the
+                  // avatar's (a true image, so box-center == visual-center)
+                  // until both landed on the same row-relative y. Without
+                  // this, avatar/name/chat-icon don't share one visual
+                  // midline even though their boxes are all centered.
+                  var nameM = new lively.morphic.Text(
+                    lively.rect(nameX, Math.round((ROWH - 4 - nameH) / 2) - 4.33, nameW, nameH),
+                    '@' + (f.handle || f.did));
+                  nameM.applyStyle({ allowInput: false, fontSize: 12,
+                    textColor: Color.rgb(40, 40, 40),
+                    fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
+                  nameM.draggingEnabled = false; nameM.droppingEnabled = false; nameM.grabbingEnabled = false;
+                  nameM.eventsAreIgnored = true;
+                  row.addMorph(nameM);
+
+                  // Chat icon — disabled placeholder. There's no 1:1
+                  // direct-message flow in this codebase yet (postcards are
+                  // async and manually-addressed, not a live DM thread), so
+                  // this deliberately doesn't wire up to anything yet.
+                  // Same box-center-vs-visual-center nudge as nameM above,
+                  // measured the same way (+0.67px here — small because the
+                  // icon font's glyph sits much closer to its own line-box
+                  // center than the regular text font's does).
+                  var chatIcon = new lively.morphic.Text(
+                    lively.rect(chatX, Math.round((ROWH - 4 - CHATSZ) / 2) + 0.67, CHATSZ, CHATSZ), 'chat_bubble');
+                  chatIcon.draggingEnabled = false; chatIcon.droppingEnabled = false; chatIcon.grabbingEnabled = false;
+                  chatIcon.eventsAreIgnored = true;
+                  // fontSize is points, not px (1pt = 4/3px) — 16pt renders
+                  // as a real ~21px glyph that fills this 28px box almost
+                  // exactly with no extra padding needed, confirmed by
+                  // measuring the live rendered span (getBoundingClientRect)
+                  // rather than guessing; see CLAUDE.md's fontSize gotcha.
+                  chatIcon.applyStyle({ allowInput: false, selectable: false, clipMode: 'hidden',
+                    fontFamily: "'Material Symbols Rounded'", fontSize: 16, align: 'center',
+                    whiteSpaceHandling: 'pre', padding: lively.Rectangle.inset(0, 0, 0, 0),
+                    textColor: Color.black,
+                    fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
+                  row.addMorph(chatIcon);
+                  chatIcon.renderContext().morphNode.title = 'Direct messages — coming soon';
+
+                  var moreBtn = new lively.morphic.Text(
+                    lively.rect(dotX, Math.round((ROWH - 4 - DOTSZ) / 2), DOTSZ, DOTSZ), 'more_vert');
+                  moreBtn.draggingEnabled = false; moreBtn.droppingEnabled = false; moreBtn.grabbingEnabled = false;
+                  moreBtn.applyStyle({ allowInput: false, selectable: false, clipMode: 'hidden',
+                    fontFamily: "'Material Symbols Rounded'", fontSize: 14, align: 'center',
+                    whiteSpaceHandling: 'pre', padding: lively.Rectangle.inset(0, 3, 0, 0),
+                    textColor: Color.rgb(100, 100, 100), handStyle: 'pointer',
+                    fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
+                  moreBtn._friendDid    = f.did;
+                  moreBtn._friendHandle = f.handle;
+                  row.addMorph(moreBtn);
+                  moreBtn.renderContext().morphNode.title = 'More';
+                  // Toggle-close, part 1/2: snapshot "is my own menu still
+                  // open" at mousedown time, INTO a flag onMouseUp reads.
+                  // Checking $world.currentMenu directly inside onMouseUp
+                  // doesn't work — confirmed live by tracing both handlers:
+                  // World's own onMouseUp (Events.js) already runs its
+                  // "close whatever menu is open, the click target isn't a
+                  // menu item" check and clears $world.currentMenu BEFORE
+                  // this button's own onMouseUp handler is reached, so by
+                  // then it always looks like nothing was open and this
+                  // just reopens an identical menu. Reading the same state
+                  // one event earlier, at onMouseDown (which always fires
+                  // before any mouseup handling, world's or this button's),
+                  // sees the true pre-close state instead.
+                  moreBtn.addScript(function onMouseDown(evt) {
+                    this._wasMyMenuOpen = !!(this._openMenu && $world.currentMenu === this._openMenu);
+                  });
+                  moreBtn.addScript(function onMouseUp(evt) {
+                    var btn = this;
+                    // Toggle-close, part 2/2: the snapshot from onMouseDown
+                    // above tells us the click that just landed was a
+                    // second click while our own menu was still open (and
+                    // the world has since closed it as a side effect of
+                    // this same click) — respect that as "close", don't
+                    // reopen. Same toggle idiom as PostCardMailbox.js's
+                    // _toggleRowMenu, just keyed off a different signal
+                    // since that file's menus aren't lively.morphic.Menu.
+                    if (btn._wasMyMenuOpen) {
+                      btn._wasMyMenuOpen = false;
+                      btn._openMenu = null;
+                      evt.stop();
+                      return true;
+                    }
+                    var did   = btn._friendDid;
+                    var hndl  = btn._friendHandle;
+                    var rowM  = btn.owner;
+                    var pnl   = rowM && rowM.owner;
+                    var pn    = pnl && pnl.owner;
+                    var w     = pn && pn.owner;
+                    var pos   = btn.worldPoint(lively.pt(0, btn.getExtent().y));
+                    var items = [
+                      ["Invite to constellation…", function () {
+                        if (w) w._openInviteToConstellationPicker(did, hndl, pos);
+                      }],
+                      ["Remove friend", function () {
+                        fetch('/@' + lively.identity.did.currentUser().handle + '/friends/' + did,
+                          { method: 'DELETE', credentials: 'include' })
+                          .then(function () {
+                            if (pnl) pnl.remove();
+                            if (w) w.loadProfile(w._handle, w._worldObjId);
+                          });
+                      }],
+                    ];
+                    btn._openMenu = lively.morphic.Menu.openAt(pos, '@' + (hndl || did), items);
+                    evt.stop();
+                    return true;
+                  });
                 });
                 if (this._friends.length > 5) {
-                  msg((this._friends.length - 5) + ' more…', 36 + 5 * 20, 16)
+                  msg((this._friends.length - 5) + ' more…', 34 + 5 * ROWH, 16)
                     .applyStyle({ fontSize: 10, textColor: Color.rgb(150, 150, 150) });
                 }
               }
