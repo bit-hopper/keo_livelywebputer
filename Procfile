@@ -1,2 +1,2 @@
-web: node bin/lk-server --port $PORT
+web: node bin/lk-server --port $PORT --workers auto
 

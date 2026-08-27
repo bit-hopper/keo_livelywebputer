@@ -13,6 +13,8 @@ process.env.UV_THREADPOOL_SIZE = process.env.UV_THREADPOOL_SIZE || "16";
 var path = require("path"),
   fs = require("fs"),
   exec = require("child_process").exec,
+  cluster = require("cluster"),
+  os = require("os"),
   checkNPMPackages = require("./helper/check-modules"),
   env = require("./env"),
   args = require("./helper/args");
@@ -109,6 +111,18 @@ var options = args.options(
       "Don't check for PartsBin existance and update the PartsBin.",
     ],
     ["--install-missing-npm-packages", "Automatically install npm packages?"],
+    [
+      "--workers NUMBER",
+      "Number of cluster worker processes to fork for handling requests.\n" +
+        "                                 Default is 1 (no clustering, same as before this option existed).\n" +
+        "                                 Pass a number, or \"auto\" to use one worker per CPU core.\n" +
+        "                                 WARNING: realtime/collaborative features (Yjs canvas sync,\n" +
+        "                                 the L2L session tracker, WebRTC room signaling) keep their\n" +
+        "                                 state in each worker's own process memory with no cross-worker\n" +
+        "                                 sharing yet -- two users land on the same worker only by chance,\n" +
+        "                                 so clustering can silently break realtime sync between them until\n" +
+        "                                 that state moves to a shared backplane (see DeployCheckList.md).",
+    ],
   ],
   {},
   "Starts a Lively Kernel server.",
@@ -342,11 +356,103 @@ function loadNodejsLively(thenDo) {
   });
 }
 
+// -=-=-=-=-=-=-=-=-=-
+// Cluster worker count
+// -=-=-=-=-=-=-=-=-=-
+// Opt-in, defaulting to 1 (today's exact single-process behavior) so local
+// dev usage is unaffected -- pass --workers N or --workers auto (one per
+// CPU core) to actually cluster. See the --workers help text above for the
+// realtime-state caveat this carries.
+function numWorkersRequested() {
+  if (options.defined("workers")) {
+    return options.workers === "auto"
+      ? os.cpus().length
+      : Math.max(1, parseInt(options.workers, 10) || 1);
+  }
+  if (process.env.WEB_CONCURRENCY) {
+    return Math.max(1, parseInt(process.env.WEB_CONCURRENCY, 10) || 1);
+  }
+  return 1;
+}
+
+// A forked cluster worker re-runs this entire script from the top (that's
+// how Node's cluster module works) -- all the option/config parsing above
+// is pure and safe to redo, but the one-time setup below (PartsBin
+// download, killing any previous server on this port, writing the pid
+// file) must only happen once, in the primary, before any workers exist.
+// A worker just loads Lively and starts serving; the primary handles
+// everything else and, when clustering, never calls startServer itself.
+function launchServer() {
+  var numWorkers = numWorkersRequested();
+
+  if (numWorkers <= 1) {
+    require("async").waterfall(
+      [loadNodejsLively, startServer, writePid],
+      function (err) {
+        if (err) console.error("Error starting Lively server: %s", err);
+        else console.log("Lively server starting...");
+      },
+    );
+    return;
+  }
+
+  console.log(
+    "Clustering across %d worker processes (pid %s is the primary)",
+    numWorkers,
+    process.pid,
+  );
+
+  writePid(process, function (err) {
+    if (err) console.error("Error writing pid file: %s", err);
+  });
+
+  var shuttingDown = false;
+  function shutdownWorkers(signal) {
+    shuttingDown = true;
+    Object.keys(cluster.workers).forEach(function (id) {
+      try {
+        cluster.workers[id].process.kill(signal);
+      } catch (e) {}
+    });
+  }
+  process.on("SIGTERM", function () {
+    shutdownWorkers("SIGTERM");
+    process.exit(0);
+  });
+  process.on("SIGINT", function () {
+    shutdownWorkers("SIGINT");
+    process.exit(0);
+  });
+
+  for (var i = 0; i < numWorkers; i++) cluster.fork();
+
+  cluster.on("exit", function (worker, code, signal) {
+    if (shuttingDown) return;
+    console.error(
+      "Worker %d died (code %s, signal %s) -- forking a replacement",
+      worker.process.pid,
+      code,
+      signal,
+    );
+    cluster.fork();
+  });
+}
+
 // -=-=-=-=-=-=-=-=-=-=-=-=-
 // This is where we do stuff
 // -=-=-=-=-=-=-=-=-=-=-=-=-
 
-if (options.defined("info")) {
+if (!cluster.isPrimary) {
+  // Forked cluster worker.
+  require("async").waterfall([loadNodejsLively, startServer], function (err) {
+    if (err)
+      console.error(
+        "Worker %d error starting Lively server: %s",
+        process.pid,
+        err,
+      );
+  });
+} else if (options.defined("info")) {
   getServerInfo(function (err, info) {
     console.log(info ? JSON.stringify(info) : "{}");
   });
@@ -367,15 +473,15 @@ if (options.defined("info")) {
     require("async").waterfall(
       [
         downloadPartsBin,
-        loadNodejsLively,
         getServerInfo,
         killOldServer, // Ensure that only one server for the given port is running
-        startServer,
-        writePid,
       ],
       function (err) {
-        if (err) console.error("Error starting Lively server: %s", err);
-        else console.log("Lively server starting...");
+        if (err) {
+          console.error("Error starting Lively server: %s", err);
+          return;
+        }
+        launchServer();
       },
     );
   };
