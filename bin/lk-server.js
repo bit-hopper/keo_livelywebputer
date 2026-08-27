@@ -1,4 +1,15 @@
 /*global require, process, __dirname*/
+
+// Must be set before Node's threadpool does any work (i.e. before requiring
+// anything that makes an async fs.* call) -- the default of 4 threads gets
+// saturated by OptimizedLoadingServer.js's combined-bundle computation
+// (~130 concurrent fs.promises calls per run via prepareFileForConcat's
+// Promise.all), queuing any unrelated fs-bound request behind it for the
+// duration. Measured live 2026-08-27: 1 of 30 unrelated static-file
+// requests fired during a ~1.15s computation queued for ~1.08s instead of
+// its normal ~20ms.
+process.env.UV_THREADPOOL_SIZE = process.env.UV_THREADPOOL_SIZE || "16";
+
 var path = require("path"),
   fs = require("fs"),
   exec = require("child_process").exec,
