@@ -82,6 +82,43 @@ lively.Main.WorldDataAccessor.subclass('lively.Main.JSONMorphicData',
     getWorld: function() {
         if (this.world) return this.world;
         this.world = lively.morphic.World.createFromJSOOn(this.jso, this.getDoc());
+        // A saved world's own _Extent reflects whatever the browser window
+        // happened to be sized to when it was last saved -- createFromJSOOn
+        // deserializes that stale extent verbatim, and nothing downstream
+        // ever resizes it to the CURRENT viewport: World#onWindowResize
+        // (wired to window.onresize in Events.js) only forwards to
+        // submorphs' own onWorldResize and invalidates the cached
+        // windowBounds, it never calls setExtent/setBounds on the World
+        // itself. Confirmed live (2026-08-26): a world saved at 1804x1004
+        // rendered at exactly that stale size in a 1923x1067 viewport,
+        // leaving a dead gray margin along the right/bottom instead of
+        // filling it -- reproduced via GET /@:handle/:objId, IdentityServer.js's
+        // saved-world route, which boots through this exact path (no
+        // manuallyCreateWorld). windowBounds() is already the correct
+        // "fit the current viewport" calculation -- it's what the
+        // fromScratch/manuallyCreateWorld boot path (WorldBuilder#getWorld
+        // below, via World.createOn) already applies via setBounds; just
+        // apply it here too so a saved world's stale extent doesn't stick.
+        this.world.setBounds(this.world.windowBounds());
+        // This first pass can undershoot by a scrollbar's width on each
+        // axis: if the world's PREVIOUS saved extent was larger than the
+        // current viewport, it overflows for the brief instant between
+        // attachment and the line above, which makes the browser show a
+        // real scrollbar and shrinks document.documentElement.clientWidth/
+        // clientHeight (what windowBounds() reads) by that scrollbar's
+        // width. Confirmed live (2026-08-26): reloading after shrinking the
+        // browser window consistently left the world ~15px short on both
+        // axes -- exactly a scrollbar's width -- while a load with no prior
+        // oversized extent (nothing to overflow) matched the viewport
+        // exactly. Once the line above shrinks the world to fit, the
+        // overflow (and scrollbar) is gone, so a second measurement is
+        // accurate. No timer/delay is needed -- reading clientWidth/
+        // clientHeight forces a synchronous layout flush -- just an
+        // explicit cache-bust: setExtent's own onWindowResize clears
+        // cachedWindowBounds too, but only after a 10ms debounce, too slow
+        // to rely on synchronously here.
+        this.world.cachedWindowBounds = null;
+        this.world.setBounds(this.world.windowBounds());
         return this.world;
     },
 
