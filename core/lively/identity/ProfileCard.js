@@ -54,14 +54,15 @@ module("lively.identity.ProfileCard")
         this.titleBar = this.addMorph(titleBar);
       },
 
-      loadProfile: function loadProfile(handle) {
+      loadProfile: function loadProfile(handle, worldObjId) {
         var self   = this;
         var user   = lively.identity.did.currentUser();
         var target = handle || (user && user.handle);
         if (!target) { self._showMsg("Not logged in."); return; }
 
-        self._handle  = target;
-        self._isOwner = !!(user && user.handle === target);
+        self._handle      = target;
+        self._isOwner     = !!(user && user.handle === target);
+        self._worldObjId  = worldObjId || null;
 
         fetch("/@" + target + "/profile", { credentials: "include" })
           .then(function (res) {
@@ -81,11 +82,31 @@ module("lively.identity.ProfileCard")
                 .then(function (r) { return r.ok ? r.json() : { domains: [] }; })
                 .then(function (r) { return r.domains || []; })
                 .catch(function () { return []; });
-              Promise.all([dp, domainsP]).then(function (results) {
-                var didDoc  = results[0];
-                var domains = results[1];
+              // Friends widget data — shape differs by who's looking:
+              //   owner viewing their own card: their actual friends list.
+              //   signed-in visitor: relationship status vs. this handle.
+              //   signed-out visitor: neither route can be called
+              //   (both require auth), so friendInfo stays { status: 'signed-out' }.
+              var friendInfoP;
+              if (self._isOwner) {
+                friendInfoP = fetch("/@" + target + "/friends", { credentials: "include" })
+                  .then(function (r) { return r.ok ? r.json() : { friends: [] }; })
+                  .then(function (r) { return { status: "owner", friends: r.friends || [] }; })
+                  .catch(function () { return { status: "owner", friends: [] }; });
+              } else if (user) {
+                friendInfoP = fetch("/@" + target + "/friend-status", { credentials: "include" })
+                  .then(function (r) { return r.ok ? r.json() : { status: "none" }; })
+                  .then(function (r) { return { status: r.status || "none" }; })
+                  .catch(function () { return { status: "none" }; });
+              } else {
+                friendInfoP = Promise.resolve({ status: "signed-out" });
+              }
+              Promise.all([dp, domainsP, friendInfoP]).then(function (results) {
+                var didDoc     = results[0];
+                var domains    = results[1];
+                var friendInfo = results[2];
                 self._domains = domains;
-                self._renderView(target, payload, didDoc, env.did, domains);
+                self._renderView(target, payload, didDoc, env.did, domains, friendInfo);
               });
             });
           })
@@ -107,7 +128,7 @@ module("lively.identity.ProfileCard")
 
       // ── read view ────────────────────────────────────────────────────────────
 
-      _renderView: function _renderView(handle, payload, didDoc, did, domains) {
+      _renderView: function _renderView(handle, payload, didDoc, did, domains, friendInfo) {
         var self = this;
         var pane = this.targetMorph;
         if (!pane) return;
@@ -298,6 +319,18 @@ module("lively.identity.ProfileCard")
           y += 20;
         });
 
+        // Reserve room below the astro-signs box (drawn above at a fixed
+        // [by, by+astroBoxH] independent of this y accumulator) so the
+        // divider/Connect row/Friends button below never collide with it
+        // when the left column has little content (short/no bio, no
+        // pronouns, no links) — confirmed live on a bare profile (@candle):
+        // with nothing above pushing y down, dividerY landed just 1px below
+        // astroBoxH's bottom edge, and the Friends button (centered between
+        // the two) rendered 12px inside the astro box.
+        if (hasAstro || self._isOwner) {
+          y = Math.max(y, by + astroBoxH + 40);
+        }
+
         // divider
         y += 8;
         var div = new lively.morphic.Box(lively.rect(contentX, y, pw - contentX * 2, 1));
@@ -334,13 +367,20 @@ module("lively.identity.ProfileCard")
 
           // "Connect" caption — centered over the icon row, between the
           // divider and the circles, in the same small-caption style as
-          // the astro box's item labels (fontSize 9, gray).
-          var connectLbl = new lively.morphic.Text(
-            lively.rect(rowStartX, dividerY + 6, rowEndX - rowStartX, 12), "Connect");
-          connectLbl.applyStyle({ allowInput: false, fontSize: 9,
-            textColor: Color.rgb(160, 160, 160),
-            fill: Color.rgba(0, 0, 0, 0), borderWidth: 0, align: 'center' });
-          pane.addMorph(connectLbl);
+          // the astro box's item labels (fontSize 9, gray). Only shown when
+          // there's actually a row of circles under it: the owner always
+          // gets one (empty "add" placeholders included), but a visitor
+          // with zero filled accounts would otherwise see this caption
+          // floating alone with nothing below it (confirmed live on
+          // @tinasnow, who has no social accounts set).
+          if (self._isOwner || accounts.length) {
+            var connectLbl = new lively.morphic.Text(
+              lively.rect(rowStartX, dividerY + 6, rowEndX - rowStartX, 12), "Connect");
+            connectLbl.applyStyle({ allowInput: false, fontSize: 9,
+              textColor: Color.rgb(160, 160, 160),
+              fill: Color.rgba(0, 0, 0, 0), borderWidth: 0, align: 'center' });
+            pane.addMorph(connectLbl);
+          }
 
           var ry = dividerY + 6 + 12 + 6;
 
@@ -477,9 +517,17 @@ module("lively.identity.ProfileCard")
           y += 30;
         }
 
-        // Friends button — shown to all; behaviour is ownership-aware
-        // TODO: wire to /identity/friends/:handle once that endpoint exists
+        // Friends button — shown to all; behaviour/content is driven by
+        // friendInfo (fetched in loadProfile: FriendRegistry-backed
+        // /@:handle/friends for the owner's own card, /@:handle/friend-status
+        // for a signed-in visitor). Every nested button below stores what it
+        // needs directly on itself (_handle/_targetDid/etc.) rather than
+        // closing over this IIFE's locals — addScript handlers are
+        // reconstructed from their own source text at runtime and lose that
+        // closure (see this file's own header comment / CLAUDE.md's
+        // BuildSpec-closure-loss gotcha).
         (function () {
+          var info = friendInfo || { status: self._isOwner ? 'owner' : 'signed-out' };
           var btnW = 108, btnH = 26;
           var btnX = bx + Math.floor((BW - btnW) / 2);
           var btnY = Math.round((by + astroBoxH + dividerY) / 2 - btnH / 2);
@@ -489,12 +537,25 @@ module("lively.identity.ProfileCard")
             fill: Color.rgb(249, 249, 251), fontSize: 12 });
           friendsBtn.setAppearanceStylingMode(false);
           friendsBtn.setBorderStylingMode(false);
-          friendsBtn._handle  = handle;
-          friendsBtn._isOwner = !!self._isOwner;
+          friendsBtn._handle     = handle;
+          friendsBtn._targetDid  = did;
+          friendsBtn._status     = info.status;
+          friendsBtn._friends    = info.friends || [];
           friendsBtn.addScript(function doAction() {
-            var pane   = this.owner;
-            var FW     = 280;
-            var FH     = this._isOwner ? 160 : 120;
+            var pane = this.owner;
+            var win  = pane && pane.owner;
+            var FW   = 280;
+            var status = this._status;
+            var rows = status === 'owner' ? Math.min(this._friends.length, 5) : 0;
+            // Each status renders a fixed, known set of rows below the
+            // title (msg line(s) + 0-2 stacked action buttons) — heights
+            // below match that layout exactly rather than guessing, same
+            // "measure/derive, don't assume" discipline as elsewhere in
+            // this file's own layout code.
+            var FH = { owner: Math.max(80, 44 + rows * 20 + (this._friends.length > 5 ? 16 : 0)),
+              friends: 120, 'pending-outgoing': 120, 'pending-incoming': 160,
+              'signed-out': 96 }[status];
+            if (FH == null) FH = 120; // 'none' — msg + one action button
             var anchorPos = this.getPosition();
             var px = pane ? Math.min(anchorPos.x, Math.max(0, pane.getExtent().x - FW - 8)) : anchorPos.x;
             var panel  = new lively.morphic.Box(
@@ -506,40 +567,148 @@ module("lively.identity.ProfileCard")
               fill: Color.rgba(0,0,0,0), borderWidth: 0,
               textColor: Color.rgb(30, 30, 30) });
             panel.addMorph(titleM);
-            if (this._isOwner) {
-              var emptyM = new lively.morphic.Text(lively.rect(12, 36, FW - 24, 80), 'No friends yet.');
-              emptyM.applyStyle({ allowInput: false, fontSize: 12,
-                textColor: Color.rgb(150, 150, 150),
-                fill: Color.rgba(0,0,0,0), borderWidth: 0 });
-              panel.addMorph(emptyM);
-            } else {
-              var msgM = new lively.morphic.Text(lively.rect(12, 36, FW - 24, 40),
-                'You and @' + this._handle + ' are not yet friends.');
-              msgM.applyStyle({ allowInput: false, fontSize: 12,
+
+            function msg(text, top, height) {
+              var m = new lively.morphic.Text(lively.rect(12, top, FW - 24, height || 40), text);
+              m.applyStyle({ allowInput: false, fontSize: 12,
                 textColor: Color.rgb(60, 60, 60),
                 fill: Color.rgba(0,0,0,0), borderWidth: 0 });
-              panel.addMorph(msgM);
-              var reqBtn = new lively.morphic.Button(lively.rect(12, 80, FW - 24, 28));
-              reqBtn.setLabel('Send friend request');
-              reqBtn.applyStyle({ borderRadius: 6, fontSize: 12, borderWidth: 1,
+              panel.addMorph(m);
+              return m;
+            }
+
+            function actionBtn(label, top) {
+              var b = new lively.morphic.Button(lively.rect(12, top, FW - 24, 28));
+              b.setLabel(label);
+              b.applyStyle({ borderRadius: 6, fontSize: 12, borderWidth: 1,
                 borderColor: Color.rgb(200, 200, 210),
                 fill: Color.rgb(249, 249, 251) });
-              reqBtn.setAppearanceStylingMode(false);
-              reqBtn.setBorderStylingMode(false);
+              b.setAppearanceStylingMode(false);
+              b.setBorderStylingMode(false);
+              panel.addMorph(b);
+              return b;
+            }
+
+            if (status === 'owner') {
+              if (!this._friends.length) {
+                msg('No friends yet.', 36, 20).applyStyle({ textColor: Color.rgb(150, 150, 150) });
+              } else {
+                this._friends.slice(0, 5).forEach(function (f, i) {
+                  msg('@' + (f.handle || f.did), 36 + i * 20, 18);
+                });
+                if (this._friends.length > 5) {
+                  msg((this._friends.length - 5) + ' more…', 36 + 5 * 20, 16)
+                    .applyStyle({ fontSize: 10, textColor: Color.rgb(150, 150, 150) });
+                }
+              }
+            } else if (status === 'friends') {
+              msg('You and @' + this._handle + ' are friends.', 36);
+              var removeBtn = actionBtn('Remove friend', 80);
+              removeBtn._targetDid = this._targetDid;
+              removeBtn.addScript(function doAction() {
+                var self_ = this;
+                fetch('/@' + lively.identity.did.currentUser().handle + '/friends/' + this._targetDid,
+                  { method: 'DELETE', credentials: 'include' })
+                  .then(function () {
+                    var w = self_.owner && self_.owner.owner && self_.owner.owner.owner;
+                    self_.owner.remove();
+                    if (w) w.loadProfile(w._handle, w._worldObjId);
+                  });
+              });
+              lively.bindings.connect(removeBtn, 'fire', removeBtn, 'doAction');
+            } else if (status === 'pending-outgoing') {
+              msg('Friend request sent — pending.', 36);
+              var cancelBtn = actionBtn('Cancel request', 80);
+              cancelBtn.applyStyle({ textColor: Color.rgb(150, 40, 40) });
+              cancelBtn._targetDid = this._targetDid;
+              cancelBtn.addScript(function doAction() {
+                var self_ = this;
+                fetch('/@' + lively.identity.did.currentUser().handle + '/friend-requests/' + this._targetDid,
+                  { method: 'DELETE', credentials: 'include' })
+                  .then(function () {
+                    var w = self_.owner && self_.owner.owner && self_.owner.owner.owner;
+                    self_.owner.remove();
+                    if (w) w.loadProfile(w._handle, w._worldObjId);
+                  });
+              });
+              lively.bindings.connect(cancelBtn, 'fire', cancelBtn, 'doAction');
+            } else if (status === 'pending-incoming') {
+              msg('@' + this._handle + ' sent you a friend request.', 36, 40);
+              var acceptBtn = actionBtn('Accept', 80);
+              var declineBtn = actionBtn('Decline', 116);
+              declineBtn.applyStyle({ textColor: Color.rgb(150, 40, 40) });
+              acceptBtn._targetDid  = this._targetDid;
+              declineBtn._targetDid = this._targetDid;
+              // Deliberately duplicated (not a shared `respond` helper) —
+              // addScript reconstructs each button's handler from its own
+              // source text at click time, discarding any closure over a
+              // function declared in this outer doAction's scope (same
+              // BuildSpec-closure-loss gotcha as everywhere else in this
+              // file); only this._targetDid and real global paths
+              // (fetch, lively.identity.did) survive that reconstruction.
+              acceptBtn.addScript(function doAction() {
+                var self_ = this;
+                fetch('/@' + lively.identity.did.currentUser().handle + '/friend-requests/' + this._targetDid,
+                  { method: 'PUT', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'approve' }) })
+                  .then(function () {
+                    var w = self_.owner && self_.owner.owner && self_.owner.owner.owner;
+                    self_.owner.remove();
+                    if (w) w.loadProfile(w._handle, w._worldObjId);
+                  });
+              });
+              declineBtn.addScript(function doAction() {
+                var self_ = this;
+                fetch('/@' + lively.identity.did.currentUser().handle + '/friend-requests/' + this._targetDid,
+                  { method: 'PUT', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'decline' }) })
+                  .then(function () {
+                    var w = self_.owner && self_.owner.owner && self_.owner.owner.owner;
+                    self_.owner.remove();
+                    if (w) w.loadProfile(w._handle, w._worldObjId);
+                  });
+              });
+              lively.bindings.connect(acceptBtn, 'fire', acceptBtn, 'doAction');
+              lively.bindings.connect(declineBtn, 'fire', declineBtn, 'doAction');
+            } else if (status === 'signed-out') {
+              msg('Sign in to connect with @' + this._handle + '.', 36);
+            } else {
+              // 'none' — no relationship on file either direction.
+              msg('You and @' + this._handle + ' are not yet friends.', 36);
+              var reqBtn = actionBtn('Send friend request', 80);
               reqBtn._handle = this._handle;
               reqBtn.addScript(function doAction() {
-                // TODO: POST to /identity/friends/:handle once that endpoint exists
-                $world.inform('Friend request sent to @' + this._handle + '!');
+                var self_ = this;
+                fetch('/@' + this._handle + '/friend-requests',
+                  { method: 'POST', credentials: 'include' })
+                  .then(function () {
+                    var w = self_.owner && self_.owner.owner && self_.owner.owner.owner;
+                    self_.owner.remove();
+                    if (w) w.loadProfile(w._handle, w._worldObjId);
+                  });
               });
               lively.bindings.connect(reqBtn, 'fire', reqBtn, 'doAction');
-              panel.addMorph(reqBtn);
             }
-            var closeBtn = new lively.morphic.Button(lively.rect(FW - 28, 6, 22, 22));
-            closeBtn.setLabel('✕');
-            closeBtn.applyStyle({ borderRadius: 11, fontSize: 11, borderWidth: 0,
-              fill: Color.rgba(0,0,0,0), textColor: Color.rgb(100, 100, 100) });
-            closeBtn.addScript(function doAction() { this.owner.remove(); });
-            lively.bindings.connect(closeBtn, 'fire', closeBtn, 'doAction');
+
+            // See copyBtn's comment further down (below the astro box) for
+            // why this is a Text morph, not a Button.
+            var closeBtn = new lively.morphic.Text(lively.rect(FW - 28, 6, 22, 22), 'close');
+            closeBtn.draggingEnabled = false;
+            closeBtn.droppingEnabled = false;
+            closeBtn.grabbingEnabled = false;
+            closeBtn.applyStyle({ borderRadius: 11, borderWidth: 0, fill: Color.rgba(0,0,0,0),
+              fontFamily: "'Material Symbols Rounded'", fontSize: 12,
+              textColor: Color.rgb(100, 100, 100), align: 'center',
+              padding: lively.Rectangle.inset(0, 5, 0, 0),
+              allowInput: false, selectable: false, clipMode: 'hidden',
+              whiteSpaceHandling: 'pre', handStyle: 'pointer' });
+            closeBtn.addScript(function onMouseUp(evt) {
+              this.owner.remove();
+              evt.stop();
+              return true;
+            });
             panel.addMorph(closeBtn);
             if (pane) pane.addMorph(panel);
           });
@@ -556,25 +725,43 @@ module("lively.identity.ProfileCard")
         var didW = Math.ceil(didStr.length * 7.5) + 16;
         pane.addMorph(txt(didStr, contentX, y, didW, 16, 10, 50, 50, 50, false));
 
-        // Copy DID button — sits immediately after the DID text
-        var copyBtn = new lively.morphic.Button(lively.rect(contentX + didW + 4, y - 2, 26, 22), '⧉︎');
+        // Copy DID button — sits immediately after the DID text. A real
+        // lively.morphic.Text (not a Button) rendering a Material Symbols
+        // Rounded glyph, same construction AmbientPresencePanel.js's
+        // makeIconButton uses — confirmed live that this is NOT
+        // interchangeable with a Button: lively.morphic.Button renders its
+        // text through an internal child `this.label` Text morph, and
+        // applyStyle({fontFamily:...}) on that child silently no-ops (the
+        // glyph stayed literal "content_copy" text in the default font even
+        // after direct application on an already-rendered label — root
+        // cause not fully pinned down, textColor applies fine through the
+        // same call so it isn't a blanket style-application failure). A
+        // bare Text morph styled and clicked the same way as this file's
+        // BuildSpec makeIconButton reference doesn't have that problem.
+        var copyBtn = new lively.morphic.Text(lively.rect(contentX + didW + 4, y - 2, 26, 22), 'content_copy');
+        copyBtn.draggingEnabled = false;
+        copyBtn.droppingEnabled = false;
+        copyBtn.grabbingEnabled = false;
         copyBtn.applyStyle({ fill: Color.rgb(240, 240, 240),
-          borderColor: Color.rgb(200, 200, 200), borderRadius: 4,
-          fontSize: 14, textColor: Color.rgb(80, 80, 80), borderWidth: 1 });
-        copyBtn.setAppearanceStylingMode(false);
-        copyBtn.setBorderStylingMode(false);
+          borderColor: Color.rgb(200, 200, 200), borderRadius: 4, borderWidth: 1,
+          fontFamily: "'Material Symbols Rounded'", fontSize: 12,
+          textColor: Color.rgb(80, 80, 80), align: 'center',
+          padding: lively.Rectangle.inset(0, 5, 0, 0),
+          allowInput: false, selectable: false, clipMode: 'hidden',
+          whiteSpaceHandling: 'pre', handStyle: 'pointer' });
         copyBtn._copyDid = did;
-        copyBtn.addScript(function doAction() {
+        copyBtn.addScript(function onMouseUp(evt) {
           var theDid = this._copyDid;
-          var btn    = this;
+          var m      = this;
           if (theDid && navigator.clipboard) {
             navigator.clipboard.writeText(theDid).then(function () {
-              btn.setLabel('✓︎');
-              setTimeout(function () { btn.setLabel('⧉︎'); }, 1500);
+              m.setTextString('check');
+              setTimeout(function () { m.setTextString('content_copy'); }, 1500);
             });
           }
+          evt.stop();
+          return true;
         });
-        lively.bindings.connect(copyBtn, 'fire', copyBtn, 'doAction');
         pane.addMorph(copyBtn);
         copyBtn.renderContext().morphNode.title = 'Copy DID';
         y += 24;
@@ -609,24 +796,31 @@ module("lively.identity.ProfileCard")
           var addrStr = lively.identity.postCardUtils.truncateAddress(payload.ethAddress);
           var addrW = Math.ceil(addrStr.length * 7.5) + 16;
           pane.addMorph(txt(addrStr, contentX, y, addrW, 16, 10, 50, 50, 50, false));
-          var addrCopyBtn = new lively.morphic.Button(lively.rect(contentX + addrW + 4, y - 2, 26, 22), '⧉︎');
+          // See copyBtn above for why this is a Text morph, not a Button.
+          var addrCopyBtn = new lively.morphic.Text(lively.rect(contentX + addrW + 4, y - 2, 26, 22), 'content_copy');
+          addrCopyBtn.draggingEnabled = false;
+          addrCopyBtn.droppingEnabled = false;
+          addrCopyBtn.grabbingEnabled = false;
           addrCopyBtn.applyStyle({ fill: Color.rgb(240, 240, 240),
-            borderColor: Color.rgb(200, 200, 200), borderRadius: 4,
-            fontSize: 14, textColor: Color.rgb(80, 80, 80), borderWidth: 1 });
-          addrCopyBtn.setAppearanceStylingMode(false);
-          addrCopyBtn.setBorderStylingMode(false);
+            borderColor: Color.rgb(200, 200, 200), borderRadius: 4, borderWidth: 1,
+            fontFamily: "'Material Symbols Rounded'", fontSize: 12,
+            textColor: Color.rgb(80, 80, 80), align: 'center',
+            padding: lively.Rectangle.inset(0, 5, 0, 0),
+            allowInput: false, selectable: false, clipMode: 'hidden',
+            whiteSpaceHandling: 'pre', handStyle: 'pointer' });
           addrCopyBtn._copyText = payload.ethAddress;
-          addrCopyBtn.addScript(function doAction() {
+          addrCopyBtn.addScript(function onMouseUp(evt) {
             var theText = this._copyText;
-            var btn     = this;
+            var m       = this;
             if (theText && navigator.clipboard) {
               navigator.clipboard.writeText(theText).then(function () {
-                btn.setLabel('✓︎');
-                setTimeout(function () { btn.setLabel('⧉︎'); }, 1500);
+                m.setTextString('check');
+                setTimeout(function () { m.setTextString('content_copy'); }, 1500);
               });
             }
+            evt.stop();
+            return true;
           });
-          lively.bindings.connect(addrCopyBtn, 'fire', addrCopyBtn, 'doAction');
           pane.addMorph(addrCopyBtn);
           addrCopyBtn.renderContext().morphNode.title = 'Copy ETH address';
           y += 24;
@@ -662,9 +856,34 @@ module("lively.identity.ProfileCard")
         pane.addMorph(txt("Hosting: " + hostStr, contentX, y, cw, 16, 10, 100, 100, 100, false)).applyStyle({ fixedWidth: false });
         y += 18;
 
+        var ph = pane.getExtent().y;
+
+        // Enter World button — only shown when this handle has a world to
+        // link to (passed in from IdentityServer.js's GET /@:handle when it
+        // renders this card as the handle's landing page). Sits to the left
+        // of the owner's Edit button when both are present, otherwise takes
+        // the Edit button's usual bottom-right slot.
+        if (self._worldObjId) {
+          var EW = 130;
+          var ex = self._isOwner ? (pw - 78 - 8 - EW) : (pw - EW - 12);
+          var worldBtn = new lively.morphic.Button(
+            lively.rect(ex, ph - 36, EW, 26), "Enter World →");
+          worldBtn.applyStyle({ fill: Color.rgb(255, 255, 255),
+            borderColor: Color.rgb(200, 200, 200), borderRadius: 4,
+            fontSize: 12, textColor: Color.rgb(60, 60, 60), borderWidth: 1 });
+          worldBtn.setAppearanceStylingMode(false);
+          worldBtn.setBorderStylingMode(false);
+          worldBtn._targetHandle     = handle;
+          worldBtn._targetWorldObjId = self._worldObjId;
+          worldBtn.addScript(function doAction() {
+            window.location.href = '/@' + this._targetHandle + '/' + this._targetWorldObjId;
+          });
+          lively.bindings.connect(worldBtn, 'fire', worldBtn, 'doAction');
+          pane.addMorph(worldBtn);
+        }
+
         // Edit button — navigates to Window via this.owner._win
         if (self._isOwner) {
-          var ph = pane.getExtent().y;
           var editBtn = new lively.morphic.Button(
             lively.rect(pw - 78, ph - 36, 66, 26), "Edit");
           editBtn.applyStyle({ fill: Color.rgb(240, 26, 105),
@@ -1884,13 +2103,16 @@ module("lively.identity.ProfileCard")
     });
 
     lively.identity.ProfileCard = {
-      open: function (handle) {
+      // worldObjId (optional): when given, the card shows an "Enter World →"
+      // button linking to /@handle/worldObjId — used when this card is the
+      // handle's own landing page (see IdentityServer.js's GET /@:handle).
+      open: function (handle, worldObjId) {
         var win    = lively.BuildSpec("lively.identity.ProfileCard").createMorph();
         var user   = lively.identity.did.currentUser();
         var target = handle || (user && user.handle);
         win.setTitle(target ? "Profile — @" + target : "Profile");
         win.openInWorldCenter();
-        win.loadProfile(handle || null);
+        win.loadProfile(handle || null, worldObjId || null);
         return win;
       },
     };

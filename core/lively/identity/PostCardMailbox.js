@@ -134,6 +134,7 @@ module('lively.identity.PostCardMailbox')
           { id: 'blocked',   label: 'Blocked'   },
           { id: 'own',       label: 'My Postcards' },
           { id: 'aliases',   label: 'Aliases' },
+          { id: 'friends',   label: 'Friends' },
         ];
         tabs.forEach(function (t) {
           var btn = document.createElement('button');
@@ -240,6 +241,7 @@ module('lively.identity.PostCardMailbox')
         if (tab === 'blocked')   this._loadBlocked();
         if (tab === 'own')       this._loadOwn();
         if (tab === 'aliases')   this._loadAliases();
+        if (tab === 'friends')   this._loadFriends();
       },
 
       // Re-runs whichever load function backs the active tab — used by the
@@ -268,12 +270,22 @@ module('lively.identity.PostCardMailbox')
         xhr.open('GET', base + '/@' + handle + '/inbox?limit=30' + this._qParam());
         xhr.withCredentials = true;
         xhr.onload = function () {
+          // Guards against the exact race PostCardMailbox.open(tab)'s own
+          // two-switch construction can trigger (constructor default's
+          // _switchTab('received') immediately followed by open()'s own
+          // _switchTab(tab) for any other tab): both loads are in flight at
+          // once, and without this check whichever XHR resolves LAST wins
+          // regardless of which tab is actually showing — confirmed live,
+          // opening straight to the new Friends tab intermittently rendered
+          // a stray Received postcard row on top of it. See _loadFriends's
+          // identical guard.
+          if (self._activeTab !== 'received') return;
           if (xhr.status !== 200) return self._showError('Could not load inbox (' + xhr.status + ')');
           var result;
           try { result = JSON.parse(xhr.responseText); } catch (e) { return self._showError('Bad response'); }
           self._renderReceivedRecords(result.records || []);
         };
-        xhr.onerror = function () { self._showError('Network error'); };
+        xhr.onerror = function () { if (self._activeTab === 'received') self._showError('Network error'); };
         xhr.send();
       },
 
@@ -285,12 +297,14 @@ module('lively.identity.PostCardMailbox')
         xhr.open('GET', base + '/@' + handle + '/deliveries?status=' + status + '&limit=30' + this._qParam());
         xhr.withCredentials = true;
         xhr.onload = function () {
+          // See _loadReceived's identical guard for why this is needed.
+          if (self._activeTab !== status) return;
           if (xhr.status !== 200) return self._showError('Could not load deliveries (' + xhr.status + ')');
           var result;
           try { result = JSON.parse(xhr.responseText); } catch (e) { return self._showError('Bad response'); }
           self._renderDeliveryRecords(result.records || [], status);
         };
-        xhr.onerror = function () { self._showError('Network error'); };
+        xhr.onerror = function () { if (self._activeTab === status) self._showError('Network error'); };
         xhr.send();
       },
 
@@ -306,12 +320,14 @@ module('lively.identity.PostCardMailbox')
         xhr.open('GET', base + '/@' + handle + '/postcards?limit=30' + this._qParam());
         xhr.withCredentials = true;
         xhr.onload = function () {
+          // See _loadReceived's identical guard for why this is needed.
+          if (self._activeTab !== 'own') return;
           if (xhr.status !== 200) return self._showError('Could not load your postcards (' + xhr.status + ')');
           var result;
           try { result = JSON.parse(xhr.responseText); } catch (e) { return self._showError('Bad response'); }
           self._renderOwnRecords(result.postcards || []);
         };
-        xhr.onerror = function () { self._showError('Network error'); };
+        xhr.onerror = function () { if (self._activeTab === 'own') self._showError('Network error'); };
         xhr.send();
       },
 
@@ -323,13 +339,15 @@ module('lively.identity.PostCardMailbox')
         xhr.open('GET', base + '/@' + handle + '/settings');
         xhr.withCredentials = true;
         xhr.onload = function () {
+          // See _loadReceived's identical guard for why this is needed.
+          if (self._activeTab !== 'blocked') return;
           if (xhr.status !== 200) return self._showError('Could not load settings (' + xhr.status + ')');
           var env;
           try { env = JSON.parse(xhr.responseText); } catch (e) { return self._showError('Bad response'); }
           self._settingsEnvelope = env;
           self._renderBlockedList((env.state && env.state.blockedHandles) || []);
         };
-        xhr.onerror = function () { self._showError('Network error'); };
+        xhr.onerror = function () { if (self._activeTab === 'blocked') self._showError('Network error'); };
         xhr.send();
       },
 
@@ -341,13 +359,59 @@ module('lively.identity.PostCardMailbox')
         xhr.open('GET', base + '/@' + handle + '/aliases');
         xhr.withCredentials = true;
         xhr.onload = function () {
+          // See _loadReceived's identical guard for why this is needed.
+          if (self._activeTab !== 'aliases') return;
           if (xhr.status !== 200) return self._showError('Could not load aliases (' + xhr.status + ')');
           var result;
           try { result = JSON.parse(xhr.responseText); } catch (e) { return self._showError('Bad response'); }
           self._renderAliasesList(result.aliases || []);
         };
-        xhr.onerror = function () { self._showError('Network error'); };
+        xhr.onerror = function () { if (self._activeTab === 'aliases') self._showError('Network error'); };
         xhr.send();
+      },
+
+      // Incoming pending friend requests + confirmed friends — two separate
+      // FriendRegistry-backed routes (not postcard/object envelopes; see
+      // that module's header comment for why), fetched together since both
+      // back this one tab. Calls _renderFriendsList once both resolve.
+      _loadFriends: function () {
+        var self   = this;
+        var handle = lively.identity.did.currentUser().handle;
+        var base   = lively.identity.did.baseUrl();
+
+        function getJSON(path) {
+          return new Promise(function (resolve, reject) {
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', base + path);
+            xhr.withCredentials = true;
+            xhr.onload = function () {
+              if (xhr.status !== 200) return reject(new Error('Request failed (' + xhr.status + ')'));
+              try { resolve(JSON.parse(xhr.responseText)); } catch (e) { reject(e); }
+            };
+            xhr.onerror = function () { reject(new Error('Network error')); };
+            xhr.send();
+          });
+        }
+
+        Promise.all([
+          getJSON('/@' + handle + '/friend-requests'),
+          getJSON('/@' + handle + '/friend-requests?direction=sent'),
+          getJSON('/@' + handle + '/friends'),
+        ]).then(function (results) {
+          // PostCardMailbox.open('friends') triggers this fetch pair
+          // immediately after the constructor's own default-tab
+          // _switchTab('received') already kicked off _loadReceived's XHR
+          // (see MailboxClass.open below) — without this check, whichever
+          // one resolves last wins and overwrites whatever the other
+          // already (correctly) rendered, regardless of which tab is
+          // actually showing. Confirmed live: opening straight to this tab
+          // intermittently showed a stray Received postcard row on top of
+          // it instead of the friends list.
+          if (self._activeTab !== 'friends') return;
+          self._renderFriendsList(results[0].requests || [], results[1].requests || [], results[2].friends || []);
+        }).catch(function (err) {
+          if (self._activeTab === 'friends') self._showError(err.message || 'Could not load friends');
+        });
       },
 
       // ── rendering ─────────────────────────────────────────────────────────
@@ -640,6 +704,134 @@ module('lively.identity.PostCardMailbox')
         });
       },
 
+      // requests: [{did, handle, requestedAt}] (incoming, pending only —
+      // already filtered server-side). friends: [{did, handle, since}].
+      // Two sections in one tab, each with its own empty state, matching
+      // the constellation lounge's own request-list-with-actions pattern
+      // (approve/decline) this route set was modeled on. Three sections:
+      // incoming (requests you can accept/decline), outgoing (requests you
+      // sent, cancellable), and confirmed friends (removable).
+      _renderFriendsList: function (requests, sent, friends) {
+        var self    = this;
+        var content = this._contentDiv;
+        content.innerHTML = '';
+
+        function heading(text, topMargin) {
+          var h = document.createElement('div');
+          h.style.cssText = 'font-weight:600;color:#3a3a3c;font-size:12px;margin:' + topMargin + 'px 0 8px;';
+          h.textContent = text;
+          content.appendChild(h);
+        }
+
+        function emptyMsg(text) {
+          var e = document.createElement('div');
+          e.style.cssText = 'color:#999;padding:4px 0 16px;';
+          e.textContent = text;
+          content.appendChild(e);
+        }
+
+        heading('Requests', 4);
+        if (!requests.length) {
+          emptyMsg('No pending friend requests.');
+        } else {
+          requests.forEach(function (r) {
+            var card = self._makeCard();
+            card.appendChild(self._makeIdentityRow('', r.handle, r.did));
+
+            var when = document.createElement('div');
+            when.style.cssText = 'color:#8e8e93;font-size:11px;';
+            when.textContent = self._formatDate(r.requestedAt);
+            card.appendChild(when);
+
+            var declineBtn = self._makeIconTextButton('close', 'Decline', '#ff3b30');
+            declineBtn.addEventListener('click', function () {
+              declineBtn.disabled = true;
+              self._respondFriendRequest(r.did, 'decline', function (err) {
+                declineBtn.disabled = false;
+                if (err) return self._showError(err.message || 'Failed to decline request');
+                self._loadFriends();
+              });
+            });
+
+            var acceptBtn = self._makeIconTextButton('check', 'Accept', '#34c759');
+            acceptBtn.addEventListener('click', function () {
+              acceptBtn.disabled = true;
+              self._respondFriendRequest(r.did, 'approve', function (err) {
+                acceptBtn.disabled = false;
+                if (err) return self._showError(err.message || 'Failed to accept request');
+                self._loadFriends();
+              });
+            });
+
+            card.appendChild(self._makeActionsCluster([declineBtn, acceptBtn]));
+            content.appendChild(card);
+          });
+        }
+
+        heading('Sent', 12);
+        if (!sent.length) {
+          emptyMsg('No outstanding sent requests.');
+        } else {
+          sent.forEach(function (s) {
+            var card = self._makeCard();
+            card.appendChild(self._makeIdentityRow('', s.handle, s.did));
+
+            var when = document.createElement('div');
+            when.style.cssText = 'color:#8e8e93;font-size:11px;';
+            when.textContent = self._formatDate(s.requestedAt);
+            card.appendChild(when);
+
+            var cancelBtn = self._makeIconTextButton('cancel', 'Cancel', '#ff3b30');
+            cancelBtn.style.position = 'absolute';
+            cancelBtn.style.top = '10px';
+            cancelBtn.style.right = '10px';
+            cancelBtn.addEventListener('click', function () {
+              cancelBtn.disabled = true;
+              self._cancelFriendRequest(s.did, function (err) {
+                cancelBtn.disabled = false;
+                if (err) return self._showError(err.message || 'Failed to cancel request');
+                self._loadFriends();
+              });
+            });
+            card.appendChild(cancelBtn);
+            content.appendChild(card);
+          });
+        }
+
+        heading('Friends', 12);
+        if (!friends.length) {
+          emptyMsg('No friends yet.');
+        } else {
+          friends.forEach(function (f) {
+            var card = self._makeCard();
+            card.appendChild(self._makeIdentityRow('', f.handle, f.did));
+
+            var since = document.createElement('div');
+            since.style.cssText = 'color:#8e8e93;font-size:11px;';
+            since.textContent = 'Friends since ' + self._formatDate(f.since);
+            card.appendChild(since);
+
+            var removeBtn = self._makeIconTextButton('person_remove', 'Remove', '#ff3b30');
+            removeBtn.style.position = 'absolute';
+            removeBtn.style.top = '10px';
+            removeBtn.style.right = '10px';
+            removeBtn.addEventListener('click', function () {
+              self.world().confirm('Remove @' + (f.handle || f.did) + ' as a friend?', function (answer) {
+                if (!answer) return;
+                removeBtn.disabled = true;
+                self._removeFriend(f.did, function (err) {
+                  removeBtn.disabled = false;
+                  if (err) return self._showError(err.message || 'Failed to remove friend');
+                  self._loadFriends();
+                });
+              });
+            });
+            card.appendChild(removeBtn);
+            content.appendChild(card);
+          });
+        }
+      },
+
       _renderOwnRecords: function (postcards) {
         var self    = this;
         var content = this._contentDiv;
@@ -715,6 +907,28 @@ module('lively.identity.PostCardMailbox')
           'background:#fff', 'border-radius:4px',
         ].join(';');
         btn.addEventListener('click', onClick);
+        return btn;
+      },
+
+      // Icon + text action button (Accept/Decline/Cancel/Remove) — renders
+      // through the vendored Material Symbols Rounded font
+      // (core/styles/material-symbols.css, loaded once per world) by
+      // setting a span's content to the icon's ligature name, same
+      // technique as AmbientPresencePanel.js's makeIconButton but paired
+      // with a real text label here rather than icon-only.
+      _makeIconTextButton: function (glyph, label, colorHex) {
+        var btn = document.createElement('button');
+        btn.style.cssText = [
+          'font-size:11px', 'padding:3px 8px', 'cursor:pointer',
+          'border:1px solid ' + colorHex, 'color:' + colorHex,
+          'background:#fff', 'border-radius:4px',
+          'display:inline-flex', 'align-items:center', 'gap:3px',
+        ].join(';');
+        var icon = document.createElement('span');
+        icon.textContent = glyph;
+        icon.style.cssText = "font-family:'Material Symbols Rounded';font-size:13px;line-height:1;";
+        btn.appendChild(icon);
+        btn.appendChild(document.createTextNode(label));
         return btn;
       },
 
@@ -937,6 +1151,63 @@ module('lively.identity.PostCardMailbox')
         xhr.withCredentials = true;
         xhr.onload = function () {
           if (xhr.status !== 200) return thenDo(new Error('Request failed (' + xhr.status + ')'));
+          thenDo(null);
+        };
+        xhr.onerror = function () { thenDo(new Error('Network error')); };
+        xhr.send();
+      },
+
+      // requesterDid is the OTHER party (the person whose request this is) —
+      // the route's own :handle is always the caller's own (the target of
+      // the request). Calls thenDo(err).
+      _respondFriendRequest: function (requesterDid, action, thenDo) {
+        var handle = lively.identity.did.currentUser().handle;
+        var base   = lively.identity.did.baseUrl();
+        var xhr    = new XMLHttpRequest();
+        xhr.open('PUT', base + '/@' + handle + '/friend-requests/' + encodeURIComponent(requesterDid), true);
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.withCredentials = true;
+        xhr.onload = function () {
+          if (xhr.status !== 200) {
+            var msg = 'Request failed (' + xhr.status + ')';
+            try { msg = JSON.parse(xhr.responseText).error || msg; } catch (e) {}
+            return thenDo(new Error(msg));
+          }
+          thenDo(null);
+        };
+        xhr.onerror = function () { thenDo(new Error('Network error')); };
+        xhr.send(JSON.stringify({ action: action }));
+      },
+
+      // Calls thenDo(err).
+      _removeFriend: function (friendDid, thenDo) {
+        var handle = lively.identity.did.currentUser().handle;
+        var base   = lively.identity.did.baseUrl();
+        var xhr    = new XMLHttpRequest();
+        xhr.open('DELETE', base + '/@' + handle + '/friends/' + encodeURIComponent(friendDid), true);
+        xhr.withCredentials = true;
+        xhr.onload = function () {
+          if (xhr.status !== 200) return thenDo(new Error('Request failed (' + xhr.status + ')'));
+          thenDo(null);
+        };
+        xhr.onerror = function () { thenDo(new Error('Network error')); };
+        xhr.send();
+      },
+
+      // Withdraws a request the caller themselves sent to targetDid. Calls
+      // thenDo(err).
+      _cancelFriendRequest: function (targetDid, thenDo) {
+        var handle = lively.identity.did.currentUser().handle;
+        var base   = lively.identity.did.baseUrl();
+        var xhr    = new XMLHttpRequest();
+        xhr.open('DELETE', base + '/@' + handle + '/friend-requests/' + encodeURIComponent(targetDid), true);
+        xhr.withCredentials = true;
+        xhr.onload = function () {
+          if (xhr.status !== 200) {
+            var msg = 'Request failed (' + xhr.status + ')';
+            try { msg = JSON.parse(xhr.responseText).error || msg; } catch (e) {}
+            return thenDo(new Error(msg));
+          }
           thenDo(null);
         };
         xhr.onerror = function () { thenDo(new Error('Network error')); };

@@ -64,6 +64,7 @@ var objectRepo = require("./identity/ObjectRepository");
 var blobStore = require("./identity/BlobStore");
 var auth = require("./identity/AuthMiddleware");
 var constellationRegistry = require("./identity/ConstellationRegistry");
+var friendRegistry = require("./identity/FriendRegistry");
 var cryptoVerify = require("./identity/CryptoVerify");
 var domainVerifier = require("./identity/DomainVerifier");
 var constellationSpace = require("./identity/ConstellationSpace");
@@ -480,6 +481,41 @@ function buildWarpDropPage() {
     "onStartWorld:function(){" +
     "lively.require('lively.identity.WarpDrop').toRun(function(){" +
     "lively.identity.WarpDrop.open();" +
+    "});" +
+    "}" +
+    "}</script>" +
+    "</head><body>" +
+    "<script type=\"text/javascript\" src=\"/core/lively/bootstrap.js\"></script>" +
+    "</body></html>"
+  );
+}
+
+// Serves a handle's profile-card landing page at GET /@:handle (html
+// negotiation branch, see the route below): a plain Lively world (no saved
+// envelope) that opens lively.identity.ProfileCard for this handle
+// immediately on boot, instead of redirecting into the handle's saved home
+// world. worldObjId (nullable — the handle may not have a world at all) is
+// threaded through so ProfileCard.open can show an "Enter World" link.
+// Modeled on buildWarpDropPage() above, same manuallyCreateWorld /
+// showMenuBar:false reasoning.
+function buildProfileCardPage(handle, worldObjId) {
+  var title = escapeHtml("@" + handle);
+  return (
+    "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" +
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
+    "<meta name=\"apple-mobile-web-app-capable\" content=\"yes\">" +
+    "<link rel=\"shortcut icon\" href=\"/core/media/lively.ico\">" +
+    "<title>" + title + "</title>" +
+    "<script>window.Config={" +
+    "codeBase:location.protocol+'//'+location.host+'/core/'," +
+    "rootPath:location.protocol+'//'+location.host+'/'," +
+    "manuallyCreateWorld:true," +
+    "showMenuBar:false," +
+    "lively2livelyEnableConnectionIndicator:false," +
+    "onStartWorld:function(){" +
+    "lively.require('lively.identity.ProfileCard').toRun(function(){" +
+    "lively.identity.ProfileCard.open(" + JSON.stringify(handle) + "," +
+    JSON.stringify(worldObjId || null) + ");" +
     "});" +
     "}" +
     "}</script>" +
@@ -1448,24 +1484,20 @@ module.exports = function (route, app) {
           .map(function (e) { return _trimRecipientsForNonOwner(e, req.identity); });
 
         // A browser hitting the bare handle (e.g. a shared/typed profile
-        // link, including a verified domain handle) wants the handle's home
-        // world rendered, not the JSON manifest this route otherwise exists
-        // to serve API clients (LoginDialog.js etc.) — same content
-        // negotiation pattern as every /@:handle/:objId route below.
-        // Mirrors welcome.html's own-world redirect: earliest-created world
-        // wins, but scoped to only the worlds this caller can actually see.
+        // link, including a verified domain handle) wants the handle's
+        // profile card rendered, not the JSON manifest this route otherwise
+        // exists to serve API clients (LoginDialog.js etc.) — same content
+        // negotiation pattern as every /@:handle/:objId route below. The
+        // handle's saved world (if any) is still reachable via the "Enter
+        // World" link ProfileCard.open renders — earliest-created world
+        // wins, same tie-break welcome.html's own-world redirect used to
+        // use here directly, but scoped to only the worlds this caller can
+        // actually see.
         if (req.accepts(["html", "json"]) === "html") {
           var worlds = visible.filter(function (e) { return e.type === "world"; });
           worlds.sort(function (a, b) { return a.created < b.created ? -1 : 1; });
-          if (worlds.length) {
-            return res.redirect("/@" + handle + "/" + worlds[0].objId);
-          }
-          return res.status(404).send(
-            buildAccessDeniedPage({
-              title: "No home world",
-              heading: "@" + handle + " has nothing public here yet",
-              message: "This account hasn't published a world visible to you.",
-            }),
+          return res.send(
+            buildProfileCardPage(handle, worlds.length ? worlds[0].objId : null),
           );
         }
 
@@ -2272,6 +2304,166 @@ module.exports = function (route, app) {
         if (err) return res.status(500).json({ error: String(err) });
         res.json(result);
       });
+    });
+  });
+
+  // ─── friend requests + friendships ──────────────────────────────────────────
+  // Must be registered before /@:handle/:objId. Backed by FriendRegistry.js's
+  // own SQLite tables (friend_requests/friendships) — deliberately NOT
+  // postcard/object envelopes, same reasoning as constellation join requests
+  // (see that module's header comment): a new purpose sharing the
+  // postcard-envelope listing pipeline is only as safe as every query's
+  // filtering, and this codebase has already been burned by that once
+  // (comment-thread replies leaking into the postcard feed, fixed in
+  // 142a07d).
+
+  // Relationship between the caller and :handle, from the caller's own
+  // point of view — ProfileCard.js uses this to decide whether to render
+  // "Send request" / "Request pending" / "Friends" for whichever profile is
+  // currently open. A declined request (either direction) reads back as
+  // 'none' so the UI offers "Send request" again rather than getting stuck.
+  app.get("/@:handle/friend-status", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    handleRegistry.resolve(handle, function (err, targetDid) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!targetDid) return res.status(404).json({ error: "Handle not found: @" + handle });
+      var viewerDid = req.identity.did;
+      if (viewerDid === targetDid) return res.json({ status: "self" });
+
+      friendRegistry.areFriends(viewerDid, targetDid, function (err, friends) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (friends) return res.json({ status: "friends" });
+
+        friendRegistry.getRequestStatus(viewerDid, targetDid, function (err, outgoing) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (outgoing === "pending") return res.json({ status: "pending-outgoing" });
+
+          friendRegistry.getRequestStatus(targetDid, viewerDid, function (err, incoming) {
+            if (err) return res.status(500).json({ error: String(err) });
+            res.json({ status: incoming === "pending" ? "pending-incoming" : "none" });
+          });
+        });
+      });
+    });
+  });
+
+  // Incoming pending requests for :handle's own mailbox (PostCardMailbox.js's
+  // Friends tab). Owner-only, same as every other mailbox-shaped route.
+  // ?direction=sent switches to the caller's own outstanding SENT requests
+  // (backs the tab's "Sent" section and the Cancel action below) — same
+  // response shape either way, just requester_did vs target_did under the
+  // hood (listIncomingPending vs listOutgoingPending).
+  app.get("/@:handle/friend-requests", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your friend requests" });
+    var listFn = req.query.direction === "sent"
+      ? friendRegistry.listOutgoingPending
+      : friendRegistry.listIncomingPending;
+    listFn(req.identity.did, function (err, requests) {
+      if (err) return res.status(500).json({ error: String(err) });
+      _resolveHandlesForDids(requests.map(function (r) { return r.did; }), function (err, didToHandle) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({
+          requests: requests.map(function (r) {
+            return { did: r.did, handle: didToHandle[r.did] || null, requestedAt: r.requestedAt };
+          }),
+        });
+      });
+    });
+  });
+
+  // Send a friend request to :handle. Body is empty — the caller is the
+  // requester, :handle (resolved to a did) is the target.
+  app.post("/@:handle/friend-requests", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    handleRegistry.resolve(handle, function (err, targetDid) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!targetDid) return res.status(404).json({ error: "Handle not found: @" + handle });
+      if (targetDid === req.identity.did)
+        return res.status(400).json({ error: "Cannot send a friend request to yourself" });
+      friendRegistry.sendRequest(req.identity.did, targetDid, function (err, result) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({ ok: true, status: result.status });
+      });
+    });
+  });
+
+  // Approve/decline an incoming request. :handle must be the caller's own
+  // (they're the target); :did is the original requester. With the request
+  // already resolved once (approved/declined), a second attempt 409s rather
+  // than silently re-applying — same double-resolution guard as constellation
+  // join requests.
+  app.put("/@:handle/friend-requests/:did", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    var requesterDid = req.params.did;
+    var action = req.body && req.body.action;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your friend requests" });
+    if (action !== "approve" && action !== "decline")
+      return res.status(400).json({ error: 'Missing/invalid required field: action ("approve" or "decline")' });
+
+    friendRegistry.getRequestStatus(requesterDid, req.identity.did, function (err, status) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (status !== "pending")
+        return res.status(409).json({ error: "Already resolved (status: " + (status || "none") + ")" });
+      var apply = action === "approve" ? friendRegistry.approveRequest : friendRegistry.declineRequest;
+      apply(requesterDid, req.identity.did, function (err) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({ ok: true, status: action === "approve" ? "accepted" : "declined" });
+      });
+    });
+  });
+
+  // Cancel a request the caller themselves sent to :did — the opposite
+  // direction of the PUT route above (that one responds to a request FROM
+  // :did; this one withdraws a request the caller sent TO :did). Same
+  // double-resolution guard: cancelling something no longer pending 409s
+  // rather than silently no-opping.
+  app.delete("/@:handle/friend-requests/:did", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    var targetDid = req.params.did;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your friend requests" });
+
+    friendRegistry.getRequestStatus(req.identity.did, targetDid, function (err, status) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (status !== "pending")
+        return res.status(409).json({ error: "Already resolved (status: " + (status || "none") + ")" });
+      friendRegistry.cancelRequest(req.identity.did, targetDid, function (err) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({ ok: true, status: "cancelled" });
+      });
+    });
+  });
+
+  // Confirmed friends list for :handle's own mailbox. Owner-only for now —
+  // no product need yet for a visitor-facing friends list on the profile
+  // itself, just the request/accept flow this route set backs.
+  app.get("/@:handle/friends", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your friends list" });
+    friendRegistry.listFriends(req.identity.did, function (err, friends) {
+      if (err) return res.status(500).json({ error: String(err) });
+      _resolveHandlesForDids(friends.map(function (f) { return f.did; }), function (err, didToHandle) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({
+          friends: friends.map(function (f) {
+            return { did: f.did, handle: didToHandle[f.did] || null, since: f.since };
+          }),
+        });
+      });
+    });
+  });
+
+  app.delete("/@:handle/friends/:did", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your friends list" });
+    friendRegistry.removeFriendship(req.identity.did, req.params.did, function (err) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json({ ok: true });
     });
   });
 
