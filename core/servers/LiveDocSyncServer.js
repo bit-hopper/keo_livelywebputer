@@ -377,3 +377,9 @@ module.exports.getOrHydrateRoom = getOrHydrateRoom;
 module.exports.attachPersistence = attachPersistence;
 module.exports.forwardAddPlacementToPrimary = forwardAddPlacementToPrimary;
 module.exports.wireClusterPrimary = wireClusterPrimary;
+// The actual port this process's sync server is listening on (or would be,
+// if y-websocket/ws weren't installed) -- so page-template code
+// (IdentityServer.js) can tell connecting clients where to find it instead
+// of every client-side call site guessing a hardcoded default. See
+// IdentityServer.js's own window.LIVEDOC_SYNC_PORT injection.
+module.exports.SYNC_PORT = SYNC_PORT;

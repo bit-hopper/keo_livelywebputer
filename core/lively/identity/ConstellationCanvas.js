@@ -116,7 +116,7 @@ module("lively.identity.ConstellationCanvas")
         // separately reachable over TLS wherever this app is deployed).
         // wss: required whenever the page itself is https: — browsers
         // block insecure ws: connections from a secure page.
-        var syncPort = (typeof window !== "undefined" && window.POSTCARD_SYNC_PORT) || 1234;
+        var syncPort = (typeof window !== "undefined" && window.LIVEDOC_SYNC_PORT) || 1234;
         var wsScheme = (typeof location !== "undefined" && location.protocol === "https:") ? "wss:" : "ws:";
         var wsUrl = wsScheme + "//" + location.hostname + ":" + syncPort;
         this.wsProvider = new WebsocketProvider(wsUrl, this._genesisObjId, this.yDoc, {

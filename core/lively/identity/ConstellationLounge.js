@@ -3055,7 +3055,7 @@ module("lively.identity.ConstellationLounge")
           try { data = JSON.parse(tokenXhr.responseText); } catch (e) { return; }
 
           self.yDoc = new Y.Doc({ gc: false });
-          var syncPort = (typeof window !== "undefined" && window.POSTCARD_SYNC_PORT) || 1234;
+          var syncPort = (typeof window !== "undefined" && window.LIVEDOC_SYNC_PORT) || 1234;
           var wsScheme = (typeof location !== "undefined" && location.protocol === "https:") ? "wss:" : "ws:";
           var wsUrl = wsScheme + "//" + location.hostname + ":" + syncPort;
           self.wsProvider = new WebsocketProvider(wsUrl, self._genesisObjId, self.yDoc, {
