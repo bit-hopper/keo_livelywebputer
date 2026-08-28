@@ -181,9 +181,30 @@ function startSyncServer() {
       return;
     }
 
+    // setupWSConnection() is only ever reached after at least one async DB
+    // round trip (constellation lookup below, plus a second one for a
+    // constellation-space room). The client sends its first sync message
+    // (SyncStep1) immediately on WS open, well before that resolves, and
+    // Node's EventEmitter doesn't buffer events emitted before a listener
+    // exists — so without this, that first message is silently dropped and
+    // the Yjs sync handshake never completes (wsconnected stays true,
+    // synced never flips to true). Buffer raw messages from the moment the
+    // connection is accepted, then replay them once setupWSConnection has
+    // attached its real listener.
+    var pendingMessages = [];
+    function bufferMessage(data) { pendingMessages.push(data); }
+    ws.on('message', bufferMessage);
+    function finishSetupWSConnection(opts) {
+      ws.removeListener('message', bufferMessage);
+      setupWSConnection(ws, req, opts);
+      pendingMessages.forEach(function (data) { ws.emit('message', data, true); });
+      pendingMessages = null;
+    }
+
     constellationRegistry.getByGenesisObjId(objId, function (err, constellation) {
       if (err) {
         console.error('[LiveDocSync] constellation lookup failed for ' + objId + ':', err.message);
+        ws.removeListener('message', bufferMessage);
         ws.close(1011, 'Internal error');
         return;
       }
@@ -193,7 +214,7 @@ function startSyncServer() {
         // room this ever actually serves (see this file's header).
         // gc: false is passed here so y-websocket creates all new Y.Doc
         // instances with gc disabled — required for playback support.
-        setupWSConnection(ws, req, { docName: objId, gc: false });
+        finishSetupWSConnection({ docName: objId, gc: false });
         return;
       }
 
@@ -217,6 +238,7 @@ function startSyncServer() {
       var viewerDid = verified ? verified.did : null;
       if (!verified || !constellationRegistry.canRead(constellation, viewerDid)) {
         console.warn('[LiveDocSync] Rejected constellation room connection for ' + objId);
+        ws.removeListener('message', bufferMessage);
         ws.close(1008, 'Unauthorized');
         return;
       }
@@ -228,11 +250,12 @@ function startSyncServer() {
       getOrHydrateRoom(objId, function (err, doc, isNewRoom) {
         if (err) {
           console.error('[LiveDocSync] failed to hydrate constellation room ' + objId + ':', err.message);
+          ws.removeListener('message', bufferMessage);
           ws.close(1011, 'Internal error');
           return;
         }
         if (isNewRoom) attachPersistence(objId, constellation, doc);
-        setupWSConnection(ws, req, { docName: objId, gc: false });
+        finishSetupWSConnection({ docName: objId, gc: false });
       });
     });
   });
