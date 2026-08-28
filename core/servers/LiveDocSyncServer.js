@@ -54,9 +54,22 @@
  *   to the primary via cluster IPC instead; see wireClusterPrimary /
  *   forwardAddPlacementToPrimary below (same IPC-bridge pattern as
  *   support/room-token-store.js). This fixes fragmentation *within one
- *   process's own cluster workers* — it does not yet solve real horizontal
- *   scaling across separate machines/instances, which needs the shared
- *   Redis-backed backplane DeployCheckList.md's to-do list already tracks.
+ *   process's own cluster workers* only.
+ *
+ *   Cross-instance (separate machines/deployments, not just this process's
+ *   own cluster workers): fixed via support/live-doc-registry-redis.js, the
+ *   last of the three realtime-backplane subsystems DeployCheckList.md
+ *   tracked. Opt-in via REDIS_URL (see liveDocRegistry below) — unset means
+ *   exactly the per-process/per-cluster-primary-only behavior described
+ *   above, untouched. A wired doc replicates its updates (and awareness/
+ *   cursor state) to every other instance holding the same room via Redis
+ *   pub/sub, with a request/reply state-vector catch-up handshake for a
+ *   newly-touched room so a continuously-edited room's live-ahead-of-
+ *   persisted-snapshot state isn't silently missed. See that file's own
+ *   header for the full design and why a Y.Doc's never-unloaded lifetime in
+ *   this app (no `persistence` adapter configured — confirmed by reading
+ *   y-websocket's own bin/utils.js) makes this a permanent-divergence bug
+ *   without it, not just a staleness one.
  *
  * life_star discovery:
  *   This file is in core/servers/ so life_star auto-discovers it. However,
@@ -80,6 +93,15 @@ var objectRepo = require('./identity/ObjectRepository');
 var constellationRegistry = require('./identity/ConstellationRegistry');
 var constellationSpace = require('./identity/ConstellationSpace');
 
+// Cross-instance Yjs replication (separate machines/deployments, not this
+// process's own cluster workers -- those already share one doc via the
+// cluster.isWorker/primary-only listener setup below). Opt-in via REDIS_URL,
+// same idiom as RoomSignalingServer.js/SessionTracker.js's own backplanes:
+// decided once here at module load, unset means today's exact
+// per-process-only behavior, untouched. See
+// support/live-doc-registry-redis.js's header for the full design.
+var liveDocRegistry = process.env.REDIS_URL ? require('./support/live-doc-registry-redis') : null;
+
 // Hoisted to module scope (rather than local to startSyncServer) so
 // getOrHydrateRoom/attachPersistence below — and other server modules that
 // lazily require() this file, e.g. ConstellationSpace.js's
@@ -96,6 +118,7 @@ function getOrHydrateRoom(objId, thenDo) {
   if (!getYDoc) return thenDo(new Error('Yjs sync not available (y-websocket/ws not installed)'));
   var isNewRoom = !docs.has(objId);
   var doc = getYDoc(objId, false);
+  if (liveDocRegistry && isNewRoom) liveDocRegistry.wireDoc(objId, doc);
   if (!isNewRoom) return thenDo(null, doc, false);
 
   objectRepo.get(objId, function (err, envelope) {
@@ -215,6 +238,13 @@ function startSyncServer() {
         // gc: false is passed here so y-websocket creates all new Y.Doc
         // instances with gc disabled — required for playback support.
         finishSetupWSConnection({ docName: objId, gc: false });
+        // setupWSConnection creates the doc via its own internal getYDoc
+        // closure (not the exported one this file holds), so it can't be
+        // intercepted from outside -- wire it here instead, right after it's
+        // guaranteed to exist. wireDoc is idempotent per objId, so this is
+        // safe to call on every connection to the same room, not just the
+        // first.
+        if (liveDocRegistry) liveDocRegistry.wireDoc(objId, docs.get(objId));
         return;
       }
 
