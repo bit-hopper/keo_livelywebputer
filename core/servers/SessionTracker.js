@@ -97,6 +97,13 @@ var sessionActions = {
             timeOfRegistration: new Date().getTime()
         });
 
+        if (sessionServer._redisRegistry) {
+            sessionServer._redisRegistry.registerSession(msg.sender, {
+                user: session.user, worldURL: session.worldURL,
+                remoteAddress: session.remoteAddress, timeOfRegistration: session.timeOfRegistration
+            }).catch(function (e) { console.error('[SessionTracker] registerSession (redis) failed:', e.message); });
+        }
+
         connection.id = msg.data.id;
 
         connection.on('close', function() {
@@ -113,6 +120,16 @@ var sessionActions = {
                     events.add('[connection to %s] l2l deregistration "%s" %s %s %s',
                         msg.sender, session.user, session.worldURL, session.id, session.remoteAddress);
                     sessionServer.removeLocalSessionOf(msg.sender);
+                    // This is only ever a guess ("no reconnect landed on ME
+                    // within the grace window") never a certainty about
+                    // global state -- under clustering a reconnect very
+                    // plausibly lands on a DIFFERENT worker within this
+                    // window. Only stop refreshing this process's own
+                    // heartbeat contribution; never delete the shared Redis
+                    // entry here, or a live reconnect elsewhere gets
+                    // clobbered. See session-registry-redis.js's
+                    // stopRefreshing for the full reasoning.
+                    if (sessionServer._redisRegistry) sessionServer._redisRegistry.stopRefreshing(msg.sender);
                     if (logSessionLifetime) {
                         console.log('l2l deregistration "%s" %s %s %s',
                             session.user, session.worldURL, session.id, session.remoteAddress);
@@ -138,6 +155,13 @@ var sessionActions = {
 
     unregisterClient: function(sessionServer, connection, msg) {
         var session = sessionServer.removeLocalSessionOf(msg.sender);
+        // Unambiguous, immediate "I'm leaving" signal -- unlike the delayed
+        // grace-period close handler, safe to delete outright here since
+        // there's no ambiguity to race against.
+        if (sessionServer._redisRegistry) {
+            sessionServer._redisRegistry.unregisterSession(msg.sender)
+                .catch(function (e) { console.error('[SessionTracker] unregisterSession (redis) failed:', e.message); });
+        }
         if (logSessionLifetime) {
             console.log('l2l deregistration "%s" %s %s %s',
                 session.user, session.worldURL, session.id, session.remoteAddress);
@@ -219,6 +243,11 @@ var sessionActions = {
          var sessions = sessionServer.getLocalSessions()[sessionServer.id()],
             session = sessions[msg.sender] = sessions[msg.sender] || {};
         session.lastActivity = msg.data.lastActivity;
+
+        if (sessionServer._redisRegistry) {
+            sessionServer._redisRegistry.touchSession(msg.sender, {lastActivity: msg.data.lastActivity})
+                .catch(function (e) { console.error('[SessionTracker] touchSession (redis) failed:', e.message); });
+        }
 
         events.add('[sender %s][reportActivity]', msg.sender);
 
@@ -350,6 +379,17 @@ var SessionTracker = module.exports.SessionTracker || function SessionTracker(op
     this.inactiveSessionRemovalTime = options.inactiveSessionRemovalTime || 60*1000;
     this.server2serverReconnectTimeout = options.server2serverReconnectTimeout || 60*1000;
     this.initTrackerData();
+    // Opt-in, decided once here at construction time -- never branched on
+    // per-message. See session-registry-redis.js's own header for why this
+    // exists: under `--workers`, each cluster worker runs a fully separate
+    // SessionTracker instance sharing no state, breaking cross-worker
+    // session delivery/listing.
+    this._redisRegistry = process.env.REDIS_URL
+        ? require('./support/session-registry-redis').forRoute(this.route, {
+              inactiveSessionRemovalTime: this.inactiveSessionRemovalTime,
+              localLookupFn: this.websocketServer.getConnection.bind(this.websocketServer)
+          })
+        : null;
 };
 
 (function() {
@@ -390,11 +430,13 @@ var SessionTracker = module.exports.SessionTracker || function SessionTracker(op
     this.shutdown = function() {
         // really close the tracker, ensures that the tracker will not
         // attempt reconnects of closed sockets
+        var tracker = this;
         if (this._dispatchLivelyMessageFromServer)
             tracker.websocketServer.removeListener('lively-message', this._dispatchLivelyMessageFromServer);
         this.websocketServer && this.websocketServer.close();
         this.removeServerToServerConnections();
         this.stopServerToServerSessionReport();
+        if (this._redisRegistry) this._redisRegistry.shutdown();
     }
 
     this.initTrackerData = function() {
@@ -476,27 +518,55 @@ var SessionTracker = module.exports.SessionTracker || function SessionTracker(op
         // will invoke getSessionList of server-to-server connections unless
         // explicitly stated otherwise in options
         options = options || {};
-        var tasks = [this.getLocalSessions.bind(this, options)];
-        if (!options.onlyLocal) tasks.push(this.getServerToServerSessionList.bind(this, options));
         var tracker = this;
-        async.parallel(tasks, function(err, sessions) {
+        var includeServerToServer = !options.onlyLocal;
+        var includeRedisCluster = !options.onlyLocal && !!this._redisRegistry;
+
+        var tasks = [this.getLocalSessions.bind(this, options)];
+        if (includeServerToServer) tasks.push(this.getServerToServerSessionList.bind(this, options));
+        if (includeRedisCluster) tasks.push(function (next) {
+            tracker._redisRegistry.listSessions().then(function (r) { next(null, r); }, next);
+        });
+
+        async.parallel(tasks, function(err, results) {
             if (err) {
-                console.error('%s getSessionList: ', this, err);
+                console.error('%s getSessionList: ', tracker, err);
             }
-            var result = sessions[0];
+            var result = results[0];
             if (options.onlyLocal) { thenDo(result); return; }
-            // sessions[1] looks like [{
+            // results[1] (when present) looks like [{
             //  url: {
             //    connection: WEBSOCKET_CONNECTION,
             //    remoteTrackerId: ID,
             //    trackersWithSessions: {trackerId: {sessionId: {session_spec}}}
             //  }}]
             // flatten it so that {trackerId: {sessionId: {sess spec}*}}
-            Object.keys(sessions[1]).forEach(function(url) {
-                var remote = sessions[1][url];
+            var s2sSessions = includeServerToServer ? results[1] : {};
+            Object.keys(s2sSessions).forEach(function(url) {
+                var remote = s2sSessions[url];
                 for (var id in remote.trackersWithSessions)
                     if (!result[id]) result[id] = remote.trackersWithSessions[id];
             });
+
+            // Sibling cluster workers' sessions (via Redis), collapsed
+            // under one synthetic pseudo-tracker id -- real per-worker
+            // trackerId granularity isn't meaningful to any consumer of
+            // this list (chat sidebar, session inspector), so this is
+            // deliberately simpler than exposing real per-worker identity.
+            // Excludes anything getLocalSessions already reported, so this
+            // process's own sessions aren't listed twice.
+            if (includeRedisCluster) {
+                var clusterSessions = results[2] || {};
+                var localSessions = result[tracker.id()] || {};
+                var merged = {};
+                Object.keys(clusterSessions).forEach(function (sessionId) {
+                    if (!localSessions[sessionId]) merged[sessionId] = clusterSessions[sessionId];
+                });
+                if (Object.keys(merged).length) {
+                    result['cluster-shared'] = Object.assign(result['cluster-shared'] || {}, merged);
+                }
+            }
+
             thenDo(result);
         });
     }
@@ -610,6 +680,23 @@ var SessionTracker = module.exports.SessionTracker || function SessionTracker(op
                         return;
                     }
                 }
+            }
+            // Last resort: this session isn't held locally and isn't known
+            // to any federated remote tracker, but might be held by a
+            // sibling cluster worker of this same deployment. The Redis
+            // heartbeat is the liveness source of truth here (matches
+            // room-peer-registry-redis.js's own convention) -- if it
+            // exists, hand back a proxy connection whose .send() relays
+            // through Redis rather than a real socket. Every real caller of
+            // findConnection only ever calls .send() on the result (see
+            // session-registry-redis.js's header), so this needs no
+            // changes at any call site.
+            if (tracker._redisRegistry) {
+                tracker._redisRegistry.existsRemotely(id, function (err, exists) {
+                    if (exists) thenDo(null, tracker._redisRegistry.proxyConnectionFor(id));
+                    else thenDo('not found', null);
+                });
+                return;
             }
             thenDo('not found', null);
         });
