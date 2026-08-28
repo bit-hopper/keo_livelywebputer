@@ -10,7 +10,7 @@
  *   - ProseMirror EditorView appended to renderContext().shapeNode (DOM).
  *     This is the same pattern as CodeEditor which appends CodeMirror.
  *   - ySyncPlugin + yUndoPlugin bind EditorView ↔ Y.Doc.getXmlFragment('prosemirror').
- *   - WebsocketProvider (y-websocket) attaches to PostCardSyncServer on port
+ *   - WebsocketProvider (y-websocket) attaches to LiveDocSyncServer on port
  *     POSTCARD_SYNC_PORT (default 1234) using the postcard objId as room name.
  *   - Auto-save: debounced 2 s after the last change, serializes to a
  *     PostCardSerializer envelope and PUTs /@:handle/:objId.
@@ -1424,7 +1424,7 @@ module('lively.identity.PostCardEditor')
         }
       },
 
-      // Connects to PostCardSyncServer via WebsocketProvider for live
+      // Connects to LiveDocSyncServer via WebsocketProvider for live
       // collaboration. Wiki mode only (§1.2) — a plain card (§1.1, every
       // card today) never has a Yjs doc to sync in the first place, and
       // never opening this connection for it is also what closes the
@@ -1442,7 +1442,7 @@ module('lively.identity.PostCardEditor')
           return;
         }
 
-        // PostCardSyncServer runs on its own standalone port (must be
+        // LiveDocSyncServer runs on its own standalone port (must be
         // separately reachable over TLS wherever this app is deployed).
         // wss: required whenever the page itself is https: — browsers
         // block insecure ws: connections from a secure page.

@@ -1,23 +1,62 @@
 /**
- * core/servers/PostCardSyncServer.js
+ * core/servers/LiveDocSyncServer.js
  *
- * Yjs sync server for live post card (and constellation space) collaboration.
+ * Yjs sync server for live collaborative Y.Docs: wiki-mode post cards (rich
+ * text, via WikiEditor.js/PostCardEditor.js's wiki mode) and constellation
+ * spaces (canvas placement layout, via ConstellationSpace.js). NOT used by
+ * plain post cards — a plain card never has a Yjs doc in the first place
+ * (PostCardEditor.js's _connectSync is gated on _isWikiMode).
+ *
+ * Renamed 2026-08-27 from PostCardSyncServer.js. That name (and this file's
+ * "Plain post card room" comment below) dated from when the design's
+ * ambition was broader — live multi-user editing *and* version-history
+ * playback for every post card, not just wiki-mode ones. See
+ * WikiPlayback.js's own header for the matching client-side history: it
+ * used to be PostCardPlayback.js before that scope narrowed to wiki-only
+ * per PostcardDesignSpec-v2.md §15. The client file got renamed to match
+ * at the time; this one never did.
  *
  * Architecture:
  *   Runs a y-websocket server as a standalone process on its own port
- *   (POSTCARD_SYNC_PORT env var, default 1234), not attached to life_star's
- *   shared http.Server. A shared-port migration was attempted and reverted:
- *   this app already funnels all 'upgrade' traffic on the shared server
- *   through a singleton (core/servers/support/websockets.js's
- *   WebSocketListener, used by WarpDropSignalingServer.js) built on the
- *   `websocket` npm package with a hard-coded 'lively-json' subprotocol —
- *   incompatible with y-websocket's binary Yjs sync protocol without a
- *   nontrivial connection-API adapter. A standalone port avoids that
- *   entirely; it just needs to be reachable over TLS wherever this app is
- *   deployed (the main port already is — this one additionally needs the
- *   same treatment, e.g. tunnel/reverse-proxy config exposing it too).
- *   Room/document IDs: post card objIds (12-char base64url) for plain post
- *   cards, or a constellation's genesisObjId for constellation spaces.
+ *   (POSTCARD_SYNC_PORT env var, default 1234 — kept as-is despite the file
+ *   rename, to avoid silently breaking anyone who already has it set in a
+ *   deploy config), not attached to life_star's shared http.Server. A
+ *   shared-port migration was attempted and reverted: this app already
+ *   funnels all 'upgrade' traffic on the shared server through a singleton
+ *   (core/servers/support/websockets.js's WebSocketListener, used by
+ *   WarpDropSignalingServer.js) built on the `websocket` npm package with a
+ *   hard-coded 'lively-json' subprotocol — incompatible with y-websocket's
+ *   binary Yjs sync protocol without a nontrivial connection-API adapter.
+ *   A standalone port avoids that entirely; it just needs to be reachable
+ *   over TLS wherever this app is deployed (the main port already is — this
+ *   one additionally needs the same treatment, e.g. tunnel/reverse-proxy
+ *   config exposing it too). Whether to actually do that migration, or
+ *   model this after L2L's (SessionTracker.js) multi-tracker routing
+ *   instead, is deliberately left open — see DeployCheckList.md, revisit
+ *   once the Redis backplane work below has landed.
+ *   Room/document IDs: post card objIds (12-char base64url) for wiki-mode
+ *   post cards, or a constellation's genesisObjId for constellation spaces.
+ *
+ *   Cluster-aware (added alongside bin/lk-server.js's --workers support):
+ *   Node's cluster module silently round-robin-distributes ANY .listen()
+ *   call made from worker code across workers, not just life_star's main
+ *   server — discovered live 2026-08-27 testing --workers 2 (see
+ *   DeployCheckList.md's "Clustering" section) applying to this file's own
+ *   standalone http.Server too, which would otherwise fragment the live
+ *   `docs` Map across workers exactly like the state DeployCheckList.md
+ *   already flags LiveDocSyncServer/SessionTracker/RoomSignalingServer
+ *   for. Fixed here by only ever starting the real listener in the cluster
+ *   primary (or a non-clustered single process) — see the cluster.isWorker
+ *   check just above the startSyncServer() call at the bottom. That leaves
+ *   a worker with no local Yjs state at all, which would otherwise break
+ *   the one server-side (non-WebSocket) write path that touches it —
+ *   ConstellationSpace.js's addPlacementToSpace — so that call is forwarded
+ *   to the primary via cluster IPC instead; see wireClusterPrimary /
+ *   forwardAddPlacementToPrimary below (same IPC-bridge pattern as
+ *   support/room-token-store.js). This fixes fragmentation *within one
+ *   process's own cluster workers* — it does not yet solve real horizontal
+ *   scaling across separate machines/instances, which needs the shared
+ *   Redis-backed backplane DeployCheckList.md's to-do list already tracks.
  *
  * life_star discovery:
  *   This file is in core/servers/ so life_star auto-discovers it. However,
@@ -34,6 +73,7 @@
 
 var http = require('http');
 var querystring = require('querystring');
+var cluster = require('cluster');
 var SYNC_PORT = parseInt(process.env.POSTCARD_SYNC_PORT, 10) || 1234;
 
 var objectRepo = require('./identity/ObjectRepository');
@@ -82,7 +122,7 @@ function attachPersistence(objId, constellation, doc) {
     saveTimer = setTimeout(function () {
       saveTimer = null;
       constellationSpace.saveSpaceSnapshot(constellation, objectRepo, doc, function (err) {
-        if (err) console.error('[PostCardSync] failed to persist constellation space ' + objId + ':', err.message);
+        if (err) console.error('[LiveDocSync] failed to persist constellation space ' + objId + ':', err.message);
       });
     }, 2500);
   });
@@ -101,7 +141,7 @@ function startSyncServer() {
     Y = require('yjs');
   } catch (e) {
     console.warn(
-      '[PostCardSync] y-websocket or ws not installed — live collaboration disabled. ' +
+      '[LiveDocSync] y-websocket or ws not installed — live collaboration disabled. ' +
       'Run: npm install yjs y-websocket ws'
     );
     return;
@@ -114,7 +154,7 @@ function startSyncServer() {
 
   var server = http.createServer(function (req, res) {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Lively PostCard Sync Server');
+    res.end('Lively LiveDoc Sync Server');
   });
 
   var wss = new WebSocketServer({ server: server });
@@ -132,24 +172,25 @@ function startSyncServer() {
     // gate access to the envelope itself. WebSocket-level auth is the Phase 3.5 work.
     // (Constellation space rooms below are the one exception — they DO check
     // a token, see the TODO(constellation-write-gate) note.)
-    console.log('[PostCardSync] connection for objId=' + objId +
+    console.log('[LiveDocSync] connection for objId=' + objId +
                 ' from ' + (req.socket && req.socket.remoteAddress));
 
     if (!objId || !/^[A-Za-z0-9\-_]{12}$/.test(objId)) {
-      console.warn('[PostCardSync] Invalid objId in WebSocket URL:', objId);
+      console.warn('[LiveDocSync] Invalid objId in WebSocket URL:', objId);
       ws.close(1008, 'Invalid objId');
       return;
     }
 
     constellationRegistry.getByGenesisObjId(objId, function (err, constellation) {
       if (err) {
-        console.error('[PostCardSync] constellation lookup failed for ' + objId + ':', err.message);
+        console.error('[LiveDocSync] constellation lookup failed for ' + objId + ':', err.message);
         ws.close(1011, 'Internal error');
         return;
       }
 
       if (!constellation) {
-        // Plain post card room — unchanged behavior.
+        // Wiki-mode post card room — the only kind of "plain post card"
+        // room this ever actually serves (see this file's header).
         // gc: false is passed here so y-websocket creates all new Y.Doc
         // instances with gc disabled — required for playback support.
         setupWSConnection(ws, req, { docName: objId, gc: false });
@@ -175,7 +216,7 @@ function startSyncServer() {
       var verified = constellationSpace.verifySpaceToken(query.token, objId);
       var viewerDid = verified ? verified.did : null;
       if (!verified || !constellationRegistry.canRead(constellation, viewerDid)) {
-        console.warn('[PostCardSync] Rejected constellation room connection for ' + objId);
+        console.warn('[LiveDocSync] Rejected constellation room connection for ' + objId);
         ws.close(1008, 'Unauthorized');
         return;
       }
@@ -186,7 +227,7 @@ function startSyncServer() {
       // touches the doc, not moments later.
       getOrHydrateRoom(objId, function (err, doc, isNewRoom) {
         if (err) {
-          console.error('[PostCardSync] failed to hydrate constellation room ' + objId + ':', err.message);
+          console.error('[LiveDocSync] failed to hydrate constellation room ' + objId + ':', err.message);
           ws.close(1011, 'Internal error');
           return;
         }
@@ -197,16 +238,77 @@ function startSyncServer() {
   });
 
   server.listen(SYNC_PORT, function () {
-    console.log('[PostCardSync] y-websocket server listening on port ' + SYNC_PORT);
+    console.log('[LiveDocSync] y-websocket server listening on port ' + SYNC_PORT);
   });
 
   server.on('error', function (err) {
-    console.error('[PostCardSync] Server error:', err.message);
+    console.error('[LiveDocSync] Server error:', err.message);
   });
 }
 
-// Start the sync server immediately when this module is loaded.
-startSyncServer();
+// Only the cluster primary (or a non-clustered single process) starts the
+// real listener — a worker doing this too would silently fragment the live
+// `docs` Map across workers (see this file's header). cluster.isWorker is
+// false for both the primary and a non-clustered process, so this is a
+// no-op behavior change outside of --workers clustering.
+if (!cluster.isWorker) startSyncServer();
+
+// -- Cluster IPC bridge for the one server-side (non-WebSocket) write path
+// that touches live room state: ConstellationSpace.js's addPlacementToSpace
+// directly mutates a live Y.Doc it gets back from getOrHydrateRoom, which a
+// worker (no local Yjs state, see above) can't do locally. Forwards the
+// whole operation to the primary, which runs it against the real doc via
+// this same file's own addPlacementToSpace call, then replies. Same
+// request/reply-by-id pattern as support/room-token-store.js.
+var _pendingAddPlacementReplies = {};
+var _addPlacementRequestSeq = 0;
+
+function forwardAddPlacementToPrimary(constellation, placement, thenDo) {
+  var requestId = process.pid + '-' + (_addPlacementRequestSeq++);
+  var timer = setTimeout(function () {
+    delete _pendingAddPlacementReplies[requestId];
+    thenDo(new Error('LiveDocSyncServer: primary did not reply in time for addPlacementToSpace'));
+  }, 5000);
+  _pendingAddPlacementReplies[requestId] = function (err, result) {
+    clearTimeout(timer);
+    thenDo(err, result);
+  };
+  process.send({
+    channel: 'live-doc-sync',
+    type: 'add-placement',
+    requestId: requestId,
+    payload: { constellation: constellation, placement: placement },
+  });
+}
+
+if (cluster.isWorker) {
+  process.on('message', function (msg) {
+    if (!msg || msg.channel !== 'live-doc-sync' || msg.type !== 'reply') return;
+    var pending = _pendingAddPlacementReplies[msg.requestId];
+    if (!pending) return;
+    delete _pendingAddPlacementReplies[msg.requestId];
+    pending(msg.error ? new Error(msg.error) : null, msg.result);
+  });
+}
+
+// Wires up the primary side of the IPC bridge above. Call once from the
+// cluster primary (bin/lk-server.js), before forking workers.
+function wireClusterPrimary() {
+  cluster.on('fork', function (worker) {
+    worker.on('message', function (msg) {
+      if (!msg || msg.channel !== 'live-doc-sync' || msg.type !== 'add-placement') return;
+      constellationSpace.addPlacementToSpace(msg.payload.constellation, msg.payload.placement, function (err, result) {
+        worker.send({
+          channel: 'live-doc-sync',
+          type: 'reply',
+          requestId: msg.requestId,
+          error: err ? err.message : null,
+          result: result,
+        });
+      });
+    });
+  });
+}
 
 // life_star subserver export — empty route function (this module manages its
 // own HTTP server, not an Express route). Also exposes getOrHydrateRoom/
@@ -220,3 +322,5 @@ module.exports = function (route, app) {
 };
 module.exports.getOrHydrateRoom = getOrHydrateRoom;
 module.exports.attachPersistence = attachPersistence;
+module.exports.forwardAddPlacementToPrimary = forwardAddPlacementToPrimary;
+module.exports.wireClusterPrimary = wireClusterPrimary;

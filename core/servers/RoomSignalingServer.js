@@ -34,37 +34,13 @@
 var WebSocketServer = require('./support/websockets').WebSocketServer;
 var constellationRegistry = require('./identity/ConstellationRegistry');
 var auth = require('./identity/AuthMiddleware');
-var crypto = require('crypto');
-
-var TOKEN_TTL_MS = 30 * 1000;
+var tokenStore = require('./support/room-token-store');
 
 function uuid() { // helper, duplicated from support/websockets.js / WarpDropSignalingServer.js
     var id = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
         var r = Math.random()*16|0, v = c == 'x' ? r : (r&0x3|0x8); return v.toString(16); }).toUpperCase();
     return id;
 }
-
-// token -> {did, handle, constellation, roomId, expiresAt}
-var _tokens = {};
-
-function mintToken(did, handle, constellation, roomId) {
-    var token = crypto.randomBytes(24).toString('base64url');
-    _tokens[token] = { did: did, handle: handle, constellation: constellation, roomId: roomId, expiresAt: Date.now() + TOKEN_TTL_MS };
-    return token;
-}
-
-// Single-use: deletes on read regardless of outcome.
-function consumeToken(token) {
-    var t = _tokens[token];
-    delete _tokens[token];
-    if (!t || Date.now() > t.expiresAt) return null;
-    return t;
-}
-
-setInterval(function() {
-    var now = Date.now();
-    Object.keys(_tokens).forEach(function(t) { if (now > _tokens[t].expiresAt) delete _tokens[t]; });
-}, 30 * 1000);
 
 module.exports = function(route, app, subserver) {
     var rooms = {}; // roomId -> {peerId: true}
@@ -89,34 +65,38 @@ module.exports = function(route, app, subserver) {
     webSocketHandler.on('lively-message', function(msg, connection) {
 
         if (msg.action === 'join') {
-            var tokenData = consumeToken(msg.data && msg.data.token);
-            if (!tokenData) {
-                connection.send({action: 'join-rejected'});
-                return;
-            }
-            var peerId = connection.id = uuid();
-            peers[peerId] = {
-                connection: connection, did: tokenData.did, handle: tokenData.handle, roomId: tokenData.roomId
-            };
-            (rooms[tokenData.roomId] || (rooms[tokenData.roomId] = {}))[peerId] = true;
-
-            connection.send({
-                action: 'joined',
-                data: {peerId: peerId, peers: peerListFor(peerId)}
-            });
-            broadcastToRoom(tokenData.roomId, peerId, {
-                action: 'peer-joined', data: {peerId: peerId, did: tokenData.did, handle: tokenData.handle}
-            });
-
-            connection.on('close', function() {
-                var p = peers[peerId];
-                if (!p) return;
-                delete peers[peerId];
-                if (rooms[p.roomId]) {
-                    delete rooms[p.roomId][peerId];
-                    if (!Object.keys(rooms[p.roomId]).length) delete rooms[p.roomId];
+            tokenStore.consumeToken(msg.data && msg.data.token).then(function (tokenData) {
+                if (!tokenData) {
+                    connection.send({action: 'join-rejected'});
+                    return;
                 }
-                broadcastToRoom(p.roomId, peerId, {action: 'peer-left', data: {peerId: peerId}});
+                var peerId = connection.id = uuid();
+                peers[peerId] = {
+                    connection: connection, did: tokenData.did, handle: tokenData.handle, roomId: tokenData.roomId
+                };
+                (rooms[tokenData.roomId] || (rooms[tokenData.roomId] = {}))[peerId] = true;
+
+                connection.send({
+                    action: 'joined',
+                    data: {peerId: peerId, peers: peerListFor(peerId)}
+                });
+                broadcastToRoom(tokenData.roomId, peerId, {
+                    action: 'peer-joined', data: {peerId: peerId, did: tokenData.did, handle: tokenData.handle}
+                });
+
+                connection.on('close', function() {
+                    var p = peers[peerId];
+                    if (!p) return;
+                    delete peers[peerId];
+                    if (rooms[p.roomId]) {
+                        delete rooms[p.roomId][peerId];
+                        if (!Object.keys(rooms[p.roomId]).length) delete rooms[p.roomId];
+                    }
+                    broadcastToRoom(p.roomId, peerId, {action: 'peer-left', data: {peerId: peerId}});
+                });
+            }).catch(function (err) {
+                console.error('[RoomSignalingServer] token consume failed:', err.message);
+                connection.send({action: 'join-rejected'});
             });
             return;
         }
@@ -159,8 +139,11 @@ module.exports = function(route, app, subserver) {
                 constellationRegistry.canJoinRoom(constellation, room, req.identity.did, function(err, allowed) {
                     if (err) return res.status(500).json({error: String(err)});
                     if (!allowed) return res.status(403).json({error: 'Forbidden: join not permitted for this room'});
-                    var token = mintToken(req.identity.did, req.identity.handle, name, roomId);
-                    res.json({token: token, wsPath: 'RoomSignalingServer/connect'});
+                    tokenStore.mintToken(req.identity.did, req.identity.handle, name, roomId).then(function (token) {
+                        res.json({token: token, wsPath: 'RoomSignalingServer/connect'});
+                    }).catch(function (err) {
+                        res.status(500).json({error: String(err)});
+                    });
                 });
             });
         });

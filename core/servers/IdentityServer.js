@@ -3029,7 +3029,7 @@ module.exports = function (route, app) {
       // existing.type === "wikipage": may be written by its original
       // author OR any constellation member with write access via
       // ConstellationRegistry.canWrite, matching the same check
-      // PostCardSyncServer.js's sync-room join already uses — this extends
+      // LiveDocSyncServer.js's sync-room join already uses — this extends
       // it to the persisted-save path so both share one source of truth.
       // Wiki pages never freeze (never delivered via /inbox).
       if (existing.did === req.identity.did) {
@@ -3430,7 +3430,7 @@ module.exports = function (route, app) {
   // ordering: named segments (did.json, space-token) must be registered
   // before the /:objId wildcard, same discipline as /@:handle/* above.
   // Membership logic (canRead/canWrite) lives in ConstellationRegistry.js so
-  // the HTTP routes here and the Yjs sync socket (PostCardSyncServer.js)
+  // the HTTP routes here and the Yjs sync socket (LiveDocSyncServer.js)
   // share exactly one source of truth for who can read/write a constellation.
 
   // GET /c — public constellations directory. ConstellationsBrowser.js's
@@ -3558,23 +3558,26 @@ module.exports = function (route, app) {
           var eventAttendees = nextEvent ? nextEvent.attendees : [];
           _resolveHandlesForDids(constellation.members.concat(bots, eventAttendees), function (err, memberHandles) {
             if (err) return res.status(500).json({ error: String(err) });
-            res.json({
-              token: constellationSpace.mintSpaceToken(constellation, req.identity),
-              genesisObjId: constellation.genesisObjId,
-              canWrite: canWrite,
-              isController: isController,
-              joinRequestStatus: joinRequestStatus,
-              quickInfo: {
-                createdBy: constellation.createdBy,
-                controllers: constellation.controllers,
-                members: constellation.members,
-                memberCount: constellation.members.length,
-                memberHandles: memberHandles,
-                createdAt: constellation.createdAt,
-                visibility: constellation.visibility,
-                bots: bots,
-                nextEvent: nextEvent
-              }
+            constellationSpace.mintSpaceToken(constellation, req.identity, function (err, token) {
+              if (err) return res.status(500).json({ error: String(err) });
+              res.json({
+                token: token,
+                genesisObjId: constellation.genesisObjId,
+                canWrite: canWrite,
+                isController: isController,
+                joinRequestStatus: joinRequestStatus,
+                quickInfo: {
+                  createdBy: constellation.createdBy,
+                  controllers: constellation.controllers,
+                  members: constellation.members,
+                  memberCount: constellation.members.length,
+                  memberHandles: memberHandles,
+                  createdAt: constellation.createdAt,
+                  visibility: constellation.visibility,
+                  bots: bots,
+                  nextEvent: nextEvent
+                }
+              });
             });
           });
         });

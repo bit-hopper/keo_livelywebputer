@@ -402,6 +402,38 @@ function launchServer() {
     process.pid,
   );
 
+  // RoomSignalingServer.js's room-join handshake mints a token via one HTTP
+  // request and consumes it via a later WebSocket connection -- under
+  // clustering those two requests land on different workers roughly
+  // (N-1)/N of the time. room-token-store.js's IPC bridge fixes this by
+  // routing both through this primary as the one shared store; wiring it up
+  // here (no `global.lively` needed for this module) before any worker
+  // exists means every worker's very first request is already covered.
+  require("../core/servers/support/room-token-store").wireClusterPrimary();
+
+  // LiveDocSyncServer.js's own standalone http.Server (Yjs collaborative
+  // sync for wiki-mode post cards and constellation spaces) would otherwise
+  // get silently round-robin-distributed across workers by cluster too,
+  // just like the main port -- fragmenting its in-memory docs Map. Requiring
+  // it here (also no `global.lively` needed) makes THIS primary process the
+  // one that actually starts the real listener (cluster.isWorker is false
+  // here, see that file's own gate), and wires the IPC bridge workers use
+  // for the one server-side write path that touches live room state
+  // (ConstellationSpace.js's addPlacementToSpace).
+  require("../core/servers/LiveDocSyncServer").wireClusterPrimary();
+
+  // ConstellationSpace.js's space-access TOKEN_SECRET has the exact same
+  // shape of bug as room-token-store.js's problem, discovered live testing
+  // the fix above: verifySpaceToken only ever runs in this primary process
+  // (inside LiveDocSyncServer.js's WS handler), but mintSpaceToken runs
+  // wherever an ordinary Express route round-robins to -- never the
+  // primary, which never runs an Express app itself. A per-process random
+  // secret meant mint and verify were NEVER the same process once
+  // clustering was on -- not just probabilistic, always broken. This
+  // wiring lets each worker fetch the primary's one canonical secret once
+  // via IPC and cache it, rather than generating its own.
+  require("../core/servers/identity/ConstellationSpace").wireClusterPrimary();
+
   writePid(process, function (err) {
     if (err) console.error("Error writing pid file: %s", err);
   });

@@ -3,7 +3,7 @@
  *
  * SQLite-backed registry of constellations: identity (did:web),
  * registration, and membership checks shared by both the HTTP routes
- * (IdentityServer.js) and the Yjs sync socket (PostCardSyncServer.js).
+ * (IdentityServer.js) and the Yjs sync socket (LiveDocSyncServer.js).
  *
  * Schema:
  *   constellations table:
@@ -407,7 +407,7 @@ function getByGenesisObjId(genesisObjId, thenDo) {
 }
 
 // ─── membership checks ──────────────────────────────────────────────────────
-// Shared by IdentityServer.js's HTTP routes and PostCardSyncServer.js's Yjs
+// Shared by IdentityServer.js's HTTP routes and LiveDocSyncServer.js's Yjs
 // room-join check, so there is exactly one place that decides who can read
 // or write a constellation's contents.
 
@@ -423,7 +423,7 @@ function canRead(constellation, did) {
 // True if `did` may write to this constellation's space (place/move/remove
 // placements): members only, regardless of visibility. Note this is only
 // enforced at HTTP-route granularity and at Yjs-room-connection granularity
-// (see PostCardSyncServer.js's TODO(constellation-write-gate)) — a connected
+// (see LiveDocSyncServer.js's TODO(constellation-write-gate)) — a connected
 // visitor on a public room is not currently blocked from sending doc-mutating
 // sync messages once the connection itself is accepted.
 function canWrite(constellation, did) {

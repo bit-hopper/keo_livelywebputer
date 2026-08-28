@@ -26,7 +26,7 @@
  *   - Extends lively.morphic.Box (windowed morph).
  *   - ProseMirror EditorView appended to renderContext().shapeNode (DOM).
  *   - ySyncPlugin + yUndoPlugin bind EditorView <-> Y.Doc.getXmlFragment('prosemirror').
- *   - WebsocketProvider (y-websocket) attaches to PostCardSyncServer on port
+ *   - WebsocketProvider (y-websocket) attaches to LiveDocSyncServer on port
  *     POSTCARD_SYNC_PORT (default 1234) using the wiki page's objId as room name.
  *   - Auto-save: debounced 2s after the last change, serializes to a
  *     WikiSerializer envelope and PUTs /@:handle/:objId.
@@ -1031,7 +1031,7 @@ module('lively.identity.WikiEditor')
         }
       },
 
-      // Connects to PostCardSyncServer via WebsocketProvider for live
+      // Connects to LiveDocSyncServer via WebsocketProvider for live
       // multi-writer collaboration. Gracefully degrades if y-websocket is
       // unavailable.
       _connectSync: function () {

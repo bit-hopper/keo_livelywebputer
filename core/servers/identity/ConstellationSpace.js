@@ -2,7 +2,7 @@
  * core/servers/identity/ConstellationSpace.js
  *
  * Server-side support for a constellation's live shared space: short-lived
- * access tokens for the Yjs sync socket (PostCardSyncServer.js has no
+ * access tokens for the Yjs sync socket (LiveDocSyncServer.js has no
  * access to the Express session store, so room-join auth rides a signed
  * token instead of a session cookie), and persisting the live Y.Doc as a
  * versioned envelope (reusing ObjectRepository's existing version-chain
@@ -13,12 +13,66 @@
 
 var crypto = require('crypto');
 var Y = require('yjs');
+var cluster = require('cluster');
 
-// In-memory secret for space-access tokens — regenerated on every process
-// restart. Fine: tokens only need to survive a single WS handshake, and
-// every open WS connection is dropped on restart anyway.
-var TOKEN_SECRET = crypto.randomBytes(32);
+// In-memory secret for space-access tokens. Under Node's cluster module,
+// only the primary ever verifies these tokens (LiveDocSyncServer.js's WS
+// handler, the sole caller of verifySpaceToken below, only ever runs there
+// -- see that file's own header), but minting (mintSpaceToken, called from
+// a normal Express route) happens in whichever worker the request round-
+// robins to -- never the primary, which never runs an Express app itself.
+// A per-process random secret meant mint and verify were *never* the same
+// process once clustering was on -- confirmed live 2026-08-27 as a
+// permanent (not probabilistic) WS reconnect-loop under --workers, not the
+// pre-existing "wsconnected:true, synced:false" bug this looked like at
+// first (that one is a stable stuck connection; this one repeatedly
+// connects then gets closed with code 1008 Unauthorized and retries).
+// Fixed the same way as support/room-token-store.js: the primary generates
+// and holds the one canonical secret; each worker fetches it once via IPC
+// at startup and caches it forever after, rather than generating its own.
+// Still regenerated on every process restart, same as before -- tokens
+// only need to survive a single WS handshake.
+var TOKEN_SECRET = cluster.isWorker ? null : crypto.randomBytes(32);
 var TOKEN_TTL_MS = 60 * 1000; // 1 minute — long enough for the WS handshake
+
+var _secretReadyPromise = null;
+function ensureSecret(thenDo) {
+  if (TOKEN_SECRET) return thenDo(null, TOKEN_SECRET);
+  if (!_secretReadyPromise) {
+    _secretReadyPromise = new Promise(function (resolve, reject) {
+      var timer = setTimeout(function () {
+        process.removeListener('message', onMessage);
+        reject(new Error('ConstellationSpace: primary did not reply with TOKEN_SECRET in time'));
+      }, 5000);
+      function onMessage(msg) {
+        if (!msg || msg.channel !== 'space-token-secret' || msg.type !== 'reply') return;
+        clearTimeout(timer);
+        process.removeListener('message', onMessage);
+        TOKEN_SECRET = Buffer.from(msg.secret, 'base64');
+        resolve(TOKEN_SECRET);
+      }
+      process.on('message', onMessage);
+      process.send({ channel: 'space-token-secret', type: 'request' });
+    });
+  }
+  _secretReadyPromise.then(
+    function (secret) { thenDo(null, secret); },
+    function (err) { thenDo(err); }
+  );
+}
+
+// Wires up the primary side of the IPC bridge above: replies to any
+// worker's secret request with this process's own canonical TOKEN_SECRET.
+// Call once from the cluster primary (bin/lk-server.js), before forking
+// workers.
+function wireClusterPrimary() {
+  cluster.on('fork', function (worker) {
+    worker.on('message', function (msg) {
+      if (!msg || msg.channel !== 'space-token-secret' || msg.type !== 'request') return;
+      worker.send({ channel: 'space-token-secret', type: 'reply', secret: TOKEN_SECRET.toString('base64') });
+    });
+  });
+}
 
 function _b64url(buf) { return Buffer.from(buf).toString('base64url'); }
 function _b64urlDecode(str) { return Buffer.from(str, 'base64url'); }
@@ -28,21 +82,33 @@ function _b64urlDecode(str) { return Buffer.from(str, 'base64url'); }
 // identity: { did } for an authenticated caller, or null for an anonymous
 // visitor (only valid on a public constellation — the caller must have
 // already checked ConstellationRegistry.canRead before minting).
-function mintSpaceToken(constellation, identity) {
-  var payload = {
-    did: identity ? identity.did : null,
-    genesisObjId: constellation.genesisObjId,
-    exp: Date.now() + TOKEN_TTL_MS
-  };
-  var payloadB64 = _b64url(Buffer.from(JSON.stringify(payload), 'utf8'));
-  var sig = crypto.createHmac('sha256', TOKEN_SECRET).update(payloadB64).digest();
-  return payloadB64 + '.' + _b64url(sig);
+// Calls thenDo(err, token) -- async because a worker's very first call may
+// need one IPC round trip to the primary for the shared secret (see
+// ensureSecret above); cached forever after, so every later call resolves
+// immediately.
+function mintSpaceToken(constellation, identity, thenDo) {
+  ensureSecret(function (err, secret) {
+    if (err) return thenDo(err);
+    var payload = {
+      did: identity ? identity.did : null,
+      genesisObjId: constellation.genesisObjId,
+      exp: Date.now() + TOKEN_TTL_MS
+    };
+    var payloadB64 = _b64url(Buffer.from(JSON.stringify(payload), 'utf8'));
+    var sig = crypto.createHmac('sha256', secret).update(payloadB64).digest();
+    thenDo(null, payloadB64 + '.' + _b64url(sig));
+  });
 }
 
 // Returns { did, genesisObjId } on success, or null if the token is
-// missing/malformed/expired/forged/for the wrong room.
+// missing/malformed/expired/forged/for the wrong room. Only ever called
+// from LiveDocSyncServer.js's WS handler, which only ever runs in the
+// cluster primary (or a non-clustered process) -- so TOKEN_SECRET is
+// always already set here, no async handshake needed the way
+// mintSpaceToken needs one.
 function verifySpaceToken(token, expectedGenesisObjId) {
   if (typeof token !== 'string') return null;
+  if (!TOKEN_SECRET) return null; // defensive: should never happen, see above
   var parts = token.split('.');
   if (parts.length !== 2) return null;
 
@@ -83,7 +149,7 @@ function buildLayoutSnapshot(yDoc) {
 
 // Persists the current state of a constellation's live space Y.Doc as a new
 // envelope version — creating the genesis version on first save. Called from
-// PostCardSyncServer.js's debounced update handler.
+// LiveDocSyncServer.js's debounced update handler.
 //
 // Server-authored: no human signer. The constellation's own did:web is the
 // envelope's nominal owner and there is no `sig`, consistent with other
@@ -133,14 +199,14 @@ function saveSpaceSnapshot(constellation, objectRepo, yDoc, thenDo) {
 
 // Adds a placement (a posted post card) to a constellation's live layout
 // map, server-side — no WebSocket round-trip needed. Reuses
-// PostCardSyncServer's in-process room state: if the room is currently
+// LiveDocSyncServer's in-process room state: if the room is currently
 // live (someone connected), the mutation broadcasts to them immediately via
 // Yjs's normal update event and the room's already-attached debounced
 // persistence handles saving; if the room isn't live, this hydrates it
 // fresh, attaches persistence itself, and the same debounced save picks up
 // the change a couple seconds later either way.
 //
-// PostCardSyncServer.js is require()'d lazily (inside the function, not at
+// LiveDocSyncServer.js is require()'d lazily (inside the function, not at
 // module top-level) because that file itself requires this one — a
 // top-level require here would create a load-order cycle and see an
 // incomplete module.exports.
@@ -148,7 +214,16 @@ function saveSpaceSnapshot(constellation, objectRepo, yDoc, thenDo) {
 // placement: { ref: {handle, objId, cid}, kind: "postcard" }
 // Calls thenDo(err, { id }).
 function addPlacementToSpace(constellation, placement, thenDo) {
-  var sync = require('../PostCardSyncServer');
+  var sync = require('../LiveDocSyncServer');
+
+  // A cluster worker has no local Yjs state for this room — only the
+  // cluster primary (or a non-clustered process) does, see
+  // LiveDocSyncServer.js's header. Forward the whole operation there
+  // instead of trying to touch a doc that doesn't exist in this process.
+  if (require('cluster').isWorker) {
+    return sync.forwardAddPlacementToPrimary(constellation, placement, thenDo);
+  }
+
   sync.getOrHydrateRoom(constellation.genesisObjId, function (err, doc, isNewRoom) {
     if (err) return thenDo(err);
     if (isNewRoom) sync.attachPersistence(constellation.genesisObjId, constellation, doc);
@@ -177,5 +252,6 @@ module.exports = {
   verifySpaceToken: verifySpaceToken,
   buildLayoutSnapshot: buildLayoutSnapshot,
   saveSpaceSnapshot: saveSpaceSnapshot,
-  addPlacementToSpace: addPlacementToSpace
+  addPlacementToSpace: addPlacementToSpace,
+  wireClusterPrimary: wireClusterPrimary
 };

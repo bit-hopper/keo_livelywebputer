@@ -71,6 +71,7 @@ QBFHighScores.json
 core/servers/*
 !core/servers/*.js
 !core/servers/identity/
+!core/servers/support/
 
 # R
 lively_r_log

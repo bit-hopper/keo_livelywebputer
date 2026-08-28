@@ -5,7 +5,7 @@
  * world (same category as a user's home world at /@handle, just
  * shared/synced instead of private) whose content is a Yjs-synced layout of
  * placed post cards and parts, with live presence. Reuses the same Yjs
- * runtime (postcard-runtime.js bundle) and sync server (PostCardSyncServer)
+ * runtime (postcard-runtime.js bundle) and sync server (LiveDocSyncServer)
  * post cards already use — the room name is the constellation's
  * genesisObjId.
  *
@@ -17,12 +17,12 @@
  * placement + presence data. The data model stays a bounded layout map, not
  * an arbitrary morph-graph CRDT.
  *
- * Auth: PostCardSyncServer's WS layer has no access to the Express session,
+ * Auth: LiveDocSyncServer's WS layer has no access to the Express session,
  * so room access rides a short-lived signed token minted by
  * GET /c/:name/space-token (see the server-side space/token module,
  * core/servers/identity/ConstellationSpace.js — a different file from this
  * one, named for the Yjs space document it manages rather than for this
- * canvas UI — and PostCardSyncServer.js's TODO(constellation-write-gate)
+ * canvas UI — and LiveDocSyncServer.js's TODO(constellation-write-gate)
  * for the current scope of what that token does and doesn't protect).
  *
  * Boots at /c/:name/canvas — the fixed-layout landing page at /c/:name
@@ -112,7 +112,7 @@ module("lively.identity.ConstellationCanvas")
         if (!WebsocketProvider) return this._showError("WebsocketProvider not loaded — cannot open space");
 
         this.yDoc = new Y.Doc({ gc: false });
-        // PostCardSyncServer runs on its own standalone port (must be
+        // LiveDocSyncServer runs on its own standalone port (must be
         // separately reachable over TLS wherever this app is deployed).
         // wss: required whenever the page itself is https: — browsers
         // block insecure ws: connections from a secure page.
