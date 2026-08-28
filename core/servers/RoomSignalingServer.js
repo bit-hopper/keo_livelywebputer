@@ -43,8 +43,23 @@ function uuid() { // helper, duplicated from support/websockets.js / WarpDropSig
 }
 
 module.exports = function(route, app, subserver) {
-    var rooms = {}; // roomId -> {peerId: true}
-    var peers = {}; // peerId -> {connection, did, handle, roomId}
+    // Two interchangeable registries behind the same join/signal/leave shape
+    // (join(peerId, roomId, did, handle, connection, thenDo(err, peerList)),
+    // signal(fromPeerId, toPeerId, signal), leave(peerId)) so the WS handler
+    // below doesn't need to know or care which one is active.
+    //
+    // Plain in-process rooms/peers maps only let two peers signal each other
+    // when they land on the very same process -- fine for a single,
+    // non-clustered server, but under `--workers` (or multiple machine
+    // instances) two peers in the same room routinely land on different
+    // processes and would otherwise never see or hear each other. The
+    // Redis-backed registry (support/room-peer-registry-redis.js) fixes
+    // that, but Redis is real operational infrastructure this app doesn't
+    // otherwise require -- so it's opt-in, activated only when REDIS_URL is
+    // explicitly set, decided once here at module load (one process = one
+    // mode for its whole lifetime), never branched on per-message.
+    var rooms = {}; // roomId -> {peerId: true} -- local mode only
+    var peers = {}; // peerId -> {connection, did, handle, roomId} -- local mode only
 
     function peerListFor(peerId) {
         var p = peers[peerId];
@@ -60,6 +75,34 @@ module.exports = function(route, app, subserver) {
         });
     }
 
+    var localRegistry = {
+        join: function (peerId, roomId, did, handle, connection, thenDo) {
+            peers[peerId] = {connection: connection, did: did, handle: handle, roomId: roomId};
+            (rooms[roomId] || (rooms[roomId] = {}))[peerId] = true;
+            thenDo(null, peerListFor(peerId));
+            broadcastToRoom(roomId, peerId, {action: 'peer-joined', data: {peerId: peerId, did: did, handle: handle}});
+        },
+        signal: function (fromPeerId, toPeerId, signal) {
+            var self = peers[fromPeerId];
+            if (!self) return;
+            var target = peers[toPeerId];
+            if (!target || target.roomId !== self.roomId) return; // wrong room / unknown peer, drop silently
+            target.connection.send({action: 'signal', data: {from: fromPeerId, signal: signal}});
+        },
+        leave: function (peerId) {
+            var p = peers[peerId];
+            if (!p) return;
+            delete peers[peerId];
+            if (rooms[p.roomId]) {
+                delete rooms[p.roomId][peerId];
+                if (!Object.keys(rooms[p.roomId]).length) delete rooms[p.roomId];
+            }
+            broadcastToRoom(p.roomId, peerId, {action: 'peer-left', data: {peerId: peerId}});
+        }
+    };
+
+    var registry = process.env.REDIS_URL ? require('./support/room-peer-registry-redis') : localRegistry;
+
     var webSocketHandler = new WebSocketServer();
 
     webSocketHandler.on('lively-message', function(msg, connection) {
@@ -71,28 +114,18 @@ module.exports = function(route, app, subserver) {
                     return;
                 }
                 var peerId = connection.id = uuid();
-                peers[peerId] = {
-                    connection: connection, did: tokenData.did, handle: tokenData.handle, roomId: tokenData.roomId
-                };
-                (rooms[tokenData.roomId] || (rooms[tokenData.roomId] = {}))[peerId] = true;
-
-                connection.send({
-                    action: 'joined',
-                    data: {peerId: peerId, peers: peerListFor(peerId)}
-                });
-                broadcastToRoom(tokenData.roomId, peerId, {
-                    action: 'peer-joined', data: {peerId: peerId, did: tokenData.did, handle: tokenData.handle}
-                });
-
-                connection.on('close', function() {
-                    var p = peers[peerId];
-                    if (!p) return;
-                    delete peers[peerId];
-                    if (rooms[p.roomId]) {
-                        delete rooms[p.roomId][peerId];
-                        if (!Object.keys(rooms[p.roomId]).length) delete rooms[p.roomId];
+                // Registered before registry.join's callback returns (rather
+                // than nested inside it) so a peer is always cleaned up even
+                // if join itself fails partway through (e.g. a Redis error) --
+                // leave() is a safe no-op if the peer was never fully
+                // registered.
+                connection.on('close', function() { registry.leave(peerId); });
+                registry.join(peerId, tokenData.roomId, tokenData.did, tokenData.handle, connection, function (err, peerList) {
+                    if (err) {
+                        connection.send({action: 'join-rejected'});
+                        return;
                     }
-                    broadcastToRoom(p.roomId, peerId, {action: 'peer-left', data: {peerId: peerId}});
+                    connection.send({action: 'joined', data: {peerId: peerId, peers: peerList}});
                 });
             }).catch(function (err) {
                 console.error('[RoomSignalingServer] token consume failed:', err.message);
@@ -103,16 +136,10 @@ module.exports = function(route, app, subserver) {
 
         // every other action requires an already-established peer
         var peerId = connection.id;
-        var self = peers[peerId];
-        if (!self) return;
+        if (!peerId) return;
 
         if (msg.action === 'signal') {
-            var target = msg.data && peers[msg.data.to];
-            if (!target || target.roomId !== self.roomId) return; // wrong room / unknown peer, drop silently
-            target.connection.send({
-                action: 'signal',
-                data: {from: peerId, signal: msg.data.signal}
-            });
+            registry.signal(peerId, msg.data && msg.data.to, msg.data && msg.data.signal);
             return;
         }
     });
