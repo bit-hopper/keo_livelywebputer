@@ -29,7 +29,13 @@ var path = require("path"),
   // stops firing would be a worse, harder-to-notice bug than paying for a
   // stat() every time.
   _mtimeCache = new Map(), // fullFilePath -> last-confirmed-valid mtime string
-  _depsCache = new Map(); // absolute core file path -> { mtime, deps: [absolute file paths] }
+  _depsCache = new Map(), // absolute core file path -> { mtime, deps: [absolute file paths] }
+  // Per-process cache of the compressed combined.js bytes, keyed to the
+  // current hash -- unlike _combinedFileAndHashCachedTimeout above, this
+  // needs no TTL: compression output only depends on file content, which
+  // the hash already uniquely identifies, so a cached buffer stays valid
+  // until the hash itself changes (see combinedModules.js route below).
+  _compressedBundleCache = { hash: null, buffers: {}, pending: {} };
 
 // source-map-concat and (especially) babel-core are only needed once we
 // actually rebuild combined.js, deep inside the async chain below -- not at
@@ -430,6 +436,70 @@ async function coreFiles(baseDir) {
 // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 
+function compressWholeFile(file, encoding) {
+  return new Promise((resolve, reject) => {
+    var chunks = [],
+      src = fs.createReadStream(file),
+      compressor = encoding === "deflate" ? zlib.createDeflate() : zlib.createGzip(),
+      stream = src.pipe(compressor);
+    src.on("error", reject);
+    stream.on("error", reject);
+    stream.on("data", (chunk) => chunks.push(chunk));
+    stream.on("end", () => resolve(Buffer.concat(chunks)));
+  });
+}
+
+function getCompressedBundle(hashAndFile, encoding) {
+  // Was: a fresh zlib.createGzip()/createDeflate() stream over combined.js
+  // (3.6MB on this repo) on EVERY request, with zero caching -- confirmed
+  // live via instrumentation under a 250-VU/45s burst to mean 1400+
+  // independent full-file compressions per worker, up to 135 concurrent, on
+  // a single stable hash. This is genuine CPU/threadpool contention (zlib's
+  // streaming API runs on libuv's threadpool, the same pool async fs calls
+  // use), not something more workers/UV_THREADPOOL_SIZE alone fixes --
+  // confirmed as the direct cause of combined_modules_bundle_ms's p95
+  // staying ~4732ms even after the unrelated spliceInDependencies fix (see
+  // DeployCheckList.md's Load testing section).
+  //
+  // Fix: compress once per hash per encoding, cache the resulting buffer,
+  // and serve it directly. Deliberately in-process/per-worker rather than
+  // shared on disk across workers -- unlike combined.js itself (which
+  // legitimately benefits from cross-worker disk sharing, since building it
+  // is the expensive, drift-sensitive step), a stable hash means each
+  // worker pays this cost at most once until the *next* real source change,
+  // not once per request -- with N workers that's N total compressions
+  // system-wide per change, not N per request. A disk-shared cache would
+  // shave that down further but adds real correctness risk (concurrent
+  // writers need atomic write-then-rename to avoid another worker reading a
+  // torn file) for a marginal win that only shows up in the narrow window
+  // right after a hash change -- not worth it here.
+  if (_compressedBundleCache.hash !== hashAndFile.hash) {
+    _compressedBundleCache = { hash: hashAndFile.hash, buffers: {}, pending: {} };
+  }
+  if (_compressedBundleCache.buffers[encoding]) {
+    return Promise.resolve(_compressedBundleCache.buffers[encoding]);
+  }
+  if (_compressedBundleCache.pending[encoding]) {
+    return _compressedBundleCache.pending[encoding];
+  }
+  var cacheEntry = _compressedBundleCache;
+  var promise = compressWholeFile(hashAndFile.file, encoding).then(
+    (buf) => {
+      if (cacheEntry === _compressedBundleCache) {
+        cacheEntry.buffers[encoding] = buf;
+        delete cacheEntry.pending[encoding];
+      }
+      return buf;
+    },
+    (err) => {
+      if (cacheEntry === _compressedBundleCache) delete cacheEntry.pending[encoding];
+      throw err;
+    },
+  );
+  _compressedBundleCache.pending[encoding] = promise;
+  return promise;
+}
+
 module.exports = function (_route, app) {
   app.get("/generated/combinedModulesHash.txt", function (_req, res) {
     combinedFileAndHashCached()
@@ -458,24 +528,31 @@ module.exports = function (_route, app) {
           return;
         }
 
-        var stream = fs.createReadStream(hashAndFile.file),
-          oneYear = 1000 * 60 * 60 * 24 * 30 * 12,
+        var oneYear = 1000 * 60 * 60 * 24 * 30 * 12,
           acceptEncoding = req.headers["accept-encoding"] || "",
           header = {
             "Content-Type": "application/javascript",
             Expires: new Date(Date.now() + oneYear).toGMTString(),
             "Cache-Control": "public",
             ETag: hashAndFile.hash,
-          };
-        if (acceptEncoding.match(/\bdeflate\b/)) {
-          header["content-encoding"] = "deflate";
-          stream = stream.pipe(zlib.createDeflate());
-        } else if (acceptEncoding.match(/\bgzip\b/)) {
-          header["content-encoding"] = "gzip";
-          stream = stream.pipe(zlib.createGzip());
+          },
+          encoding = acceptEncoding.match(/\bdeflate\b/)
+            ? "deflate"
+            : acceptEncoding.match(/\bgzip\b/)
+              ? "gzip"
+              : null;
+
+        if (!encoding) {
+          res.writeHead(200, header);
+          fs.createReadStream(hashAndFile.file).pipe(res);
+          return;
         }
-        res.writeHead(200, header);
-        stream.pipe(res);
+
+        header["content-encoding"] = encoding;
+        return getCompressedBundle(hashAndFile, encoding).then((buf) => {
+          res.writeHead(200, header);
+          res.end(buf);
+        });
       })
       .catch((err) =>
         res
