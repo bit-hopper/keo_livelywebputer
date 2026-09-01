@@ -16,8 +16,23 @@ function makeClient() {
   var r = new Redis(REDIS_URL, {
     // Default retryStrategy already backs off and keeps retrying forever;
     // capping the delay at 5s keeps reconnects from going quiet for long
-    // stretches during an extended outage.
-    retryStrategy: function (times) { return Math.min(times * 200, 5000); }
+    // stretches during an extended outage. The background reconnect loop
+    // itself is unaffected by maxRetriesPerRequest below and keeps trying
+    // forever, so this doesn't weaken auto-recovery once Redis comes back.
+    retryStrategy: function (times) { return Math.min(times * 200, 5000); },
+    // ioredis's own default (20) queues a command issued while disconnected
+    // and waits through up to 20 reconnect cycles before finally rejecting
+    // it -- confirmed live during the 2026-08-31 Redis-outage test: a
+    // single room-join's registry.join() call took 60-90+ seconds to fail,
+    // not the few seconds a caller/user would reasonably wait for. None of
+    // this app's Redis-dependent call sites need more than a couple of
+    // quick attempts before falling back to "Redis is down right now" --
+    // every caller already has its own error handling for a rejected
+    // command (see room-peer-registry-redis.js/session-registry-redis.js/
+    // live-doc-registry-redis.js's .catch() blocks), so failing fast here
+    // just makes that error handling kick in promptly instead of after a
+    // long silent hang.
+    maxRetriesPerRequest: 3
   });
   r.on('error', function (err) {
     console.error('[redis-client] connection error:', err.message);

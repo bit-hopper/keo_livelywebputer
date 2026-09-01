@@ -144,6 +144,7 @@ module("lively.identity.RoomView")
         this._signalingIntentionallyClosed = false;
         this._pendingSignalingToken = null;
         this._mySignalingPeerId = null;
+        this._signalingRejectStreak = 0;  // consecutive join-rejected in a row, see _onSignalingMessage
         this._peerMeta = {};        // signaling peerId -> {did, handle}, known as soon as a peer is announced
         this._signalingPeers = {};  // signaling peerId -> {pc, did, handle, pendingIce}, only once a pc exists
         this._didToPeerId = {};     // did -> signaling peerId, for looking up a peer by roster identity
@@ -1389,17 +1390,60 @@ module("lively.identity.RoomView")
           case "signal":      this._onSignalingSignal(msg.data); break;
           case "join-rejected":
             // Token expired/invalid (e.g. this socket sat mid-handshake too
-            // long) — mint a fresh one and reconnect from scratch.
-            console.warn("[RoomView] Signaling token rejected — retrying");
+            // long) — mint a fresh one and reconnect from scratch. That's
+            // the routine, self-correcting case this retry was originally
+            // written for. But registry.join can also fail server-side for
+            // a persistent reason (e.g. the Redis-backed peer registry
+            // being unreachable — confirmed live during the 2026-08-31
+            // Redis-outage test in DeployCheckList.md: registry.join's
+            // promise chain rejects, RoomSignalingServer.js sends
+            // join-rejected just like a bad token would, and this handler
+            // can't tell the two apart from the message alone). Retrying
+            // every 1s forever with only a console.warn is fine for one or
+            // two stale-token retries but turns into silent, indefinite,
+            // server-hammering retries with zero visible indication that
+            // video/voice signaling isn't working at all during a real
+            // outage. Back off and escalate to a louder log after a few
+            // consecutive failures; still keeps retrying (rather than
+            // giving up) so it self-heals for free once the backend
+            // recovers.
+            this._signalingRejectStreak++;
+            var retryDelay = this._signalingRejectStreak > 3 ? 5000 : 1000;
+            if (this._signalingRejectStreak === 4) {
+              console.error("[RoomView] Signaling join rejected " + this._signalingRejectStreak +
+                " times in a row -- this looks like a persistent backend issue, not a stale " +
+                "token. Video/voice signaling is unavailable; retrying every " + retryDelay + "ms.");
+            } else {
+              console.warn("[RoomView] Signaling token rejected — retrying");
+            }
+            // Mark this close as intentional BEFORE calling .close() --
+            // otherwise .close() also fires _onSignalingClosed (the socket
+            // genuinely does close), which has its own separate, unlogged,
+            // fixed-1500ms-forever retry loop with no notion of this
+            // streak/backoff at all. Without this, every single rejection
+            // was scheduling TWO independent, uncoordinated reconnects
+            // (this handler's backed-off one AND _onSignalingClosed's
+            // uncontrolled one racing each other) -- confirmed live during
+            // the 2026-08-31 Redis-outage test: far more signaling-token
+            // mints were observed hitting the server than console.warn
+            // calls logged, which only made sense once this second,
+            // silent retry source was found. _openSignalingSocket (called
+            // from the retry below) resets this back to false for the new
+            // attempt, so nothing else needs to reset it here.
+            this._signalingIntentionallyClosed = true;
             try { this._signalingWs.close(); } catch (e) {}
             this._signalingWs = null;
             var self = this;
-            setTimeout(function () { self._connectSignaling(); }, 1000);
+            setTimeout(function () { self._connectSignaling(); }, retryDelay);
             break;
         }
       },
 
       _onSignalingJoined: function (data) {
+        if (this._signalingRejectStreak > 3) {
+          console.log("[RoomView] Signaling join recovered after " + this._signalingRejectStreak + " consecutive rejections.");
+        }
+        this._signalingRejectStreak = 0;
         this._mySignalingPeerId = data.peerId;
         var self = this;
         (data.peers || []).forEach(function (p) {
