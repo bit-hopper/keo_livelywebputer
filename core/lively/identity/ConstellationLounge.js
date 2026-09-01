@@ -224,8 +224,6 @@ module("lively.identity.ConstellationLounge")
         this._rooms = [];          // fetched from GET /c/:name/rooms, see _fetchRooms
         this._amMember = false;
         this._signedIn = false;   // distinguishes "not signed in" from "signed in, not a member" (see _roomStatusInfo)
-        this._joinedRoomIds = {};    // roomId -> true while this client has an active heartbeat
-        this._heartbeatTimers = {};  // roomId -> setInterval handle
       },
     },
 
@@ -269,14 +267,6 @@ module("lively.identity.ConstellationLounge")
         this._connectPresence();
         this._installMenuBarEntry();
         window.addEventListener("resize", this._layout.bind(this));
-        // Best-effort leave for every room this client is currently
-        // heartbeating — both events wired since browser support for
-        // firing one reliably over the other varies; a synchronous XHR is
-        // the one thing reasonably guaranteed to actually send before the
-        // page tears down (sendBeacon has no reliable session-cookie-auth
-        // story for a DELETE).
-        window.addEventListener("pagehide", this._leaveAllRoomsBestEffort.bind(this));
-        window.addEventListener("beforeunload", this._leaveAllRoomsBestEffort.bind(this));
       },
     },
 
@@ -1236,8 +1226,6 @@ module("lively.identity.ConstellationLounge")
         xhr.open("DELETE", base + "/c/" + encodeURIComponent(this._name) + "/rooms/" + room.id + "/presence", true);
         xhr.withCredentials = true;
         xhr.onload = function () {
-          delete self._joinedRoomIds[room.id];
-          self._stopHeartbeat(room.id);
           self._fetchRooms();
         };
         xhr.onerror = function () {};
@@ -1336,50 +1324,6 @@ module("lively.identity.ConstellationLounge")
         };
         lively.require("lively.identity.NewRoomDialog").toRun(function () {
           lively.identity.NewRoomDialog.open(opts);
-        });
-      },
-    },
-
-    // ─── room presence ──────────────────────────────────────────────────────
-    // Heartbeat lifecycle for rooms this client currently has "joined" —
-    // see RoomPresence.js's server-side half. A room stays present in the
-    // live roster only as long as heartbeats keep arriving; this is what
-    // actually keeps them arriving while the tab stays open.
-
-    "room presence", {
-      _startHeartbeat: function (roomId) {
-        var self = this;
-        if (this._heartbeatTimers[roomId]) return;
-        this._heartbeatTimers[roomId] = setInterval(function () { self._sendHeartbeat(roomId); }, 25000);
-      },
-
-      _stopHeartbeat: function (roomId) {
-        if (this._heartbeatTimers[roomId]) {
-          clearInterval(this._heartbeatTimers[roomId]);
-          delete this._heartbeatTimers[roomId];
-        }
-      },
-
-      _sendHeartbeat: function (roomId) {
-        var base = lively.identity.did.baseUrl();
-        var xhr = new XMLHttpRequest();
-        xhr.open("POST", base + "/c/" + encodeURIComponent(this._name) + "/rooms/" + roomId + "/presence", true);
-        xhr.withCredentials = true;
-        xhr.send();
-      },
-
-      // Called from pagehide/beforeunload (_start). A synchronous XHR here
-      // is deliberate — the one thing reasonably guaranteed to actually
-      // send before the page tears down; sendBeacon has no reliable
-      // session-cookie-auth story for a DELETE, and an async XHR here
-      // would very likely never complete before the page is gone.
-      _leaveAllRoomsBestEffort: function () {
-        var self = this, base = lively.identity.did.baseUrl();
-        Object.keys(this._joinedRoomIds || {}).forEach(function (roomId) {
-          var xhr = new XMLHttpRequest();
-          xhr.open("DELETE", base + "/c/" + encodeURIComponent(self._name) + "/rooms/" + roomId + "/presence", false);
-          xhr.withCredentials = true;
-          try { xhr.send(); } catch (e) {}
         });
       },
     },

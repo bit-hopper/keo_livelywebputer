@@ -375,18 +375,28 @@ module("lively.identity.RoomView")
         location.href = lively.identity.did.baseUrl() + "/c/" + encodeURIComponent(this._name);
       },
 
-      // Synchronous XHR + no navigation — same reasoning as ConstellationLounge.js's
-      // own _leaveAllRoomsBestEffort (pagehide/beforeunload need something that's
-      // actually guaranteed to send before the page tears down).
+      // Was a synchronous XHR here (pagehide/beforeunload need something
+      // guaranteed to send before the page tears down) -- verified live
+      // 2026-09-01 that this assumption no longer holds: a synchronous XHR
+      // fired from a beforeunload handler never reached the server at all
+      // in the current browser (confirmed via a network-log check across
+      // multiple real navigations -- the request simply never appeared,
+      // not even as a failed/cancelled entry). fetch's `keepalive` flag is
+      // the purpose-built modern replacement for exactly this "survive
+      // page teardown" case and, unlike sendBeacon, supports DELETE --
+      // confirmed live it actually gets dispatched with the session cookie
+      // attached (sendBeacon can only do POST, which is why the original
+      // comment ruled it out).
       _leaveBestEffort: function () {
         this._roomLeft = true;
         if (this._messagePollTimer) { clearInterval(this._messagePollTimer); this._messagePollTimer = null; }
         try { this._teardownSignaling(); } catch (e) {}
         var base = lively.identity.did.baseUrl();
-        var xhr = new XMLHttpRequest();
-        xhr.open("DELETE", base + "/c/" + encodeURIComponent(this._name) + "/rooms/" + this._roomId + "/presence", false);
-        xhr.withCredentials = true;
-        try { xhr.send(); } catch (e) {}
+        try {
+          fetch(base + "/c/" + encodeURIComponent(this._name) + "/rooms/" + this._roomId + "/presence", {
+            method: "DELETE", keepalive: true, credentials: "same-origin",
+          }).catch(function () {});
+        } catch (e) {}
         try { lively.identity.AmbientPresencePanel.leaveRoom(); } catch (e) {}
       },
 

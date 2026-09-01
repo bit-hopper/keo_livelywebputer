@@ -657,6 +657,11 @@ function buildRoomViewPage(constellation, room) {
     'rootPath:location.protocol+"//"+location.host+"/",' +
     'manuallyCreateWorld:true,' +
     'onStartWorld:function(){' +
+    // Not a live-editing surface (chat/presence writes go straight to the
+    // server, nothing buffered locally to lose) -- the classic Lively
+    // "data may be lost" exit warning doesn't apply here and would just
+    // block bfcache and nag on every navigation away for no reason.
+    'if(lively.Config)lively.Config.askBeforeQuit=false;' +
     'lively.require("lively.identity.RoomView").toRun(function(){' +
     'lively.identity.RoomView.open(' + JSON.stringify(constellation.name) + ',' + JSON.stringify(room.id) + ');' +
     '});' +
@@ -744,6 +749,10 @@ function buildConstellationLoungePage(constellation, quickInfo) {
     // The lounge is a place the user inhabits, so the normal menu bar
     // stays available (unlike WarpDrop's kiosk-style stripped-down panel).
     'onStartWorld:function(){' +
+    // Same reasoning as buildRoomViewPage: a room/member list, not a
+    // live-editing surface -- no unsaved local state the exit warning
+    // would actually be protecting, just an unconditional bfcache-blocker.
+    'if(lively.Config)lively.Config.askBeforeQuit=false;' +
     'lively.require("lively.identity.ConstellationLounge").toRun(function(){' +
     'lively.identity.ConstellationLounge.open(' + JSON.stringify(constellation.name) + ');' +
     '});' +
@@ -821,6 +830,10 @@ function buildWikiIndexPage(constellation, pages) {
     // user navigates within the constellation, so the normal menu bar
     // (identity, "my postcards", etc.) stays available.
     'onStartWorld:function(){' +
+    // Same reasoning as buildRoomViewPage: a page listing, not a
+    // live-editing surface -- no unsaved local state the exit warning
+    // would actually be protecting, just an unconditional bfcache-blocker.
+    'if(lively.Config)lively.Config.askBeforeQuit=false;' +
     'lively.require("lively.identity.WikiIndex").toRun(function(){' +
     'lively.identity.WikiIndex.open(' + JSON.stringify(constellation.name) + ');' +
     '});' +
@@ -882,6 +895,10 @@ function buildPersonalWikiIndexPage(handle, pages) {
     'rootPath:location.protocol+"//"+location.host+"/",' +
     'manuallyCreateWorld:true,' +
     'onStartWorld:function(){' +
+    // Same reasoning as buildRoomViewPage: a page listing, not a
+    // live-editing surface -- no unsaved local state the exit warning
+    // would actually be protecting, just an unconditional bfcache-blocker.
+    'if(lively.Config)lively.Config.askBeforeQuit=false;' +
     'lively.require("lively.identity.WikiIndex").toRun(function(){' +
     'lively.identity.WikiIndex.openPersonal(' + JSON.stringify(handle) + ');' +
     '});' +
