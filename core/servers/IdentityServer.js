@@ -710,7 +710,16 @@ function buildConstellationLoungePage(constellation, quickInfo) {
     '<title>c/' + title + '</title>' +
     '<style>' +
     'body{margin:0;font-family:system-ui,sans-serif;background:#fafafa}' +
-    '.lounge-static{position:relative;min-height:100vh}' +
+    // position:fixed (not relative/min-height:100vh) so this skeleton never
+    // participates in body's normal document flow -- ConstellationLounge.js's
+    // _buildChrome() removes this element outright once the real chrome is
+    // ready, with no space reservation or transition, and a flow element
+    // that tall collapsing to nothing is a massive layout shift (measured
+    // live: CLS ~0.93, body's own rect collapsing from a full-viewport box
+    // down to ~90px tall). Taking it out of flow entirely means its removal
+    // can't move anything else, matching the same position:fixed idiom
+    // bootstrap.js's own loading overlay already uses for the same reason.
+    '.lounge-static{position:fixed;top:0;left:0;right:0;bottom:0;overflow:auto}' +
     '.lounge-quickinfo{position:fixed;top:16px;right:16px;width:220px;' +
     'background:#fff;border:1px solid #eee;border-radius:8px;padding:12px 14px;' +
     'box-shadow:0 1px 3px rgba(0,0,0,.08);font-size:13px}' +
@@ -785,7 +794,12 @@ function buildWikiIndexPage(constellation, pages) {
     '<title>c/' + title + ' wiki</title>' +
     '<style>' +
     'body{margin:0;font-family:system-ui,sans-serif;background:#fafafa}' +
-    '.wiki-index-static{position:relative;min-height:100vh;padding:64px 40px}' +
+    // position:fixed, same reasoning as .lounge-static above: WikiIndex.js's
+    // _buildChrome() removes this element outright with no space reservation,
+    // and position:relative;min-height:100vh made it a full-viewport flow
+    // element whose removal collapsed body's height -- a large, verified
+    // layout shift. Out of flow entirely, its removal can't shift anything.
+    '.wiki-index-static{position:fixed;top:0;left:0;right:0;bottom:0;overflow:auto;padding:64px 40px}' +
     '.wiki-index-static h1{font-size:18px}' +
     '.wiki-index-static ul{padding-left:20px}' +
     '.wiki-index-loader{position:fixed;bottom:12px;right:12px;font-size:12px;' +
@@ -844,7 +858,12 @@ function buildPersonalWikiIndexPage(handle, pages) {
     '<title>@' + title + ' wiki</title>' +
     '<style>' +
     'body{margin:0;font-family:system-ui,sans-serif;background:#fafafa}' +
-    '.wiki-index-static{position:relative;min-height:100vh;padding:64px 40px}' +
+    // position:fixed, same reasoning as .lounge-static above: WikiIndex.js's
+    // _buildChrome() removes this element outright with no space reservation,
+    // and position:relative;min-height:100vh made it a full-viewport flow
+    // element whose removal collapsed body's height -- a large, verified
+    // layout shift. Out of flow entirely, its removal can't shift anything.
+    '.wiki-index-static{position:fixed;top:0;left:0;right:0;bottom:0;overflow:auto;padding:64px 40px}' +
     '.wiki-index-static h1{font-size:18px}' +
     '.wiki-index-static ul{padding-left:20px}' +
     '.wiki-index-loader{position:fixed;bottom:12px;right:12px;font-size:12px;' +
