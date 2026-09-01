@@ -15,6 +15,7 @@ var path = require("path"),
   exec = require("child_process").exec,
   cluster = require("cluster"),
   os = require("os"),
+  crypto = require("crypto"),
   checkNPMPackages = require("./helper/check-modules"),
   env = require("./env"),
   args = require("./helper/args");
@@ -331,6 +332,7 @@ function startServer(callback) {
     sslServerKey: sslServerKey,
     sslServerCert: sslServerCert,
     sslCACert: sslCACert,
+    sessionSecret: process.env.SESSION_SECRET,
   });
   if (options.defined("enableSsl") && !sslActuallyEnabled) {
     console.error(
@@ -382,8 +384,31 @@ function numWorkersRequested() {
 // file) must only happen once, in the primary, before any workers exist.
 // A worker just loads Lively and starts serving; the primary handles
 // everything else and, when clustering, never calls startServer itself.
+// The cookie-session signing secret (life_star's setupCookies) has to be
+// identical across every worker or a session cookie signed by one worker
+// fails to validate on another. Deciding it once here, before any
+// cluster.fork() call, is what makes that happen for free: Node's
+// cluster.fork() inherits the primary's current process.env into each
+// forked worker automatically, no IPC round trip needed (unlike
+// room-token-store.js/ConstellationSpace.js's own per-request secrets,
+// which are minted/verified continuously after boot and need a live
+// bridge). Respects an explicit SESSION_SECRET so an operator can keep
+// sessions valid across restarts/redeploys; auto-generates one otherwise
+// (same per-boot-random idiom used elsewhere in this codebase) since a
+// server that won't start without one would break zero-config local dev.
+function ensureSessionSecret() {
+  if (process.env.SESSION_SECRET) return;
+  process.env.SESSION_SECRET = crypto.randomBytes(32).toString("hex");
+  console.log(
+    "No SESSION_SECRET set -- generated one for this boot. " +
+      "Sessions will not survive a restart/redeploy; set SESSION_SECRET " +
+      "explicitly in production to avoid signing everyone out each time.",
+  );
+}
+
 function launchServer() {
   var numWorkers = numWorkersRequested();
+  ensureSessionSecret();
 
   if (numWorkers <= 1) {
     require("async").waterfall(

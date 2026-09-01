@@ -1,28 +1,5 @@
-diff --git a/node_modules/life_star/.envrc b/node_modules/life_star/.envrc
-old mode 100644
-new mode 100755
-diff --git a/node_modules/life_star/.travis.yml b/node_modules/life_star/.travis.yml
-old mode 100644
-new mode 100755
-diff --git a/node_modules/life_star/Jakefile b/node_modules/life_star/Jakefile
-old mode 100644
-new mode 100755
-diff --git a/node_modules/life_star/README.md b/node_modules/life_star/README.md
-old mode 100644
-new mode 100755
-diff --git a/node_modules/life_star/flake.lock b/node_modules/life_star/flake.lock
-old mode 100644
-new mode 100755
-diff --git a/node_modules/life_star/flake.nix b/node_modules/life_star/flake.nix
-old mode 100644
-new mode 100755
-diff --git a/node_modules/life_star/lib/auth.js b/node_modules/life_star/lib/auth.js
-old mode 100644
-new mode 100755
 diff --git a/node_modules/life_star/lib/manifest.js b/node_modules/life_star/lib/manifest.js
-old mode 100644
-new mode 100755
-index 2a9cebe..572179c
+index 2a9cebe..572179c 100644
 --- a/node_modules/life_star/lib/manifest.js
 +++ b/node_modules/life_star/lib/manifest.js
 @@ -173,7 +173,7 @@ ManifestHandler.prototype.addManifestRef = function(req, res) {
@@ -35,9 +12,7 @@ index 2a9cebe..572179c
      }
      return buffers;
 diff --git a/node_modules/life_star/lib/proxy.js b/node_modules/life_star/lib/proxy.js
-old mode 100644
-new mode 100755
-index b0b08aa..2e63d0b
+index b0b08aa..2e63d0b 100644
 --- a/node_modules/life_star/lib/proxy.js
 +++ b/node_modules/life_star/lib/proxy.js
 @@ -50,7 +50,7 @@ module.exports = function(logger) {
@@ -50,9 +25,7 @@ index b0b08aa..2e63d0b
      req.on('data', function(chunk) {
        chunk.copy(buffer, offset);
 diff --git a/node_modules/life_star/lib/subservers.js b/node_modules/life_star/lib/subservers.js
-old mode 100644
-new mode 100755
-index ebcfec9..e0c4f24
+index ebcfec9..e0c4f24 100644
 --- a/node_modules/life_star/lib/subservers.js
 +++ b/node_modules/life_star/lib/subservers.js
 @@ -255,7 +255,7 @@ SubserverHandler.prototype.registerWith = function(app, server) {
@@ -64,27 +37,22 @@ index ebcfec9..e0c4f24
    app.get(metaURL, this.listSubservers.bind(this));
  
    // load and start the subservers
-diff --git a/node_modules/life_star/lib/testing.js b/node_modules/life_star/lib/testing.js
-old mode 100644
-new mode 100755
-diff --git a/node_modules/life_star/lib/util.js b/node_modules/life_star/lib/util.js
-old mode 100644
-new mode 100755
 diff --git a/node_modules/life_star/life_star.js b/node_modules/life_star/life_star.js
-old mode 100644
-new mode 100755
-index c03d3c3..972c0ee
+index c03d3c3..2b557b3 100644
 --- a/node_modules/life_star/life_star.js
 +++ b/node_modules/life_star/life_star.js
-@@ -10,7 +10,6 @@ var lang             = require('lively.lang'),
+@@ -10,9 +10,9 @@ var lang             = require('lively.lang'),
      SubserverHandler = require('./lib/subservers').SubserverHandler,
      ManifestHandler  = require('./lib/manifest').ManifestHandler,
      lfUtil           = require('./lib/util'),
 -    util             = require('util'),
      fs               = require('fs'),
      path             = require('path'),
++    crypto           = require('crypto'),
      EventEmitter     = require('events').EventEmitter
-@@ -72,7 +71,7 @@ var serverSetup = module.exports = function(config, thenDo) {
+ 
+ var serverSetup = module.exports = function(config, thenDo) {
+@@ -72,7 +72,7 @@ var serverSetup = module.exports = function(config, thenDo) {
    function extendServerSetupFunction(next) {
      // make it an event emitter so that life_star users can receive server
      // related events. Events are emitted in startHTTPListener()
@@ -93,7 +61,7 @@ index c03d3c3..972c0ee
      EventEmitter.call(serverSetup);
      
      serverSetup.getServer = function() { return server; };
-@@ -84,7 +83,7 @@ var serverSetup = module.exports = function(config, thenDo) {
+@@ -84,7 +84,7 @@ var serverSetup = module.exports = function(config, thenDo) {
      // some helpers, mainly for interactive usage
      if (typeof global.lively === "undefined") global.lively = {};
      var lv = global.lv = global.lively;
@@ -102,7 +70,25 @@ index c03d3c3..972c0ee
        server: {
          dir: __dirname,
          get lifeStar() { return server; },
-@@ -380,7 +379,7 @@ var serverSetup = module.exports = function(config, thenDo) {
+@@ -221,9 +221,15 @@ var serverSetup = module.exports = function(config, thenDo) {
+     // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+     app.use(express.cookieSession({
+       key: 'livelykernel-sign-on',
+-      secret: 'foo',
++      // config.sessionSecret should always be provided by the caller
++      // (bin/lk-server.js generates/propagates one) -- this random
++      // fallback only protects against some future caller of this
++      // package omitting it entirely; the failure mode then is
++      // "sessions don't survive a restart or cross cluster workers",
++      // never "sessions are forgeable with a known secret".
++      secret: config.sessionSecret || crypto.randomBytes(32).toString('hex'),
+       proxy: config.behindProxy,
+-      cookie: {path: '/', httpOnly: false, maxAge: null}
++      cookie: {path: '/', httpOnly: true, maxAge: null}
+     }));
+     next();
+   }
+@@ -380,7 +386,7 @@ var serverSetup = module.exports = function(config, thenDo) {
      if (config.dbConf) {
          if (typeof config.dbConf === 'string')
              config.dbConf = JSON.parse(config.dbConf);
@@ -111,16 +97,8 @@ index c03d3c3..972c0ee
      }
      var fsHandler = new LivelyFsHandler(dbConf).registerWith(app, server);
      global.lively.server.repository = fsHandler.repository;
-diff --git a/node_modules/life_star/standalone_star.js b/node_modules/life_star/standalone_star.js
-old mode 100644
-new mode 100755
-diff --git a/node_modules/life_star/subservers/.gitkeep b/node_modules/life_star/subservers/.gitkeep
-old mode 100644
-new mode 100755
 diff --git a/node_modules/life_star/tests/life_star-test-support.js b/node_modules/life_star/tests/life_star-test-support.js
-old mode 100644
-new mode 100755
-index 90cb831..aa18305
+index 90cb831..aa18305 100644
 --- a/node_modules/life_star/tests/life_star-test-support.js
 +++ b/node_modules/life_star/tests/life_star-test-support.js
 @@ -6,12 +6,11 @@ var lifeStar = require("./../life_star"),
@@ -137,15 +115,3 @@ index 90cb831..aa18305
    options.host = options.host || 'localhost';
    options.port = options.port || 9999;
    server = lifeStar(options, function(err, server) { func(server); });
-diff --git a/node_modules/life_star/tests/manifest-test.js b/node_modules/life_star/tests/manifest-test.js
-old mode 100644
-new mode 100755
-diff --git a/node_modules/life_star/tests/subservers-test.js b/node_modules/life_star/tests/subservers-test.js
-old mode 100644
-new mode 100755
-diff --git a/node_modules/life_star/tests/test-helper.js b/node_modules/life_star/tests/test-helper.js
-old mode 100644
-new mode 100755
-diff --git a/node_modules/life_star/tmp/dummy.txt b/node_modules/life_star/tmp/dummy.txt
-old mode 100644
-new mode 100755
