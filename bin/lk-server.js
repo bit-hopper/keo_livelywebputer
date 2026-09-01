@@ -113,7 +113,19 @@ var options = args.options(
     ],
     ["--install-missing-npm-packages", "Automatically install npm packages?"],
     [
-      "--workers NUMBER",
+      // optparse's NUMBER filter type unconditionally rejects any
+      // non-numeric string (including the literal "auto" this flag's own
+      // help text documents below) via a regex match, before
+      // numWorkersRequested()'s own `=== "auto"` check ever runs --
+      // confirmed live 2026-09-01: `--workers auto` crashed at startup
+      // with "--workers: Expected a number representative", meaning
+      // Procfile's `--workers auto` for production has likely never
+      // actually started a cluster. TEXT is optparse's identity/no-op
+      // filter (node_modules/optparse/lib/optparse.js's
+      // PREDEFINED_FILTERS['TEXT'] = filter_text) -- numWorkersRequested()
+      // already does its own "auto"-vs-numeric parsing on the raw string,
+      // so this is a pure unblock, not a behavior change for numeric values.
+      "--workers TEXT",
       "Number of cluster worker processes to fork for handling requests.\n" +
         "                                 Default is 1 (no clustering, same as before this option existed).\n" +
         "                                 Pass a number, or \"auto\" to use one worker per CPU core.\n" +
