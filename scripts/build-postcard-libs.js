@@ -130,7 +130,7 @@ esbuild.build({
   format:    'iife',
   platform:  'browser',
   outfile:   path.join(outDir, 'postcard-runtime.js'),
-  minify:    false,
+  minify:    true,
   sourcemap: false,
   logLevel:  'info',
 }).then(function () {
