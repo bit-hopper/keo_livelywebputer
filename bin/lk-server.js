@@ -412,15 +412,18 @@ function launchServer() {
   require("../core/servers/support/room-token-store").wireClusterPrimary();
 
   // LiveDocSyncServer.js's own standalone http.Server (Yjs collaborative
-  // sync for wiki-mode post cards and constellation spaces) would otherwise
-  // get silently round-robin-distributed across workers by cluster too,
-  // just like the main port -- fragmenting its in-memory docs Map. Requiring
-  // it here (also no `global.lively` needed) makes THIS primary process the
-  // one that actually starts the real listener (cluster.isWorker is false
-  // here, see that file's own gate), and wires the IPC bridge workers use
-  // for the one server-side write path that touches live room state
-  // (ConstellationSpace.js's addPlacementToSpace).
-  require("../core/servers/LiveDocSyncServer").wireClusterPrimary();
+  // sync for wiki-mode post cards and constellation presence rooms) would
+  // otherwise get silently round-robin-distributed across workers by
+  // cluster too, just like the main port -- fragmenting its in-memory docs
+  // Map. Requiring it here (no `global.lively` needed) makes THIS primary
+  // process the one that actually starts the real listener (cluster.isWorker
+  // is false here, see that file's own gate). Bare require -- no method
+  // call needed: the module has no cluster-IPC bridge to wire up any more
+  // (that existed only for ConstellationSpace.js's addPlacementToSpace,
+  // removed along with the canvas feature), but the require() itself still
+  // has to run here for its module-load side effect of starting the
+  // listener.
+  require("../core/servers/LiveDocSyncServer");
 
   // ConstellationSpace.js's space-access TOKEN_SECRET has the exact same
   // shape of bug as room-token-store.js's problem, discovered live testing

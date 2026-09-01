@@ -73,13 +73,13 @@ var roomPresence = require("./identity/RoomPresence");
 var liveDocSync = require("./LiveDocSyncServer");
 
 // Every page template below that can boot a world where a postcard/wiki
-// editor or a constellation canvas/lounge might open (in place, not just by
+// editor or a constellation lounge might open (in place, not just by
 // navigating to a fresh page — MenuBarEntry.js's "New Postcard"/"New Wiki
 // Page", WikiIndex.js's inline new-page flow, etc. all do) injects this so
-// ConstellationCanvas.js/ConstellationLounge.js/PostCardEditor.js/
-// WikiEditor.js's window.LIVEDOC_SYNC_PORT read has a real value instead of
-// silently falling back to the hardcoded default — see DeployCheckList.md's
-// "window.POSTCARD_SYNC_PORT is never set server-side" finding.
+// ConstellationLounge.js/PostCardEditor.js/WikiEditor.js's window.
+// LIVEDOC_SYNC_PORT read has a real value instead of silently falling back
+// to the hardcoded default — see DeployCheckList.md's "window.
+// POSTCARD_SYNC_PORT is never set server-side" finding.
 var LIVEDOC_SYNC_PORT_SCRIPT = "<script>window.LIVEDOC_SYNC_PORT=" + JSON.stringify(liveDocSync.SYNC_PORT) + ";</script>";
 
 // ─── home-world bootstrap helpers ─────────────────────────────────────────────
@@ -101,7 +101,7 @@ function getBlankWorldJso() {
 // small <script> in before the bootstrap.js tag that mounts LocalMap once
 // $world exists, via Config.onStartWorld (fires after world-load regardless
 // of snapshot vs. from-scratch loading — same mechanism buildWarpDropPage/
-// buildConstellationCanvasPage use, just without manuallyCreateWorld since
+// buildConstellationLoungePage use, just without manuallyCreateWorld since
 // there's no snapshot to bypass here).
 //
 // Deliberately NOT cached (unlike getBlankWorldJso/getRestoreWorldJso
@@ -613,13 +613,12 @@ function buildPostCardPage(envelope, handle) {
     // Without this, bootstrap.js's default Loader#getWorldData routes
     // through WorldDataAccessor.forHTMLDoc, which looks for a
     // <script type="text/x-lively-world"> tag this page never has and
-    // crashes on JSON.parse("") — see buildConstellationCanvasPage's
-    // identical fix above for the full explanation.
+    // crashes on JSON.parse("") — see buildConstellationLoungePage's
+    // identical fix below for the full explanation.
     'manuallyCreateWorld:true,' +
     // removeDOMContentBeforeWorldLoad (default true) wipes #postcard-static/
-    // #postcard-loader once the (blank, unused) World is built, same as
-    // buildConstellationCanvasPage's #constellation-static/#constellation-loader
-    // — onStartWorld is what replaces that wiped content with the actual
+    // #postcard-loader once the (blank, unused) World is built —
+    // onStartWorld is what replaces that wiped content with the actual
     // live view, using the envelope this page already fetched server-side
     // (PostCardView.open's opts.envelope skips a redundant re-fetch).
     'onStartWorld:function(){' +
@@ -640,118 +639,12 @@ function buildPostCardPage(envelope, handle) {
   );
 }
 
-// Convert a constellation space's stored layout snapshot to simple
-// absolutely-positioned HTML for static rendering — same "fast first paint,
-// no runtime required" purpose as _snapshotToHtml below, just over a
-// placement map instead of a ProseMirror doc.
-function _layoutSnapshotToHtml(snapshot) {
-  var layout = (snapshot && snapshot.layout) || {};
-  var ids = Object.keys(layout);
-  if (!ids.length) {
-    return '<p class="constellation-empty">No items placed yet.</p>';
-  }
-  return ids.map(function (id) {
-    var p = layout[id] || {};
-    var x = p.x || 0, y = p.y || 0, w = p.w || 200, h = p.h || 120;
-    var kind = escapeHtml(p.kind || 'item');
-    var objId = (p.ref && p.ref.objId) ? escapeHtml(p.ref.objId) : '';
-    return '<div class="constellation-placement" style="left:' + x + 'px;top:' + y +
-      'px;width:' + w + 'px;height:' + h + 'px">' +
-      '<div class="constellation-placement-label">' + kind + (objId ? ': ' + objId : '') + '</div>' +
-      '</div>';
-  }).join('');
-}
-
-// Serve a constellation's freeform canvas (the drag/place/resize live
-// space, ConstellationDesignSpec.md §2) as a standalone HTML page, same
-// two-mode shape as buildPostCardPage: static layout render for fast first
-// paint, then boots the live ConstellationCanvas morph (Yjs-synced,
-// multi-user). Lives at /c/:name/canvas — the top-level /c/:name route is
-// the fixed-layout lounge (buildConstellationLoungePage below); the canvas
-// is the "fully customizable" space members/controllers arrange.
-//
-// A constellation's canvas is served as a full, freshly-built Lively world
-// (same category as a user's home world at /@handle, just shared/synced
-// instead of private), not a window opened inside someone else's world.
-//
-// A bare page that boots bootstrap.js without an embedded
-// <script type="text/x-lively-world"> tag (the mechanism buildWorldPage
-// uses for stored worlds) never gets a working $world: the default fallback
-// tries to load the *viewing* user's own home-world config
-// (/users/<handle>/config.js) to construct one, which 404s today for every
-// account (a separate, pre-existing gap — per-user config.js is never
-// auto-created on registration) and aborts startup entirely.
-//
-// manuallyCreateWorld routes world creation through
-// WorldDataAccessor.fromScratch instead (see Main.js's Loader#getWorldData)
-// — builds a blank, viewport-sized World directly, sidestepping that
-// fallback altogether. Same mechanism buildWarpDropPage already uses for
-// GET /warpdrop; onStartWorld is Lively's own "$world is ready" callback,
-// used here instead of polling for it.
-function buildConstellationCanvasPage(constellation, spaceEnvelope) {
-  var title = escapeHtml(constellation.name);
-  var snapshot = spaceEnvelope && spaceEnvelope.record && spaceEnvelope.record.payload &&
-    spaceEnvelope.record.payload.snapshot;
-  var staticHtml = _layoutSnapshotToHtml(snapshot);
-  var pageData = {
-    name: constellation.name,
-    did: constellation.did,
-    genesisObjId: constellation.genesisObjId,
-    visibility: constellation.visibility
-  };
-  var dataJson = JSON.stringify(pageData).replace(/<\/script>/gi, '<\\/script>');
-
-  return (
-    '<!DOCTYPE html><html lang="en"><head>' +
-    '<meta charset="utf-8">' +
-    '<meta name="viewport" content="width=device-width, initial-scale=1">' +
-    '<meta name="apple-mobile-web-app-capable" content="yes">' +
-    '<link rel="shortcut icon" href="/core/media/lively.ico">' +
-    '<title>' + title + '</title>' +
-    '<style>' +
-    'body{margin:0;font-family:system-ui,sans-serif;background:#fafafa}' +
-    '.constellation-static{position:relative;min-height:100vh;overflow:auto}' +
-    '.constellation-empty{padding:48px;text-align:center;color:#999}' +
-    '.constellation-placement{position:absolute;border:1px solid #ddd;background:#fff;' +
-    'border-radius:4px;box-shadow:0 1px 3px rgba(0,0,0,.08);overflow:hidden}' +
-    '.constellation-placement-label{padding:6px 8px;font-size:12px;color:#666}' +
-    '.constellation-loader{position:fixed;bottom:12px;right:12px;font-size:12px;' +
-    'color:#999;background:#fff;border:1px solid #eee;border-radius:4px;padding:4px 8px}' +
-    '</style>' +
-    '</head><body>' +
-    '<div class="constellation-static" id="constellation-static">' + staticHtml + '</div>' +
-    '<div class="constellation-loader" id="constellation-loader">Loading live mode…</div>' +
-    '<script type="application/json" id="constellation-data">' + dataJson + '</script>' +
-    '<script src="/core/lib/postcard/postcard-runtime.js"></script>' +
-    LIVEDOC_SYNC_PORT_SCRIPT +
-    '<script>window.Config={' +
-    'codeBase:location.protocol+"//"+location.host+"/core/",' +
-    'rootPath:location.protocol+"//"+location.host+"/",' +
-    'manuallyCreateWorld:true,' +
-    // Unlike WarpDrop's kiosk-style panel, a constellation is a place the
-    // user inhabits — they need their normal menu bar (identity, "my
-    // postcards", etc.) available here, not a stripped-down single-purpose
-    // view.
-    'onStartWorld:function(){' +
-    // removeDOMContentBeforeWorldLoad (default true) already wiped
-    // #constellation-static/#constellation-loader along with the rest of
-    // the page's prior DOM before this callback runs — nothing left to hide.
-    'lively.require("lively.identity.ConstellationCanvas").toRun(function(){' +
-    'lively.identity.ConstellationCanvas.open(' + JSON.stringify(constellation.name) + ');' +
-    '});' +
-    '}' +
-    '}</script>' +
-    '<script src="/core/lively/bootstrap.js"></script>' +
-    '</body></html>'
-  );
-}
-
 // Serve a single room's Discord-like live view (chat/members/voice-video,
 // lively.identity.RoomView) as a standalone HTML page. Same boot shape as
-// buildConstellationCanvasPage: manuallyCreateWorld so bootstrap.js builds a
+// buildConstellationLoungePage: manuallyCreateWorld so bootstrap.js builds a
 // blank world instead of trying (and failing) to load a per-user home-world
 // config, then onStartWorld hands off to the live RoomView controller. No
-// static layout snapshot to pre-render here (unlike the canvas) — chat/
+// static layout snapshot to pre-render here (unlike a stored post card) — chat/
 // members/presence all need the live controller's own queries anyway, so
 // the page ships a plain loading placeholder.
 function buildRoomViewPage(constellation, room) {
@@ -791,19 +684,19 @@ function buildRoomViewPage(constellation, room) {
 // Serve a constellation's lounge — the fixed-layout landing page at
 // /c/:name (search, postcard turnover reel + reply thread, quick-info
 // panel, embedded wiki, member list) — as a standalone HTML page. Same
-// boot shape as buildConstellationCanvasPage: manuallyCreateWorld so
+// boot shape as buildRoomViewPage above: manuallyCreateWorld so
 // bootstrap.js builds a blank world instead of trying (and failing) to
 // load a per-user home-world config, then onStartWorld hands off to the
 // live lively.identity.ConstellationLounge controller.
 //
-// Unlike the canvas (whose static render is a real layout snapshot), the
-// lounge's static render only pre-fills the quick-info panel — that data
-// (name/visibility/memberCount/createdAt/co-creator handle) is already in
-// hand from the route handler's constellationRegistry.get() call, so it's
-// free to render server-side. The postcard reel, reply thread, wiki panel,
-// and member list all need additional queries (feed, wiki index, presence)
-// that the live controller makes anyway, so they render as loading
-// placeholders here rather than duplicating that fetching server-side.
+// The lounge's static render only pre-fills the quick-info panel — that
+// data (name/visibility/memberCount/createdAt/co-creator handle) is already
+// in hand from the route handler's constellationRegistry.get() call, so
+// it's free to render server-side. The postcard reel, reply thread, wiki
+// panel, and member list all need additional queries (feed, wiki index,
+// presence) that the live controller makes anyway, so they render as
+// loading placeholders here rather than duplicating that fetching
+// server-side.
 function buildConstellationLoungePage(constellation, quickInfo) {
   var title = escapeHtml(constellation.name);
   var pageData = {
@@ -854,8 +747,8 @@ function buildConstellationLoungePage(constellation, quickInfo) {
     'codeBase:location.protocol+"//"+location.host+"/core/",' +
     'rootPath:location.protocol+"//"+location.host+"/",' +
     'manuallyCreateWorld:true,' +
-    // Same reasoning as buildConstellationCanvasPage: the lounge is a
-    // place the user inhabits, so the normal menu bar stays available.
+    // The lounge is a place the user inhabits, so the normal menu bar
+    // stays available (unlike WarpDrop's kiosk-style stripped-down panel).
     'onStartWorld:function(){' +
     'lively.require("lively.identity.ConstellationLounge").toRun(function(){' +
     'lively.identity.ConstellationLounge.open(' + JSON.stringify(constellation.name) + ');' +
@@ -876,7 +769,7 @@ function _formatDateForLounge(iso) {
 
 // Serve a constellation's wiki index — every wikiName'd page in the
 // constellation — as a standalone HTML page. Same two-mode boot shape as
-// buildConstellationLoungePage/buildConstellationCanvasPage: a static
+// buildConstellationLoungePage: a static
 // skeleton for fast first paint (pre-filled from `pages`, which the route
 // handler already has from objectRepo.listWikiPages), then manuallyCreateWorld
 // hands off to the live lively.identity.WikiIndex controller (a real morphic
@@ -1206,10 +1099,10 @@ function _canSeePostcardMeta(meta, viewerDid) {
 // listing projection only carries `did` — see _runPostcardQuery in
 // ObjectRepository.js — but PostCardView.open(handle, objId) needs a
 // handle. Every other existing caller of this projection already has
-// `handle` from its own data, e.g. ConstellationCanvas's placement layout;
-// /postcards/nearby is the first cross-user listing route that doesn't, so
-// it resolves once here rather than adding handle to the shared projection
-// for every caller). Calls thenDo(null, { [did]: handle|null }).
+// `handle` from its own data; /postcards/nearby is the first cross-user
+// listing route that doesn't, so it resolves once here rather than adding
+// handle to the shared projection for every caller). Calls thenDo(null, {
+// [did]: handle|null }).
 function _resolveHandlesForDids(dids, thenDo) {
   var uniqueDids = dids.filter(function (d, i, a) { return d && a.indexOf(d) === i; });
   if (!uniqueDids.length) return thenDo(null, {});
@@ -2885,13 +2778,11 @@ module.exports = function (route, app) {
 
     // Wiki pages (type: "wikipage") are the one exception to "envelope.did
     // must equal the saving session's did": a wiki page's did is fixed at
-    // genesis to its original author and never changes across saves — same
-    // precedent as a constellation space envelope's did staying the
-    // constellation's own did:web regardless of who last moved a placement
-    // (ConstellationSpace.js's saveSpaceSnapshot). Attribution for
-    // individual wiki edits lives in the Yjs update history, not in this
-    // field. Write access for a non-owner is checked further down instead
-    // (constellation membership, against the EXISTING stored version).
+    // genesis to its original author and never changes across saves.
+    // Attribution for individual wiki edits lives in the Yjs update
+    // history, not in this field. Write access for a non-owner is checked
+    // further down instead (constellation membership, against the
+    // EXISTING stored version).
     if (envelope.type !== "wikipage" && req.identity.did !== envelope.did) {
       return res
         .status(403)
@@ -3549,8 +3440,8 @@ module.exports = function (route, app) {
       var isController = constellationRegistry.isController(constellation, viewerDid);
 
       // isController/joinRequestStatus back the menu bar's "c/<name>" entry
-      // (ConstellationCanvas.js and ConstellationLounge.js each patch their
-      // own instance) — a member/controller-aware dropdown (Join / Request
+      // (ConstellationLounge.js patches its own instance) — a
+      // member/controller-aware dropdown (Join / Request
       // pending… / Pending requests…) in place of the generic world-rename
       // entry, since constellations don't rename (ConstellationDesignSpec.md
       // §1.3) and joining is member-facing.
@@ -3650,8 +3541,8 @@ module.exports = function (route, app) {
   // request/approve/decline half.
 
   // Body: { objId } — a postcard the caller already created+signed
-  // client-side (ConstellationCanvas.js's and ConstellationLounge.js's
-  // own _requestJoin, via PostCardSerializer.serializePlainToEnvelope
+  // client-side (ConstellationLounge.js's own _requestJoin, via
+  // PostCardSerializer.serializePlainToEnvelope
   // with state.kind:
   // 'constellation-join-request') and PUT to their own /@handle/objId
   // before calling this. Rides the same postal rail as everything else
@@ -4247,10 +4138,8 @@ module.exports = function (route, app) {
   });
 
   // Post an existing (owned) post card to a constellation: tags the card
-  // with this constellation (so it shows in the feed, same as the original
-  // stub routes already relied on) and adds it to the live space's layout
-  // map at a default cascading position (server-side, no WS connection
-  // needed — see ConstellationSpace.js's addPlacementToSpace).
+  // with this constellation so it shows in the feed, same as the original
+  // stub routes already relied on.
   app.post("/c/:name/posts", auth.requireAuth, function (req, res) {
     var name = req.params.name;
     var objId = (req.body || {}).objId;
@@ -4279,14 +4168,7 @@ module.exports = function (route, app) {
         var updated = Object.assign({}, envelope, { constellation: name });
         objectRepo.put(updated, function (err) {
           if (err) return res.status(500).json({ error: String(err) });
-
-          constellationSpace.addPlacementToSpace(constellation, {
-            ref: { handle: req.identity.handle, objId: objId, cid: envelope.record.cid },
-            kind: "postcard"
-          }, function (err, result) {
-            if (err) return res.status(500).json({ error: String(err) });
-            res.status(200).json({ ok: true, placementId: result.id });
-          });
+          res.status(200).json({ ok: true });
         });
       });
     });
@@ -4473,25 +4355,6 @@ module.exports = function (route, app) {
     });
   });
 
-  // The freeform, drag/place/resize live space (ConstellationDesignSpec.md
-  // §2) — registered before the /:objId wildcard below, same ordering
-  // discipline as every other named sub-route under /c/:constellation.
-  // /c/:constellation itself is the fixed-layout lounge (below).
-  app.get("/c/:constellation/canvas", auth.optionalAuth, function (req, res) {
-    var name = req.params.constellation;
-    constellationRegistry.get(name, function (err, constellation) {
-      if (err) return res.status(500).json({ error: String(err) });
-      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
-      if (!constellationRegistry.canRead(constellation, req.identity ? req.identity.did : null)) {
-        return res.status(404).json({ error: "Constellation not found: " + name });
-      }
-      objectRepo.get(constellation.genesisObjId, function (err, spaceEnvelope) {
-        if (err) return res.status(500).json({ error: String(err) });
-        res.send(buildConstellationCanvasPage(constellation, spaceEnvelope));
-      });
-    });
-  });
-
   // A single room's Discord-like live view (lively.identity.RoomView) —
   // registered before the /:objId wildcard below, same ordering discipline
   // as every other named sub-route under /c/:constellation. Gated by
@@ -4585,8 +4448,7 @@ module.exports = function (route, app) {
       // HTML: the constellation's lounge (fixed-layout landing page,
       // static quick-info render then boots the live ConstellationLounge
       // controller). JSON: unchanged, still the post card feed listing —
-      // no breaking change for existing API callers. The freeform
-      // drag/place canvas lives at /c/:name/canvas now, not here.
+      // no breaking change for existing API callers.
       if (req.accepts(["html", "json"]) === "html") {
         return handleRegistry.resolveHandleForDid(constellation.createdBy, function (err, createdByHandle) {
           var quickInfo = {

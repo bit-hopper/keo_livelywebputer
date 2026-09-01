@@ -2,9 +2,10 @@
  * lively.identity.ConstellationLounge
  *
  * The fixed-layout landing page at /c/:name (ConstellationDesignSpec.md's
- * "space", reframed as a lounge/main-feed UI rather than the freeform
- * drag/place world — that world now lives at /c/:name/canvas,
- * ConstellationCanvas.js). A visitor to /c/:name sees:
+ * "space", reframed as a lounge/main-feed UI). A freeform drag/place canvas
+ * used to live alongside this at /c/:name/canvas (ConstellationCanvas.js);
+ * it was removed (no clear product goal, extra infra/perf cost) — this is
+ * now the only UI for a constellation. A visitor to /c/:name sees:
  *
  *   - a search field (top, horizontally centered across the full page width
  *     as its own row, styled after PartsBin/iPadWidgets/SearchField.json
@@ -33,8 +34,8 @@
  *     other DID in constellation.controllers, per the owner's "every
  *     added controller is also a moderator" framing — no separate
  *     moderator role in the schema) — active members (live Yjs
- *     awareness/presence, ConstellationCanvas.js's own mechanism, connected
- *     here read/write-for-presence-only, no layout rendering)
+ *     awareness/presence, this controller's own _connectPresence/
+ *     _publishPresence, read/write-for-presence-only, no layout map)
  *
  * Boot: server-rendered skeleton (buildConstellationLoungePage,
  * IdentityServer.js) pre-fills the quick-info panel from data the route
@@ -53,9 +54,9 @@
  * focus after every character; (2) later-opened morphic windows (e.g. the
  * mailbox) rendered *underneath* the raw DOM chrome, because that chrome
  * sat outside Lively's own z-order/bringToFront management entirely. Real
- * morphs (added via addMorph, same as ConstellationCanvas.js's placements)
- * fix both by construction, and — the actual reason this matters per the
- * project owner — keep every element halo-selectable and Object-Editor
+ * morphs (added via addMorph) fix both by construction, and — the actual
+ * reason this matters per the project owner — keep every element
+ * halo-selectable and Object-Editor
  * inspectable, the way everything else in this codebase is. The postcard
  * embed slots were already lively.morphic.Box morphs; this revision
  * brings the rest of the chrome (search, quick-info, nav, reply thread,
@@ -502,10 +503,9 @@ module("lively.identity.ConstellationLounge")
           else if (evt.key === "ArrowRight") self._turn(1);
         });
 
-        // This is fixed-layout chrome, not a freeform space (that's the
-        // canvas, ConstellationCanvas.js) — nothing here should be
-        // draggable. Recurses into submorphs since dragging is a
-        // per-morph flag, not inherited from a container.
+        // This is fixed-layout chrome — nothing here should be draggable.
+        // Recurses into submorphs since dragging is a per-morph flag, not
+        // inherited from a container.
         [
           this._searchBox, this._sortByBox, this._createPostcardBtn, this._quickInfoBox,
           this._backCardBox, this._frontCardBox,
@@ -3114,10 +3114,9 @@ module("lively.identity.ConstellationLounge")
       },
     },
 
-    // ─── membership — menu bar entry (§1.3 pattern, ConstellationCanvas.js) ────
+    // ─── membership — menu bar entry (§1.3 pattern) ────────────────────────
     // Replaces the generic per-world menu bar entry's rename affordance with
-    // a constellation-aware dropdown, exactly as ConstellationCanvas.js
-    // already does for the canvas — the lounge boots its own separate
+    // a constellation-aware dropdown — the lounge boots its own separate
     // Lively world (buildConstellationLoungePage), so it gets its own
     // un-patched WorldNameMenuBarEntry instance and needs this too.
 
@@ -3163,9 +3162,6 @@ module("lively.identity.ConstellationLounge")
           items.push(["Join…", function () { self._requestJoin(); }]);
         }
 
-        items.push(["Open canvas", function () {
-          window.location.href = "/c/" + encodeURIComponent(self._name) + "/canvas";
-        }]);
         items.push(["Open wiki", function () {
           window.location.href = "/c/" + encodeURIComponent(self._name) + "/wiki";
         }]);
@@ -3174,8 +3170,7 @@ module("lively.identity.ConstellationLounge")
         lively.morphic.Menu.openAt(pos, "c/" + this._name, items);
       },
 
-      // Identical flow to ConstellationCanvas.js's _requestJoin — a real,
-      // client-signed postcard riding the same postal rail, never
+      // A real, client-signed postcard riding the same postal rail, never
       // server-fabricated.
       _requestJoin: function () {
         var self = this;
