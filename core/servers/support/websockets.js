@@ -223,6 +223,14 @@ function WebSocketListener(options) {
     else lifeStar.on('start', init);
     lifeStar.on('close', this.shutDown.bind(this));
     this.requestHandlers = [];
+    // Raw, pre-handshake upgrade handlers -- a different registry than
+    // requestHandlers above (those match *after* the lively-json handshake
+    // via dispatchRequest/findHandlersForPath). This one lets a consumer
+    // that speaks a totally different WebSocket subprotocol (e.g.
+    // LiveDocSyncServer.js's binary Yjs sync traffic) share this same TCP
+    // listen socket without going through the lively-json protocol at all
+    // -- see _dispatchUpgrade below.
+    this.rawUpgradeHandlers = [];
 }
 
 util.inherits(WebSocketListener, websocket.server);
@@ -235,9 +243,45 @@ util.inherits(WebSocketListener, websocket.server);
         var existingListener = server.websocketHandler;
         if (existingListener) { server.removeAllListeners('upgrade'); }
         options.httpServer = server;
-        websocket.server.call(this, options); // super call
+        websocket.server.call(this, options); // super call -- attaches server.on('upgrade', this._handlers.upgrade)
+        // Undo that auto-attach and replace it with a single combined
+        // dispatcher (_dispatchUpgrade below) that checks rawUpgradeHandlers
+        // first and only falls through to the lively-json handshake
+        // (this._handlers.upgrade) if nothing claims the path. Two
+        // independent 'upgrade' listeners on the same server is not safe --
+        // Node calls every registered listener for an event, so a second,
+        // uncoordinated listener would still fire even after a raw handler
+        // already upgraded the socket, and the websocket package's own
+        // listener would then try to reject() what is now a live WebSocket.
+        this._rawUpgradeServer = server;
+        this._dispatchUpgradeBound = this._dispatchUpgrade.bind(this);
+        server.removeListener('upgrade', this._handlers.upgrade);
+        server.on('upgrade', this._dispatchUpgradeBound);
         this.on('request', this.dispatchRequest.bind(this));
         this._started = true;
+    }
+
+    this.registerRawUpgradeHandler = function(options) {
+        // options: {match: function(pathname) -> bool, handler: function(req, socket, head)}
+        this.rawUpgradeHandlers.push(options);
+    }
+
+    this.unregisterRawUpgradeHandler = function(handler) {
+        this.rawUpgradeHandlers = this.rawUpgradeHandlers.filter(function(ea) {
+            return ea.handler !== handler;
+        });
+    }
+
+    this._dispatchUpgrade = function(req, socket, head) {
+        var pathname;
+        try { pathname = require('url').parse(req.url).pathname; }
+        catch (e) { pathname = req.url; }
+        for (var i = 0; i < this.rawUpgradeHandlers.length; i++) {
+            if (this.rawUpgradeHandlers[i].match(pathname)) {
+                return this.rawUpgradeHandlers[i].handler(req, socket, head);
+            }
+        }
+        this._handlers.upgrade(req, socket, head); // fall through: lively-json handshake, unchanged
     }
 
     this.registerSubhandler = function(options) {
@@ -280,6 +324,15 @@ util.inherits(WebSocketListener, websocket.server);
         this.requestHandlers.forEach(function(ea) {
             this.unregisterSubhandler({handler: ea});
         }, this);
+        this.rawUpgradeHandlers = [];
+        // websocket.server.prototype.shutDown's own unmount() removes
+        // this._handlers.upgrade from the server, but init() above already
+        // detached that listener in favor of _dispatchUpgradeBound -- that
+        // one needs its own explicit removal, or a restart would leave a
+        // second stale dispatcher attached alongside the new one.
+        if (this._rawUpgradeServer && this._dispatchUpgradeBound) {
+            this._rawUpgradeServer.removeListener('upgrade', this._dispatchUpgradeBound);
+        }
         websocket.server.prototype.shutDown.call(this);
     }
 
@@ -428,7 +481,22 @@ util.inherits(WebSocketServer, EventEmitter);
 // exports
 // -=-=-=-
 
+// Registers a raw, pre-handshake upgrade handler on the shared listener --
+// for a consumer speaking a WebSocket subprotocol other than lively-json
+// (e.g. LiveDocSyncServer.js's binary Yjs sync traffic) that wants to share
+// this app's single TCP listen socket without adapting to the lively-json
+// JSON-envelope protocol. See WebSocketListener's own registerRawUpgradeHandler.
+function registerRawUpgradeHandler(options) {
+    return WebSocketListener.forLively().registerRawUpgradeHandler(options);
+}
+
+function unregisterRawUpgradeHandler(handler) {
+    return WebSocketListener.forLively().unregisterRawUpgradeHandler(handler);
+}
+
 module.exports = {
     WebSocketServer: WebSocketServer,
-    WebSocketClient: WebSocketClient
+    WebSocketClient: WebSocketClient,
+    registerRawUpgradeHandler: registerRawUpgradeHandler,
+    unregisterRawUpgradeHandler: unregisterRawUpgradeHandler
 };

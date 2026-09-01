@@ -70,17 +70,6 @@ var domainVerifier = require("./identity/DomainVerifier");
 var constellationSpace = require("./identity/ConstellationSpace");
 var plusCode = require("./identity/PlusCode");
 var roomPresence = require("./identity/RoomPresence");
-var liveDocSync = require("./LiveDocSyncServer");
-
-// Every page template below that can boot a world where a postcard/wiki
-// editor or a constellation lounge might open (in place, not just by
-// navigating to a fresh page — MenuBarEntry.js's "New Postcard"/"New Wiki
-// Page", WikiIndex.js's inline new-page flow, etc. all do) injects this so
-// ConstellationLounge.js/PostCardEditor.js/WikiEditor.js's window.
-// LIVEDOC_SYNC_PORT read has a real value instead of silently falling back
-// to the hardcoded default — see DeployCheckList.md's "window.
-// POSTCARD_SYNC_PORT is never set server-side" finding.
-var LIVEDOC_SYNC_PORT_SCRIPT = "<script>window.LIVEDOC_SYNC_PORT=" + JSON.stringify(liveDocSync.SYNC_PORT) + ";</script>";
 
 // ─── home-world bootstrap helpers ─────────────────────────────────────────────
 
@@ -439,7 +428,6 @@ function buildWorldPage(envelope, welcomeHandle) {
     "<meta name=\"apple-mobile-web-app-capable\" content=\"yes\">" +
     "<link rel=\"shortcut icon\" href=\"/core/media/lively.ico\">" +
     "<title>" + title + "</title>" +
-    LIVEDOC_SYNC_PORT_SCRIPT +
     configScript +
     "</head><body>" +
     "<script type=\"text/javascript\" src=\"/core/lively/bootstrap.js\"></script>" +
@@ -606,7 +594,6 @@ function buildPostCardPage(envelope, handle) {
     '<div class="postcard-static" id="postcard-static">' + staticHtml + '</div>' +
     '<div class="postcard-loader" id="postcard-loader">Loading live mode…</div>' +
     '<script type="application/json" id="postcard-envelope">' + dataEnv + '</script>' +
-    LIVEDOC_SYNC_PORT_SCRIPT +
     '<script>window.Config={' +
     'codeBase:location.protocol+"//"+location.host+"/core/",' +
     'rootPath:location.protocol+"//"+location.host+"/",' +
@@ -665,7 +652,6 @@ function buildRoomViewPage(constellation, room) {
     '</head><body>' +
     '<div class="room-loader" id="room-loader">Loading ' + escapeHtml(room.name) + '…</div>' +
     '<script src="/core/lib/postcard/postcard-runtime.js"></script>' +
-    LIVEDOC_SYNC_PORT_SCRIPT +
     '<script>window.Config={' +
     'codeBase:location.protocol+"//"+location.host+"/core/",' +
     'rootPath:location.protocol+"//"+location.host+"/",' +
@@ -742,7 +728,6 @@ function buildConstellationLoungePage(constellation, quickInfo) {
     '<div class="lounge-loader" id="lounge-loader">Loading live mode…</div>' +
     '<script type="application/json" id="lounge-data">' + dataJson + '</script>' +
     '<script src="/core/lib/postcard/postcard-runtime.js"></script>' +
-    LIVEDOC_SYNC_PORT_SCRIPT +
     '<script>window.Config={' +
     'codeBase:location.protocol+"//"+location.host+"/core/",' +
     'rootPath:location.protocol+"//"+location.host+"/",' +
@@ -814,7 +799,6 @@ function buildWikiIndexPage(constellation, pages) {
     '<div class="wiki-index-loader" id="wiki-index-loader">Loading live mode…</div>' +
     '<script type="application/json" id="wiki-index-data">' + dataJson + '</script>' +
     '<script src="/core/lib/postcard/postcard-runtime.js"></script>' +
-    LIVEDOC_SYNC_PORT_SCRIPT +
     '<script>window.Config={' +
     'codeBase:location.protocol+"//"+location.host+"/core/",' +
     'rootPath:location.protocol+"//"+location.host+"/",' +
@@ -874,7 +858,6 @@ function buildPersonalWikiIndexPage(handle, pages) {
     '<div class="wiki-index-loader" id="wiki-index-loader">Loading live mode…</div>' +
     '<script type="application/json" id="wiki-index-data">' + dataJson + '</script>' +
     '<script src="/core/lib/postcard/postcard-runtime.js"></script>' +
-    LIVEDOC_SYNC_PORT_SCRIPT +
     '<script>window.Config={' +
     'codeBase:location.protocol+"//"+location.host+"/core/",' +
     'rootPath:location.protocol+"//"+location.host+"/",' +

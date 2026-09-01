@@ -3055,9 +3055,11 @@ module("lively.identity.ConstellationLounge")
           try { data = JSON.parse(tokenXhr.responseText); } catch (e) { return; }
 
           self.yDoc = new Y.Doc({ gc: false });
-          var syncPort = (typeof window !== "undefined" && window.LIVEDOC_SYNC_PORT) || 1234;
+          // Same origin/port as the page itself -- LiveDocSyncServer.js
+          // rides the shared WS listener under /livedoc-sync/, no separate
+          // port to configure or inject any more.
           var wsScheme = (typeof location !== "undefined" && location.protocol === "https:") ? "wss:" : "ws:";
-          var wsUrl = wsScheme + "//" + location.hostname + ":" + syncPort;
+          var wsUrl = wsScheme + "//" + location.host + "/livedoc-sync";
           self.wsProvider = new WebsocketProvider(wsUrl, self._genesisObjId, self.yDoc, {
             connect: true,
             params: { token: data.token },

@@ -22,55 +22,76 @@
  * at the time; this one never did.
  *
  * Architecture:
- *   Runs a y-websocket server as a standalone process on its own port
- *   (POSTCARD_SYNC_PORT env var, default 1234 — kept as-is despite the file
- *   rename, to avoid silently breaking anyone who already has it set in a
- *   deploy config), not attached to life_star's shared http.Server. A
- *   shared-port migration was attempted and reverted: this app already
- *   funnels all 'upgrade' traffic on the shared server through a singleton
- *   (core/servers/support/websockets.js's WebSocketListener, used by
- *   WarpDropSignalingServer.js) built on the `websocket` npm package with a
- *   hard-coded 'lively-json' subprotocol — incompatible with y-websocket's
- *   binary Yjs sync protocol without a nontrivial connection-API adapter.
- *   A standalone port avoids that entirely; it just needs to be reachable
- *   over TLS wherever this app is deployed (the main port already is — this
- *   one additionally needs the same treatment, e.g. tunnel/reverse-proxy
- *   config exposing it too). Whether to actually do that migration is being
- *   scoped separately in DeployCheckList.md, now that the canvas feature
- *   (this file's main source of extra complexity) is gone.
+ *   Rides life_star's shared http.Server (the same one SessionTracker.js/
+ *   RoomSignalingServer.js/WarpDropSignalingServer.js use) rather than
+ *   running its own standalone listener on a separate port — a genuine
+ *   binary-protocol Yjs sync server sharing a TCP socket with a JSON-
+ *   envelope 'lively-json' protocol server, without adapting to that
+ *   protocol at all. The two coexist via a *raw pre-handshake* dispatch
+ *   layer in core/servers/support/websockets.js
+ *   (registerRawUpgradeHandler/unregisterRawUpgradeHandler,
+ *   WebSocketListener#_dispatchUpgrade) that inspects the incoming
+ *   upgrade request's URL path *before* either protocol's own handshake
+ *   logic runs, and routes to exactly one of them — never both (two
+ *   independent 'upgrade' listeners on the same server is unsafe: Node
+ *   calls every listener for an event, so a second, uncoordinated
+ *   listener would still fire even after a first one already upgraded the
+ *   socket). This file registers a `ws` package WebSocketServer in
+ *   `{noServer: true}` mode and hands it raw upgrades whose path starts
+ *   with `/livedoc-sync/`; the `websocket` npm package handles everything
+ *   else exactly as before, unchanged. A prior shared-port attempt (before
+ *   this raw-dispatch layer existed) tried adapting to the 'lively-json'
+ *   protocol wrapper directly and was reverted — `websockets.js`'s own
+ *   WebSocketServer.accept unconditionally calls
+ *   `request.accept('lively-json', ...)`, which throws for a client that
+ *   never requested that subprotocol (a stock Yjs client never does), and
+ *   separately JSON.parse()s every message, incompatible with binary Yjs
+ *   frames. This design sidesteps that protocol entirely instead of
+ *   adapting to it.
+ *
+ *   No separate port to reverse-proxy/TLS-terminate in production any
+ *   more — the client connects to the same origin the page itself was
+ *   served from, just a different path (see the client-side WebsocketProvider
+ *   call sites in ConstellationLounge.js/PostCardEditor.js/WikiEditor.js).
+ *
  *   Room/document IDs: post card objIds (12-char base64url) for wiki-mode
  *   post cards, or a constellation's genesisObjId for a Lounge presence
  *   room.
  *
- *   Cluster-aware (added alongside bin/lk-server.js's --workers support):
- *   Node's cluster module silently round-robin-distributes ANY .listen()
- *   call made from worker code across workers, not just life_star's main
- *   server — discovered live 2026-08-27 testing --workers 2 (see
- *   DeployCheckList.md's "Clustering" section) applying to this file's own
- *   standalone http.Server too, which would otherwise fragment the live
- *   `docs` Map across workers exactly like the state DeployCheckList.md
- *   already flags LiveDocSyncServer/SessionTracker/RoomSignalingServer
- *   for. Fixed here by only ever starting the real listener in the cluster
- *   primary (or a non-clustered single process) — see the cluster.isWorker
- *   check just above the startSyncServer() call at the bottom. A worker
- *   still requires this module for that side effect alone (see
- *   bin/lk-server.js) even though it now has nothing to call on it.
+ *   Cluster-aware, but no longer specially so: since this now registers
+ *   itself the same way as every other subserver (inside the exported
+ *   route function, called once per worker by SubserverHandler), each
+ *   cluster worker independently runs its own `ws` WebSocketServer against
+ *   its own per-worker share of the round-robin-distributed shared port —
+ *   exactly the same pattern SessionTracker.js/RoomSignalingServer.js
+ *   already use, no cluster-primary special case needed. (Previously, this
+ *   file ran its own standalone http.Server, which Node's cluster module
+ *   round-robins across workers just like any other .listen() call — that
+ *   required a cluster-primary-only gate plus an IPC bridge to forward
+ *   server-side writes to the primary; both are gone now, the IPC bridge
+ *   along with the addPlacementToSpace feature it existed for.) Two Yjs
+ *   clients on the same room landing on different workers of the same
+ *   instance now needs the same cross-process replication as two clients
+ *   on separate machines — already covered transparently by
+ *   support/live-doc-registry-redis.js below, which is fully
+ *   process-symmetric (a random per-process INSTANCE_ID, nothing
+ *   machine-keyed) and needed zero changes for this.
  *
- *   Cross-instance (separate machines/deployments, not just this process's
- *   own cluster workers): fixed via support/live-doc-registry-redis.js, the
- *   last of the three realtime-backplane subsystems DeployCheckList.md
- *   tracked. Opt-in via REDIS_URL (see liveDocRegistry below) — unset means
- *   exactly the per-process/per-cluster-primary-only behavior described
- *   above, untouched. A wired doc replicates its updates (and awareness/
- *   cursor state) to every other instance holding the same room via Redis
+ *   Cross-instance (separate machines/deployments) *and* cross-worker
+ *   (same machine, different cluster workers): fixed via
+ *   support/live-doc-registry-redis.js, the last of the three
+ *   realtime-backplane subsystems DeployCheckList.md tracked. Opt-in via
+ *   REDIS_URL (see liveDocRegistry below) — unset means each worker's
+ *   `docs` Map is genuinely isolated (same as running without clustering
+ *   at all). A wired doc replicates its updates (and awareness/cursor
+ *   state) to every other process holding the same room via Redis
  *   pub/sub. See that file's own header for the full design.
  *
  * life_star discovery:
- *   This file is in core/servers/ so life_star auto-discovers it. However,
- *   it is NOT an Express subserver — it returns an empty route function and
- *   starts the y-websocket process out-of-band as a side-effect of require().
- *   This is the documented life_star pattern for servers that manage their own
- *   HTTP upgrade outside Express.
+ *   This file is in core/servers/ so life_star auto-discovers it and calls
+ *   its exported route function once per worker, same as any other
+ *   subserver — it happens to also do the WebSocket raw-upgrade
+ *   registration there rather than register an Express route.
  *
  * Dependencies (must be installed):
  *   npm install yjs y-websocket ws
@@ -78,31 +99,34 @@
 
 'use strict';
 
-var http = require('http');
 var querystring = require('querystring');
-var cluster = require('cluster');
-var SYNC_PORT = parseInt(process.env.POSTCARD_SYNC_PORT, 10) || 1234;
+var websockets = require('./support/websockets');
 
 var constellationRegistry = require('./identity/ConstellationRegistry');
 var constellationSpace = require('./identity/ConstellationSpace');
 
-// Cross-instance Yjs replication (separate machines/deployments, not this
-// process's own cluster workers -- those already share one doc via the
-// cluster.isWorker/primary-only listener setup below). Opt-in via REDIS_URL,
+// Cross-instance AND cross-worker Yjs replication. Opt-in via REDIS_URL,
 // same idiom as RoomSignalingServer.js/SessionTracker.js's own backplanes:
-// decided once here at module load, unset means today's exact
-// per-process-only behavior, untouched. See
-// support/live-doc-registry-redis.js's header for the full design.
+// decided once here at module load, unset means each process's `docs` Map
+// is genuinely isolated. See support/live-doc-registry-redis.js's header
+// for the full design.
 var liveDocRegistry = process.env.REDIS_URL ? require('./support/live-doc-registry-redis') : null;
 
-// Hoisted to module scope (rather than local to startSyncServer) so the
+var LIVEDOC_PATH_PREFIX = '/livedoc-sync/';
+
+// Hoisted to module scope (rather than local to the route function) so the
 // WS connection handler below can reach the same live docs Map that
-// setupWSConnection itself uses. null until startSyncServer() succeeds.
+// setupWSConnection itself uses. null until setup below succeeds.
 var setupWSConnection = null, getYDoc = null, docs = null;
 
-// Lazy-load y-websocket to avoid hard failing if the package isn't installed yet.
-// The sync server is optional: post cards degrade to read-only if it's absent.
-function startSyncServer() {
+function isLiveDocPath(pathname) {
+  return pathname.indexOf(LIVEDOC_PATH_PREFIX) === 0;
+}
+
+// life_star subserver export — no Express route; registers a raw
+// pre-handshake upgrade handler on the shared WebSocket listener instead.
+// Called once per worker (or once, non-clustered) by SubserverHandler.
+module.exports = function (route, app) {
   var WebSocketServer;
   try {
     var ywsUtils = require('y-websocket/bin/utils');
@@ -122,19 +146,13 @@ function startSyncServer() {
   // with gc: false when that option is passed to setupWSConnection.
   // We do NOT maintain a separate docs map here — setupWSConnection is
   // the single source of truth for in-memory Y.Doc instances.
-
-  var server = http.createServer(function (req, res) {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Lively LiveDoc Sync Server');
-  });
-
-  var wss = new WebSocketServer({ server: server });
+  var wss = new WebSocketServer({ noServer: true });
 
   wss.on('connection', function (ws, req) {
-    // Extract objId and query params from URL: ws://host:port/<objId>?token=...
-    var urlParts = req.url ? req.url.replace(/^\//, '').split('?') : [''];
-    var objId = urlParts[0];
-    var query = querystring.parse(urlParts[1] || '');
+    // Extract objId and query params from URL: ws://host/livedoc-sync/<objId>?token=...
+    var pathAndQuery = req.url ? req.url.split('?') : [''];
+    var objId = pathAndQuery[0].slice(LIVEDOC_PATH_PREFIX.length);
+    var query = querystring.parse(pathAndQuery[1] || '');
 
     // Auth: check identity-did session cookie.
     // Full session-store auth (spec §5 step 2 caveat) is deferred until the
@@ -154,15 +172,14 @@ function startSyncServer() {
     }
 
     // setupWSConnection() is only ever reached after at least one async DB
-    // round trip (constellation lookup below, plus a second one for a
-    // constellation-space room). The client sends its first sync message
-    // (SyncStep1) immediately on WS open, well before that resolves, and
-    // Node's EventEmitter doesn't buffer events emitted before a listener
-    // exists — so without this, that first message is silently dropped and
-    // the Yjs sync handshake never completes (wsconnected stays true,
-    // synced never flips to true). Buffer raw messages from the moment the
-    // connection is accepted, then replay them once setupWSConnection has
-    // attached its real listener.
+    // round trip (constellation lookup below). The client sends its first
+    // sync message (SyncStep1) immediately on WS open, well before that
+    // resolves, and Node's EventEmitter doesn't buffer events emitted
+    // before a listener exists — so without this, that first message is
+    // silently dropped and the Yjs sync handshake never completes
+    // (wsconnected stays true, synced never flips to true). Buffer raw
+    // messages from the moment the connection is accepted, then replay
+    // them once setupWSConnection has attached its real listener.
     var pendingMessages = [];
     function bufferMessage(data) { pendingMessages.push(data); }
     ws.on('message', bufferMessage);
@@ -202,46 +219,34 @@ function startSyncServer() {
       // hydrate from a persisted snapshot any more (the canvas feature that
       // used to carry one here was removed), so just open the doc directly,
       // same as the wiki-mode branch above.
-      var verified = constellationSpace.verifySpaceToken(query.token, objId);
-      var viewerDid = verified ? verified.did : null;
-      if (!verified || !constellationRegistry.canRead(constellation, viewerDid)) {
-        console.warn('[LiveDocSync] Rejected constellation room connection for ' + objId);
-        ws.removeListener('message', bufferMessage);
-        ws.close(1008, 'Unauthorized');
-        return;
-      }
+      //
+      // verifySpaceToken is async (it may need one IPC round trip to the
+      // cluster primary for the shared token secret, same as mintSpaceToken
+      // already needed -- see ConstellationSpace.js's own header for why
+      // this now applies to verify too, not just mint, since this file
+      // stopped being cluster-primary-only).
+      constellationSpace.verifySpaceToken(query.token, objId, function (err, verified) {
+        var viewerDid = verified ? verified.did : null;
+        if (err || !verified || !constellationRegistry.canRead(constellation, viewerDid)) {
+          console.warn('[LiveDocSync] Rejected constellation room connection for ' + objId);
+          ws.removeListener('message', bufferMessage);
+          ws.close(1008, 'Unauthorized');
+          return;
+        }
 
-      var isNewRoom = !docs.has(objId);
-      var doc = getYDoc(objId, false);
-      if (liveDocRegistry && isNewRoom) liveDocRegistry.wireDoc(objId, doc);
-      finishSetupWSConnection({ docName: objId, gc: false });
+        var isNewRoom = !docs.has(objId);
+        var doc = getYDoc(objId, false);
+        if (liveDocRegistry && isNewRoom) liveDocRegistry.wireDoc(objId, doc);
+        finishSetupWSConnection({ docName: objId, gc: false });
+      });
     });
   });
 
-  server.listen(SYNC_PORT, function () {
-    console.log('[LiveDocSync] y-websocket server listening on port ' + SYNC_PORT);
-  });
+  function handleRawUpgrade(req, socket, head) {
+    wss.handleUpgrade(req, socket, head, function (ws) {
+      wss.emit('connection', ws, req);
+    });
+  }
 
-  server.on('error', function (err) {
-    console.error('[LiveDocSync] Server error:', err.message);
-  });
-}
-
-// Only the cluster primary (or a non-clustered single process) starts the
-// real listener — a worker doing this too would silently fragment the live
-// `docs` Map across workers (see this file's header). cluster.isWorker is
-// false for both the primary and a non-clustered process, so this is a
-// no-op behavior change outside of --workers clustering.
-if (!cluster.isWorker) startSyncServer();
-
-// life_star subserver export — empty route function (this module manages its
-// own HTTP server, not an Express route).
-module.exports = function (route, app) {
-  // No-op Express registration. The WebSocket server is started above.
+  websockets.registerRawUpgradeHandler({ match: isLiveDocPath, handler: handleRawUpgrade });
 };
-// The actual port this process's sync server is listening on (or would be,
-// if y-websocket/ws weren't installed) -- so page-template code
-// (IdentityServer.js) can tell connecting clients where to find it instead
-// of every client-side call site guessing a hardcoded default. See
-// IdentityServer.js's own window.LIVEDOC_SYNC_PORT injection.
-module.exports.SYNC_PORT = SYNC_PORT;

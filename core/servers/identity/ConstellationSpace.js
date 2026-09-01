@@ -18,22 +18,26 @@ var crypto = require('crypto');
 var cluster = require('cluster');
 
 // In-memory secret for space-access tokens. Under Node's cluster module,
-// only the primary ever verifies these tokens (LiveDocSyncServer.js's WS
-// handler, the sole caller of verifySpaceToken below, only ever runs there
-// -- see that file's own header), but minting (mintSpaceToken, called from
-// a normal Express route) happens in whichever worker the request round-
-// robins to -- never the primary, which never runs an Express app itself.
-// A per-process random secret meant mint and verify were *never* the same
-// process once clustering was on -- confirmed live 2026-08-27 as a
-// permanent (not probabilistic) WS reconnect-loop under --workers, not the
-// pre-existing "wsconnected:true, synced:false" bug this looked like at
-// first (that one is a stable stuck connection; this one repeatedly
-// connects then gets closed with code 1008 Unauthorized and retries).
-// Fixed the same way as support/room-token-store.js: the primary generates
-// and holds the one canonical secret; each worker fetches it once via IPC
-// at startup and caches it forever after, rather than generating its own.
-// Still regenerated on every process restart, same as before -- tokens
-// only need to survive a single WS handshake.
+// both minting (mintSpaceToken, from a normal Express route) AND verifying
+// (verifySpaceToken, from LiveDocSyncServer.js's WS handler) can now run in
+// ANY worker -- confirmed live 2026-08-27 as a permanent (not probabilistic)
+// WS reconnect-loop under --workers when this was still generated
+// per-process (mint and verify were never the same process). Fixed the same
+// way as support/room-token-store.js: the primary generates and holds the
+// one canonical secret; each worker fetches it once via IPC at startup and
+// caches it forever after, rather than generating its own. Still
+// regenerated on every process restart, same as before -- tokens only need
+// to survive a single WS handshake.
+//
+// verifySpaceToken used to be able to assume TOKEN_SECRET was always
+// already set, back when LiveDocSyncServer.js ran its own standalone port
+// and only the cluster primary ever handled WS connections. Now that
+// LiveDocSyncServer.js rides the shared per-worker listener (see its own
+// header), a worker's very first LiveDoc connection could plausibly be a
+// verify for a token some OTHER worker minted, before this worker has ever
+// locally minted one itself -- so verifySpaceToken needs the same
+// ensureSecret gate mintSpaceToken already has, not just a defensive null
+// check. See verifySpaceToken below.
 var TOKEN_SECRET = cluster.isWorker ? null : crypto.randomBytes(32);
 var TOKEN_TTL_MS = 60 * 1000; // 1 minute — long enough for the WS handshake
 
@@ -102,15 +106,22 @@ function mintSpaceToken(constellation, identity, thenDo) {
   });
 }
 
-// Returns { did, genesisObjId } on success, or null if the token is
-// missing/malformed/expired/forged/for the wrong room. Only ever called
-// from LiveDocSyncServer.js's WS handler, which only ever runs in the
-// cluster primary (or a non-clustered process) -- so TOKEN_SECRET is
-// always already set here, no async handshake needed the way
-// mintSpaceToken needs one.
-function verifySpaceToken(token, expectedGenesisObjId) {
+// Calls thenDo(err, result) where result is { did, genesisObjId } on
+// success, or null if the token is missing/malformed/expired/forged/for
+// the wrong room. Async for the same reason mintSpaceToken is: a worker's
+// first call (mint OR verify, whichever happens first) may need one IPC
+// round trip to the primary for the shared secret; cached forever after.
+function verifySpaceToken(token, expectedGenesisObjId, thenDo) {
+  ensureSecret(function (err) {
+    if (err) return thenDo(err, null);
+    thenDo(null, _verifySpaceTokenSync(token, expectedGenesisObjId));
+  });
+}
+
+// TOKEN_SECRET is guaranteed set by the time this runs -- only called from
+// verifySpaceToken above, after ensureSecret's callback fires.
+function _verifySpaceTokenSync(token, expectedGenesisObjId) {
   if (typeof token !== 'string') return null;
-  if (!TOKEN_SECRET) return null; // defensive: should never happen, see above
   var parts = token.split('.');
   if (parts.length !== 2) return null;
 

@@ -411,30 +411,20 @@ function launchServer() {
   // exists means every worker's very first request is already covered.
   require("../core/servers/support/room-token-store").wireClusterPrimary();
 
-  // LiveDocSyncServer.js's own standalone http.Server (Yjs collaborative
-  // sync for wiki-mode post cards and constellation presence rooms) would
-  // otherwise get silently round-robin-distributed across workers by
-  // cluster too, just like the main port -- fragmenting its in-memory docs
-  // Map. Requiring it here (no `global.lively` needed) makes THIS primary
-  // process the one that actually starts the real listener (cluster.isWorker
-  // is false here, see that file's own gate). Bare require -- no method
-  // call needed: the module has no cluster-IPC bridge to wire up any more
-  // (that existed only for ConstellationSpace.js's addPlacementToSpace,
-  // removed along with the canvas feature), but the require() itself still
-  // has to run here for its module-load side effect of starting the
-  // listener.
-  require("../core/servers/LiveDocSyncServer");
+  // LiveDocSyncServer.js no longer runs its own standalone http.Server --
+  // it rides the shared per-worker listener the same way SessionTracker.js/
+  // RoomSignalingServer.js already do, registered from inside each
+  // worker's own subserver loading, not from the primary. Nothing for the
+  // primary to require or wire up here any more.
 
   // ConstellationSpace.js's space-access TOKEN_SECRET has the exact same
-  // shape of bug as room-token-store.js's problem, discovered live testing
-  // the fix above: verifySpaceToken only ever runs in this primary process
-  // (inside LiveDocSyncServer.js's WS handler), but mintSpaceToken runs
-  // wherever an ordinary Express route round-robins to -- never the
-  // primary, which never runs an Express app itself. A per-process random
-  // secret meant mint and verify were NEVER the same process once
-  // clustering was on -- not just probabilistic, always broken. This
-  // wiring lets each worker fetch the primary's one canonical secret once
-  // via IPC and cache it, rather than generating its own.
+  // shape of bug as room-token-store.js's problem: both mintSpaceToken
+  // (Express route) AND verifySpaceToken (LiveDocSyncServer.js's WS
+  // handler, now running in every worker rather than just the primary)
+  // can run in any worker. A per-process random secret would mean mint and
+  // verify are never guaranteed to be the same process once clustering is
+  // on. This wiring lets each worker fetch the primary's one canonical
+  // secret once via IPC and cache it, rather than generating its own.
   require("../core/servers/identity/ConstellationSpace").wireClusterPrimary();
 
   writePid(process, function (err) {

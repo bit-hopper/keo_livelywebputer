@@ -10,13 +10,10 @@
  *   - ProseMirror EditorView appended to renderContext().shapeNode (DOM).
  *     This is the same pattern as CodeEditor which appends CodeMirror.
  *   - ySyncPlugin + yUndoPlugin bind EditorView ↔ Y.Doc.getXmlFragment('prosemirror').
- *   - WebsocketProvider (y-websocket) attaches to LiveDocSyncServer on the
- *     port the server injects as window.LIVEDOC_SYNC_PORT (falls back to
- *     1234 if unset), using the postcard objId as room name. The server-side
- *     env var controlling that port is still named POSTCARD_SYNC_PORT
- *     (kept through LiveDocSyncServer.js's rename for deploy-config
- *     back-compat — see that file's own header) — only this client-facing
- *     global was renamed to match, since nothing external depends on it.
+ *   - WebsocketProvider (y-websocket) attaches to LiveDocSyncServer at
+ *     /livedoc-sync/<objId> on the same origin/port as the page itself
+ *     (LiveDocSyncServer.js rides the shared WS listener, no separate
+ *     port), using the postcard objId as room name.
  *   - Auto-save: debounced 2 s after the last change, serializes to a
  *     PostCardSerializer envelope and PUTs /@:handle/:objId.
  *   - Title field: plain text input above the editor, not part of the yDoc
@@ -1447,13 +1444,13 @@ module('lively.identity.PostCardEditor')
           return;
         }
 
-        // LiveDocSyncServer runs on its own standalone port (must be
-        // separately reachable over TLS wherever this app is deployed).
-        // wss: required whenever the page itself is https: — browsers
-        // block insecure ws: connections from a secure page.
-        var syncPort = (typeof window !== 'undefined' && window.LIVEDOC_SYNC_PORT) || 1234;
+        // Same origin/port as the page itself -- LiveDocSyncServer.js rides
+        // the shared WS listener under /livedoc-sync/, no separate port to
+        // configure or inject any more. wss: required whenever the page
+        // itself is https: — browsers block insecure ws: connections from
+        // a secure page.
         var wsScheme = (typeof location !== 'undefined' && location.protocol === 'https:') ? 'wss:' : 'ws:';
-        var wsUrl = wsScheme + '//' + location.hostname + ':' + syncPort;
+        var wsUrl = wsScheme + '//' + location.host + '/livedoc-sync';
         try {
           this.wsProvider = new WebsocketProvider(wsUrl, this._objId, this.yDoc, { connect: true });
           this.wsProvider.on('status', function (event) {
