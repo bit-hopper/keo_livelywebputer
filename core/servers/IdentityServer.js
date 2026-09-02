@@ -362,6 +362,25 @@ function createUserConfigFile(handle, thenDo) {
   });
 }
 
+// Identity is DID-based and federation is a real design goal (portable
+// identity across separately-deployed instances) -- an absolute URL this
+// server hands back for something it hosts (e.g. a blob) must point at this
+// instance's own stable, real public address, never at whichever hostname
+// alias happened to receive the current request. req.protocol/req.get('host')
+// reflect the literal incoming Host header, which can be a CDN edge, a
+// staging/preview alias, or (confirmed live) a Cloudflare-Access-gated dev
+// domain never meant to be public -- baking that in breaks the URL for any
+// later viewer who isn't on that same alias (see DeployCheckList.md's
+// avatar/banner ORB-block writeup). PUBLIC_BASE_URL lets an operator pin the
+// one real canonical address once at deploy time; unset (the default, and
+// every existing deploy today) falls back to exactly today's request-derived
+// behavior, so this is purely additive.
+function canonicalOrigin(req) {
+  var configured = process.env.PUBLIC_BASE_URL;
+  if (configured) return configured.replace(/\/+$/, "");
+  return req.protocol + "://" + req.get("host");
+}
+
 // ─── HTML helpers (world bootstrap / access-denied / access-requested pages) ──
 
 function escapeHtml(str) {
@@ -1908,7 +1927,12 @@ module.exports = function (route, app) {
 
     function onResult(err, result) {
       if (err) return res.status(400).json({ error: String(err.message || err) });
-      res.json({ ok: true, cid: result.cid, size: result.size });
+      res.json({
+        ok: true,
+        cid: result.cid,
+        size: result.size,
+        url: canonicalOrigin(req) + "/@" + handle + "/blobs/" + result.cid,
+      });
     }
 
     // body-parser does not process binary content — stream raw bytes into

@@ -58,6 +58,8 @@ module("lively.media.Musicpod")
           "_playerMountEl",
           "_activeDragCleanup",
           "_volTimer",
+          "_queueIds",
+          "_queueTitlesLoaded",
         ],
       },
 
@@ -217,8 +219,17 @@ module("lively.media.Musicpod")
           }, 1000);
         },
 
+        // Only builds the queue's own data structure (needed for track
+        // navigation regardless of whether the Queue screen is ever opened)
+        // -- title lookups are deferred to _ensureQueueTitlesLoaded, called
+        // once the user actually opens the Queue screen. Was: an unconditional
+        // noembed.com fetch per playlist entry here, fired on every single
+        // page load whether or not the Queue screen was ever viewed (measured
+        // live: 13 simultaneous third-party requests per load on start.html,
+        // a free service this app doesn't control the rate limits of).
         _hydrateQueue: function (ids) {
-          var self = this;
+          this._queueIds = ids;
+          this._queueTitlesLoaded = false;
           this.setState({
             queue: ids.map(function (id, i) {
               return { id: id, title: "Loading…", index: i };
@@ -226,7 +237,14 @@ module("lively.media.Musicpod")
             currentIndex: 0,
             queueIndex: 0,
           });
-          ids.forEach(function (id, i) {
+        },
+
+        // Idempotent -- safe to call every time the Queue screen opens.
+        _ensureQueueTitlesLoaded: function () {
+          if (this._queueTitlesLoaded || !this._queueIds) return;
+          this._queueTitlesLoaded = true;
+          var self = this;
+          this._queueIds.forEach(function (id, i) {
             fetch("https://noembed.com/embed?url=https://www.youtube.com/watch?v=" + id)
               .then(function (r) {
                 return r.json();
@@ -327,6 +345,7 @@ module("lively.media.Musicpod")
         _selectMenuItem: function (i) {
           var item = this.menuLabels[i];
           var screen = item === "Now Playing" ? "now-playing" : "queue";
+          if (screen === "queue") this._ensureQueueTitlesLoaded();
           this.setState({ screen: screen, menuIndex: i });
         },
 

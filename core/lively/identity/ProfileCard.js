@@ -2330,8 +2330,17 @@ module("lively.identity.ProfileCard")
                 return;
               }
               close();
+              // Prefer the server-computed, federation-safe canonical URL
+              // (see IdentityServer.js's canonicalOrigin / PUBLIC_BASE_URL) —
+              // location.origin-derived construction here permanently baked
+              // in whichever hostname alias happened to serve this page at
+              // upload time, confirmed live to produce a real, permanently
+              // broken avatarUrl when uploaded via a Cloudflare-Access-gated
+              // dev alias and then viewed from anywhere else. The fallback
+              // below only fires against an old server that hasn't picked up
+              // this fix yet.
               var base = lively.identity.did.baseUrl();
-              onDone(base + '/@' + user.handle + '/blobs/' + result.blobCid);
+              onDone(result.url || (base + '/@' + user.handle + '/blobs/' + result.blobCid));
             });
           }, 'image/jpeg', 0.92);
         });

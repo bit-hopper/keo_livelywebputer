@@ -155,8 +155,13 @@ module('lively.identity.FileCrypto')
               c.sha256(blob.bytes, function (err, blobCid) {
                 if (err) return thenDo(err);
 
-                self._putBlob(user.handle, blobCid, blob.bytes, function (err) {
+                self._putBlob(user.handle, blobCid, blob.bytes, function (err, putResult) {
                   if (err) return thenDo(err);
+                  // Server-computed, federation-safe absolute URL for this
+                  // blob (see IdentityServer.js's canonicalOrigin) -- never
+                  // construct one client-side from location.origin, which
+                  // just reflects whichever hostname alias served this page.
+                  var blobUrl = putResult && putResult.url;
 
                   var metadata = {
                     name: fileName,
@@ -188,7 +193,7 @@ module('lively.identity.FileCrypto')
                         // with dek) for callers that embed both directly
                         // rather than going through fetchAndDecrypt — e.g.
                         // postcard attachments (Encryption.md §6).
-                        thenDo(null, { objId: gen.objId, blobCid: blobCid, blobNonce: blob.nonce, dek: dek });
+                        thenDo(null, { objId: gen.objId, blobCid: blobCid, blobNonce: blob.nonce, dek: dek, url: blobUrl });
                       });
                     }
 
