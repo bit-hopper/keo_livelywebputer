@@ -549,7 +549,7 @@ lively.morphic.Text.addMethods(
         }, '');
     },
     setFontSizeHTML: function(ctx, size) {
-        if (ctx.textNode) ctx.textNode.style.fontSize = size + 'pt'
+        if (ctx.textNode) ctx.textNode.style.fontSize = (typeof size === 'number' && !isNaN(size)) ? size + 'pt' : "";
     },
     setFontFamilyHTML: function(ctx, fontName) {
         if (ctx.textNode) ctx.textNode.style.fontFamily = fontName || "";
@@ -818,7 +818,7 @@ lively.morphic.OldList.addMethods(
 },
 'styling', {
     setFontSizeHTML: function(ctx, value) {
-        if (ctx.listNode) ctx.listNode.style.fontSize = value + 'pt'
+        if (ctx.listNode) ctx.listNode.style.fontSize = (typeof value === 'number' && !isNaN(value)) ? value + 'pt' : "";
     },
     setFontFamilyHTML: function(ctx, value) {
         if (ctx.listNode) ctx.listNode.style.fontFamily = value
