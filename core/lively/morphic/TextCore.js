@@ -558,17 +558,16 @@ lively.morphic.Morph.subclass('lively.morphic.Text', Trait('TextChunkOwner'),
             fixedWidth = isClip || this.fixedWidth,
             fixedHeight = isClip || this.fixedHeight,
             style = textNode.style,
-            prefix, padding, isMoz = !!UserAgent.fireFoxVersion;
+            padding, isMoz = !!UserAgent.fireFoxVersion;
 
         if (fixedWidth || fixedHeight) {
             // only compute it when needed
             padding = this.getPadding();
-            prefix = this.renderContext().domInterface.html5CssPrefix;
         }
 
         if (fixedHeight) {
             var paddingHeight = padding ? padding.top() + padding.bottom() : 0,
-                newHeight = prefix + 'calc(100% - ' + paddingHeight + 'px)';
+                newHeight = 'calc(100% - ' + paddingHeight + 'px)';
             style.minHeight = newHeight;
             // rksm: Sep 30, 2019: fixes the scrollde down selection in text windows
             // when they contain more text than fits in there non-clipped content
@@ -583,7 +582,7 @@ lively.morphic.Morph.subclass('lively.morphic.Text', Trait('TextChunkOwner'),
 
         if (fixedWidth) {
             var paddingWidth = padding ? padding.left() + padding.right() : 0,
-                newWidth = prefix + 'calc(100% - ' + paddingWidth + 'px)';
+                newWidth = 'calc(100% - ' + paddingWidth + 'px)';
             style.minWidth = newWidth;
             style.maxWidth = newWidth;
         } else {
