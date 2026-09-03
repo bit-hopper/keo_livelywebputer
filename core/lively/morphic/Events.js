@@ -791,7 +791,7 @@ lively.morphic.Morph.addMethods(
         this.eventsAreIgnored = false;
     },
     setPointerEvents: function(value) { return this.morphicSetter('PointerEvents', value) },
-    getPointerEvents: function() { return this.morphicGetter('PointerEvents') },
+    getPointerEvents: function() { return this.morphicGetter('PointerEvents') || 'auto' },
 
     areEventsIgnoredOrDisabled: function() {
         return this.eventsAreIgnored || this.eventsAreDisabled;
