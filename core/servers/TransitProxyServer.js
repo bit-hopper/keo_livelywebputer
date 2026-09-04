@@ -122,6 +122,20 @@ function transitRequest(endpoint, query, thenDo) {
 // bare object in others — normalize both to a plain array.
 function asArray(x) { return x == null ? [] : (Array.isArray(x) ? x : [x]); }
 
+// BART's real LineRef values look like "Orange-S" / "Yellow-N" (color name,
+// dash, direction) — confirmed live against a real response. Extracting the
+// color prefix gives the same key vocabulary as lively.transit.BartData's
+// own line.key (YELLOW/ORANGE/RED/GREEN/BLUE/GREY), so the client can look
+// up its own canonical label/color instead of showing 511's much more
+// verbose PublishedLineName ("Richmond to Berryessa/North San Jose").
+function lineKeyFromRef(lineRef) {
+  return lineRef ? lineRef.split('-')[0].toUpperCase() : null;
+}
+
+// StopMonitoring's real root is ServiceDelivery directly; VehicleMonitoring's
+// real root wraps that one level deeper in Siri — confirmed live, both
+// against real responses, not assumed from spec alone (this pair of
+// endpoints is NOT symmetric, despite looking like it should be).
 function normalizeStopMonitoring(raw) {
   var delivery = raw && raw.ServiceDelivery && asArray(raw.ServiceDelivery.StopMonitoringDelivery)[0];
   var visits = delivery ? asArray(delivery.MonitoredStopVisit) : [];
@@ -131,6 +145,7 @@ function normalizeStopMonitoring(raw) {
     var expected = call.ExpectedArrivalTime || call.AimedArrivalTime || null;
     return {
       line: mvj.PublishedLineName || mvj.LineRef || '?',
+      lineKey: lineKeyFromRef(mvj.LineRef),
       destination: mvj.DestinationName || '',
       stopName: call.StopPointName || '',
       expectedArrival: expected,
@@ -140,7 +155,8 @@ function normalizeStopMonitoring(raw) {
 }
 
 function normalizeVehicleMonitoring(raw) {
-  var delivery = raw && raw.ServiceDelivery && asArray(raw.ServiceDelivery.VehicleMonitoringDelivery)[0];
+  var serviceDelivery = raw && ((raw.Siri && raw.Siri.ServiceDelivery) || raw.ServiceDelivery);
+  var delivery = serviceDelivery && asArray(serviceDelivery.VehicleMonitoringDelivery)[0];
   var activities = delivery ? asArray(delivery.VehicleActivity) : [];
   return activities.map(function (activity) {
     var mvj = activity.MonitoredVehicleJourney || {};
@@ -148,6 +164,7 @@ function normalizeVehicleMonitoring(raw) {
     return {
       vehicleId: mvj.VehicleRef || null,
       line: mvj.PublishedLineName || mvj.LineRef || '?',
+      lineKey: lineKeyFromRef(mvj.LineRef),
       destination: mvj.DestinationName || '',
       lat: loc.Latitude != null ? parseFloat(loc.Latitude) : null,
       lon: loc.Longitude != null ? parseFloat(loc.Longitude) : null,

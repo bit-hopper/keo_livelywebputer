@@ -258,7 +258,7 @@ module("lively.transit.TransitMapMorph")
               return '<div style="display:flex;align-items:center;gap:6px;margin:3px 0;">' +
                 '<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:' +
                 (self._colorForLineKey(p.lineKey) || "#999") + ';"></span>' +
-                '<span style="font-weight:600;">' + self._escapeHtml(p.line) + '</span>' +
+                '<span style="font-weight:600;">' + self._escapeHtml(self._labelForLineKey(p.lineKey) || p.line) + '</span>' +
                 '<span style="color:#555;">→ ' + self._escapeHtml(p.destination) + '</span>' +
                 '<span style="margin-left:auto;font-weight:600;">' +
                 (p.minutesAway == null ? "?" : p.minutesAway) + ' min</span>' +
@@ -285,6 +285,15 @@ module("lively.transit.TransitMapMorph")
           return line && line.color;
         },
 
+        // Prefer this repo's own canonical "Yellow Line" style label over
+        // 511.org's much more verbose PublishedLineName ("Richmond to
+        // Berryessa/North San Jose") when the response's LineRef resolved
+        // to a known line — falls back to whatever the caller already has.
+        _labelForLineKey: function (lineKey) {
+          var line = lively.transit.BartData.lines.filter(function (l) { return l.key === lineKey; })[0];
+          return line && line.label;
+        },
+
         _escapeHtml: function (s) {
           return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
             return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
@@ -304,12 +313,10 @@ module("lively.transit.TransitMapMorph")
           lively.transit.TransitClient.vehicleMonitoring(function (err, result) {
             if (self._destroyed) return;
             self._renderVehicles(result.vehicles || []);
-            // Simulated data is purely local math (cheap, no external
-            // network hit — the proxy returns 503 instantly) so we can
-            // poll it fast for a smooth "live" demo; real 511.org data
-            // polls slower to respect the API's per-token rate limit.
-            var nextDelay = result.simulated ? 2000 : 30000;
-            self._vehiclePollTimer = setTimeout(function () { self._pollVehiclesOnce(); }, nextDelay);
+            // No simulated fallback for vehicles (see TransitClient.js) —
+            // always a real network call, so poll at a steady rate that
+            // respects 511.org's per-token rate limit.
+            self._vehiclePollTimer = setTimeout(function () { self._pollVehiclesOnce(); }, 30000);
           });
         },
 

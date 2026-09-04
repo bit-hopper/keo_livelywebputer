@@ -176,7 +176,32 @@ module("lively.transit.DestinationPlanner")
           return true;
         };
 
-        function describeLine(lineKey) {
+        // Strips punctuation/spacing so 511.org's destination text ("Berryessa /
+    // North San Jose") can be compared against this repo's own station name
+    // ("Berryessa/North San Jose") despite differing formatting.
+    function normalizeStationName(s) {
+      return String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    }
+
+    // A line runs in two directions; `leg` only tells us the line and the
+    // next station in the direction we actually want (confirmed live: a
+    // naive lineKey-only match picked a real Green Line train, correctly on
+    // the right line, but headed the opposite way — toward Daly City
+    // instead of toward Fremont). Compares leg.stations[0]->[1] against the
+    // line's own full station order to find which of the line's two real
+    // termini we're headed toward, then matches predictions whose
+    // `destination` names that terminus.
+    function directionTerminusName(leg) {
+      var line = lively.transit.BartData.lines.filter(function (l) { return l.key === leg.lineKey; })[0];
+      if (!line || leg.stations.length < 2) return null;
+      var i0 = line.stations.indexOf(leg.stations[0]);
+      var i1 = line.stations.indexOf(leg.stations[1]);
+      if (i0 === -1 || i1 === -1) return null;
+      var terminusAbbr = i1 > i0 ? line.stations[line.stations.length - 1] : line.stations[0];
+      return lively.transit.BartData.stationName(terminusAbbr);
+    }
+
+    function describeLine(lineKey) {
           var line = lively.transit.BartData.lines.filter(function (l) { return l.key === lineKey; })[0];
           return line ? line.label : lineKey;
         }
@@ -201,8 +226,12 @@ module("lively.transit.DestinationPlanner")
               resultText.textString = summary + "\n\nLooking up next departure…";
               lively.transit.TransitClient.stopMonitoring(fromAbbr, function (err, result) {
                 var firstLineKey = legs[0].lineKey;
-                var pred = (result.predictions || []).filter(function (p) { return p.lineKey === firstLineKey; })[0] ||
-                  (result.predictions || [])[0];
+                var wantTerminus = normalizeStationName(directionTerminusName(legs[0]));
+                var predictions = result.predictions || [];
+                var pred = predictions.filter(function (p) {
+                  return p.lineKey === firstLineKey &&
+                    (!wantTerminus || normalizeStationName(p.destination) === wantTerminus);
+                })[0] || predictions.filter(function (p) { return p.lineKey === firstLineKey; })[0];
                 var departureLine = pred
                   ? "\n\nNext departure: " + pred.minutesAway + " min" + (result.simulated ? " (simulated)" : "")
                   : "\n\nNo upcoming departure info.";

@@ -9,12 +9,15 @@
  * proxy needed).
  *
  * Until a real 511.org token is configured (see TransitProxyServer.js's
- * doc comment), the proxy responds 503 — every method here falls back to
- * clearly-labeled simulated data in that case (`simulated: true` on the
- * result) rather than silently showing nothing or fabricating "live" data
- * that isn't. Simulated arrival times are deterministic per
- * (station, line, 90-second bucket) so they count down smoothly and don't
- * jump around on repeated polls.
+ * doc comment), the proxy responds 503 — stopMonitoring falls back to
+ * clearly-labeled simulated arrival predictions in that case
+ * (`simulated: true` on the result), deterministic per (station, line,
+ * ~14-minute bucket) so they count down smoothly and don't jump around on
+ * repeated polls. vehicleMonitoring has no such fallback: BART's 511.org
+ * feed never publishes real-time vehicle GPS at all (confirmed live,
+ * repeatedly, during service hours), so simulating moving dots for it would
+ * be permanent decoration misrepresenting real trains, not a stand-in for a
+ * temporary gap — it just reports real vehicles, empty if there are none.
  */
 
 module("lively.transit.TransitClient")
@@ -64,9 +67,13 @@ module("lively.transit.TransitClient")
 
       // thenDo(err, { predictions: [...], simulated: bool })
       stopMonitoring: function (stationAbbr, thenDo) {
+        var station = lively.transit.BartData.stations[stationAbbr];
+        if (!station || !station.stopId511) {
+          return thenDo(null, { predictions: simulatedPredictionsFor(stationAbbr), simulated: true });
+        }
         var url = PROXY_BASE + "stop-monitoring?agency=" +
           encodeURIComponent(lively.transit.BartData.agency) +
-          "&stopcode=" + encodeURIComponent(stationAbbr);
+          "&stopcode=" + encodeURIComponent(station.stopId511);
         fetch(url).then(function (res) {
           if (res.status === 503) return null; // not configured — fall back below
           if (!res.ok) throw new Error("HTTP " + res.status);
@@ -81,21 +88,24 @@ module("lively.transit.TransitClient")
         });
       },
 
-      // thenDo(err, { vehicles: [...], simulated: bool })
-      // Simulated vehicles: one per line, interpolated along that line's
-      // station sequence based on wall-clock time so they visibly move on
-      // repeated polls, deterministic per line (no randomness).
+      // thenDo(err, { vehicles: [...], simulated: false })
+      // No simulated fallback here (unlike stopMonitoring): confirmed live,
+      // repeatedly, during BART service hours, that BART's 511.org feed
+      // never populates VehicleActivity at all — it publishes StopMonitoring
+      // arrival predictions but not real-time vehicle GPS. Fabricating
+      // moving dots for a feed that will never produce real ones would be
+      // permanently-misleading decoration, not a stand-in for a temporary
+      // gap, so this just reports whatever's really there — empty, if BART
+      // doesn't have it.
       vehicleMonitoring: function (thenDo) {
         var url = PROXY_BASE + "vehicle-monitoring?agency=" + encodeURIComponent(lively.transit.BartData.agency);
         fetch(url).then(function (res) {
-          if (res.status === 503) return null;
-          if (!res.ok) throw new Error("HTTP " + res.status);
+          if (!res.ok) return { vehicles: [] }; // not configured, or any other error — just empty
           return res.json();
         }).then(function (data) {
-          if (!data) return thenDo(null, { vehicles: simulatedVehicles(), simulated: true });
-          thenDo(null, { vehicles: data.vehicles || [], simulated: false });
+          thenDo(null, { vehicles: (data && data.vehicles) || [], simulated: false });
         }).catch(function () {
-          thenDo(null, { vehicles: simulatedVehicles(), simulated: true });
+          thenDo(null, { vehicles: [], simulated: false });
         });
       },
 
@@ -122,39 +132,5 @@ module("lively.transit.TransitClient")
       },
 
     };
-
-    // ─── simulated vehicle positions (module-private helper) ──────────────────
-
-    function simulatedVehicles() {
-      var now = Date.now();
-      var vehicles = [];
-      lively.transit.BartData.lines.forEach(function (line) {
-        if (line.stations.length < 2) return;
-        var seed = stableHash(line.key);
-        var legDurationMs = 20000; // 20s to "travel" between adjacent stations, for a visibly-moving demo
-        var totalLegs = (line.stations.length - 1) * 2; // there-and-back loop
-        var cyclePos = Math.floor(((now + seed) / legDurationMs)) % totalLegs;
-        var t = (((now + seed) % legDurationMs) / legDurationMs);
-        var goingForward = cyclePos < (line.stations.length - 1);
-        var legIndex = goingForward ? cyclePos : (totalLegs - cyclePos - 1);
-        var fromIdx = goingForward ? legIndex : legIndex + 1;
-        var toIdx = goingForward ? legIndex + 1 : legIndex;
-        var from = lively.transit.BartData.stations[line.stations[fromIdx]];
-        var to = lively.transit.BartData.stations[line.stations[toIdx]];
-        if (!from || !to) return;
-        vehicles.push({
-          vehicleId: "sim-" + line.key,
-          line: line.label,
-          lineKey: line.key,
-          destination: lively.transit.BartData.stationName(
-            goingForward ? line.stations[line.stations.length - 1] : line.stations[0]
-          ),
-          lat: from.lat + (to.lat - from.lat) * t,
-          lon: from.lon + (to.lon - from.lon) * t,
-          bearing: null,
-        });
-      });
-      return vehicles;
-    }
 
   }); // end module('lively.transit.TransitClient')
