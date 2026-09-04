@@ -85,6 +85,9 @@ core/apis/github-api.json
 # Klipy API (GIF/sticker search) — see core/servers/KlipyProxyServer.js
 core/apis/klipy-api.json
 
+# 511.org transit API (live BART predictions) — see core/servers/TransitProxyServer.js
+core/apis/511-api.json
+
 # HTTP / server #
 htpasswd
 .htpasswd
@@ -139,3 +142,4 @@ build/
 # Runtime
 tmp/
 temp/
+*.rdb

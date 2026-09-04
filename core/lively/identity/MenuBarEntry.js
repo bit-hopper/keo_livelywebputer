@@ -178,13 +178,9 @@ module("lively.identity.MenuBarEntry")
           });
         },
 
-        // Placeholder — no map UI exists yet. Opens a blank window titled
-        // "Map" to be filled in later.
         openMaps: function openMaps() {
-          var box = new lively.morphic.Box(lively.rect(0, 0, 400, 300));
-          box.openInWindow({
-            title: "Map",
-            pos: lively.morphic.World.current().visibleBounds().center(),
+          lively.require("lively.transit.TransitMapApp").toRun(function () {
+            lively.transit.TransitMapApp.open();
           });
         },
 
