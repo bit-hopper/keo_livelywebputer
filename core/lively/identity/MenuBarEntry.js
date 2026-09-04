@@ -59,7 +59,7 @@ module("lively.identity.MenuBarEntry")
             ["My profile",         function () { self.openMyProfile(); }],
             ["My worlds",          function () { self.openMyWorlds(); }],
             ["My Constellations",  function () { self.openMyConstellations(); }],
-            ["Friends",            function () { self.openFriends(); }],
+            ["Map",                function () { self.openMaps(); }],
             ["Wallet",             function () { self.openWallet(); }],
             ["Mailbox", [
               ["Received",  function () { self.openMailbox("received");  }],
@@ -178,13 +178,12 @@ module("lively.identity.MenuBarEntry")
           });
         },
 
-        // Placeholder — no friends list/browser exists yet (the only Friends
-        // UI so far is the stub panel on ProfileCard). Opens a blank window
-        // titled "Friends" to be filled in later.
-        openFriends: function openFriends() {
+        // Placeholder — no map UI exists yet. Opens a blank window titled
+        // "Map" to be filled in later.
+        openMaps: function openMaps() {
           var box = new lively.morphic.Box(lively.rect(0, 0, 400, 300));
           box.openInWindow({
-            title: "Friends",
+            title: "Map",
             pos: lively.morphic.World.current().visibleBounds().center(),
           });
         },
