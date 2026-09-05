@@ -3,7 +3,12 @@
  *
  * Encrypt-before-upload file handling for the Lively identity system
  * (Encryption.md §5). Shared by FilesBrowser, ProfileCard, and (§6)
- * PostCardEditor's attachment flow.
+ * PostCardEditor's attachment flow. Also owns the encrypted-folder
+ * operations (Encryption.md §15, added 2026-09-04) — a folder is not
+ * different enough from a file to warrant a separate module: both are
+ * KEK/DEK/sealedDek envelopes over the same BlobStore, just with a folder's
+ * DEK fixed for its lifetime instead of rotated per version (see §15.2 for
+ * why, and the "folder" section below).
  *
  * A "file" object is a small encrypted-metadata envelope (type: 'file',
  * stored via the ordinary PUT /@:handle/:objId route) plus the actual file
@@ -86,7 +91,7 @@ module('lively.identity.FileCrypto')
           .catch(function (e) { thenDo(e); });
       },
 
-      _putFileEnvelope: function (handle, envelope, thenDo) {
+      _putEnvelope: function (handle, envelope, thenDo) {
         var base = lively.identity.did.baseUrl();
         fetch(base + '/@' + handle + '/' + envelope.objId, {
           method: 'PUT',
@@ -185,7 +190,7 @@ module('lively.identity.FileCrypto')
                         blobCid: blobCid,
                         state: { name: fileName },
                       }, envelopeExtra || {});
-                      self._putFileEnvelope(user.handle, envelope, function (err) {
+                      self._putEnvelope(user.handle, envelope, function (err) {
                         if (err) return thenDo(err);
                         // blobNonce is null for a public file — its blob is
                         // plaintext, encrypted only for the private/shared
@@ -407,6 +412,362 @@ module('lively.identity.FileCrypto')
           URL.revokeObjectURL(self._urlCache[key]);
         });
         this._urlCache = {};
+        this._folderDekCache = {};
+      },
+
+    },
+
+    'folder', {
+
+      // Random opaque id for a folder member entry (Encryption.md §15.3) —
+      // deliberately NOT generateGenesisObjId: a folder member has no
+      // standalone envelope of its own to address, this is purely a stable
+      // list key for UI/fetch calls into the folder's own decrypted list.
+      _randomId: function () {
+        var bytes = new Uint8Array(9);
+        crypto.getRandomValues(bytes);
+        return lively.identity.crypto.base64urlEncode(bytes);
+      },
+
+      _cacheFolderDek: function (objId, dek) {
+        if (!this._folderDekCache) this._folderDekCache = {};
+        this._folderDekCache[objId] = dek;
+      },
+
+      // Generic envelope GET — factored out here (rather than reusing
+      // fetchAndDecrypt's inline fetch) since every folder operation below
+      // needs the raw envelope first, whereas fetchAndDecrypt's fetch is
+      // file-specific and already covered by its own test path.
+      _getEnvelope: function (handle, objId, thenDo) {
+        var base = lively.identity.did.baseUrl();
+        fetch(base + '/@' + handle + '/' + objId, { credentials: 'include' })
+          .then(function (res) {
+            if (!res.ok) throw new Error('Could not fetch envelope (HTTP ' + res.status + ')');
+            return res.json();
+          })
+          .then(function (envelope) { thenDo(null, envelope); })
+          .catch(function (e) { thenDo(e); });
+      },
+
+      // Re-encrypt {name, files} with the SAME dek (fresh nonce) as a new
+      // envelope version — the shared tail of create/add/remove/rename.
+      // prevEnvelope supplies did/wrappedDek/recipients/created unchanged;
+      // only record.{cid,prevCid,payload,nonce} and blobCids/state advance.
+      _saveFolderVersion: function (handle, prevEnvelope, dek, name, files, thenDo) {
+        var self = this;
+        var c = lively.identity.crypto;
+        var payload = { name: name, files: files };
+        c.encryptPayload(payload, dek, function (err, encrypted) {
+          if (err) return thenDo(err);
+          c.computeCid(encrypted.ciphertext, function (err, cid) {
+            if (err) return thenDo(err);
+            var envelope = {
+              objId: prevEnvelope.objId,
+              did: prevEnvelope.did,
+              type: 'folder',
+              visibility: (prevEnvelope.record.recipients || []).length ? 'shared' : 'private',
+              created: prevEnvelope.created,
+              record: {
+                cid: cid,
+                prevCid: prevEnvelope.record.cid,
+                payload: encrypted.ciphertext,
+                nonce: encrypted.nonce,
+                wrappedDek: prevEnvelope.record.wrappedDek,
+                recipients: prevEnvelope.record.recipients || [],
+              },
+              blobCids: files.map(function (f) { return f.blobCid; }),
+              state: { name: name, fileCount: files.length },
+            };
+            self._putEnvelope(handle, envelope, function (err) {
+              if (err) return thenDo(err);
+              self._cacheFolderDek(envelope.objId, dek);
+              thenDo(null, { objId: envelope.objId, cid: cid, fileCount: files.length });
+            });
+          });
+        });
+      },
+
+      // opts: { recipients, onWaiting } — same shape as encryptAndUpload.
+      // Calls thenDo(null, { objId, dek }).
+      createFolder: function (name, opts, thenDo) {
+        var self = this;
+        var c = lively.identity.crypto;
+        var user = lively.identity.did.currentUser();
+        if (!user) return thenDo(new Error('createFolder: no identity session active'));
+        opts = opts || {};
+        var recipients = opts.recipients || [];
+
+        self._withKek(user, opts.onWaiting, function (err, kek) {
+          if (err) return thenDo(err);
+          c.wrapDek(kek, function (err, dekResult) {
+            if (err) return thenDo(err);
+            var dek = dekResult.dek;
+
+            c.encryptPayload({ name: name, files: [] }, dek, function (err, encrypted) {
+              if (err) return thenDo(err);
+              c.computeCid(encrypted.ciphertext, function (err, cid) {
+                if (err) return thenDo(err);
+
+                function withRecipientWraps(cb) {
+                  if (!recipients.length) return cb(null, []);
+                  var wraps = [];
+                  var remaining = recipients.length;
+                  var hadError = false;
+                  recipients.forEach(function (r) {
+                    c.sealForRecipient(dek, r.x25519PublicKey, function (err, sealed) {
+                      if (hadError) return;
+                      if (err) { hadError = true; return cb(err); }
+                      wraps.push({ did: r.did, sealedDek: sealed });
+                      if (--remaining === 0) cb(null, wraps);
+                    });
+                  });
+                }
+
+                withRecipientWraps(function (err, recipientWraps) {
+                  if (err) return thenDo(err);
+                  lively.identity.webKey.generateGenesisObjId(user.did, function (err, gen) {
+                    if (err) return thenDo(err);
+                    var envelope = {
+                      objId: gen.objId,
+                      did: user.did,
+                      type: 'folder',
+                      visibility: recipientWraps.length ? 'shared' : 'private',
+                      created: new Date().toISOString(),
+                      record: {
+                        cid: cid,
+                        prevCid: null,
+                        payload: encrypted.ciphertext,
+                        nonce: encrypted.nonce,
+                        wrappedDek: dekResult.wrappedDek,
+                        recipients: recipientWraps,
+                      },
+                      blobCids: [],
+                      state: { name: name, fileCount: 0 },
+                    };
+                    self._putEnvelope(user.handle, envelope, function (err) {
+                      if (err) return thenDo(err);
+                      self._cacheFolderDek(envelope.objId, dek);
+                      thenDo(null, { objId: envelope.objId, dek: dek });
+                    });
+                  });
+                });
+              });
+            });
+          });
+        });
+      },
+
+      // GET + decrypt a folder envelope. Calls thenDo(null, { objId, name,
+      // files, dek, isOwner, envelope }). Caches the dek per objId so a
+      // session's worth of add/remove/rename/fetch calls only pay the
+      // KEK/sealedDek ceremony once.
+      fetchFolder: function (handle, folderObjId, thenDo) {
+        var self = this;
+        var c = lively.identity.crypto;
+        var wa = lively.identity.webAuthn;
+        var user = lively.identity.did.currentUser();
+        if (!user) return thenDo(new Error('fetchFolder: no identity session'));
+
+        self._getEnvelope(handle, folderObjId, function (err, envelope) {
+          if (err) return thenDo(err);
+          if (envelope.type !== 'folder') {
+            return thenDo(new Error('fetchFolder: ' + folderObjId + ' is not a folder'));
+          }
+
+          c.computeCid(envelope.record.payload, function (err, expectedCid) {
+            if (err) return thenDo(err);
+            if (expectedCid !== envelope.record.cid) {
+              return thenDo(new Error('fetchFolder: CID mismatch for objId=' + envelope.objId));
+            }
+
+            var isOwner = user.did === envelope.did;
+
+            function withDek(cb) {
+              var cached = self._folderDekCache && self._folderDekCache[envelope.objId];
+              if (cached) return cb(null, cached);
+              if (isOwner) {
+                self._withKek(user, null, function (err, kek) {
+                  if (err) return cb(err);
+                  c.unwrapDek(envelope.record.wrappedDek, kek, cb);
+                });
+                return;
+              }
+              var myEntry = (envelope.record.recipients || []).find(function (r) { return r.did === user.did; });
+              if (!myEntry) return cb(new Error('fetchFolder: no sealed DEK for current user'));
+              var ch = new Uint8Array(32);
+              crypto.getRandomValues(ch);
+              wa.deriveX25519KeyPair({ credentialId: user.credentialId, rpId: user.rpId, challenge: ch }, function (err, pair) {
+                if (err) return cb(err);
+                c.openSealedBox(myEntry.sealedDek, pair.publicKey, pair.privateKey, cb);
+              });
+            }
+
+            withDek(function (err, dek) {
+              if (err) return thenDo(err);
+              self._cacheFolderDek(envelope.objId, dek);
+              c.decryptPayload(envelope.record.payload, envelope.record.nonce, dek, function (err, payload) {
+                if (err) return thenDo(err);
+                thenDo(null, {
+                  objId: envelope.objId,
+                  name: payload.name,
+                  files: payload.files || [],
+                  dek: dek,
+                  isOwner: isOwner,
+                  envelope: envelope,
+                });
+              });
+            });
+          });
+        });
+      },
+
+      // Encrypt+upload a new member file under the folder's existing dek,
+      // then save a new folder version whose file list includes it.
+      // opts: { name } — override for file.name, same as encryptAndUpload.
+      // Calls thenDo(null, { id, blobCid }).
+      addFileToFolder: function (handle, folderObjId, file, opts, thenDo) {
+        if (typeof opts === 'function') { thenDo = opts; opts = {}; }
+        opts = opts || {};
+        var self = this;
+        var c = lively.identity.crypto;
+
+        self.fetchFolder(handle, folderObjId, function (err, folder) {
+          if (err) return thenDo(err);
+          self._readFile(file, function (err, plainBytes) {
+            if (err) return thenDo(err);
+            c.encryptBytes(plainBytes, folder.dek, function (err, result) {
+              if (err) return thenDo(err);
+              c.sha256(result.ciphertext, function (err, blobCid) {
+                if (err) return thenDo(err);
+                self._putBlob(handle, blobCid, result.ciphertext, function (err) {
+                  if (err) return thenDo(err);
+                  var entry = {
+                    id: self._randomId(),
+                    name: opts.name || file.name || 'file',
+                    mime: file.type || 'application/octet-stream',
+                    size: plainBytes.length,
+                    blobCid: blobCid,
+                    blobNonce: result.nonce,
+                    addedAt: new Date().toISOString(),
+                  };
+                  var newFiles = folder.files.concat([entry]);
+                  self._saveFolderVersion(handle, folder.envelope, folder.dek, folder.name, newFiles, function (err) {
+                    if (err) return thenDo(err);
+                    thenDo(null, { id: entry.id, blobCid: blobCid });
+                  });
+                });
+              });
+            });
+          });
+        });
+      },
+
+      // Drops one member entry from the folder's file list. Does NOT delete
+      // the now-unreferenced blob from BlobStore — storage reclamation isn't
+      // built anywhere else in this codebase either, left as a separate,
+      // not-yet-built concern (Encryption.md §15.5).
+      removeFileFromFolder: function (handle, folderObjId, fileId, thenDo) {
+        var self = this;
+        self.fetchFolder(handle, folderObjId, function (err, folder) {
+          if (err) return thenDo(err);
+          var newFiles = folder.files.filter(function (f) { return f.id !== fileId; });
+          self._saveFolderVersion(handle, folder.envelope, folder.dek, folder.name, newFiles, thenDo);
+        });
+      },
+
+      renameFolder: function (handle, folderObjId, newName, thenDo) {
+        var self = this;
+        self.fetchFolder(handle, folderObjId, function (err, folder) {
+          if (err) return thenDo(err);
+          self._saveFolderVersion(handle, folder.envelope, folder.dek, newName, folder.files, thenDo);
+        });
+      },
+
+      // Owner-only: seal the folder's existing (unchanged) dek for each new
+      // recipient and PUT the envelope. Payload ciphertext is untouched, so
+      // this lands on ObjectRepository's same-cid metadata-update path —
+      // no file bytes are re-encrypted (Encryption.md §15.2).
+      // recipients: [{ did, x25519PublicKey }]. Calls thenDo(null, { objId, added }).
+      shareFolder: function (handle, folderObjId, recipients, thenDo) {
+        var self = this;
+        var c = lively.identity.crypto;
+        self.fetchFolder(handle, folderObjId, function (err, folder) {
+          if (err) return thenDo(err);
+          if (!folder.isOwner) return thenDo(new Error('shareFolder: only the owner can share a folder'));
+
+          var existingDids = (folder.envelope.record.recipients || []).map(function (r) { return r.did; });
+          var toAdd = (recipients || []).filter(function (r) { return existingDids.indexOf(r.did) === -1; });
+          if (!toAdd.length) return thenDo(null, { objId: folderObjId, added: 0 });
+
+          var wraps = [];
+          var remaining = toAdd.length;
+          var hadError = false;
+          toAdd.forEach(function (r) {
+            c.sealForRecipient(folder.dek, r.x25519PublicKey, function (err, sealed) {
+              if (hadError) return;
+              if (err) { hadError = true; return thenDo(err); }
+              wraps.push({ did: r.did, sealedDek: sealed });
+              if (--remaining === 0) {
+                var envelope = Object.assign({}, folder.envelope);
+                envelope.record = Object.assign({}, folder.envelope.record, {
+                  recipients: (folder.envelope.record.recipients || []).concat(wraps),
+                });
+                envelope.visibility = 'shared';
+                self._putEnvelope(handle, envelope, function (err) {
+                  if (err) return thenDo(err);
+                  thenDo(null, { objId: folderObjId, added: wraps.length });
+                });
+              }
+            });
+          });
+        });
+      },
+
+      // Owner-only: drop one recipient's sealedDek entry. See Encryption.md
+      // §15.2 before presenting this as an unconditional "they can no longer
+      // read anything" in any UI copy that calls this — it stops them from
+      // being resealed into any FUTURE save, it does not retroactively
+      // invalidate a dek they already obtained.
+      revokeFolderRecipient: function (handle, folderObjId, did, thenDo) {
+        var self = this;
+        self.fetchFolder(handle, folderObjId, function (err, folder) {
+          if (err) return thenDo(err);
+          if (!folder.isOwner) return thenDo(new Error('revokeFolderRecipient: only the owner can revoke access'));
+          var remainingRecipients = (folder.envelope.record.recipients || []).filter(function (r) { return r.did !== did; });
+          var envelope = Object.assign({}, folder.envelope);
+          envelope.record = Object.assign({}, folder.envelope.record, { recipients: remainingRecipients });
+          envelope.visibility = remainingRecipients.length ? 'shared' : 'private';
+          self._putEnvelope(handle, envelope, function (err) {
+            if (err) return thenDo(err);
+            thenDo(null, { objId: folderObjId, remaining: remainingRecipients.length });
+          });
+        });
+      },
+
+      // fetchFolder (dek cache hit after the first call) -> blob fetch ->
+      // decrypt -> object URL, cached per blobCid same as objectUrlFor.
+      // fileEntry: one entry from fetchFolder's `files` array.
+      folderFileUrl: function (handle, folderObjId, fileEntry, thenDo) {
+        if (!this._urlCache) this._urlCache = {};
+        var cacheKey = 'folder-file:' + fileEntry.blobCid;
+        if (this._urlCache[cacheKey]) return thenDo(null, this._urlCache[cacheKey]);
+
+        var self = this;
+        var c = lively.identity.crypto;
+
+        self.fetchFolder(handle, folderObjId, function (err, folder) {
+          if (err) return thenDo(err);
+          self._fetchBlobBytes(handle, fileEntry.blobCid, function (err, cipherBytes) {
+            if (err) return thenDo(err);
+            c.decryptBytes(cipherBytes, fileEntry.blobNonce, folder.dek, function (err, plainBytes) {
+              if (err) return thenDo(err);
+              var blob = new Blob([plainBytes], { type: fileEntry.mime || 'application/octet-stream' });
+              var url = URL.createObjectURL(blob);
+              self._urlCache[cacheKey] = url;
+              thenDo(null, url);
+            });
+          });
+        });
       },
 
     });

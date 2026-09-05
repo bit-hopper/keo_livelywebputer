@@ -24,9 +24,11 @@
  *   CREATE INDEX idx_obj_id ON objects(obj_id)
  *   CREATE INDEX idx_did ON objects(did)
  *
- *   blob_refs table — which file envelope(s) a BlobStore cid belongs to
- *   (Encryption.md §5.3), so the blob GET route can find the gating envelope
- *   without being able to decrypt it:
+ *   blob_refs table — which file or folder envelope a BlobStore cid
+ *   currently belongs to (Encryption.md §5.3/§15.3), so the blob GET route
+ *   can find the gating envelope without being able to decrypt it. Reflects
+ *   only the latest version's membership (rewritten on every put(), not
+ *   accumulated) — see _syncBlobRefs:
  *     blob_cid TEXT NOT NULL
  *     obj_id   TEXT NOT NULL
  *     PRIMARY KEY (blob_cid, obj_id)
@@ -255,7 +257,7 @@ function put(envelope, thenDo) {
             }
             return thenDo(err);
           }
-          _addBlobRefIfFile(db, envelope, function() {
+          _syncBlobRefs(db, envelope, function() {
             thenDo(null, { id: this.lastID, objId: envelope.objId, cid: envelope.record.cid, changed: 'content' });
           }.bind(this));
         }
@@ -265,22 +267,46 @@ function put(envelope, thenDo) {
 }
 
 // File envelopes carry a top-level (plaintext, server-consumed) `blobCid`
-// field — for private files the server can't read blobCid out of the
-// ciphertext payload, so the client duplicates it outside `record` (the
+// field, and folder envelopes (Encryption.md §15) a top-level `blobCids`
+// array — for private content the server can't read these out of the
+// ciphertext payload, so the client duplicates them outside `record` (the
 // encrypted copy inside the payload is the one the client trusts; see
-// Encryption.md §5.3). Indexes it in blob_refs so the blob GET route can find
-// the gating envelope. Errors are logged, not fatal — worst case a blob
+// Encryption.md §5.3/§15.3). Indexed in blob_refs so the blob GET route can
+// find the gating envelope. Errors are logged, not fatal — worst case a blob
 // lookup 404s and the client retries the envelope PUT.
-function _addBlobRefIfFile(db, envelope, thenDo) {
-  if (envelope.type !== 'file' || !envelope.blobCid) return thenDo();
-  db.run(
-    'INSERT OR IGNORE INTO blob_refs (blob_cid, obj_id) VALUES (?, ?)',
-    [envelope.blobCid, envelope.objId],
-    function(err) {
-      if (err) console.warn('[ObjectRepository] Failed to index blob_refs for', envelope.objId, ':', err.message);
-      thenDo();
-    }
-  );
+//
+// Unlike a file envelope (whose blobCid never changes across its objId's
+// lifetime — every upload gets a fresh objId, there is no "edit in place"),
+// a folder envelope's member list, and therefore its blobCids, DOES change
+// version to version (files added/removed). blob_refs has no cid column —
+// it's a current-membership index, not a version history — so this clears
+// every existing row for this obj_id before re-inserting the current set,
+// rather than only ever adding (INSERT-only would leave a stale row for a
+// file just removed from a folder, letting its blob stay fetchable via the
+// folder's gating envelope forever — a real access-control gap, not just
+// clutter). For a file envelope this is a harmless delete-then-reinsert of
+// the same single row.
+function _syncBlobRefs(db, envelope, thenDo) {
+  var cids = [];
+  if (envelope.type === 'file' && envelope.blobCid) cids = [envelope.blobCid];
+  else if (envelope.type === 'folder' && Array.isArray(envelope.blobCids)) cids = envelope.blobCids;
+
+  db.run('DELETE FROM blob_refs WHERE obj_id = ?', [envelope.objId], function(delErr) {
+    if (delErr) console.warn('[ObjectRepository] Failed to clear stale blob_refs for', envelope.objId, ':', delErr.message);
+    if (!cids.length) return thenDo();
+    var remaining = cids.length;
+    var done = false;
+    cids.forEach(function(cid) {
+      db.run(
+        'INSERT OR IGNORE INTO blob_refs (blob_cid, obj_id) VALUES (?, ?)',
+        [cid, envelope.objId],
+        function(err) {
+          if (err) console.warn('[ObjectRepository] Failed to index blob_refs for', envelope.objId, ':', err.message);
+          if (--remaining === 0 && !done) { done = true; thenDo(); }
+        }
+      );
+    });
+  });
 }
 
 // Which obj_ids reference a given blob cid (a blob may be referenced by more
