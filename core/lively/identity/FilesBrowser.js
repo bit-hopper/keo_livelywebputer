@@ -124,7 +124,13 @@ module('lively.identity.FilesBrowser')
         var handle = lively.identity.did.currentUser().handle;
         var base = lively.identity.did.baseUrl();
         this._contentDiv.innerHTML = '<div style="color:#999;padding:20px 0;">Loading…</div>';
-        fetch(base + '/@' + handle, { credentials: 'include' })
+        // Accept header is required here, not optional: GET /@:handle content-
+        // negotiates between the JSON object listing and an HTML profile-card
+        // page (IdentityServer.js), and a fetch() with no explicit Accept
+        // sends "*/*", which that route's req.accepts(["html","json"]) then
+        // resolves to "html" (first match wins) — silently handing this res.json()
+        // call an HTML page to parse, hence "Unexpected token '<'".
+        fetch(base + '/@' + handle, { credentials: 'include', headers: { 'Accept': 'application/json' } })
           .then(function (res) {
             if (!res.ok) throw new Error('Could not load files (' + res.status + ')');
             return res.json();
