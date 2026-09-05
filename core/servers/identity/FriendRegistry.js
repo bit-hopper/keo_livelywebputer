@@ -1,27 +1,34 @@
 /**
  * core/servers/identity/FriendRegistry.js
  *
- * SQLite-backed friend requests + friendships, shared by IdentityServer.js's
- * HTTP routes. Deliberately NOT modeled as postcard/object envelopes —
- * mirrors ConstellationRegistry.js's join_requests table instead (its own
- * dedicated table, queried directly by the recipient), the same pattern
- * that keeps constellation join requests out of the postcard feed. A
- * generic-envelope approach was considered and rejected: comment-thread
- * replies once leaked into the postcard feed by reusing the same envelope
- * shape/listing queries as top-level postcards (fixed in 142a07d) — a new
- * purpose sharing that pipeline is only as safe as every listing query's
- * filtering, and friend requests have no natural fit in it anyway (postcard
- * delivery, POST /@:handle/inbox, requires the sender to already own/have
- * access to a real object envelope).
+ * Postgres-backed friend requests + friendships, shared by IdentityServer.js's
+ * HTTP routes. Migrated from SQLite (see git history for the original) as
+ * part of the storage-layer migration documented in DeployCheckList.md —
+ * same postgres-client.js pool + one-shot-bootstrapped-DDL idiom as
+ * ObjectRepository.js. Data migration for a pre-existing friends.db:
+ * scripts/migrate-friends-to-postgres.js.
  *
- * Schema:
+ * Deliberately NOT modeled as postcard/object envelopes — mirrors
+ * ConstellationRegistry.js's join_requests table instead (its own dedicated
+ * table, queried directly by the recipient), the same pattern that keeps
+ * constellation join requests out of the postcard feed. A generic-envelope
+ * approach was considered and rejected: comment-thread replies once leaked
+ * into the postcard feed by reusing the same envelope shape/listing queries
+ * as top-level postcards (fixed in 142a07d) — a new purpose sharing that
+ * pipeline is only as safe as every listing query's filtering, and friend
+ * requests have no natural fit in it anyway (postcard delivery,
+ * POST /@:handle/inbox, requires the sender to already own/have access to a
+ * real object envelope).
+ *
+ * Schema (Postgres, via DATABASE_URL — see ../support/postgres-client.js):
+ *
  *   friend_requests table: one row per (requester_did, target_did) — a
  *     re-request after a decline overwrites the old row back to pending,
  *     same overwrite-on-re-request shape as join_requests.
  *     requester_did  TEXT NOT NULL
  *     target_did     TEXT NOT NULL
  *     requested_at   TEXT NOT NULL
- *     status         TEXT NOT NULL DEFAULT 'pending'  -- pending|accepted|declined
+ *     status         TEXT NOT NULL DEFAULT 'pending'  -- pending|accepted|declined|cancelled
  *     PRIMARY KEY (requester_did, target_did)
  *
  *   friendships table: one row per confirmed friend pair, undirected —
@@ -32,56 +39,40 @@
  *     did_b       TEXT NOT NULL  -- did_a < did_b
  *     created_at  TEXT NOT NULL
  *     PRIMARY KEY (did_a, did_b)
- *
- * The DB file is stored at <WORKSPACE_LK>/identity/friends.db. Created
- * automatically on first use.
  */
 
 'use strict';
 
-var path    = require('path');
-var sqlite3 = require('sqlite3').verbose();
+var postgresClient = require('../support/postgres-client');
 
-var DB_PATH = path.join(
-  process.env.WORKSPACE_LK || process.cwd(),
-  'identity',
-  'friends.db'
-);
+var DDL =
+  'CREATE TABLE IF NOT EXISTS friend_requests (' +
+  '  requester_did  TEXT NOT NULL,' +
+  '  target_did     TEXT NOT NULL,' +
+  '  requested_at   TEXT NOT NULL,' +
+  '  status         TEXT NOT NULL DEFAULT \'pending\',' +
+  '  PRIMARY KEY (requester_did, target_did)' +
+  ');\n' +
+  'CREATE TABLE IF NOT EXISTS friendships (' +
+  '  did_a       TEXT NOT NULL,' +
+  '  did_b       TEXT NOT NULL,' +
+  '  created_at  TEXT NOT NULL,' +
+  '  PRIMARY KEY (did_a, did_b)' +
+  ');';
 
-// Singleton DB connection, opened lazily.
-var _db = null;
+var _bootstrapped = false;
 
+// Returns the shared pg.Pool, bootstrapping the schema exactly once per
+// process first. Nothing outside this file calls withDB() directly today
+// (confirmed via grep) -- its contract changing from "a sqlite3.Database"
+// to "a pg.Pool" is safe.
 function withDB(thenDo) {
-  if (_db) return thenDo(null, _db);
-
-  var fs = require('fs');
-  var dir = path.dirname(DB_PATH);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-  var db = new sqlite3.Database(DB_PATH, function(err) {
+  var pool = postgresClient.getPool();
+  if (_bootstrapped) return thenDo(null, pool);
+  pool.query(DDL, function (err) {
     if (err) return thenDo(err);
-    _db = db;
-    db.run(
-      'CREATE TABLE IF NOT EXISTS friend_requests (' +
-      '  requester_did  TEXT NOT NULL,' +
-      '  target_did     TEXT NOT NULL,' +
-      '  requested_at   TEXT NOT NULL,' +
-      '  status         TEXT NOT NULL DEFAULT \'pending\',' +
-      '  PRIMARY KEY (requester_did, target_did)' +
-      ')',
-      function(err) {
-        if (err) return thenDo(err);
-        db.run(
-          'CREATE TABLE IF NOT EXISTS friendships (' +
-          '  did_a       TEXT NOT NULL,' +
-          '  did_b       TEXT NOT NULL,' +
-          '  created_at  TEXT NOT NULL,' +
-          '  PRIMARY KEY (did_a, did_b)' +
-          ')',
-          function(err) { thenDo(err || null, db); }
-        );
-      }
-    );
+    _bootstrapped = true;
+    thenDo(null, pool);
   });
 }
 
@@ -95,24 +86,25 @@ function _pair(didA, didB) {
 // Calls thenDo(null, true|false).
 function areFriends(didA, didB, thenDo) {
   var pair = _pair(didA, didB);
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.get('SELECT 1 FROM friendships WHERE did_a = ? AND did_b = ?', pair, function(err, row) {
-      thenDo(err || null, !!row);
+    pool.query('SELECT 1 FROM friendships WHERE did_a = $1 AND did_b = $2', pair, function(err, result) {
+      if (err) return thenDo(err);
+      thenDo(null, result.rows.length > 0);
     });
   });
 }
 
 // Calls thenDo(null, [{ did, since }, ...]), newest first.
 function listFriends(did, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.all(
-      'SELECT did_a, did_b, created_at FROM friendships WHERE did_a = ? OR did_b = ? ORDER BY created_at DESC',
+    pool.query(
+      'SELECT did_a, did_b, created_at FROM friendships WHERE did_a = $1 OR did_b = $2 ORDER BY created_at DESC',
       [did, did],
-      function(err, rows) {
+      function(err, result) {
         if (err) return thenDo(err);
-        thenDo(null, (rows || []).map(function(r) {
+        thenDo(null, (result.rows || []).map(function(r) {
           return { did: r.did_a === did ? r.did_b : r.did_a, since: r.created_at };
         }));
       }
@@ -123,10 +115,10 @@ function listFriends(did, thenDo) {
 // Idempotent. Calls thenDo(err).
 function _createFriendship(didA, didB, thenDo) {
   var pair = _pair(didA, didB);
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.run(
-      'INSERT OR IGNORE INTO friendships (did_a, did_b, created_at) VALUES (?, ?, ?)',
+    pool.query(
+      'INSERT INTO friendships (did_a, did_b, created_at) VALUES ($1, $2, $3) ON CONFLICT (did_a, did_b) DO NOTHING',
       [pair[0], pair[1], new Date().toISOString()],
       function(err) { thenDo(err || null); }
     );
@@ -136,9 +128,9 @@ function _createFriendship(didA, didB, thenDo) {
 // Calls thenDo(err).
 function removeFriendship(didA, didB, thenDo) {
   var pair = _pair(didA, didB);
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.run('DELETE FROM friendships WHERE did_a = ? AND did_b = ?', pair, function(err) {
+    pool.query('DELETE FROM friendships WHERE did_a = $1 AND did_b = $2', pair, function(err) {
       thenDo(err || null);
     });
   });
@@ -149,14 +141,14 @@ function removeFriendship(didA, didB, thenDo) {
 // Calls thenDo(null, 'pending'|'accepted'|'declined'|null) — null means no
 // request on file in this direction.
 function getRequestStatus(requesterDid, targetDid, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.get(
-      'SELECT status FROM friend_requests WHERE requester_did = ? AND target_did = ?',
+    pool.query(
+      'SELECT status FROM friend_requests WHERE requester_did = $1 AND target_did = $2',
       [requesterDid, targetDid],
-      function(err, row) {
+      function(err, result) {
         if (err) return thenDo(err);
-        thenDo(null, row ? row.status : null);
+        thenDo(null, result.rows[0] ? result.rows[0].status : null);
       }
     );
   });
@@ -182,17 +174,17 @@ function sendRequest(requesterDid, targetDid, thenDo) {
       if (reverseStatus === 'pending') {
         return _createFriendship(requesterDid, targetDid, function(err) {
           if (err) return thenDo(err);
-          withDB(function(err, db) {
+          withDB(function(err, pool) {
             if (err) return thenDo(err);
-            db.run(
-              'UPDATE friend_requests SET status = \'accepted\' WHERE requester_did = ? AND target_did = ?',
+            pool.query(
+              'UPDATE friend_requests SET status = \'accepted\' WHERE requester_did = $1 AND target_did = $2',
               [targetDid, requesterDid],
               function(err) {
                 if (err) return thenDo(err);
-                db.run(
+                pool.query(
                   'INSERT INTO friend_requests (requester_did, target_did, requested_at, status)' +
-                  ' VALUES (?, ?, ?, \'accepted\')' +
-                  ' ON CONFLICT(requester_did, target_did) DO UPDATE SET status = \'accepted\'',
+                  ' VALUES ($1, $2, $3, \'accepted\')' +
+                  ' ON CONFLICT (requester_did, target_did) DO UPDATE SET status = \'accepted\'',
                   [requesterDid, targetDid, new Date().toISOString()],
                   function(err) { thenDo(err || null, { status: 'accepted' }); }
                 );
@@ -202,11 +194,11 @@ function sendRequest(requesterDid, targetDid, thenDo) {
         });
       }
 
-      withDB(function(err, db) {
+      withDB(function(err, pool) {
         if (err) return thenDo(err);
-        db.run(
-          'INSERT INTO friend_requests (requester_did, target_did, requested_at, status) VALUES (?, ?, ?, \'pending\')' +
-          ' ON CONFLICT(requester_did, target_did) DO UPDATE SET requested_at = excluded.requested_at, status = \'pending\'',
+        pool.query(
+          'INSERT INTO friend_requests (requester_did, target_did, requested_at, status) VALUES ($1, $2, $3, \'pending\')' +
+          ' ON CONFLICT (requester_did, target_did) DO UPDATE SET requested_at = EXCLUDED.requested_at, status = \'pending\'',
           [requesterDid, targetDid, new Date().toISOString()],
           function(err) { thenDo(err || null, { status: 'pending' }); }
         );
@@ -217,14 +209,14 @@ function sendRequest(requesterDid, targetDid, thenDo) {
 
 // Calls thenDo(null, [{ did, requestedAt }, ...]), oldest first.
 function listIncomingPending(targetDid, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.all(
-      'SELECT requester_did, requested_at FROM friend_requests WHERE target_did = ? AND status = \'pending\' ORDER BY requested_at ASC',
+    pool.query(
+      'SELECT requester_did, requested_at FROM friend_requests WHERE target_did = $1 AND status = \'pending\' ORDER BY requested_at ASC',
       [targetDid],
-      function(err, rows) {
+      function(err, result) {
         if (err) return thenDo(err);
-        thenDo(null, (rows || []).map(function(r) { return { did: r.requester_did, requestedAt: r.requested_at }; }));
+        thenDo(null, (result.rows || []).map(function(r) { return { did: r.requester_did, requestedAt: r.requested_at }; }));
       }
     );
   });
@@ -238,10 +230,10 @@ function listIncomingPending(targetDid, thenDo) {
 function approveRequest(requesterDid, targetDid, thenDo) {
   _createFriendship(requesterDid, targetDid, function(err) {
     if (err) return thenDo(err);
-    withDB(function(err, db) {
+    withDB(function(err, pool) {
       if (err) return thenDo(err);
-      db.run(
-        'UPDATE friend_requests SET status = \'accepted\' WHERE requester_did = ? AND target_did = ?',
+      pool.query(
+        'UPDATE friend_requests SET status = \'accepted\' WHERE requester_did = $1 AND target_did = $2',
         [requesterDid, targetDid],
         function(err) { thenDo(err || null); }
       );
@@ -251,10 +243,10 @@ function approveRequest(requesterDid, targetDid, thenDo) {
 
 // Calls thenDo(err).
 function declineRequest(requesterDid, targetDid, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.run(
-      'UPDATE friend_requests SET status = \'declined\' WHERE requester_did = ? AND target_did = ?',
+    pool.query(
+      'UPDATE friend_requests SET status = \'declined\' WHERE requester_did = $1 AND target_did = $2',
       [requesterDid, targetDid],
       function(err) { thenDo(err || null); }
     );
@@ -266,10 +258,10 @@ function declineRequest(requesterDid, targetDid, thenDo) {
 // so it reads correctly in either party's history rather than looking like
 // a rejection. Calls thenDo(err).
 function cancelRequest(requesterDid, targetDid, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.run(
-      'UPDATE friend_requests SET status = \'cancelled\' WHERE requester_did = ? AND target_did = ?',
+    pool.query(
+      'UPDATE friend_requests SET status = \'cancelled\' WHERE requester_did = $1 AND target_did = $2',
       [requesterDid, targetDid],
       function(err) { thenDo(err || null); }
     );
@@ -280,20 +272,21 @@ function cancelRequest(requesterDid, targetDid, thenDo) {
 // listIncomingPending but for the caller's own outstanding sent requests —
 // backs the mailbox's Friends tab "Sent" section and the Cancel action.
 function listOutgoingPending(requesterDid, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.all(
-      'SELECT target_did, requested_at FROM friend_requests WHERE requester_did = ? AND status = \'pending\' ORDER BY requested_at ASC',
+    pool.query(
+      'SELECT target_did, requested_at FROM friend_requests WHERE requester_did = $1 AND status = \'pending\' ORDER BY requested_at ASC',
       [requesterDid],
-      function(err, rows) {
+      function(err, result) {
         if (err) return thenDo(err);
-        thenDo(null, (rows || []).map(function(r) { return { did: r.target_did, requestedAt: r.requested_at }; }));
+        thenDo(null, (result.rows || []).map(function(r) { return { did: r.target_did, requestedAt: r.requested_at }; }));
       }
     );
   });
 }
 
 module.exports = {
+  withDB: withDB,
   areFriends: areFriends,
   listFriends: listFriends,
   removeFriendship: removeFriendship,

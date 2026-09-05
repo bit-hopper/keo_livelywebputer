@@ -1,16 +1,22 @@
 /**
  * core/servers/identity/HandleRegistry.js
  *
- * SQLite-backed registry mapping handles and domains to did:jwk strings.
+ * Postgres-backed registry mapping handles and domains to did:jwk strings.
+ * Migrated from SQLite (see git history for the original) as part of the
+ * storage-layer migration documented in DeployCheckList.md — same
+ * postgres-client.js pool + one-shot-bootstrapped-DDL idiom as
+ * ObjectRepository.js. Data migration for a pre-existing handles.db:
+ * scripts/migrate-handles-to-postgres.js.
  *
- * Schema:
+ * Schema (Postgres, via DATABASE_URL — see ../support/postgres-client.js):
+ *
  *   handles table:
  *     handle         TEXT PRIMARY KEY  — e.g. "alice", or an alias like "k3f8m2pq"
  *     did            TEXT NOT NULL     — e.g. "did:jwk:eyJ..."
  *     created_at     TEXT NOT NULL     — ISO 8601
  *     updated_at     TEXT NOT NULL     — ISO 8601
- *     is_alias       INTEGER NOT NULL DEFAULT 0  — 1 for a forwarding alias (§3.2)
- *     primary_handle TEXT DEFAULT NULL           — set iff is_alias=1; the
+ *     is_alias       BOOLEAN NOT NULL DEFAULT false  — true for a forwarding alias (§3.2)
+ *     primary_handle TEXT DEFAULT NULL           — set iff is_alias; the
  *                                                   handle inbox delivery
  *                                                   files under
  *     revoked_at     TEXT DEFAULT NULL           — set on alias revocation;
@@ -29,169 +35,83 @@
  *                                          later than verified_at if the most
  *                                          recent check failed)
  *
- * The DB file is stored at <WORKSPACE_LK>/identity/handles.db.
- * Created automatically on first use. is_alias/primary_handle/revoked_at
- * are added via idempotent ALTER TABLE on top of a pre-existing handles
- * table (checked against PRAGMA table_info rather than assuming SQLite's
- * ADD COLUMN IF NOT EXISTS is available, since that's a relatively recent
- * SQLite addition) — existing rows get is_alias=0, primary_handle=NULL,
- * revoked_at=NULL, which is exactly "an ordinary primary handle."
+ *   credentials table — COSE-encoded public key + sign counter per WebAuthn credential:
+ *     credential_id  TEXT PRIMARY KEY
+ *     did            TEXT NOT NULL
+ *     public_key     TEXT NOT NULL    — base64
+ *     counter        INTEGER NOT NULL DEFAULT 0
+ *     created_at     TEXT NOT NULL
+ *
+ *   did_documents table — full DID document JSON, keyed by DID string:
+ *     did        TEXT PRIMARY KEY
+ *     document   TEXT NOT NULL       — JSON.stringify'd
+ *     updated_at TEXT NOT NULL
+ *
+ * Unlike the original SQLite file, there is no PRAGMA-table_info-guarded
+ * ALTER TABLE dance here — this schema has never existed in Postgres before
+ * this migration, so every column ships in the initial CREATE TABLE rather
+ * than being added incrementally to an already-live table.
  */
 
 'use strict';
 
-var path    = require('path');
-var sqlite3 = require('sqlite3').verbose();
+var postgresClient = require('../support/postgres-client');
 
-var DB_PATH = path.join(
-  process.env.WORKSPACE_LK || process.cwd(),
-  'identity',
-  'handles.db'
-);
+var DDL =
+  'CREATE TABLE IF NOT EXISTS handles (' +
+  '  handle         TEXT PRIMARY KEY,' +
+  '  did            TEXT NOT NULL,' +
+  '  created_at     TEXT NOT NULL,' +
+  '  updated_at     TEXT NOT NULL,' +
+  '  is_alias       BOOLEAN NOT NULL DEFAULT false,' +
+  '  primary_handle TEXT DEFAULT NULL,' +
+  '  revoked_at     TEXT DEFAULT NULL' +
+  ');\n' +
+  'CREATE TABLE IF NOT EXISTS domains (' +
+  '  domain          TEXT PRIMARY KEY,' +
+  '  did             TEXT NOT NULL,' +
+  '  verified_at     TEXT NOT NULL,' +
+  '  status          TEXT NOT NULL DEFAULT \'verified\',' +
+  '  last_checked_at TEXT DEFAULT NULL' +
+  ');\n' +
+  'CREATE TABLE IF NOT EXISTS credentials (' +
+  '  credential_id TEXT PRIMARY KEY,' +
+  '  did           TEXT NOT NULL,' +
+  '  public_key    TEXT NOT NULL,' +
+  '  counter       INTEGER NOT NULL DEFAULT 0,' +
+  '  created_at    TEXT NOT NULL' +
+  ');\n' +
+  'CREATE TABLE IF NOT EXISTS did_documents (' +
+  '  did        TEXT PRIMARY KEY,' +
+  '  document   TEXT NOT NULL,' +
+  '  updated_at TEXT NOT NULL' +
+  ');';
 
-// Singleton DB connection, opened lazily.
-var _db = null;
+var _bootstrapped = false;
 
+// Returns the shared pg.Pool, bootstrapping the schema exactly once per
+// process first. Nothing outside this file calls withDB() directly today
+// (confirmed via grep) -- its contract changing from "a sqlite3.Database"
+// to "a pg.Pool" is safe.
 function withDB(thenDo) {
-  if (_db) return thenDo(null, _db);
-
-  var fs = require('fs');
-  var dir = path.dirname(DB_PATH);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-  var db = new sqlite3.Database(DB_PATH, function(err) {
+  var pool = postgresClient.getPool();
+  if (_bootstrapped) return thenDo(null, pool);
+  pool.query(DDL, function (err) {
     if (err) return thenDo(err);
-    _db = db;
-    db.serialize(function() {
-      db.run(
-        'CREATE TABLE IF NOT EXISTS handles (' +
-        '  handle     TEXT PRIMARY KEY,' +
-        '  did        TEXT NOT NULL,' +
-        '  created_at TEXT NOT NULL,' +
-        '  updated_at TEXT NOT NULL' +
-        ')',
-        function(err) {
-          if (err) return thenDo(err);
-          _ensureAliasColumns(db, function(err) {
-            if (err) return thenDo(err);
-            _createRemainingTables(db, thenDo);
-          });
-        }
-      );
-    });
-  });
-}
-
-// Idempotent migration: adds §3.2's three alias columns to a handles table
-// that may predate them. Checked via PRAGMA table_info rather than
-// `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` (SQLite 3.35+ only) for wider
-// compatibility with whatever sqlite3 build this runs against.
-function _ensureAliasColumns(db, thenDo) {
-  db.all('PRAGMA table_info(handles)', function(err, cols) {
-    if (err) return thenDo(err);
-    var names = (cols || []).map(function(c) { return c.name; });
-    var toAdd = [];
-    if (names.indexOf('is_alias') === -1) {
-      toAdd.push('ALTER TABLE handles ADD COLUMN is_alias INTEGER NOT NULL DEFAULT 0');
-    }
-    if (names.indexOf('primary_handle') === -1) {
-      toAdd.push('ALTER TABLE handles ADD COLUMN primary_handle TEXT DEFAULT NULL');
-    }
-    if (names.indexOf('revoked_at') === -1) {
-      toAdd.push('ALTER TABLE handles ADD COLUMN revoked_at TEXT DEFAULT NULL');
-    }
-    (function next(i) {
-      if (i >= toAdd.length) return thenDo(null);
-      db.run(toAdd[i], function(err) {
-        if (err) return thenDo(err);
-        next(i + 1);
-      });
-    })(0);
-  });
-}
-
-// Idempotent migration: adds the status/last_checked_at columns to a domains
-// table that may predate them, same PRAGMA table_info approach as
-// _ensureAliasColumns.
-function _ensureDomainStatusColumns(db, thenDo) {
-  db.all('PRAGMA table_info(domains)', function(err, cols) {
-    if (err) return thenDo(err);
-    var names = (cols || []).map(function(c) { return c.name; });
-    var toAdd = [];
-    if (names.indexOf('status') === -1) {
-      toAdd.push("ALTER TABLE domains ADD COLUMN status TEXT NOT NULL DEFAULT 'verified'");
-    }
-    if (names.indexOf('last_checked_at') === -1) {
-      toAdd.push('ALTER TABLE domains ADD COLUMN last_checked_at TEXT DEFAULT NULL');
-    }
-    (function next(i) {
-      if (i >= toAdd.length) return thenDo(null);
-      db.run(toAdd[i], function(err) {
-        if (err) return thenDo(err);
-        next(i + 1);
-      });
-    })(0);
-  });
-}
-
-function _createRemainingTables(db, thenDo) {
-  db.serialize(function() {
-      db.run(
-        'CREATE TABLE IF NOT EXISTS domains (' +
-        '  domain          TEXT PRIMARY KEY,' +
-        '  did             TEXT NOT NULL,' +
-        "  verified_at     TEXT NOT NULL," +
-        "  status          TEXT NOT NULL DEFAULT 'verified'," +
-        '  last_checked_at TEXT DEFAULT NULL' +
-        ')',
-        function(err) {
-          if (err) return thenDo(err);
-          _ensureDomainStatusColumns(db, function(err) {
-            if (err) return thenDo(err);
-            _createCredentialAndDocTables(db, thenDo);
-          });
-        }
-      );
-  });
-}
-
-function _createCredentialAndDocTables(db, thenDo) {
-  db.serialize(function() {
-      // Stores the COSE-encoded public key and sign counter for each WebAuthn
-      // credential. Required by verifyAuthenticationResponse and for replay
-      // protection (counter must increase on every assertion).
-      db.run(
-        'CREATE TABLE IF NOT EXISTS credentials (' +
-        '  credential_id TEXT PRIMARY KEY,' +
-        '  did           TEXT NOT NULL,' +
-        '  public_key    TEXT NOT NULL,' +
-        '  counter       INTEGER NOT NULL DEFAULT 0,' +
-        '  created_at    TEXT NOT NULL' +
-        ')'
-      );
-      // Stores the full DID document JSON keyed by DID string.
-      // Used by the new-device login path to fetch the DID document without
-      // requiring it to exist in the user's content object store.
-      db.run(
-        'CREATE TABLE IF NOT EXISTS did_documents (' +
-        '  did        TEXT PRIMARY KEY,' +
-        '  document   TEXT NOT NULL,' +
-        '  updated_at TEXT NOT NULL' +
-        ')',
-        function(err) { thenDo(err, db); }
-      );
+    _bootstrapped = true;
+    thenDo(null, pool);
   });
 }
 
 // Register or update a handle → DID mapping.
 // Calls thenDo(err).
 function register(handle, did, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
     var now = new Date().toISOString();
-    db.run(
-      'INSERT INTO handles (handle, did, created_at, updated_at) VALUES (?, ?, ?, ?)' +
-      ' ON CONFLICT(handle) DO UPDATE SET did=excluded.did, updated_at=excluded.updated_at',
+    pool.query(
+      'INSERT INTO handles (handle, did, created_at, updated_at) VALUES ($1, $2, $3, $4)' +
+      ' ON CONFLICT (handle) DO UPDATE SET did = EXCLUDED.did, updated_at = EXCLUDED.updated_at',
       [handle, did, now, now],
       function(err) { thenDo(err || null); }
     );
@@ -208,13 +128,14 @@ function register(handle, did, thenDo) {
 // Primary handles are never revoked through this feature, so their
 // revoked_at stays NULL forever and this filter is a no-op for them.
 function resolve(handle, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.get(
-      'SELECT did FROM handles WHERE handle = ? AND revoked_at IS NULL',
+    pool.query(
+      'SELECT did FROM handles WHERE handle = $1 AND revoked_at IS NULL',
       [handle],
-      function(err, row) {
+      function(err, result) {
         if (err) return thenDo(err);
+        var row = result.rows[0];
         if (row) return thenDo(null, row.did);
         // Not a registered handle. If it looks like a domain (contains a
         // "."), fall back to the domains table — regardless of `status`.
@@ -223,10 +144,10 @@ function resolve(handle, thenDo) {
         // was ever shared; `status` only drives the profile card's badge
         // and the add/verify UI (ProfileCard.js), not routing.
         if (handle.indexOf('.') === -1) return thenDo(null, null);
-        db.get(
-          'SELECT did FROM domains WHERE domain = ?',
+        pool.query(
+          'SELECT did FROM domains WHERE domain = $1',
           [handle],
-          function(err2, drow) { thenDo(err2 || null, drow ? drow.did : null); }
+          function(err2, result2) { thenDo(err2 || null, result2.rows[0] ? result2.rows[0].did : null); }
         );
       }
     );
@@ -234,21 +155,21 @@ function resolve(handle, thenDo) {
 }
 
 // Reverse of resolve(): look up the *primary* handle registered for a DID
-// — deliberately excludes alias rows (is_alias = 0), even though a DID
+// — deliberately excludes alias rows (is_alias = false), even though a DID
 // with active aliases now has multiple handles rows. Without this filter,
-// which row `db.get`'s unordered SELECT happens to return first is
-// unspecified, so a caller could non-deterministically get back an alias —
-// exactly the "never returned by any route the recipient's contacts would
-// see" leak §3.2 rules out. The one existing caller (IdentityServer.js's
-// reactions byEmoji handle resolution) needs this guarantee.
+// which row an unordered SELECT happens to return first is unspecified, so
+// a caller could non-deterministically get back an alias — exactly the
+// "never returned by any route the recipient's contacts would see" leak
+// §3.2 rules out. The one existing caller (IdentityServer.js's reactions
+// byEmoji handle resolution) needs this guarantee.
 // Calls thenDo(null, handle) or thenDo(null, null) if not found.
 function resolveHandleForDid(did, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.get(
-      'SELECT handle FROM handles WHERE did = ? AND is_alias = 0',
+    pool.query(
+      'SELECT handle FROM handles WHERE did = $1 AND is_alias = false',
       [did],
-      function(err, row) { thenDo(err || null, row ? row.handle : null); }
+      function(err, result) { thenDo(err || null, result.rows[0] ? result.rows[0].handle : null); }
     );
   });
 }
@@ -262,13 +183,14 @@ function resolveHandleForDid(did, thenDo) {
 // response (gap #2 — a spammer can't tell "revoked" from "never existed").
 // Calls thenDo(null, { did, primaryHandle } | null).
 function resolveForDelivery(handle, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.get(
-      'SELECT did, is_alias, primary_handle FROM handles WHERE handle = ? AND revoked_at IS NULL',
+    pool.query(
+      'SELECT did, is_alias, primary_handle FROM handles WHERE handle = $1 AND revoked_at IS NULL',
       [handle],
-      function(err, row) {
+      function(err, result) {
         if (err) return thenDo(err);
+        var row = result.rows[0];
         if (!row) return thenDo(null, null);
         thenDo(null, { did: row.did, primaryHandle: row.is_alias ? row.primary_handle : handle });
       }
@@ -299,7 +221,7 @@ function _randomAliasCandidate() {
 // whatever that handle already pointed to.
 // Calls thenDo(err, alias).
 function createAlias(primaryHandle, did, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
 
     (function attempt(triesLeft) {
@@ -308,13 +230,14 @@ function createAlias(primaryHandle, did, thenDo) {
       }
       var candidate = _randomAliasCandidate();
       var now = new Date().toISOString();
-      db.run(
+      pool.query(
         'INSERT INTO handles (handle, did, created_at, updated_at, is_alias, primary_handle, revoked_at)' +
-        ' VALUES (?, ?, ?, ?, 1, ?, NULL)',
+        ' VALUES ($1, $2, $3, $4, true, $5, NULL)',
         [candidate, did, now, now, primaryHandle],
         function(err) {
           if (err) {
-            if (err.message && err.message.indexOf('UNIQUE constraint') !== -1) {
+            // 23505 = unique_violation
+            if (err.code === '23505') {
               return attempt(triesLeft - 1);
             }
             return thenDo(err);
@@ -329,14 +252,14 @@ function createAlias(primaryHandle, did, thenDo) {
 // Active (non-revoked) aliases for a primary handle, newest first.
 // Calls thenDo(null, [{ handle, created_at }]).
 function listAliasesForHandle(primaryHandle, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.all(
+    pool.query(
       'SELECT handle, created_at FROM handles' +
-      ' WHERE is_alias = 1 AND primary_handle = ? AND revoked_at IS NULL' +
+      ' WHERE is_alias = true AND primary_handle = $1 AND revoked_at IS NULL' +
       ' ORDER BY created_at DESC',
       [primaryHandle],
-      function(err, rows) { thenDo(err || null, rows || []); }
+      function(err, result) { thenDo(err || null, result ? result.rows : []); }
     );
   });
 }
@@ -347,15 +270,15 @@ function listAliasesForHandle(primaryHandle, thenDo) {
 // found" (the WHERE clause excludes it) rather than erroring.
 // Calls thenDo(err, changed) where changed is true iff a row was updated.
 function revokeAlias(alias, primaryHandle, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.run(
-      'UPDATE handles SET revoked_at = ?' +
-      ' WHERE handle = ? AND is_alias = 1 AND primary_handle = ? AND revoked_at IS NULL',
+    pool.query(
+      'UPDATE handles SET revoked_at = $1' +
+      ' WHERE handle = $2 AND is_alias = true AND primary_handle = $3 AND revoked_at IS NULL',
       [new Date().toISOString(), alias, primaryHandle],
-      function(err) {
+      function(err, result) {
         if (err) return thenDo(err);
-        thenDo(null, this.changes > 0);
+        thenDo(null, result.rowCount > 0);
       }
     );
   });
@@ -364,18 +287,20 @@ function revokeAlias(alias, primaryHandle, thenDo) {
 // List all registered handles with their DIDs.
 // Calls thenDo(null, [{ handle, did, created_at, updated_at }]).
 function listAll(thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.all('SELECT handle, did, created_at, updated_at FROM handles ORDER BY handle', thenDo);
+    pool.query('SELECT handle, did, created_at, updated_at FROM handles ORDER BY handle', function(err, result) {
+      thenDo(err || null, result ? result.rows : []);
+    });
   });
 }
 
 // Remove a handle registration.
 // Calls thenDo(err).
 function remove(handle, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.run('DELETE FROM handles WHERE handle = ?', [handle], function(err) {
+    pool.query('DELETE FROM handles WHERE handle = $1', [handle], function(err) {
       thenDo(err || null);
     });
   });
@@ -388,13 +313,13 @@ function remove(handle, thenDo) {
 // the only other writer of status is updateDomainStatus.
 // Calls thenDo(err).
 function registerDomain(domain, did, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
     var now = new Date().toISOString();
-    db.run(
-      'INSERT INTO domains (domain, did, verified_at, status, last_checked_at) VALUES (?, ?, ?, \'verified\', ?)' +
-      ' ON CONFLICT(domain) DO UPDATE SET did=excluded.did, verified_at=excluded.verified_at,' +
-      "   status='verified', last_checked_at=excluded.last_checked_at",
+    pool.query(
+      'INSERT INTO domains (domain, did, verified_at, status, last_checked_at) VALUES ($1, $2, $3, \'verified\', $4)' +
+      ' ON CONFLICT (domain) DO UPDATE SET did = EXCLUDED.did, verified_at = EXCLUDED.verified_at,' +
+      "   status = 'verified', last_checked_at = EXCLUDED.last_checked_at",
       [domain, did, now, now],
       function(err) { thenDo(err || null); }
     );
@@ -404,12 +329,12 @@ function registerDomain(domain, did, thenDo) {
 // Resolve a domain to its DID (from the domains table).
 // Calls thenDo(null, did) or thenDo(null, null) if not registered.
 function resolveDomain(domain, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.get(
-      'SELECT did FROM domains WHERE domain = ?',
+    pool.query(
+      'SELECT did FROM domains WHERE domain = $1',
       [domain],
-      function(err, row) { thenDo(err || null, row ? row.did : null); }
+      function(err, result) { thenDo(err || null, result.rows[0] ? result.rows[0].did : null); }
     );
   });
 }
@@ -418,13 +343,13 @@ function resolveDomain(domain, thenDo) {
 // card's badge list (ProfileCard.js).
 // Calls thenDo(null, [{ domain, did, verified_at, status, last_checked_at }]).
 function listDomainsForDid(did, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.all(
+    pool.query(
       'SELECT domain, did, verified_at, status, last_checked_at FROM domains' +
-      ' WHERE did = ? ORDER BY verified_at DESC',
+      ' WHERE did = $1 ORDER BY verified_at DESC',
       [did],
-      function(err, rows) { thenDo(err || null, rows || []); }
+      function(err, result) { thenDo(err || null, result ? result.rows : []); }
     );
   });
 }
@@ -432,11 +357,11 @@ function listDomainsForDid(did, thenDo) {
 // Every registered domain, for DomainVerifier's periodic recheck job.
 // Calls thenDo(null, [{ domain, did, verified_at, status, last_checked_at }]).
 function listAllDomains(thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.all(
+    pool.query(
       'SELECT domain, did, verified_at, status, last_checked_at FROM domains ORDER BY domain',
-      function(err, rows) { thenDo(err || null, rows || []); }
+      function(err, result) { thenDo(err || null, result ? result.rows : []); }
     );
   });
 }
@@ -446,14 +371,14 @@ function listAllDomains(thenDo) {
 // revokeAlias's primaryHandle check).
 // Calls thenDo(err, changed) where changed is true iff a row was deleted.
 function removeDomain(domain, did, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.run(
-      'DELETE FROM domains WHERE domain = ? AND did = ?',
+    pool.query(
+      'DELETE FROM domains WHERE domain = $1 AND did = $2',
       [domain, did],
-      function(err) {
+      function(err, result) {
         if (err) return thenDo(err);
-        thenDo(null, this.changes > 0);
+        thenDo(null, result.rowCount > 0);
       }
     );
   });
@@ -462,10 +387,10 @@ function removeDomain(domain, did, thenDo) {
 // Update a domain's verification status after a recheck (DomainVerifier).
 // status: 'verified' | 'invalid'. Calls thenDo(err).
 function updateDomainStatus(domain, status, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.run(
-      'UPDATE domains SET status = ?, last_checked_at = ? WHERE domain = ?',
+    pool.query(
+      'UPDATE domains SET status = $1, last_checked_at = $2 WHERE domain = $3',
       [status, new Date().toISOString(), domain],
       function(err) { thenDo(err || null); }
     );
@@ -477,13 +402,13 @@ function updateDomainStatus(domain, status, thenDo) {
 // counter: integer from result.registrationInfo.counter (0 at registration).
 // Calls thenDo(err).
 function saveCredential(credentialId, did, cosePublicKey, counter, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
     var keyB64 = Buffer.from(cosePublicKey).toString('base64');
     var now    = new Date().toISOString();
-    db.run(
-      'INSERT INTO credentials (credential_id, did, public_key, counter, created_at) VALUES (?, ?, ?, ?, ?)' +
-      ' ON CONFLICT(credential_id) DO UPDATE SET public_key=excluded.public_key, counter=excluded.counter',
+    pool.query(
+      'INSERT INTO credentials (credential_id, did, public_key, counter, created_at) VALUES ($1, $2, $3, $4, $5)' +
+      ' ON CONFLICT (credential_id) DO UPDATE SET public_key = EXCLUDED.public_key, counter = EXCLUDED.counter',
       [credentialId, did, keyB64, counter || 0, now],
       function(err) { thenDo(err || null); }
     );
@@ -493,13 +418,14 @@ function saveCredential(credentialId, did, cosePublicKey, counter, thenDo) {
 // Retrieve a stored WebAuthn credential.
 // Calls thenDo(null, { did, publicKey: Uint8Array, counter }) or thenDo(null, null).
 function getCredential(credentialId, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.get(
-      'SELECT did, public_key, counter FROM credentials WHERE credential_id = ?',
+    pool.query(
+      'SELECT did, public_key, counter FROM credentials WHERE credential_id = $1',
       [credentialId],
-      function(err, row) {
+      function(err, result) {
         if (err) return thenDo(err);
+        var row = result.rows[0];
         if (!row) return thenDo(null, null);
         thenDo(null, {
           did:       row.did,
@@ -514,10 +440,10 @@ function getCredential(credentialId, thenDo) {
 // Update the sign counter after a successful WebAuthn assertion (replay protection).
 // Calls thenDo(err).
 function updateCounter(credentialId, newCounter, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.run(
-      'UPDATE credentials SET counter = ? WHERE credential_id = ?',
+    pool.query(
+      'UPDATE credentials SET counter = $1 WHERE credential_id = $2',
       [newCounter, credentialId],
       function(err) { thenDo(err || null); }
     );
@@ -528,12 +454,12 @@ function updateCounter(credentialId, newCounter, thenDo) {
 // document: plain object (will be JSON-serialised).
 // Calls thenDo(err).
 function saveDIDDocument(did, document, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
     var now = new Date().toISOString();
-    db.run(
-      'INSERT INTO did_documents (did, document, updated_at) VALUES (?, ?, ?)' +
-      ' ON CONFLICT(did) DO UPDATE SET document=excluded.document, updated_at=excluded.updated_at',
+    pool.query(
+      'INSERT INTO did_documents (did, document, updated_at) VALUES ($1, $2, $3)' +
+      ' ON CONFLICT (did) DO UPDATE SET document = EXCLUDED.document, updated_at = EXCLUDED.updated_at',
       [did, JSON.stringify(document), now],
       function(err) { thenDo(err || null); }
     );
@@ -543,13 +469,14 @@ function saveDIDDocument(did, document, thenDo) {
 // Retrieve the stored DID document for a DID.
 // Calls thenDo(null, document) or thenDo(null, null) if not found.
 function getDIDDocument(did, thenDo) {
-  withDB(function(err, db) {
+  withDB(function(err, pool) {
     if (err) return thenDo(err);
-    db.get(
-      'SELECT document FROM did_documents WHERE did = ?',
+    pool.query(
+      'SELECT document FROM did_documents WHERE did = $1',
       [did],
-      function(err, row) {
+      function(err, result) {
         if (err) return thenDo(err);
+        var row = result.rows[0];
         if (!row) return thenDo(null, null);
         try {
           thenDo(null, JSON.parse(row.document));
