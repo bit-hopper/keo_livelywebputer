@@ -37,6 +37,7 @@
     "open-location-code": "^1.0.3",
     "opencascade.js": "2.0.0-beta.b5ff984",
     "optparse": "^1.0.5",
+    "pg": "^8.23.0",
     "process": "^0.11.10",
     "shelljs": "^0.8.5",
     "source-map-concat": "^1.0.1",
