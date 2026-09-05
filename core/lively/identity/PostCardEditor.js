@@ -2961,6 +2961,7 @@ module('lively.identity.PostCardEditor')
               dek: result.dek ? lively.identity.crypto.base64urlEncode(result.dek) : null,
               blobCid: result.blobCid,
               blobNonce: result.blobNonce,
+              chunked: result.chunked,
               name: file.name,
               mime: file.type || 'application/octet-stream',
             };

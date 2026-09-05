@@ -43,6 +43,17 @@ module('lively.identity.FileCrypto')
   )
   .toRun(function () {
 
+    // Plaintext bytes per chunk for the streaming (crypto_secretstream)
+    // encrypt/decrypt path below — see DeployCheckList.md's large-file
+    // scoping note. 1 MiB: large enough that per-chunk overhead (both the
+    // 17-byte MAC and the JS call itself) is negligible, small enough that
+    // peak resident memory during encrypt/decrypt stays in the low single-
+    // digit MB regardless of total file size. A plain `var` here (not a
+    // namespace property) is safe: unlike lively.BuildSpec/addScript
+    // methods, Object.subclass methods are ordinary closures, not
+    // reconstructed from source text at call time.
+    var FILE_CHUNK_SIZE = 1024 * 1024;
+
     Object.subclass('lively.identity.FileCrypto',
 
     'kek', {
@@ -66,7 +77,10 @@ module('lively.identity.FileCrypto')
 
     'upload', {
 
-      // Read a File/Blob into a Uint8Array.
+      // Read a File/Blob into a Uint8Array. Only used for public (unencrypted)
+      // uploads and small non-file payloads — the private/shared file path
+      // below reads (and encrypts) in bounded FILE_CHUNK_SIZE chunks instead,
+      // via _encryptFileChunked, specifically to avoid this.
       _readFile: function (file, thenDo) {
         var reader = new FileReader();
         reader.onload = function () { thenDo(null, new Uint8Array(reader.result)); };
@@ -74,7 +88,147 @@ module('lively.identity.FileCrypto')
         reader.readAsArrayBuffer(file);
       },
 
-      // PUT raw bytes to the content-addressed blob store.
+      // Encrypt a File/Blob under `dek` using crypto_secretstream, reading
+      // and encrypting FILE_CHUNK_SIZE bytes at a time so the full plaintext
+      // is never resident in memory at once (DeployCheckList.md's large-file
+      // scoping note — the whole reason this exists instead of just calling
+      // c.encryptBytes on the result of _readFile). Wire format: [header]
+      // [chunk1 ciphertext]...[chunkN ciphertext, pushed with isFinal=true].
+      // A zero-byte file still produces exactly one (empty) final chunk.
+      //
+      // The ciphertext is assembled as a Blob built from an array of
+      // per-chunk Blob parts, not one concatenated Uint8Array/ArrayBuffer —
+      // this is what actually keeps peak *contiguous* memory bounded: a
+      // browser does not require a Blob built this way to be backed by one
+      // contiguous heap allocation the way a manually-concatenated typed
+      // array would be, and `fetch`'s Blob-body path (see _putBlob) streams
+      // it without materializing it either.
+      //
+      // Calls thenDo(null, { blob: <Blob>, size: <original plaintext bytes> }).
+      _encryptFileChunked: function (file, dek, thenDo) {
+        var c = lively.identity.crypto;
+        var total = file.size;
+
+        c.streamInitPush(dek, function (err, push) {
+          if (err) return thenDo(err);
+          var parts = [push.header];
+          var offset = 0;
+
+          function nextChunk() {
+            var end = Math.min(offset + FILE_CHUNK_SIZE, total);
+            var isFinal = end >= total;
+            file.slice(offset, end).arrayBuffer().then(function (buf) {
+              c.streamPush(push.state, new Uint8Array(buf), isFinal, function (err, ciphertext) {
+                if (err) return thenDo(err);
+                parts.push(ciphertext);
+                offset = end;
+                if (isFinal) return thenDo(null, { blob: new Blob(parts), size: total });
+                nextChunk();
+              });
+            }).catch(function (e) { thenDo(e); });
+          }
+
+          nextChunk();
+        });
+      },
+
+      // Decrypt a chunked-secretstream blob as it downloads, symmetric to
+      // _encryptFileChunked: reads the fetch Response's body incrementally
+      // (res.body.getReader(), not res.arrayBuffer()) so the full ciphertext
+      // is never resident at once either. `response`: a fetch Response whose
+      // body is the wire format _encryptFileChunked produced.
+      // Calls thenDo(null, <Blob of decrypted plaintext>).
+      _decryptBlobChunked: function (response, dek, thenDo) {
+        var c = lively.identity.crypto;
+        var self = this;
+        var failed = false;
+        function fail(e) { if (failed) return; failed = true; thenDo(e); }
+
+        c.streamHeaderBytes(function (err, HEADERBYTES) {
+          if (err) return fail(err);
+          c.streamAbytes(function (err, ABYTES) {
+            if (err) return fail(err);
+
+            var CIPHER_CHUNK = FILE_CHUNK_SIZE + ABYTES;
+            var reader = response.body.getReader();
+            var pending = new Uint8Array(0);
+            var pullState = null;
+            var sawFinal = false;
+            var decryptedParts = [];
+
+            function appendPending(chunk) {
+              var merged = new Uint8Array(pending.length + chunk.length);
+              merged.set(pending, 0);
+              merged.set(chunk, pending.length);
+              pending = merged;
+            }
+
+            function pullOne(bytes, cb) {
+              c.streamPull(pullState, bytes, function (err, res) {
+                if (err) return fail(err);
+                decryptedParts.push(res.message);
+                if (res.isFinal) sawFinal = true;
+                cb();
+              });
+            }
+
+            // Consumes as many complete CIPHER_CHUNK-sized pieces of
+            // `pending` as are available. Once the underlying stream is
+            // done, whatever (necessarily shorter) remainder is left must be
+            // the final chunk — a real transfer never ends mid-chunk.
+            function drain(streamDone, cb) {
+              if (sawFinal) return cb();
+              if (pending.length >= CIPHER_CHUNK) {
+                var chunk = pending.slice(0, CIPHER_CHUNK);
+                pending = pending.slice(CIPHER_CHUNK);
+                return pullOne(chunk, function () { drain(streamDone, cb); });
+              }
+              if (!streamDone) return cb();
+              if (pending.length === 0) return cb();
+              var last = pending;
+              pending = new Uint8Array(0);
+              pullOne(last, cb);
+            }
+
+            function ensureHeaderThen(cb) {
+              if (pullState) return cb();
+              if (pending.length < HEADERBYTES) return cb(); // wait for more bytes
+              var header = pending.slice(0, HEADERBYTES);
+              pending = pending.slice(HEADERBYTES);
+              c.streamInitPull(header, dek, function (err, state) {
+                if (err) return fail(err);
+                pullState = state;
+                cb();
+              });
+            }
+
+            function pump() {
+              reader.read().then(function (result) {
+                if (result.value) appendPending(result.value);
+                ensureHeaderThen(function () {
+                  if (!pullState) {
+                    if (result.done) return fail(new Error('_decryptBlobChunked: stream ended before the header was fully received'));
+                    return pump();
+                  }
+                  drain(result.done, function () {
+                    if (failed) return;
+                    if (!result.done) return pump();
+                    if (!sawFinal) return fail(new Error('_decryptBlobChunked: stream ended before a final chunk was seen — truncated or corrupted blob'));
+                    thenDo(null, new Blob(decryptedParts));
+                  });
+                });
+              }).catch(fail);
+            }
+
+            pump();
+          });
+        });
+      },
+
+      // PUT raw bytes (or a Blob — fetch streams a Blob body without
+      // materializing it, which is why _encryptFileChunked hands this a
+      // Blob rather than a concatenated Uint8Array) to the content-addressed
+      // blob store.
       _putBlob: function (handle, cid, bytes, thenDo) {
         var base = lively.identity.did.baseUrl();
         fetch(base + '/@' + handle + '/blobs/' + cid, {
@@ -131,36 +285,49 @@ module('lively.identity.FileCrypto')
         var fileName = opts.name || file.name || 'file';
         var recipients = opts.recipients || [];
 
-        self._readFile(file, function (err, plainBytes) {
-          if (err) return thenDo(err);
+        function withDek(cb) {
+          if (isPublic) return cb(null, null);
+          self._withKek(user, opts.onWaiting, function (err, kek) {
+            if (err) return cb(err);
+            c.wrapDek(kek, function (err, dekResult) { cb(err, dekResult); });
+          });
+        }
 
-          function withDek(cb) {
-            if (isPublic) return cb(null, null);
-            self._withKek(user, opts.onWaiting, function (err, kek) {
+        withDek(function (err, dekResult) {
+          if (err) return thenDo(err);
+          var dek = dekResult ? dekResult.dek : null;
+
+          // Private/shared files go through the chunked crypto_secretstream
+          // path (_encryptFileChunked) so the plaintext is never fully
+          // resident in memory — the whole point of this codepath (see
+          // DeployCheckList.md's large-file scoping note). Public files
+          // still go through the old whole-file _readFile path: there's no
+          // encryption to chunk in the first place, and hashing a large
+          // public file has the identical unsolved incremental-hash gap
+          // documented in that same scoping note — left as-is, out of scope
+          // here.
+          function withCipherBlob(cb) {
+            if (isPublic) {
+              self._readFile(file, function (err, plainBytes) {
+                if (err) return cb(err);
+                cb(null, { blob: new Blob([plainBytes]), size: plainBytes.length, chunked: false });
+              });
+              return;
+            }
+            self._encryptFileChunked(file, dek, function (err, result) {
               if (err) return cb(err);
-              c.wrapDek(kek, function (err, dekResult) { cb(err, dekResult); });
+              cb(null, { blob: result.blob, size: result.size, chunked: true });
             });
           }
 
-          withDek(function (err, dekResult) {
+          withCipherBlob(function (err, cipher) {
             if (err) return thenDo(err);
-            var dek = dekResult ? dekResult.dek : null;
 
-            function withCipherBytes(cb) {
-              if (isPublic) return cb(null, { bytes: plainBytes, nonce: null });
-              c.encryptBytes(plainBytes, dek, function (err, result) {
-                if (err) return cb(err);
-                cb(null, { bytes: result.ciphertext, nonce: result.nonce });
-              });
-            }
-
-            withCipherBytes(function (err, blob) {
-              if (err) return thenDo(err);
-
-              c.sha256(blob.bytes, function (err, blobCid) {
+            cipher.blob.arrayBuffer().then(function (buf) {
+              c.sha256(new Uint8Array(buf), function (err, blobCid) {
                 if (err) return thenDo(err);
 
-                self._putBlob(user.handle, blobCid, blob.bytes, function (err, putResult) {
+                self._putBlob(user.handle, blobCid, cipher.blob, function (err, putResult) {
                   if (err) return thenDo(err);
                   // Server-computed, federation-safe absolute URL for this
                   // blob (see IdentityServer.js's canonicalOrigin) -- never
@@ -171,9 +338,18 @@ module('lively.identity.FileCrypto')
                   var metadata = {
                     name: fileName,
                     mime: file.type || 'application/octet-stream',
-                    size: plainBytes.length,
+                    size: cipher.size,
                     blobCid: blobCid,
-                    blobNonce: blob.nonce,
+                    // A chunked blob's nonce is its inline header (part of
+                    // the blob bytes themselves, see _encryptFileChunked) —
+                    // there is no separate per-blob nonce to store here the
+                    // way the old whole-file secretbox path needed. `chunked`
+                    // is what fetchAndDecrypt/folderFileUrl/resolveAttachmentUrl
+                    // branch on to know which decrypt path applies; absent/
+                    // false means the old secretbox format (real blobNonce
+                    // required) — every already-uploaded file is this shape.
+                    blobNonce: null,
+                    chunked: cipher.chunked,
                   };
 
                   lively.identity.webKey.generateGenesisObjId(user.did, function (err, gen) {
@@ -192,13 +368,17 @@ module('lively.identity.FileCrypto')
                       }, envelopeExtra || {});
                       self._putEnvelope(user.handle, envelope, function (err) {
                         if (err) return thenDo(err);
-                        // blobNonce is null for a public file — its blob is
-                        // plaintext, encrypted only for the private/shared
-                        // path (see withCipherBytes above). Returned (along
-                        // with dek) for callers that embed both directly
-                        // rather than going through fetchAndDecrypt — e.g.
-                        // postcard attachments (Encryption.md §6).
-                        thenDo(null, { objId: gen.objId, blobCid: blobCid, blobNonce: blob.nonce, dek: dek, url: blobUrl });
+                        // blobNonce is always null now (public: blob is
+                        // plaintext; private/shared: the header travels
+                        // inline in the blob instead, see
+                        // _encryptFileChunked) — kept in the result shape
+                        // for callers that already read it. `chunked` is
+                        // returned (along with dek) for callers that embed
+                        // both directly rather than going through
+                        // fetchAndDecrypt — e.g. postcard attachments
+                        // (Encryption.md §6), which need it to pick the
+                        // right decrypt path in resolveAttachmentUrl.
+                        thenDo(null, { objId: gen.objId, blobCid: blobCid, blobNonce: null, chunked: cipher.chunked, dek: dek, url: blobUrl });
                       });
                     }
 
@@ -325,6 +505,27 @@ module('lively.identity.FileCrypto')
             if (err) return thenDo(err);
             c.decryptPayload(envelope.record.payload, envelope.record.nonce, dek, function (err, metadata) {
               if (err) return thenDo(err);
+              if (metadata.chunked) {
+                // Streamed download+decrypt (_decryptBlobChunked never holds
+                // the full ciphertext at once) -- the one remaining
+                // materialization here is the final decrypted Blob into a
+                // Uint8Array, to keep fetchAndDecrypt's existing return
+                // contract unchanged for every caller. objectUrlFor
+                // immediately re-wraps `bytes` into another Blob anyway, so
+                // a future pass could return the Blob directly and skip
+                // this — not done here to keep this change's blast radius
+                // limited to the encrypt/decrypt path itself.
+                self._fetchBlobResponse(handle, metadata.blobCid, function (err, response) {
+                  if (err) return thenDo(err);
+                  self._decryptBlobChunked(response, dek, function (err, blob) {
+                    if (err) return thenDo(err);
+                    blob.arrayBuffer().then(function (buf) {
+                      thenDo(null, { bytes: new Uint8Array(buf), mime: metadata.mime, name: metadata.name, size: metadata.size });
+                    }).catch(function (e) { thenDo(e); });
+                  });
+                });
+                return;
+              }
               self._fetchBlobBytes(handle, metadata.blobCid, function (err, cipherBytes) {
                 if (err) return thenDo(err);
                 c.decryptBytes(cipherBytes, metadata.blobNonce, dek, function (err, plainBytes) {
@@ -345,6 +546,19 @@ module('lively.identity.FileCrypto')
             return res.arrayBuffer();
           })
           .then(function (buf) { thenDo(null, new Uint8Array(buf)); })
+          .catch(function (e) { thenDo(e); });
+      },
+
+      // Sibling of _fetchBlobBytes that hands back the raw Response instead
+      // of materializing it, for the chunked decrypt path (_decryptBlobChunked)
+      // to stream incrementally via response.body.getReader().
+      _fetchBlobResponse: function (handle, blobCid, thenDo) {
+        var base = lively.identity.did.baseUrl();
+        fetch(base + '/@' + handle + '/blobs/' + blobCid, { credentials: 'include' })
+          .then(function (res) {
+            if (!res.ok) throw new Error('Could not fetch blob ' + blobCid + ' (HTTP ' + res.status + ')');
+            thenDo(null, res);
+          })
           .catch(function (e) { thenDo(e); });
       },
 
@@ -375,8 +589,10 @@ module('lively.identity.FileCrypto')
       // rather than being wrapped/sealed in the attachment's own file
       // envelope, so this skips fetchAndDecrypt's envelope fetch + KEK/
       // sealedDek unwrap entirely and goes straight blob-fetch -> decrypt.
-      // attachment: { blobCid, blobNonce, dek, mime } — dek/blobNonce null
-      // for a public postcard's attachment (blob is already plaintext).
+      // attachment: { blobCid, blobNonce, dek, mime, chunked } — dek/blobNonce
+      // null for a public postcard's attachment (blob is already plaintext);
+      // chunked true for an attachment uploaded via the crypto_secretstream
+      // path (see encryptAndUpload/PostCardEditor.js's attachment entry).
       // Cached per blobCid (content-addressed, so this is safe across
       // versions/attachments that happen to share bytes).
       // Calls thenDo(null, objectUrl).
@@ -388,19 +604,32 @@ module('lively.identity.FileCrypto')
         var self = this;
         var c = lively.identity.crypto;
 
-        function withPlainBytes(plainBytes) {
-          var blob = new Blob([plainBytes], { type: attachment.mime || 'application/octet-stream' });
-          var url = URL.createObjectURL(blob);
+        function withPlainBlob(plainBlob) {
+          var url = URL.createObjectURL(plainBlob);
           self._urlCache[cacheKey] = url;
           thenDo(null, url);
         }
 
+        if (attachment.dek && attachment.chunked) {
+          this._fetchBlobResponse(handle, attachment.blobCid, function (err, response) {
+            if (err) return thenDo(err);
+            self._decryptBlobChunked(response, attachment.dek, function (err, plainBlob) {
+              if (err) return thenDo(err);
+              withPlainBlob(new Blob([plainBlob], { type: attachment.mime || 'application/octet-stream' }));
+            });
+          });
+          return;
+        }
+
         this._fetchBlobBytes(handle, attachment.blobCid, function (err, bytes) {
           if (err) return thenDo(err);
-          if (!attachment.dek) return withPlainBytes(bytes); // public: already plaintext
+          function asBlob(plainBytes) {
+            withPlainBlob(new Blob([plainBytes], { type: attachment.mime || 'application/octet-stream' }));
+          }
+          if (!attachment.dek) return asBlob(bytes); // public: already plaintext
           c.decryptBytes(bytes, attachment.blobNonce, attachment.dek, function (err, plainBytes) {
             if (err) return thenDo(err);
-            withPlainBytes(plainBytes);
+            asBlob(plainBytes);
           });
         });
       },
@@ -633,21 +862,21 @@ module('lively.identity.FileCrypto')
 
         self.fetchFolder(handle, folderObjId, function (err, folder) {
           if (err) return thenDo(err);
-          self._readFile(file, function (err, plainBytes) {
+          self._encryptFileChunked(file, folder.dek, function (err, cipher) {
             if (err) return thenDo(err);
-            c.encryptBytes(plainBytes, folder.dek, function (err, result) {
-              if (err) return thenDo(err);
-              c.sha256(result.ciphertext, function (err, blobCid) {
+            cipher.blob.arrayBuffer().then(function (buf) {
+              c.sha256(new Uint8Array(buf), function (err, blobCid) {
                 if (err) return thenDo(err);
-                self._putBlob(handle, blobCid, result.ciphertext, function (err) {
+                self._putBlob(handle, blobCid, cipher.blob, function (err) {
                   if (err) return thenDo(err);
                   var entry = {
                     id: self._randomId(),
                     name: opts.name || file.name || 'file',
                     mime: file.type || 'application/octet-stream',
-                    size: plainBytes.length,
+                    size: cipher.size,
                     blobCid: blobCid,
-                    blobNonce: result.nonce,
+                    blobNonce: null,
+                    chunked: true,
                     addedAt: new Date().toISOString(),
                   };
                   var newFiles = folder.files.concat([entry]);
@@ -657,7 +886,7 @@ module('lively.identity.FileCrypto')
                   });
                 });
               });
-            });
+            }).catch(function (e) { thenDo(e); });
           });
         });
       },
@@ -755,16 +984,31 @@ module('lively.identity.FileCrypto')
         var self = this;
         var c = lively.identity.crypto;
 
+        function withPlainBlob(plainBlob) {
+          var url = URL.createObjectURL(plainBlob);
+          self._urlCache[cacheKey] = url;
+          thenDo(null, url);
+        }
+
         self.fetchFolder(handle, folderObjId, function (err, folder) {
           if (err) return thenDo(err);
+
+          if (fileEntry.chunked) {
+            self._fetchBlobResponse(handle, fileEntry.blobCid, function (err, response) {
+              if (err) return thenDo(err);
+              self._decryptBlobChunked(response, folder.dek, function (err, plainBlob) {
+                if (err) return thenDo(err);
+                withPlainBlob(new Blob([plainBlob], { type: fileEntry.mime || 'application/octet-stream' }));
+              });
+            });
+            return;
+          }
+
           self._fetchBlobBytes(handle, fileEntry.blobCid, function (err, cipherBytes) {
             if (err) return thenDo(err);
             c.decryptBytes(cipherBytes, fileEntry.blobNonce, folder.dek, function (err, plainBytes) {
               if (err) return thenDo(err);
-              var blob = new Blob([plainBytes], { type: fileEntry.mime || 'application/octet-stream' });
-              var url = URL.createObjectURL(blob);
-              self._urlCache[cacheKey] = url;
-              thenDo(null, url);
+              withPlainBlob(new Blob([plainBytes], { type: fileEntry.mime || 'application/octet-stream' }));
             });
           });
         });

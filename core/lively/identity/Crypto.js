@@ -12,6 +12,12 @@
  *   - ObjID computation (SHA-256 of canonical JWK, first 12 chars base64url)
  *   - CID computation (BLAKE2b-256 via libsodium crypto_generichash)
  *   - Symmetric encryption/decryption (XSalsa20-Poly1305 via libsodium crypto_secretbox_easy)
+ *   - Chunked streaming symmetric encryption/decryption (XChaCha20-Poly1305
+ *     via libsodium crypto_secretstream_xchacha20poly1305) for large files
+ *     that can't be held fully in memory (Encryption.md's large-file scoping
+ *     note) — a sibling of encryptBytes/decryptBytes, not a replacement;
+ *     encryptBytes/decryptBytes stay the right tool for small payloads
+ *     (envelope metadata) that are already fully in memory anyway.
  *   - ECDH sealed-box key wrapping (X25519 via libsodium crypto_box_seal)
  *
  * Async pattern: all async ops take a final `thenDo(err, result)` callback,
@@ -567,6 +573,127 @@ Object.subclass('lively.identity.Crypto',
         if (!plaintext) return thenDo(new Error('Decryption failed: authentication tag mismatch'));
 
         thenDo(null, JSON.parse(sodium.to_string(plaintext)));
+      } catch (e) { thenDo(e); }
+    });
+  }
+
+},
+
+// ─── chunked streaming symmetric encryption (XChaCha20-Poly1305) ────────────
+
+// A `secretbox` call (encryptBytes/decryptBytes above) needs the whole
+// plaintext resident in memory at once — fine for envelope metadata, not fine
+// for a multi-GB file. crypto_secretstream instead keeps a small, opaque,
+// per-stream `state` object so a file can be encrypted or decrypted one
+// bounded-size chunk at a time. `state` is mutated in place by each push/pull
+// call (matching libsodium-wrappers' own contract) and must never be
+// serialized/persisted/reused across streams.
+//
+// Wire format for a chunked blob (FileCrypto.js is the caller that assembles
+// this): [HEADERBYTES-byte header][chunk1 ciphertext]...[chunkN ciphertext].
+// Each chunk's ciphertext is plaintext.length + streamAbytes() bytes longer
+// than the plaintext. The LAST chunk must be pushed with isFinal=true — this
+// is what lets a truncated/tampered stream be detected on decrypt, a
+// property `secretbox`'s single-shot MAC already had implicitly and that
+// chunking would otherwise silently lose.
+
+'streamEncryption', {
+
+  // The fixed header size in bytes (currently 24) — needed by callers to
+  // know how many leading bytes of a chunked blob are the header rather than
+  // ciphertext.
+  streamHeaderBytes: function(thenDo) {
+    this.withSodium(function(err, sodium) {
+      if (err) return thenDo(err);
+      thenDo(null, sodium.crypto_secretstream_xchacha20poly1305_HEADERBYTES);
+    });
+  },
+
+  // The fixed per-chunk authentication overhead in bytes (currently 17) —
+  // needed by callers sizing plaintext chunk buffers against a target
+  // ciphertext chunk size, or vice versa.
+  streamAbytes: function(thenDo) {
+    this.withSodium(function(err, sodium) {
+      if (err) return thenDo(err);
+      thenDo(null, sodium.crypto_secretstream_xchacha20poly1305_ABYTES);
+    });
+  },
+
+  // Begin an encryption stream. encKey: Uint8Array or base64url string.
+  // Returns thenDo(null, { state, header: <Uint8Array, streamHeaderBytes() long> }).
+  // `header` must travel with the ciphertext (this codebase prepends it to
+  // the blob bytes) — streamInitPull needs it to begin decryption.
+  streamInitPush: function(encKey, thenDo) {
+    this.withSodium(function(err, sodium) {
+      if (err) return thenDo(err);
+      try {
+        var keyBytes = encKey instanceof Uint8Array
+          ? encKey
+          : sodium.from_base64(encKey, sodium.base64_variants.URLSAFE_NO_PADDING);
+        var res = sodium.crypto_secretstream_xchacha20poly1305_init_push(keyBytes);
+        thenDo(null, { state: res.state, header: res.header });
+      } catch (e) { thenDo(e); }
+    });
+  },
+
+  // Encrypt one chunk. state: from streamInitPush (mutated in place across
+  // calls — pass the same object back on every subsequent call for the same
+  // stream). chunk: Uint8Array. isFinal: true for the stream's last chunk
+  // (including a legitimately empty final chunk for a zero-length file —
+  // every stream must end with exactly one TAG_FINAL chunk, never zero).
+  // Returns thenDo(null, <Uint8Array ciphertext>).
+  streamPush: function(state, chunk, isFinal, thenDo) {
+    this.withSodium(function(err, sodium) {
+      if (err) return thenDo(err);
+      try {
+        var tag = isFinal
+          ? sodium.crypto_secretstream_xchacha20poly1305_TAG_FINAL
+          : sodium.crypto_secretstream_xchacha20poly1305_TAG_MESSAGE;
+        var ciphertext = sodium.crypto_secretstream_xchacha20poly1305_push(state, chunk, null, tag);
+        thenDo(null, ciphertext);
+      } catch (e) { thenDo(e); }
+    });
+  },
+
+  // Begin a decryption stream. header: the Uint8Array (or base64url string)
+  // produced by streamInitPush — the leading streamHeaderBytes() bytes of the
+  // chunked blob. encKey: the same key used to encrypt.
+  // Returns thenDo(null, <opaque state>) for use with streamPull.
+  streamInitPull: function(header, encKey, thenDo) {
+    this.withSodium(function(err, sodium) {
+      if (err) return thenDo(err);
+      try {
+        var keyBytes = encKey instanceof Uint8Array
+          ? encKey
+          : sodium.from_base64(encKey, sodium.base64_variants.URLSAFE_NO_PADDING);
+        var headerBytes = header instanceof Uint8Array
+          ? header
+          : sodium.from_base64(header, sodium.base64_variants.URLSAFE_NO_PADDING);
+        var state = sodium.crypto_secretstream_xchacha20poly1305_init_pull(headerBytes, keyBytes);
+        thenDo(null, state);
+      } catch (e) { thenDo(e); }
+    });
+  },
+
+  // Decrypt one chunk. state: from streamInitPull (mutated in place across
+  // calls, same contract as streamPush). cipherChunk: Uint8Array.
+  // Returns thenDo(null, { message: <Uint8Array plaintext>, isFinal: bool }).
+  // Errors (rather than returning) on authentication failure (corrupted or
+  // tampered chunk) or an out-of-order/rekey tag this codebase's chunked
+  // format never produces — either indicates a corrupted or truncated blob,
+  // never a legitimate stream this code wrote.
+  streamPull: function(state, cipherChunk, thenDo) {
+    this.withSodium(function(err, sodium) {
+      if (err) return thenDo(err);
+      try {
+        var res = sodium.crypto_secretstream_xchacha20poly1305_pull(state, cipherChunk);
+        if (!res) return thenDo(new Error('streamPull: authentication tag mismatch — corrupted or tampered chunk'));
+        var FINAL = sodium.crypto_secretstream_xchacha20poly1305_TAG_FINAL;
+        var MESSAGE = sodium.crypto_secretstream_xchacha20poly1305_TAG_MESSAGE;
+        if (res.tag !== FINAL && res.tag !== MESSAGE) {
+          return thenDo(new Error('streamPull: unexpected stream tag ' + res.tag + ' — corrupted or truncated blob'));
+        }
+        thenDo(null, { message: res.message, isFinal: res.tag === FINAL });
       } catch (e) { thenDo(e); }
     });
   }
