@@ -60,6 +60,7 @@ module("lively.identity.MenuBarEntry")
             ["My worlds",          function () { self.openMyWorlds(); }],
             ["My Constellations",  function () { self.openMyConstellations(); }],
             ["Map",                function () { self.openMaps(); }],
+            ["Calendar",           function () { self.openCalendar(); }],
             ["Wallet",             function () { self.openWallet(); }],
             ["Mailbox", [
               ["Received",  function () { self.openMailbox("received");  }],
@@ -181,6 +182,12 @@ module("lively.identity.MenuBarEntry")
         openMaps: function openMaps() {
           lively.require("lively.transit.TransitMapApp").toRun(function () {
             lively.transit.TransitMapApp.open();
+          });
+        },
+
+        openCalendar: function openCalendar() {
+          lively.require("lively.calendar.CalendarApp").toRun(function () {
+            lively.calendar.CalendarApp.open();
           });
         },
 
