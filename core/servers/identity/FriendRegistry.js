@@ -5,8 +5,7 @@
  * HTTP routes. Migrated from SQLite (see git history for the original) as
  * part of the storage-layer migration documented in DeployCheckList.md —
  * same postgres-client.js pool + one-shot-bootstrapped-DDL idiom as
- * ObjectRepository.js. Data migration for a pre-existing friends.db:
- * scripts/migrate-friends-to-postgres.js.
+ * ObjectRepository.js.
  *
  * Deliberately NOT modeled as postcard/object envelopes — mirrors
  * ConstellationRegistry.js's join_requests table instead (its own dedicated

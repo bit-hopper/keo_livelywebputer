@@ -7,8 +7,7 @@
  * Migrated from SQLite (see git history for the original) as part of the
  * storage-layer migration documented in DeployCheckList.md — same
  * postgres-client.js pool + one-shot-bootstrapped-DDL idiom as
- * ObjectRepository.js. Data migration for a pre-existing constellations.db:
- * scripts/migrate-constellations-to-postgres.js.
+ * ObjectRepository.js.
  *
  * Schema (Postgres, via DATABASE_URL — see ../support/postgres-client.js):
  *
