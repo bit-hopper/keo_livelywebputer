@@ -10,8 +10,8 @@
 # `wsl --shutdown`/reboot on its own; something has to check/start them
 # before the app can use them.
 #
-# Usage: ./scripts/dev-up.sh [extra lk-server flags...]
-#   e.g. ./scripts/dev-up.sh --no-partsbin-check
+# Usage: ./scripts/dev-init.sh [extra lk-server flags...]
+#   e.g. ./scripts/dev-init.sh --no-partsbin-check
 set -e
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
