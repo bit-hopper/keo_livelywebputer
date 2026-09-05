@@ -16,10 +16,10 @@
  * [A-Za-z0-9_-]. The filename IS the hash, so put() gets dedup and integrity
  * for free: verify while streaming to a tmp file, then rename into place.
  *
- * Explicitly not a MinIO/S3 client (see Encryption.md §4 design note) — if a
- * second implementation is ever needed (federation, terabytes of video),
- * write a second module with this same four-method interface; nothing above
- * it changes.
+ * A second, S3-compatible implementation of this same interface now exists —
+ * S3BlobStore.js (MinIO/DO Spaces/AWS S3), selected instead of this module
+ * whenever BLOB_S3_BUCKET is set (see IdentityServer.js). This module stays
+ * the default for a single-instance deployment on a persistent volume.
  */
 
 'use strict';
@@ -27,6 +27,7 @@
 var fs = require('fs');
 var path = require('path');
 var crypto = require('crypto');
+var common = require('./blob-common');
 
 var BASE_DIR = path.join(
   process.env.WORKSPACE_LK || process.cwd(),
@@ -35,17 +36,11 @@ var BASE_DIR = path.join(
 );
 var TMP_DIR = path.join(BASE_DIR, 'tmp');
 
-var MAX_BLOB_SIZE = parseInt(process.env.IDENTITY_MAX_BLOB_SIZE, 10) || (100 * 1024 * 1024); // 100 MB
-
-var CID_RE = /^[A-Za-z0-9_-]{43}$/;
+var MAX_BLOB_SIZE = common.MAX_BLOB_SIZE;
+var CID_RE = common.CID_RE;
 
 function _ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-}
-
-// base64url, no padding — matches Crypto.js's base64urlEncode on the client.
-function _base64url(buffer) {
-  return buffer.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
 function _pathFor(cid) {
@@ -86,7 +81,7 @@ function put(cid, readableStreamOrBuffer, thenDo) {
 
   function onDone() {
     if (failed) return;
-    var actualCid = _base64url(hash.digest());
+    var actualCid = common.base64url(hash.digest());
     if (actualCid !== cid) {
       return finish(new Error(
         'BlobStore.put: hash mismatch — expected ' + cid + ' but bytes hash to ' + actualCid

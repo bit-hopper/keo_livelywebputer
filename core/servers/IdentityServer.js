@@ -61,7 +61,12 @@ hljs.registerLanguage("typescript", require("highlight.js/lib/languages/typescri
 hljs.registerLanguage("xml", require("highlight.js/lib/languages/xml"));
 var handleRegistry = require("./identity/HandleRegistry");
 var objectRepo = require("./identity/ObjectRepository");
-var blobStore = require("./identity/BlobStore");
+// Local disk by default; swaps to the S3-compatible implementation
+// (MinIO/DO Spaces/AWS S3) when BLOB_S3_BUCKET is set — see S3BlobStore.js's
+// own header for why this is opt-in rather than a mandatory cutover.
+var blobStore = process.env.BLOB_S3_BUCKET
+  ? require("./identity/S3BlobStore")
+  : require("./identity/BlobStore");
 var auth = require("./identity/AuthMiddleware");
 var constellationRegistry = require("./identity/ConstellationRegistry");
 var friendRegistry = require("./identity/FriendRegistry");
