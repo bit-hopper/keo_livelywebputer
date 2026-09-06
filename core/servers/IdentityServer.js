@@ -241,9 +241,21 @@ function looksLikeObjId(str) {
   return typeof str === "string" && /^[A-Za-z0-9\-_]{12}$/.test(str);
 }
 
+// String-payload branch added 2026-09-05 (previously always JSON.stringify'd
+// unconditionally, matching a since-fixed bug in CryptoVerify.js's port of
+// this same algorithm): an encrypted postcard/part's record.payload is a
+// ciphertext *string*, not a plain object — PostCardSerializer.js/
+// PartSerializer.js hash it directly via Crypto.js's client-side computeCid,
+// which has this same typeof branch. Every existing caller of this function
+// here only ever passes a plain object (world/profile/settings genesis
+// creation), so this is a defensive fix with no behavior change for them —
+// but keeping this in sync with CryptoVerify.js's computeCid (which is
+// exercised against real encrypted envelopes on every PUT) avoids the two
+// implementations silently re-diverging.
 function computeCidSync(jso) {
+  var json = typeof jso === "string" ? jso : JSON.stringify(jso);
   return nodeCrypto.createHash("sha256")
-    .update(JSON.stringify(jso))
+    .update(json, "utf8")
     .digest("base64")
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
 }
@@ -2837,6 +2849,34 @@ module.exports = function (route, app) {
         .json({ error: "Forbidden: envelope DID does not match session DID" });
     }
 
+    // ── genesis + CID integrity (postcard_audit.md F20, part 1/3) ──────────
+    // A genesis write (record.prevCid === null) must prove its objId was
+    // actually derived from its own did+genesisNonce, per WebKey.js's
+    // generateGenesisObjId — otherwise a client could claim any objId
+    // (colliding with another author's object, or one not really theirs)
+    // as long as it won a race to PUT it first. Every real client sends a
+    // correct genesisNonce on every genesis write regardless of whether
+    // signing succeeds (see PostCardSerializer.js/WikiSerializer.js/
+    // SignedSerializer.js/PartSerializer.js's shared _buildEnvelope
+    // pattern), so this is safe to make mandatory with no back-compat risk.
+    if (!envelope.record.prevCid) {
+      if (!envelope.genesisNonce) {
+        return res.status(400).json({
+          error: "Genesis write missing required field: genesisNonce",
+        });
+      }
+      var expectedGenesisObjId = cryptoVerify.computeGenesisObjId(
+        envelope.did,
+        envelope.genesisNonce,
+      );
+      if (expectedGenesisObjId !== envelope.objId) {
+        return res.status(400).json({
+          error: "objId does not match H(did:genesisNonce) — expected " +
+            expectedGenesisObjId,
+        });
+      }
+    }
+
     function _handleRegistryCheckAndWrite() {
       handleRegistry.resolve(handle, function (err, registeredDid) {
         if (err) return res.status(500).json({ error: String(err) });
@@ -2880,7 +2920,21 @@ module.exports = function (route, app) {
         }
 
         objectRepo.put(envelope, function (err, result) {
-          if (err) return res.status(500).json({ error: String(err) });
+          if (err) {
+            // prevCid chain-continuity violation (postcard_audit.md F20,
+            // part 3/3 — tagged by ObjectRepository.put itself, checked
+            // inside its advisory-lock-held transaction so this is race-free
+            // under real concurrent writers). Surfaced as 409 so a client
+            // can reload the current version and retry, rather than assume
+            // a server fault.
+            if (err.isConflict) {
+              return res.status(409).json({
+                error: String(err),
+                currentCid: err.currentCid,
+              });
+            }
+            return res.status(500).json({ error: String(err) });
+          }
           // IDENTITY: future — WaveBus-style fan-out on PUT.
           // After a successful write, notify any WebSocket connections subscribed
           // to this objId so other clients can pull the new version. This maps to
@@ -2924,6 +2978,105 @@ module.exports = function (route, app) {
       });
     }
 
+    // ── signature verification (postcard_audit.md F20, part 2/3) — MANDATORY ──
+    // Every write must carry a valid envelope.sig, verified against the
+    // CURRENT SESSION's delegation chain (req.identity.did), not necessarily
+    // envelope.did: a wikipage co-editor signs with their own device key
+    // while envelope.did stays pinned to the genesis author (see
+    // WikiSerializer.js's _signEnvelopeIfPossible comment) — every other
+    // envelope type already requires req.identity.did === envelope.did
+    // above, so this is the same check either way for them.
+    //
+    // Made mandatory 2026-09-05, on explicit request, after auditing every
+    // registered handle's delegation status: 13/40 accounts can already
+    // sign (delegation complete); 27/40 cannot and will get a 403 on every
+    // write from this point on, until they complete it. See the delegation-
+    // status audit run this session (handle list + live/version-row counts
+    // per account) for exactly which — every numbered/generic test handle
+    // (@one..@fifteen, @user0..@user12, plus a few named throwaway accounts
+    // like @kee/@meg/@six/@seven/@eight) falls in the "cannot sign" group;
+    // real-looking accounts (@candle, @gameboy, @pika, @mini, @visa,
+    // @tinasnow, @rtzv7hs5, @5g3lmkan, @caprison, @channelf, @fifteen,
+    // @ipod) can all already sign. `ProfileCard.js`'s "Enable encryption"
+    // button (UserSpace.enableEncryption) is the existing, already-built
+    // recovery path for any of these accounts to start signing without
+    // re-registering.
+    //
+    // Exception: a metadata-only write (existing.record.cid === incoming
+    // record.cid — visibility/state/recipients changed, payload didn't)
+    // skips BOTH the CID-integrity check below AND signature checking
+    // ENTIRELY, whether or not a sig is present.
+    //
+    // CID integrity is only meaningful to (re)check for genuinely new
+    // content, where record.payload is fresh from this exact HTTP request
+    // (req.body) and was never round-tripped through Postgres. A metadata-
+    // only write's payload, by contrast, typically came from a prior GET —
+    // and Postgres's jsonb column type does NOT preserve the original
+    // field order of inserted JSON. Confirmed live 2026-09-05: fetching a
+    // real stored postcard, adding state.deleted:true, and PUTting it back
+    // (exactly what PostCardMailbox.js's tombstone-delete does) produced a
+    // "record.cid does not match hash of record.payload" false rejection —
+    // not because anything was tampered, but because re-hashing the
+    // GET-then-PUT payload doesn't reproduce the digest computed from the
+    // payload's *original* pre-storage field order. Re-verifying a cid that
+    // isn't changing adds nothing anyway: matching existing.record.cid (a
+    // plain string equality, immune to key ordering) is exactly what
+    // defines "metadata-only" here, so it's already established the
+    // content is unchanged from whatever was validated when IT was fresh.
+    //
+    // Signature verification is exempted for the same underlying reason
+    // content integrity is what a signature protects, and a metadata-only
+    // write can't smuggle in forged content by definition. Several real,
+    // legitimate flows (PostCardMailbox.js's tombstone-delete, its block-
+    // list patch) also deliberately drop sig on exactly this kind of write
+    // rather than carry over one that's now stale relative to the changed
+    // state — confirmed live against a real stored postcard whose current
+    // state.deleted:true doesn't match what its own (retained, not
+    // stripped — likely predating that fix) sig actually covers. Verifying
+    // "if present" here would reject that real row's own legitimate
+    // history, and any future metadata change still carrying a stale sig
+    // forward. So: content writes (below) require a valid sig and a
+    // verified cid unconditionally; metadata-only writes check neither.
+    function _afterSignatureCheck(existing, callback) {
+      var isMetadataOnlyUpdate = !!(existing && existing.record &&
+        existing.record.cid === envelope.record.cid);
+      if (isMetadataOnlyUpdate) return callback();
+
+      if (envelope.record.payload !== undefined) {
+        var expectedCid = cryptoVerify.computeCid(envelope.record.payload);
+        if (expectedCid !== envelope.record.cid) {
+          return res.status(400).json({
+            error: "record.cid does not match hash of record.payload — expected " + expectedCid,
+          });
+        }
+      }
+
+      if (!envelope.sig) {
+        return res.status(403).json({
+          error: "Envelope must be signed. This account hasn't completed the " +
+            "signing-key setup yet — see ProfileCard's \"Enable encryption\" " +
+            "action to complete it, then retry.",
+        });
+      }
+      handleRegistry.getDIDDocument(req.identity.did, function (err, didDocument) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!didDocument) {
+          return res.status(403).json({
+            error: "Envelope is signed but no DID document is on file for " + req.identity.did,
+          });
+        }
+        var expectedPayload = Object.assign({}, envelope);
+        delete expectedPayload.sig;
+        var verification = cryptoVerify.verifySignedPayload(expectedPayload, envelope.sig, didDocument);
+        if (!verification.valid) {
+          return res.status(403).json({
+            error: "Envelope signature verification failed: " + verification.reason,
+          });
+        }
+        callback();
+      });
+    }
+
     // Write authorization against the EXISTING stored version. Always
     // fetches it first (not gated on the incoming envelope's own claimed
     // type) so a type mismatch can be caught regardless of what the
@@ -2935,6 +3088,7 @@ module.exports = function (route, app) {
     // check.
     objectRepo.get(objId, function (err, existing) {
       if (err) return res.status(500).json({ error: String(err) });
+      _afterSignatureCheck(existing, function () {
       // No existing version yet (genesis) — nothing to check type or
       // authorship against; the self-consistency check above already
       // covers this case.
@@ -3004,6 +3158,7 @@ module.exports = function (route, app) {
         _applyWikiContributorTracking(existing);
         _handleRegistryCheckAndWrite();
       });
+    });
     });
   });
 

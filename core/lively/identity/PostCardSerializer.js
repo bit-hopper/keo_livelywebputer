@@ -864,19 +864,40 @@ module('lively.identity.PostCardSerializer')
       var livelyMeta = method.lively;
       if (!livelyMeta.softSigningKeyWrapped || !livelyMeta.delegationCert) return thenDo(null, envelope);
       var wa = lively.identity.webAuthn;
-      if (!wa || !wa._kekCache || !wa._kekCache[user.credentialId]) return thenDo(null, envelope);
-      var kek = wa._kekCache[user.credentialId];
-      var wrapped;
-      try { wrapped = JSON.parse(livelyMeta.softSigningKeyWrapped); } catch (e) { return thenDo(e); }
-      c.decryptPayload(wrapped.ciphertext, wrapped.nonce, kek, function (err, softPrivJwk) {
-        if (err) return thenDo(err);
-        c.importPrivateKeyJwk(softPrivJwk, function (err, softPrivKey) {
+      if (!wa) return thenDo(null, envelope);
+
+      // deriveKek returns the cached KEK immediately if already warm this
+      // session, or runs a fresh on-demand WebAuthn PRF ceremony otherwise
+      // (WebAuthn.js's own cache, not checked manually here) — added
+      // 2026-09-05 because signature verification is now mandatory
+      // server-side (postcard_audit.md F20) and the old
+      // "only sign if already cached" check silently produced an unsigned
+      // envelope, guaranteed to be rejected, for any session that hadn't
+      // separately warmed the KEK via some encrypted-content path (which is
+      // most sessions — ordinary login never warms it, by design, per the
+      // reverted login-time-warmup incident this same memory documents).
+      // A user who cancels this prompt still gets a real, visible failure
+      // (the resulting unsigned envelope's PUT 403s downstream), same as
+      // any other client-side save error.
+      var ch = new Uint8Array(32);
+      crypto.getRandomValues(ch);
+      wa.deriveKek({ credentialId: user.credentialId, rpId: user.rpId, challenge: ch }, function (err, kek) {
+        if (err) {
+          console.warn('[PostCardSerializer] Could not derive KEK to sign envelope (non-fatal):', err.message);
+          return thenDo(null, envelope);
+        }
+        var wrapped;
+        try { wrapped = JSON.parse(livelyMeta.softSigningKeyWrapped); } catch (e) { return thenDo(e); }
+        c.decryptPayload(wrapped.ciphertext, wrapped.nonce, kek, function (err, softPrivJwk) {
           if (err) return thenDo(err);
-          var envelopeToSign = Object.assign({}, envelope);
-          delete envelopeToSign.sig;
-          c.signJws(envelopeToSign, softPrivKey, function (err, sig) {
+          c.importPrivateKeyJwk(softPrivJwk, function (err, softPrivKey) {
             if (err) return thenDo(err);
-            thenDo(null, Object.assign({}, envelope, { sig: sig }));
+            var envelopeToSign = Object.assign({}, envelope);
+            delete envelopeToSign.sig;
+            c.signJws(envelopeToSign, softPrivKey, function (err, sig) {
+              if (err) return thenDo(err);
+              thenDo(null, Object.assign({}, envelope, { sig: sig }));
+            });
           });
         });
       });

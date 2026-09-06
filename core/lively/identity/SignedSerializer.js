@@ -160,23 +160,36 @@ module("lively.identity.SignedSerializer")
             if (!livelyMeta.softSigningKeyWrapped || !livelyMeta.delegationCert) return thenDo(null, envelope);
 
             var wa = lively.identity.webAuthn;
-            if (!wa || !wa._kekCache || !wa._kekCache[user.credentialId]) return thenDo(null, envelope);
-            var kek = wa._kekCache[user.credentialId];
+            if (!wa) return thenDo(null, envelope);
 
-            // Decrypt the wrapped soft private key JWK
-            var wrapped;
-            try { wrapped = JSON.parse(livelyMeta.softSigningKeyWrapped); } catch (e) { return thenDo(e); }
-            c.decryptPayload(wrapped.ciphertext, wrapped.nonce, kek, function (err, softPrivJwk) {
-              if (err) return thenDo(err);
-              c.importPrivateKeyJwk(softPrivJwk, function (err, softPrivKey) {
+            // On-demand KEK derivation (added 2026-09-05, see
+            // PostCardSerializer.js's identical fix for the full rationale):
+            // deriveKek returns the cached KEK immediately if already warm,
+            // or runs a fresh WebAuthn PRF ceremony otherwise. Needed
+            // because signature verification is now mandatory server-side
+            // and ordinary login never warms this cache.
+            var ch = new Uint8Array(32);
+            crypto.getRandomValues(ch);
+            wa.deriveKek({ credentialId: user.credentialId, rpId: user.rpId, challenge: ch }, function (err, kek) {
+              if (err) {
+                console.warn('[SignedSerializer] Could not derive KEK to sign envelope (non-fatal):', err.message);
+                return thenDo(null, envelope);
+              }
+              // Decrypt the wrapped soft private key JWK
+              var wrapped;
+              try { wrapped = JSON.parse(livelyMeta.softSigningKeyWrapped); } catch (e) { return thenDo(e); }
+              c.decryptPayload(wrapped.ciphertext, wrapped.nonce, kek, function (err, softPrivJwk) {
                 if (err) return thenDo(err);
-                // Sign envelope without the sig field
-                var envelopeToSign = Object.assign({}, envelope);
-                delete envelopeToSign.sig;
-                c.signJws(envelopeToSign, softPrivKey, function (err, sig) {
+                c.importPrivateKeyJwk(softPrivJwk, function (err, softPrivKey) {
                   if (err) return thenDo(err);
-                  var signed = Object.assign({}, envelope, { sig: sig });
-                  thenDo(null, signed);
+                  // Sign envelope without the sig field
+                  var envelopeToSign = Object.assign({}, envelope);
+                  delete envelopeToSign.sig;
+                  c.signJws(envelopeToSign, softPrivKey, function (err, sig) {
+                    if (err) return thenDo(err);
+                    var signed = Object.assign({}, envelope, { sig: sig });
+                    thenDo(null, signed);
+                  });
                 });
               });
             });

@@ -217,6 +217,13 @@ function _updateInPlaceTx(client, envelope, thenDo) {
 //   { objId, did, type, visibility, record: { cid, prevCid } }
 // Calls thenDo(err, { id, objId, cid, duplicate, changed }) where
 // changed is 'content' | 'metadata' | 'none'.
+//
+// A genuinely new (non-metadata-only) version must chain off the current
+// tip: envelope.record.prevCid must equal the existing latest version's cid,
+// or be null iff no version exists yet. thenDo is called with an Error
+// carrying { isConflict: true, currentCid } on violation (postcard_audit.md
+// F20) — callers should surface this as a 409, not a 500, so a client can
+// reload the current version and retry rather than assume server failure.
 function put(envelope, thenDo) {
   if (!envelope || !envelope.objId || !envelope.record || !envelope.record.cid) {
     return thenDo(new Error('ObjectRepository.put: invalid envelope — missing objId or record.cid'));
@@ -277,6 +284,33 @@ function put(envelope, thenDo) {
                   thenDo(null, { objId: envelope.objId, cid: envelope.record.cid, duplicate: true, changed: 'metadata' });
                 });
               });
+            }
+
+            // prevCid chain-continuity check (postcard_audit.md F20): this is
+            // reached only for a genuinely new content version (the same-cid
+            // metadata-update path above already returned). The incoming
+            // envelope must chain directly off whatever this transaction's
+            // own locked read just saw as the current tip — or off nothing
+            // (null) when no version exists yet. Runs inside the same
+            // pg_advisory_xact_lock-held transaction as the read that
+            // produced `existing`, so this is race-free under real
+            // concurrent writers, not just a check-then-write on a stale read.
+            // Without this, two editors both starting from the same base
+            // version could both succeed, the second silently discarding the
+            // first's content with no signal to either client.
+            var incomingPrevCid = envelope.record.prevCid || null;
+            var currentTipCid = existing ? existing.record.cid : null;
+            if (incomingPrevCid !== currentTipCid) {
+              var conflictErr = new Error(
+                existing
+                  ? 'prevCid mismatch: envelope chains off ' + incomingPrevCid +
+                    ' but the current version of ' + envelope.objId + ' is ' + currentTipCid
+                  : 'prevCid mismatch: envelope chains off ' + incomingPrevCid +
+                    ' but no version of ' + envelope.objId + ' exists yet'
+              );
+              conflictErr.isConflict = true;
+              conflictErr.currentCid = currentTipCid;
+              return _rollbackAndRelease(client, release, conflictErr, thenDo);
             }
 
             var now = new Date().toISOString();

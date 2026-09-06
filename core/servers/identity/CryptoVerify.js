@@ -245,6 +245,33 @@ function verifyDelegationCert(cert, did) {
   return verifyEcdsaP256(passkeyJwk, signingInput, sigBytes, 'der');
 }
 
+// ─── genesis objId binding ──────────────────────────────────────────────────
+
+// Sync port of Crypto.js computeGenesisObjId / WebKey.js generateGenesisObjId
+// (client generates a random 16-byte nonce, base64url-encodes it, and derives
+// objId from it; the base64url string — not raw bytes — is what travels in
+// envelope.genesisNonce, so this takes it in that already-encoded form).
+//
+// objId = base64url(SHA-256(authorDid + ":" + genesisNonceB64))[0..12]
+function computeGenesisObjId(authorDid, genesisNonceB64) {
+  var input = Buffer.from(authorDid + ':' + genesisNonceB64, 'utf8');
+  return base64urlEncode(sha256(input)).slice(0, 12);
+}
+
+// Port of Crypto.js's client-side computeCid — NOT IdentityServer.js's own
+// computeCidSync, which is missing the same string-payload special case this
+// had to gain (see the bug this fixed, below). An encrypted postcard/part's
+// record.payload is a ciphertext *string* (PostCardSerializer.js/PartSerializer.js
+// call c.computeCid(encrypted.ciphertext, ...) directly, no wrapping object);
+// hashing a string via JSON.stringify would wrap it in quotes and escape it,
+// producing a different digest than the client's own computeCid — confirmed
+// live 2026-09-05 against a real stored encrypted postcard envelope, which is
+// exactly why this branch exists rather than the naive always-stringify form.
+function computeCid(payload) {
+  var json = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  return base64urlEncode(sha256(Buffer.from(json, 'utf8')));
+}
+
 // ─── entry point: verify a signed payload against a DID document ──────────
 
 // expectedPayload: the object the server reconstructs from the request it
@@ -290,5 +317,7 @@ module.exports = {
   verifyJws: verifyJws,
   decodeJwsPayload: decodeJwsPayload,
   verifyDelegationCert: verifyDelegationCert,
-  verifySignedPayload: verifySignedPayload
+  verifySignedPayload: verifySignedPayload,
+  computeGenesisObjId: computeGenesisObjId,
+  computeCid: computeCid
 };
