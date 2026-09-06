@@ -1,5 +1,5 @@
 module("lively.data.FileUpload")
-  .requires("lively.persistence.Serializer", "lively.Network")
+  .requires("lively.persistence.Serializer", "lively.Network", "lively.identity.FileCrypto")
   .toRun(function () {
     // Handles uploading of dropped files via HTML5 event API. This is how it works:
     // From the drop event we get a list of files, each have a type attribute
@@ -129,51 +129,54 @@ module("lively.data.FileUpload")
           );
         },
 
-        attachIdentityDelete: function (morph, url) {
-          if (!morph || !url) return;
-          morph.identityUploadUrl = url;
+        // ref: {handle, blobCid} -- identifies the real server-side blob to
+        // reclaim on delete (derived, not a directly-storable URL: the
+        // morph's own displayed content is a session-local blob: URL, see
+        // lively.data.EncryptedMedia).
+        attachIdentityDelete: function (morph, ref) {
+          if (!morph || !ref || !ref.handle || !ref.blobCid) return;
+          morph.identityUploadRef = ref;
           morph.addScript(function remove() {
             var self = this;
-            var uploadUrl = this.identityUploadUrl;
-            console.log('[identityDelete] remove() called. uploadUrl:', uploadUrl, '| owner:', this.owner);
+            var uploadRef = this.identityUploadRef;
+            console.log('[identityDelete] remove() called. uploadRef:', uploadRef, '| owner:', this.owner);
             // Call the base remove explicitly — $super doesn't work when the method
             // is inherited rather than defined directly on the subclass prototype.
             lively.morphic.Morph.prototype.remove.call(this);
             console.log('[identityDelete] after base remove, owner:', this.owner);
-            if (!uploadUrl) { console.log('[identityDelete] no URL, skipping DELETE'); return; }
+            if (!uploadRef) { console.log('[identityDelete] no ref, skipping DELETE'); return; }
             // remove() is also called during drag (morph is re-parented to the hand).
             // Defer the DELETE: if the morph gets a new owner (hand or world) within
             // the same tick, it's a drag — not a deletion — so don't delete the file.
             setTimeout(function () {
               console.log('[identityDelete] setTimeout: owner is', self.owner, '→ will DELETE:', !self.owner);
               if (!self.owner) {
-                delete self.identityUploadUrl;
+                delete self.identityUploadRef;
                 // Another morph (e.g. a halo copy, which carries over
-                // persisted properties like _ImageURL but not this ad-hoc
-                // identityUploadUrl marker) can end up displaying the same
-                // upload URL without ever being tracked for deletion itself.
+                // persisted properties like fileObjId but not this ad-hoc
+                // identityUploadRef marker) can end up displaying the same
+                // blob without ever being tracked for deletion itself.
                 // Deleting the file out from under that still-live sibling
                 // silently corrupts it — confirmed against @candle's saved
-                // world history: two Image morphs ended up with an identical
-                // _ImageURL, only one ever carried identityUploadUrl, and
-                // the backing file is now gone from disk while the other
-                // morph's reference to it lives on in the latest save. Scan
-                // every morph's own properties for the same URL before
-                // deleting — cheap, and catches any media type (image/video/
-                // audio/pdf) without needing to know its src property name.
+                // world history (back when content was a plain shared URL;
+                // the durable identity now is blobCid, not a URL string,
+                // since two morphs never share a literal blob: URL). Scan
+                // every morph for the same blobCid before deleting — cheap,
+                // and catches any media type (image/video/pdf) without
+                // needing to know its src property name.
                 var stillReferenced = false;
                 $world.withAllSubmorphsDo(function (m) {
                   if (stillReferenced || m === self) return;
-                  for (var k in m) {
-                    try { if (m[k] === uploadUrl) { stillReferenced = true; break; } }
-                    catch (e) {}
+                  if (m.identityUploadRef && m.identityUploadRef.blobCid === uploadRef.blobCid) {
+                    stillReferenced = true;
                   }
                 });
                 if (stillReferenced) {
-                  console.log('[identityDelete] URL still referenced by another morph, skipping DELETE:', uploadUrl);
+                  console.log('[identityDelete] blobCid still referenced by another morph, skipping DELETE:', uploadRef.blobCid);
                   return;
                 }
-                fetch(uploadUrl, { method: "DELETE", credentials: "include" })
+                var deleteUrl = lively.identity.did.baseUrl() + '/@' + uploadRef.handle + '/blobs/' + uploadRef.blobCid;
+                fetch(deleteUrl, { method: "DELETE", credentials: "include" })
                   .then(function (r) {
                     r.json().then(function (j) {
                       console.log('[identityDelete] DELETE response', r.status, j);
@@ -185,32 +188,29 @@ module("lively.data.FileUpload")
           });
         },
 
+        // Calls thenDo(null, {handle, objId, blobCid}) -- not a directly
+        // usable URL. Private file envelope via FileCrypto: flat,
+        // objId-addressed, so (unlike the old legacy-uploads path this
+        // replaces) two unrelated drops sharing a generic browser-assigned
+        // name (clipboard screenshots all come in as "image.png") never
+        // collide on a shared server path; each upload gets its own
+        // objId/blobCid. Private, not public: files and worlds default to
+        // encrypted, per the same reasoning as every other upload path in
+        // this codebase — rendering private content is handled by
+        // lively.data.EncryptedMedia (loaded below before thenDo fires),
+        // not by handing callers a plaintext-fetchable URL.
         identityUpload: function (file, thenDo) {
-          var user = lively.identity.did.currentUser();
-          // Uniquify by upload, not just by name — dropped/pasted files
-          // routinely share a generic browser-assigned name (clipboard
-          // screenshots all come in as "image.png"), so keying purely on
-          // file.name lets two unrelated uploads collide on the same server
-          // path: a later upload overwrites an earlier one's file in place,
-          // and attachIdentityDelete's delete-on-remove (see below) can then
-          // delete that shared path while a different morph still displays
-          // it — permanently, since these files have no server-side trash
-          // or versioning. See attachIdentityDelete's comment for the
-          // specific case this was found from.
-          var url =
-            "/@" + user.handle + "/uploads/" + Strings.newUUID() + "-" + encodeURIComponent(file.name);
-          fetch(url, {
-            method: "PUT",
-            credentials: "include",
-            headers: { "Content-Type": file.type || "application/octet-stream" },
-            body: file,
-          })
-            .then(function (res) { return res.json(); })
-            .then(function (json) {
-              if (json.ok) thenDo(null, json.url);
-              else thenDo(new Error(json.error || "Upload failed"));
-            })
-            .catch(function (err) { thenDo(err); });
+          var handle = lively.identity.did.currentUser().handle;
+          lively.identity.fileCrypto.encryptAndUpload(file, {
+            visibility: "private",
+            name: file.name,
+          }, function (err, result) {
+            if (err) return thenDo(err);
+            var ref = { handle: handle, objId: result.objId, blobCid: result.blobCid };
+            lively.require('lively.data.EncryptedMedia').toRun(function () {
+              thenDo(null, ref);
+            });
+          });
         },
 
         uploadBinary: function (url, mime, binaryData, onloadCallback) {

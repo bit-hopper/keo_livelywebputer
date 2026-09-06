@@ -50,8 +50,8 @@ module("lively.data.ImageUpload")
       readManually: function (file) {
         var self = this;
 
-        function _openAndFit(url, type) {
-          var img = self.openImage(url, type, self.pos, file.name, function (err, loadedImg) {
+        function _openAndFit(ref, type) {
+          var img = self.openImage(ref, type, self.pos, file.name, function (err, loadedImg) {
             var m = loadedImg || img;
             if (!m) return;
             var tryExtent = function () {
@@ -61,13 +61,15 @@ module("lively.data.ImageUpload")
           });
           // Attach synchronously from the return value — don't wait for the load callback,
           // which may receive (img) instead of (null, img) depending on the Image class.
-          if (img) self.attachIdentityDelete(img, url);
+          if (img && ref && typeof ref === "object") {
+            self.attachIdentityDelete(img, { handle: ref.handle, blobCid: ref.blobCid });
+          }
         }
 
         if (self.isIdentityUploadAvailable()) {
-          self.identityUpload(file, function (err, url) {
+          self.identityUpload(file, function (err, ref) {
             if (err) { $world.inform("Error uploading image file:\n" + err); return; }
-            _openAndFit(url, file.type);
+            _openAndFit(ref, file.type);
           });
           return;
         }
@@ -168,14 +170,24 @@ module("lively.data.ImageUpload")
         });
       },
 
+      // url: a plain fetchable URL (legacy/non-identity uploads, the
+      // local-dev-server fallback, or a URL lifted from a dragged <img>
+      // element), OR {handle, objId} for an identity upload -- the latter
+      // renders as encrypted content via lively.data.EncryptedMedia's
+      // EncryptedImage instead of a plain <img src> binding, since that
+      // binding can never decrypt private content (confirmed live: it
+      // doesn't even work for the owner).
       openImage: function (url, mime, pos, optName, thenDo) {
         var name = optName;
-        if (!name)
-          try {
-            name = new URL(url).filename();
-          } catch (e) {
+        var isRef = url && typeof url === "object";
+        if (!name) {
+          if (isRef) {
             name = "image";
+          } else {
+            try { name = new URL(url).filename(); }
+            catch (e) { name = "image"; }
           }
+        }
         var w = lively.morphic.World.current();
         var maxExt = w.visibleBounds().extent().addXY(-20, -20);
         var opts = {
@@ -184,12 +196,20 @@ module("lively.data.ImageUpload")
           maxHeight: maxExt.y,
         };
         // Start with 0x0 extent to trigger automatic native extent calculation
-        var img = new lively.morphic.Image(
-          pt(0, 0).extent(pt(0, 0)),
-          url,
-          opts,
-          thenDo,
-        ).openInWorld();
+        var img;
+        if (isRef) {
+          img = new lively.data.FileUpload.EncryptedImage(
+            pt(0, 0).extent(pt(0, 0)), url, opts,
+          ).openInWorld();
+          img._resolveAndDisplay(thenDo);
+        } else {
+          img = new lively.morphic.Image(
+            pt(0, 0).extent(pt(0, 0)),
+            url,
+            opts,
+            thenDo,
+          ).openInWorld();
+        }
         img.name = name;
         pos && img.setPosition(pos);
         return img;

@@ -13,8 +13,8 @@
  *
  * Receiving a file: if the current browser has a signed-in Lively
  * session (lively.identity.did.isLoggedIn()), the received file is
- * saved directly to that user's upload space under uploads/WarpDrop/
- * (same PUT endpoint FilesBrowser uses) instead of triggering a browser
+ * saved as a private file envelope via the same FileCrypto.encryptAndUpload
+ * flow FilesBrowser/ProfileCard use, instead of triggering a browser
  * download, so it shows up in FilesBrowser afterward. Anonymous/
  * logged-out receivers still get a plain browser download.
  *
@@ -26,7 +26,7 @@
  */
 
 module('lively.identity.WarpDrop')
-  .requires('lively.Network', 'lively.identity.DID')
+  .requires('lively.Network', 'lively.identity.DID', 'lively.identity.FileCrypto')
   .toRun(function () {
 
     var CHUNK_SIZE = 16 * 1024;
@@ -35,7 +35,6 @@ module('lively.identity.WarpDrop')
     var ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
     var DISCONNECT_ABORT_MS = 12 * 1000;
     var AVATAR_SIZE = 40;
-    var SAVE_FOLDER = 'WarpDrop';
     var MOBILE_BREAKPOINT = 600; // px -- below this, open() sizes near-fullscreen instead of the fixed desktop box
     var MOBILE_MARGIN = 12;
 
@@ -655,7 +654,7 @@ module('lively.identity.WarpDrop')
                 self._downloadBlob(blob, filename);
                 self._setStatus(peer, 'Save failed, downloaded instead');
               } else {
-                self._setStatus(peer, 'Saved to Files › ' + SAVE_FOLDER + ' as ' + savedName);
+                self._setStatus(peer, 'Saved to Files as ' + savedName);
               }
               self._teardownPeerConnection(peer);
             });
@@ -667,63 +666,18 @@ module('lively.identity.WarpDrop')
         }
       },
 
-      // Saves into the signed-in user's upload space instead of
-      // triggering a browser download, reusing the same PUT endpoint
-      // FilesBrowser._uploadFile uses (the server auto-creates the
-      // WarpDrop folder on first upload, no separate mkdir call needed).
-      // Auto-renames on a name collision ("photo.png" -> "photo (1).png")
-      // rather than overwriting a previous receipt.
+      // Saves as a private file envelope via FileCrypto.encryptAndUpload —
+      // the flat, objId-addressed model has no name-collision concept (two
+      // files can share a display name), so unlike the old legacy-uploads
+      // PUT this never needs to rename around an existing file.
       _saveToFiles: function (blob, filename, thenDo) {
-        var self = this;
-        this._listSaveFolderNames(function (err, existingNames) {
-          if (err) { thenDo(err); return; }
-          var uniqueName = self._uniqueFilename(existingNames, filename);
-          var handle = lively.identity.did.currentUser().handle;
-          var base   = lively.identity.did.baseUrl();
-          var relPath = SAVE_FOLDER + '/' + uniqueName;
-          var xhr = new XMLHttpRequest();
-          xhr.open('PUT', base + '/@' + handle + '/uploads/' +
-            relPath.split('/').map(encodeURIComponent).join('/'));
-          xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-          xhr.withCredentials = true;
-          xhr.onload = function () {
-            if (xhr.status === 200) return thenDo(null, uniqueName);
-            thenDo(new Error('Save failed: ' + xhr.status));
-          };
-          xhr.onerror = function () { thenDo(new Error('Network error')); };
-          xhr.send(blob);
+        lively.identity.fileCrypto.encryptAndUpload(blob, {
+          visibility: 'private',
+          name: filename,
+        }, function (err, result) {
+          if (err) return thenDo(err);
+          thenDo(null, filename);
         });
-      },
-
-      _listSaveFolderNames: function (thenDo) {
-        var handle = lively.identity.did.currentUser().handle;
-        var base   = lively.identity.did.baseUrl();
-        var prefix = SAVE_FOLDER + '/';
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', base + '/@' + handle + '/uploads');
-        xhr.withCredentials = true;
-        xhr.onload = function () {
-          if (xhr.status !== 200) { thenDo(new Error('Could not list Files (' + xhr.status + ')')); return; }
-          var result;
-          try { result = JSON.parse(xhr.responseText); } catch (e) { thenDo(new Error('Bad response')); return; }
-          var names = (result.files || [])
-            .filter(function (f) { return f.path.indexOf(prefix) === 0 && f.path.indexOf('/', prefix.length) === -1; })
-            .map(function (f) { return f.path.slice(prefix.length); });
-          thenDo(null, names);
-        };
-        xhr.onerror = function () { thenDo(new Error('Network error')); };
-        xhr.send();
-      },
-
-      _uniqueFilename: function (existingNames, desiredName) {
-        if (existingNames.indexOf(desiredName) === -1) return desiredName;
-        var dot = desiredName.lastIndexOf('.');
-        var base = dot === -1 ? desiredName : desiredName.slice(0, dot);
-        var ext  = dot === -1 ? '' : desiredName.slice(dot);
-        for (var i = 1; ; i++) {
-          var candidate = base + ' (' + i + ')' + ext;
-          if (existingNames.indexOf(candidate) === -1) return candidate;
-        }
       },
 
       _downloadBlob: function (blob, filename) {

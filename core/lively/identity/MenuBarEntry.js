@@ -21,6 +21,12 @@ module("lively.identity.MenuBarEntry")
       lively.identity.AmbientPresencePanel.init();
     });
 
+    // Self-registers against DID's identityChanged signal on load -- see
+    // UploadMigration.js's own header for what it does and why it lives
+    // here (this module is already the load-bearing "make identity
+    // machinery reachable everywhere login can happen" require).
+    lively.require("lively.identity.UploadMigration").toRun(function () {});
+
     lively.BuildSpec(
       "lively.identity.MenuBarEntry",
       lively.BuildSpec("lively.morphic.tools.MenuBarEntry").customize({

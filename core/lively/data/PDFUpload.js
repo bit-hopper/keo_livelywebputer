@@ -1,38 +1,21 @@
 module('lively.data.PDFUpload').requires('lively.data.FileUpload').toRun(function() {
 
-lively.data.FileUpload.Handler.subclass('lively.data.PDFUpload.Handler', {
-    handles: function(file) {
-        return file.type.match(/application\/pdf/);
-    },
-
-    getUploadSpec: function(evt, file) {
-        if (this.isIdentityUploadAvailable()) return {readMethod: "manual"};
-        return {readMethod: "asBinary"};
-    },
-    readManually: function(file) {
-        var self = this;
-        self.identityUpload(file, function(err, url) {
-            if (err) { $world.inform("Error uploading PDF file:\n" + err); return; }
-            var morph = self.openPDF(url, file.type, self.pos);
-            self.attachIdentityDelete(morph, url);
-        });
-    },
-    onLoad: function(evt) {
-        this.uploadAndOpenPDFTo(
-            URL.source.withFilename(this.file.name),
-            this.file.type, evt.target.result, this.pos);
-    },
-
-    uploadAndOpenPDFTo: function(url, mime, binaryData, pos) {
-        var self = this;
-        this.uploadBinary(url, mime, binaryData, function(status) {
-            if (!status.isDone()) return;
-            if (status.isSuccess()) self.openPDF(url, mime, pos)
-            else alert('Failure uploading ' + url + ': ' + status);
-        });
-    },
-
-    openPDF: function(url, mime, pos) {
+// Factored out so lively.data.EncryptedMedia's EncryptedPDF can rebuild the
+// identical viewer both on fresh upload and on world restore, without
+// duplicating this construction. Returns just the container DOM node --
+// callers are responsible for wrapping it in a morph.
+//
+// urlOrBytes: a plain fetchable URL string, OR a Uint8Array of raw PDF
+// bytes. Confirmed live: pdfjsLib.getDocument() cannot resolve a blob: URL
+// at all in this environment -- reproduced in isolation with a valid
+// minimal PDF, both as a bare string and as {url: blobUrl}, always failing
+// with a mangled/doubled-origin "Missing PDF" error; {data: bytes} works
+// correctly. So the encrypted path (lively.data.EncryptedMedia's
+// EncryptedPDF) must hand this raw decrypted bytes, never a resolved
+// blob: URL, unlike Image/Video (whose <img>/<video> src bindings DO
+// support blob: URLs natively, confirmed working).
+Object.extend(lively.data.FileUpload, {
+    buildPDFContainer: function(urlOrBytes) {
         // Canvas-based PDF.js rendering: no iframe, so Ctrl+click → halos
         // works natively everywhere on the morph. Scroll within canvasWrapper
         // is captured by the div (parent document) — no subdocument isolation.
@@ -69,10 +52,6 @@ lively.data.FileUpload.Handler.subclass('lively.data.PDFUpload.Handler', {
         container.appendChild(navBar);
         container.appendChild(canvasWrapper);
 
-        var morph = new lively.morphic.Morph(new lively.morphic.Shapes.External(container));
-        morph.applyStyle({extent: pt(600, 800), borderWidth: 1, borderColor: Color.black});
-        morph.openInWorld(pos);
-
         var pdfDoc = null, pageNum = 1, rendering = false;
 
         function renderPage(num) {
@@ -100,7 +79,8 @@ lively.data.FileUpload.Handler.subclass('lively.data.PDFUpload.Handler', {
             if (!lib.GlobalWorkerOptions.workerSrc) {
                 lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
             }
-            lib.getDocument(url).promise.then(function(pdf) {
+            var docParams = (urlOrBytes instanceof Uint8Array) ? { data: urlOrBytes } : urlOrBytes;
+            lib.getDocument(docParams).promise.then(function(pdf) {
                 pdfDoc = pdf;
                 renderPage(1);
             }).catch(function(e) {
@@ -132,8 +112,63 @@ lively.data.FileUpload.Handler.subclass('lively.data.PDFUpload.Handler', {
             document.head.appendChild(script);
         }
 
+        return container;
+    },
+});
+
+lively.data.FileUpload.Handler.subclass('lively.data.PDFUpload.Handler', {
+    handles: function(file) {
+        return file.type.match(/application\/pdf/);
+    },
+
+    getUploadSpec: function(evt, file) {
+        if (this.isIdentityUploadAvailable()) return {readMethod: "manual"};
+        return {readMethod: "asBinary"};
+    },
+    readManually: function(file) {
+        var self = this;
+        self.identityUpload(file, function(err, ref) {
+            if (err) { $world.inform("Error uploading PDF file:\n" + err); return; }
+            var morph = self.openPDF(ref, file.type, self.pos);
+            self.attachIdentityDelete(morph, { handle: ref.handle, blobCid: ref.blobCid });
+        });
+    },
+    onLoad: function(evt) {
+        this.uploadAndOpenPDFTo(
+            URL.source.withFilename(this.file.name),
+            this.file.type, evt.target.result, this.pos);
+    },
+
+    uploadAndOpenPDFTo: function(url, mime, binaryData, pos) {
+        var self = this;
+        this.uploadBinary(url, mime, binaryData, function(status) {
+            if (!status.isDone()) return;
+            if (status.isSuccess()) self.openPDF(url, mime, pos)
+            else alert('Failure uploading ' + url + ': ' + status);
+        });
+    },
+
+    // url: a plain fetchable URL (legacy/non-identity uploads, or the
+    // local-dev-server fallback), OR {handle, objId} for an identity
+    // upload -- the latter renders as encrypted content via
+    // lively.data.EncryptedMedia's EncryptedPDF instead of a plain
+    // pdfjsLib.getDocument(url) call against ciphertext, since that can
+    // never decrypt private content (confirmed live: it doesn't even work
+    // for the owner).
+    openPDF: function(url, mime, pos) {
+        if (url && typeof url === 'object') {
+            var encMorph = new lively.data.FileUpload.EncryptedPDF(url);
+            encMorph.openInWorld(pos);
+            encMorph._rebuildContent();
+            return encMorph;
+        }
+
+        var container = lively.data.FileUpload.buildPDFContainer(url);
+        var morph = new lively.morphic.Morph(new lively.morphic.Shapes.External(container));
+        morph.applyStyle({extent: pt(600, 800), borderWidth: 1, borderColor: Color.black});
+        morph.openInWorld(pos);
         return morph;
-    }
+    },
 
 });
 
