@@ -327,6 +327,15 @@ function startServer(callback) {
       : null,
     sslActuallyEnabled = options.defined("enableSsl") && !!sslServerKey && !!sslServerCert && !!sslCACert;
 
+  // The classic WebDAV write path (lively-davfs, everything life_star's own
+  // dbConf.excludePaths doesn't carve out) has no authentication of its own
+  // -- see WEBDAV.md sec 0/0.1. This patches it closed before life_star
+  // wires up the DAV catch-all route; has to run in every process that
+  // calls startServer (the single-process path and every cluster worker),
+  // which is why it lives here rather than launchServer's cluster-primary
+  // branch above.
+  require("../core/servers/support/webdav-auth-gate").install();
+
   require("life_star")({
     host: host,
     port: port,
