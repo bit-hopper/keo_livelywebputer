@@ -1268,7 +1268,9 @@ module.exports = function (route, app) {
 
     auth.verifyRegistration(req, body, function (err, result) {
       if (err)
-        return res.status(400).json({ error: String(err.message || err) });
+        return res
+          .status(err.statusCode || 400)
+          .json({ error: String(err.message || err) });
 
       // Establish a server session so the new user can immediately write
       // objects (PUT /@handle/:objId) without a separate sign-in step.

@@ -143,25 +143,43 @@ function verifyRegistration(req, body, thenDo) {
       ));
     }
 
-    handleRegistry.saveCredential(
-      body.credentialId,
-      body.did,
-      cred.publicKey,
-      cred.counter,
-      function(saveErr) {
-        if (saveErr) return thenDo(saveErr);
-        handleRegistry.register(body.handle, body.did, function(err) {
-          if (err) return thenDo(err);
-          thenDo(null, {
-            verified:     true,
-            credentialId: body.credentialId,
-            publicKeyJwk: body.publicKeyJwk,
-            handle:       body.handle,
-            did:          body.did
-          });
-        });
+    // This route only ever runs for first-time (genesis) registration --
+    // adding a device to an *existing* account is a separate,
+    // signature-authenticated path (see comment above). So a handle that
+    // already resolves to *any* DID here is always a conflict, never a
+    // legitimate re-registration: handleRegistry.register()'s own
+    // `INSERT ... ON CONFLICT (handle) DO UPDATE` would otherwise silently
+    // reassign that handle to this new DID, orphaning whoever held it
+    // before -- confirmed live 2026-09-07 (a real @pika account's DID got
+    // silently overwritten this way). Must resolve before register() runs.
+    handleRegistry.resolve(body.handle, function(resolveErr, existingDid) {
+      if (resolveErr) return thenDo(resolveErr);
+      if (existingDid) {
+        var conflictErr = new Error('Handle already registered: ' + body.handle);
+        conflictErr.statusCode = 409;
+        return thenDo(conflictErr);
       }
-    );
+
+      handleRegistry.saveCredential(
+        body.credentialId,
+        body.did,
+        cred.publicKey,
+        cred.counter,
+        function(saveErr) {
+          if (saveErr) return thenDo(saveErr);
+          handleRegistry.register(body.handle, body.did, function(err) {
+            if (err) return thenDo(err);
+            thenDo(null, {
+              verified:     true,
+              credentialId: body.credentialId,
+              publicKeyJwk: body.publicKeyJwk,
+              handle:       body.handle,
+              did:          body.did
+            });
+          });
+        }
+      );
+    });
 
   }).catch(function(err) {
     thenDo(new Error('WebAuthn registration error: ' + err.message));
