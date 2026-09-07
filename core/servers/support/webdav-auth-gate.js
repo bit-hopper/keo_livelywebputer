@@ -40,12 +40,15 @@ var WRITE_METHODS = {
   COPY: true
 };
 
-// TODO(core-maintainers): this is intentionally empty -- there is no DID
-// allowlist yet (explicit product decision, 2026-09-06: deny all runtime
-// writes to core/+welcome.html rather than pick an initial admin list
-// ad hoc). Once a real "core maintainer" concept exists, populate this from
-// e.g. (process.env.LK_ADMIN_DIDS || '').split(',').filter(Boolean).
-var ADMIN_DIDS = [];
+// Populated from LK_ADMIN_DIDS (comma-separated DIDs), e.g.
+// LK_ADMIN_DIDS="did:web:example.com:alice" node bin/lk-server.js. Empty
+// (deny-all for core/+welcome.html+start.html) unless that env var is set --
+// still no real per-maintainer allowlist system (roles, revocation, an admin
+// UI), just enough to let an explicitly-named developer write to the app's
+// own boot pages instead of every signed-in account being denied outright.
+// See DeployCheckList.md's WebDAV item for the real allowlist this is a
+// stopgap for.
+var ADMIN_DIDS = (process.env.LK_ADMIN_DIDS || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
 
 var FRAMEWORK_CRITICAL_RE = /^core\//;
 
