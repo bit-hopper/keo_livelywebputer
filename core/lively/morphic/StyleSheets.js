@@ -50,6 +50,21 @@ module('lively.morphic.StyleSheets').requires('lively.morphic.Core', 'apps.cssPa
         iconFontEl.setAttribute('type', "text/css")
         iconFontEl.setAttribute('href', Config.codeBase + 'styles/material-symbols.css')
         document.getElementsByTagName('head')[0].appendChild(iconFontEl);
+        // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+        // Vendored decorative/display Google Fonts (core/lib/google-fonts/,
+        // one subdirectory per family with its own woff2 + upstream license
+        // file), requested for the TextFormattingToolbar font-family picker
+        // (see lively.morphic.Text.Fonts.getKnownFonts() in TextCore.js,
+        // which lists these names so availableFonts() picks them up the
+        // same way it already does for system fonts). Same plain-<link>
+        // idiom and reasoning as the Material Symbols block above -- just
+        // @font-face at-rules, nothing morph-targeting for the CSS parser
+        // to walk.
+        var googleFontsEl = document.createElement('link');
+        googleFontsEl.setAttribute('rel', "stylesheet")
+        googleFontsEl.setAttribute('type', "text/css")
+        googleFontsEl.setAttribute('href', Config.codeBase + 'styles/google-fonts.css')
+        document.getElementsByTagName('head')[0].appendChild(googleFontsEl);
     });
     if (!UserAgent.isTouch) return;
     lively.whenLoaded(function(world) {

@@ -3881,7 +3881,17 @@ lively.morphic.Text.Fonts = {
     	var availableFonts = fontNames.select(function(fontName) {
     		try {
     			if (Global.getComputedStyle(span).fontFamily == fontName) return true;
-    			span.style.fontFamily = fontName;
+    			// Quoted: an unquoted CSS <custom-ident> token can't start with a
+    			// digit, so any family name with a numeral "word" (e.g. "Yarndings
+    			// 20") is invalid as a bare assignment here and gets silently
+    			// rejected by the CSSOM setter -- span.style.fontFamily keeps its
+    			// prior value, so the width/height comparison below can never see
+    			// a difference and the font reads as permanently "unavailable"
+    			// regardless of whether it's actually installed/loaded. Confirmed
+    			// live vendoring Yarndings 20 (TextFormattingToolbar.js). Quoting
+    			// is valid for every other name too, so this has no downside for
+    			// existing callers (openFontBook).
+    			span.style.fontFamily = '"' + fontName.replace(/"/g, '\\"') + '"';
     			var available = defaultWidth !== span.offsetWidth || defaultHeight !== span.offsetHeight;
     			return available;
     		} catch(e) { return false; }
@@ -4036,7 +4046,59 @@ lively.morphic.Text.Fonts = {
     		'Bitstream Vera Sans Mono',
     		'Comic Sans MS',
     		'Bitstream Vera Sans',
-    		'Waree'].uniq().sort();
+    		'Waree',
+    		// Vendored decorative/display Google Fonts (core/lib/google-fonts/,
+    		// self-hosted -- see core/styles/google-fonts.css for the
+    		// @font-face rules and StyleSheets.js for the <link> that loads
+    		// them). Unlike every name above, these aren't a guess at what
+    		// might be installed on the user's OS -- they're guaranteed
+    		// present once the stylesheet loads, but still go through this
+    		// same availableFonts() measurement rather than being assumed,
+    		// since the measurement is also what confirms the webfont has
+    		// actually finished loading by the time it's checked.
+    		'Alex Brush',
+    		'Bitcount Ink',
+    		'Bitcount Prop Double Ink',
+    		'Bitcount Single Ink',
+    		'Cedarville Cursive',
+    		'Coiny',
+    		'Creepster',
+    		'Eater',
+    		'Emilys Candy',
+    		'Foldit',
+    		'Freckle Face',
+    		'Gloria Hallelujah',
+    		'Gluten',
+    		'Gochi Hand',
+    		'Grandstander',
+    		'Gravitas One',
+    		'IBM Plex Serif',
+    		'Indie Flower',
+    		'Jolly Lodger',
+    		'Just Me Again Down Here',
+    		'Kablammo',
+    		'Kalnia Glaze',
+    		'Loved by the King',
+    		'Manufacturing Consent',
+    		'Matemasie',
+    		'Mea Culpa',
+    		'Menbere',
+    		'Miltonian',
+    		'Mystery Quest',
+    		'Offside',
+    		'Patrick Hand',
+    		'Rancho',
+    		'Reem Kufi Fun',
+    		'Rubik Beastly',
+    		'Rubik Burned',
+    		'Rubik Distressed',
+    		'Rubik Gemstones',
+    		'Rubik Maps',
+    		'Rubik Puddles',
+    		'Shadows Into Light Two',
+    		'Yarndings 20',
+    		'Yuyu',
+    		'Yuyu Short'].uniq().sort();
     },
 
     openFontBook: function() {
