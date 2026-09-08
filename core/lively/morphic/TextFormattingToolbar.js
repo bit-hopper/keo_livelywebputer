@@ -24,7 +24,7 @@ module("lively.morphic.TextFormattingToolbar")
       BTN_SIZE: 26,
       GAP: 2,
       GROUP_GAP: 8,
-      BAR_BG: Color.rgb(43, 45, 49),
+      BAR_BG: Color.rgb(153, 83, 143), // #99538F
       ICON_DEFAULT: Color.rgb(220, 222, 226),
       ICON_ACTIVE_BG: Color.rgb(90, 140, 240),
       HOVER_BG: Color.rgba(255, 255, 255, 0.12),
