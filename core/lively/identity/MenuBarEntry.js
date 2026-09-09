@@ -63,6 +63,7 @@ module("lively.identity.MenuBarEntry")
               ["Wiki",     function () { self.newWiki(); }],
             ]],
             ["My profile",         function () { self.openMyProfile(); }],
+            ["Messages",           function () { self.openMessages(); }],
             ["My worlds",          function () { self.openMyWorlds(); }],
             ["My Constellations",  function () { self.openMyConstellations(); }],
             ["Map",                function () { self.openMaps(); }],
@@ -206,6 +207,17 @@ module("lively.identity.MenuBarEntry")
         openMyProfile: function openMyProfile() {
           lively.require("lively.identity.ProfileCard").toRun(function () {
             lively.identity.ProfileCard.open();
+          });
+        },
+
+        // Opens the P2P E2EE direct-message thread list (p2pchat.md) —
+        // the menu-bar entry point for reaching an existing conversation
+        // without going through a friend's profile first. Individual
+        // conversations are also reachable from the "Message" icon on each
+        // friend nameplate row in ProfileCard.js's Friends widget.
+        openMessages: function openMessages() {
+          lively.require("lively.identity.DMChat").toRun(function () {
+            lively.identity.DMChat.openInbox();
           });
         },
 

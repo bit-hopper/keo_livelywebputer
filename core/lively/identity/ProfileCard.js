@@ -738,18 +738,20 @@ module("lively.identity.ProfileCard")
                   nameM.eventsAreIgnored = true;
                   row.addMorph(nameM);
 
-                  // Chat icon — disabled placeholder. There's no 1:1
-                  // direct-message flow in this codebase yet (postcards are
-                  // async and manually-addressed, not a live DM thread), so
-                  // this deliberately doesn't wire up to anything yet.
-                  // Same box-center-vs-visual-center nudge as nameM above,
+                  // Chat icon — opens a real 1:1 P2P E2EE DM window
+                  // (lively.identity.DMChat, p2pchat.md) with this friend.
+                  // Messaging is friend-gated server-side (FriendRegistry),
+                  // so every row here is already a valid DM target — no
+                  // separate lookup/permission UI needed. Same
+                  // box-center-vs-visual-center nudge as nameM above,
                   // measured the same way (+0.67px here — small because the
                   // icon font's glyph sits much closer to its own line-box
                   // center than the regular text font's does).
                   var chatIcon = new lively.morphic.Text(
                     lively.rect(chatX, Math.round((ROWH - 4 - CHATSZ) / 2) + 0.67, CHATSZ, CHATSZ), 'chat_bubble');
                   chatIcon.draggingEnabled = false; chatIcon.droppingEnabled = false; chatIcon.grabbingEnabled = false;
-                  chatIcon.eventsAreIgnored = true;
+                  chatIcon._friendHandle = f.handle;
+                  chatIcon._friendDid    = f.did;
                   // fontSize is points, not px (1pt = 4/3px) — 16pt renders
                   // as a real ~21px glyph that fills this 28px box almost
                   // exactly with no extra padding needed, confirmed by
@@ -758,10 +760,17 @@ module("lively.identity.ProfileCard")
                   chatIcon.applyStyle({ allowInput: false, selectable: false, clipMode: 'hidden',
                     fontFamily: "'Material Symbols Rounded'", fontSize: 16, align: 'center',
                     whiteSpaceHandling: 'pre', padding: lively.Rectangle.inset(0, 0, 0, 0),
-                    textColor: Color.black,
+                    textColor: Color.black, handStyle: 'pointer',
                     fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
                   row.addMorph(chatIcon);
-                  chatIcon.renderContext().morphNode.title = 'Direct messages — coming soon';
+                  chatIcon.renderContext().morphNode.title = 'Message';
+                  chatIcon.addScript(function onMouseUp(evt) {
+                    var handle = this._friendHandle, did = this._friendDid;
+                    lively.require('lively.identity.DMChat').toRun(function () {
+                      lively.identity.DMChat.open(handle, did);
+                    });
+                    evt.stop(); return true;
+                  });
 
                   var moreBtn = new lively.morphic.Text(
                     lively.rect(dotX, Math.round((ROWH - 4 - DOTSZ) / 2), DOTSZ, DOTSZ), 'more_vert');

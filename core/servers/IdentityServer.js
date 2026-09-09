@@ -70,6 +70,7 @@ var blobStore = process.env.BLOB_S3_BUCKET
 var auth = require("./identity/AuthMiddleware");
 var constellationRegistry = require("./identity/ConstellationRegistry");
 var friendRegistry = require("./identity/FriendRegistry");
+var dmMailbox = require("./identity/DMMailbox");
 var cryptoVerify = require("./identity/CryptoVerify");
 var domainVerifier = require("./identity/DomainVerifier");
 var constellationSpace = require("./identity/ConstellationSpace");
@@ -2466,6 +2467,107 @@ module.exports = function (route, app) {
     friendRegistry.removeFriendship(req.identity.did, req.params.did, function (err) {
       if (err) return res.status(500).json({ error: String(err) });
       res.json({ ok: true });
+    });
+  });
+
+  // ─── DM mailbox (P2P E2EE chat, p2pchat.md) ─────────────────────────────────
+  // Store-and-forward relay for sealed+signed chat messages — the server
+  // never sees plaintext (ciphertext is a libsodium sealed box, opened only
+  // by the recipient's own device X25519 key) and never retains a message
+  // past the recipient's own ack-delete; full history lives client-side in
+  // IndexedDB (p2pchat.md §7), not here. Must be registered before
+  // /@:handle/:objId, same reasoning as the friend-request routes above.
+  // Friend-gated (p2pchat.md §1/§5): DMing requires an accepted friendship,
+  // reusing FriendRegistry.js as-is rather than inventing a chat-specific
+  // gate.
+
+  // Deliver a message addressed to :handle (the recipient) — the caller
+  // (req.identity) is the sender. Body: {msgId, threadId, senderDevicePub,
+  // ciphertext, sig, sentAt}. sig is a JWS, by the sender's DID signing
+  // key, over {msgId, threadId, senderDid, recipientDid, ciphertext, sentAt}
+  // (same verifySignedPayload helper the F20 postcard-PUT signature work
+  // already built — no new verification code needed).
+  app.post("/@:handle/dm/mailbox", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    var body = req.body || {};
+    var required = ["msgId", "threadId", "senderDevicePub", "ciphertext", "sig", "sentAt"];
+    for (var i = 0; i < required.length; i++) {
+      if (!body[required[i]]) {
+        return res.status(400).json({ error: "Missing required field: " + required[i] });
+      }
+    }
+    handleRegistry.resolve(handle, function (err, recipientDid) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!recipientDid) return res.status(404).json({ error: "Handle not found: @" + handle });
+
+      var senderDid = req.identity.did;
+      if (senderDid === recipientDid)
+        return res.status(400).json({ error: "Cannot DM yourself" });
+
+      friendRegistry.areFriends(senderDid, recipientDid, function (err, friends) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!friends)
+          return res.status(403).json({ error: "You must be friends with @" + handle + " to message them" });
+
+        var expectedPayload = {
+          msgId: body.msgId, threadId: body.threadId,
+          senderDid: senderDid, recipientDid: recipientDid,
+          ciphertext: body.ciphertext, sentAt: body.sentAt,
+        };
+        handleRegistry.getDIDDocument(senderDid, function (err, didDocument) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (!didDocument)
+            return res.status(403).json({ error: "No DID document on file for sender" });
+          var verification = cryptoVerify.verifySignedPayload(expectedPayload, body.sig, didDocument);
+          if (!verification.valid)
+            return res.status(403).json({ error: "Message signature verification failed: " + verification.reason });
+
+          dmMailbox.putMessage({
+            msgId: body.msgId, threadId: body.threadId,
+            senderDid: senderDid, recipientDid: recipientDid,
+            senderDevicePub: body.senderDevicePub,
+            ciphertext: body.ciphertext, sig: body.sig, sentAt: body.sentAt,
+          }, function (err) {
+            if (err) return res.status(500).json({ error: String(err) });
+            res.json({ ok: true });
+          });
+        });
+      });
+    });
+  });
+
+  // Fetch :handle's own queued messages. Self only — a mailbox is not a
+  // readable-by-others resource, same convention as /@:handle/friends.
+  // Each message also gets a resolved senderHandle (same fan-out/join
+  // helper the friends list uses) so the client never needs its own
+  // DID-\>handle lookup just to label who a message is from.
+  app.get("/@:handle/dm/mailbox", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your mailbox" });
+    dmMailbox.listForRecipient(req.identity.did, function (err, messages) {
+      if (err) return res.status(500).json({ error: String(err) });
+      _resolveHandlesForDids(messages.map(function (m) { return m.senderDid; }), function (err, didToHandle) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({
+          messages: messages.map(function (m) {
+            return Object.assign({}, m, { senderHandle: didToHandle[m.senderDid] || null });
+          }),
+        });
+      });
+    });
+  });
+
+  // Ack — the client calls this once a message has been decrypted,
+  // verified, and saved into its own local IndexedDB. Self only;
+  // deleteMessage itself also re-checks recipient_did server-side.
+  app.delete("/@:handle/dm/mailbox/:msgId", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your mailbox" });
+    dmMailbox.deleteMessage(req.params.msgId, req.identity.did, function (err, deleted) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json({ ok: true, deleted: deleted });
     });
   });
 
