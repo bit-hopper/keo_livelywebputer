@@ -335,6 +335,30 @@ async function coreFiles(baseDir) {
     return absFile;
   }
 
+  // Extracts the raw argument text between the parens of a file's leading
+  // module(...).requires(HERE).toRun(...) call. A naive non-greedy regex
+  // (the previous approach) breaks as soon as the arguments contain their
+  // own nested call with parens -- e.g. Widgets.js's
+  // .requires([...].concat(UserAgent.isMobile ? [...] : [])) -- because it
+  // stops at the first ")" it finds, which belongs to the nested call, not
+  // the real closing paren. This instead walks forward counting paren
+  // depth to find the actual matching close.
+  function extractRequiresArgs(content) {
+    var modIdx = content.indexOf("module(");
+    if (modIdx === -1) return null;
+    var marker = ").requires(";
+    var reqIdx = content.indexOf(marker, modIdx);
+    if (reqIdx === -1) return null;
+    var start = reqIdx + marker.length;
+    var depth = 1, i = start;
+    for (; i < content.length && depth > 0; i++) {
+      if (content[i] === "(") depth++;
+      else if (content[i] === ")") depth--;
+    }
+    if (depth !== 0) return null;
+    return content.slice(start, i - 1);
+  }
+
   // Walks the module dependency graph declared via module(...).requires(...)
   // calls at the top of each core file. This used to do this with
   // fs.readFileSync in a tight synchronous loop, which -- across the
@@ -388,11 +412,27 @@ async function coreFiles(baseDir) {
           } else {
             var content = (await fs.promises.readFile(filename)).toString();
             // FIXME: do real parsing, evil eval
-            var modRegEx = /module\((.*?)\)\.requires\((.*?)\)./g;
-            var moduleDefs = modRegEx.exec(content);
+            var reqArgs = extractRequiresArgs(content);
             deps = [];
-            if (moduleDefs) {
-              var req = eval("[" + moduleDefs[2] + "]");
+            if (reqArgs) {
+              // Some requires() calls branch on UserAgent (a browser-only
+              // global from bootstrap.js, not defined here in Node) to
+              // conditionally add a file -- e.g. Widgets.js's
+              // .requires([...].concat(UserAgent.isMobile ? [...] : [])).
+              // This walk only decides bundle inclusion/ordering, not
+              // runtime behavior, so resolve every UserAgent check truthy:
+              // better to over-include a conditionally-required file than
+              // silently drop it for whichever branch isn't taken.
+              var UserAgent = new Proxy({}, { get: function () { return true; } });
+              // Wrapping reqArgs in an extra "[...]" (as the old code did)
+              // assumes requires() was called with a plain comma list of
+              // string literals. Widgets.js instead passes one single
+              // array-typed argument (built via .concat(...)); wrapping
+              // that in another "[...]" would nest it one level too deep.
+              // Evaluating as real call arguments and flattening one level
+              // handles both forms.
+              var req = eval("(function(){return Array.prototype.slice.call(arguments);})(" + reqArgs + ")");
+              req = [].concat.apply([], req);
               for (var module of req) deps.push(await moduleToFile(module));
             }
             _depsCache.set(filename, { mtime: mtime, deps: deps });
