@@ -37,9 +37,10 @@ module('lively.jenga3d.tools.CreateSphereTool')
     },
 
     'initializing', {
-      initialize: function (viewport, assembly) {
+      initialize: function (viewport, assembly, onCommitted) {
         this.viewport = viewport;
         this.assembly = assembly;
+        this.onCommitted = onCommitted; // optional — called after a real commit (Workspace uses this to auto-return to select mode)
         this._dragProxy = null;
         this._dragCenter = null;
         this._dragActive = false;
@@ -139,6 +140,7 @@ module('lively.jenga3d.tools.CreateSphereTool')
         this.assembly.createInstance('createSphere',
           { radius: radius },
           { translate: [center.x, radius, center.z], rotate: [0, 0, 0], scale: [1, 1, 1] });
+        if (this.onCommitted) this.onCommitted();
       },
     },
 

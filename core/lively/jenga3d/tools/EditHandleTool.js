@@ -77,7 +77,17 @@ module('lively.jenga3d.tools.EditHandleTool')
       // the root were classified the same way, which is why this didn't
       // surface until real booleans made it observable.
       startDrag: function (nodeId, paramField, initialValue) {
-        var isComplex = !this.featureTree.isPrimitiveEditable(this.sceneSync.rootId);
+        // A rotated primitive (RotateTool, added later than this file)
+        // already can't use the axis-aligned proxy (`_createProxy`'s own
+        // `_proxySupported` check below), which used to mean a silent,
+        // frozen viewport for the whole drag with no live feedback at
+        // all — the real rebuild only ever ran once, at endDrag. Routing
+        // it through the same throttled/worker path Complex nodes use
+        // gives it live feedback too, reusing §5.3's machinery rather
+        // than inventing a rotated-proxy path.
+        var xf = this._findWrappingTransform(nodeId);
+        var isRotated = !!(xf && (xf.rotate[0] || xf.rotate[1] || xf.rotate[2]));
+        var isComplex = !this.featureTree.isPrimitiveEditable(this.sceneSync.rootId) || isRotated;
         this._dragging = {
           nodeId: nodeId, paramField: paramField,
           isComplex: isComplex, lastSendTime: 0, pendingValue: null,

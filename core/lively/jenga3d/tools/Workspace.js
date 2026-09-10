@@ -40,7 +40,7 @@
 module('lively.jenga3d.tools.Workspace')
   .requires('lively.persistence.BuildSpec', 'lively.jenga3d.SolidMorph', 'lively.jenga3d.Export',
     'lively.jenga3d.tools.CreateBoxTool', 'lively.jenga3d.tools.CreateCylinderTool',
-    'lively.jenga3d.tools.CreateSphereTool', 'lively.jenga3d.tools.MoveTool')
+    'lively.jenga3d.tools.CreateSphereTool', 'lively.jenga3d.tools.MoveTool', 'lively.jenga3d.tools.RotateTool')
   .toRun(function () {
 
     lively.BuildSpec('lively.jenga3d.tools.Workspace', {
@@ -87,6 +87,8 @@ module('lively.jenga3d.tools.Workspace')
         this._armedCreateTool = null;
         this._moveTool = null;
         this._moveDrag = null; // { rootId, startPoint, isRealDrag }
+        this._rotateTool = null;
+        this._rotateDrag = null; // { rootId, axis } — set on a ring-hit pointerdown
         this.buildToolbar();
         this.buildSolid();
         this._attachCanvasHandlers();
@@ -95,41 +97,92 @@ module('lively.jenga3d.tools.Workspace')
 
       // ─── toolbar construction ───────────────────────────────────────
 
+      // Icon-button toolbar (a CAD-viewer-style restyle) — square Material
+      // Symbols glyph buttons grouped into tinted clusters (select/create,
+      // booleans, edge-ops, history, export) instead of the original flat
+      // row of same-color text-label buttons. Ligature names verified
+      // against the vendored core/media/material-icons/ set before use,
+      // not assumed from memory (several plausible names, e.g. "cylinder"/
+      // "cube"/"smooth", don't actually exist in this icon set). fontSize
+      // is in POINTS, not px (Text morphs render fontSize+'pt' — the
+      // AmbientPresencePanel.js icon-button precedent already established
+      // this project's fontSize*0.75 conversion for a target px glyph
+      // size); 22 here targets a ~29px glyph in a 32px button.
       buildToolbar: function buildToolbar() {
         var content = this.get('workspaceContent');
         var self = this;
         var bar = new lively.morphic.Box(lively.rect(0, 0, content.getExtent().x, this.TOOLBAR_HEIGHT));
-        bar.setFill(Color.rgb(230, 230, 230));
+        bar.setFill(Color.rgb(238, 240, 242));
         bar.name = 'toolbar';
         bar.layout = { resizeWidth: true };
         content.addMorph(bar);
         this._toolbarButtons = {};
         this._x = 8;
 
-        function addButton(name, label, handler) {
-          var w = 16 + label.length * 7;
-          var btn = new lively.morphic.Button(lively.rect(self._x, 8, w, 24), label);
+        var ICON_W = 32, ICON_H = 30;
+
+        // A bare Text morph rendering a Material Symbols ligature directly
+        // (`AmbientPresencePanel.js`'s `makeIconButton` recipe), not a
+        // `lively.morphic.Button` — found live that `Button.ensureLabel`'s
+        // `this.label.setTextStylingMode(true)` puts the label into a rich-
+        // text mode where a flat `applyStyle({fontFamily})` on the button's
+        // own `.label` submorph silently doesn't reach the rendered glyph
+        // (confirmed: computed style stayed Helvetica/12px even after a
+        // direct live `applyStyle` call), unlike a plain Text morph, which
+        // this project's own precedent already uses for icon buttons.
+        // `enable`/`disable`/`setFill` are hand-rolled here to match the
+        // subset `_refreshToolbarState` actually calls on every button.
+        function addIconButton(name, icon, handler, tint) {
+          var rect = lively.rect(self._x, 5, ICON_W, ICON_H);
+          var btn = new lively.morphic.Text(rect);
+          btn.textString = icon;
+          btn.applyStyle({
+            fontFamily: "'Material Symbols Rounded'",
+            fontSize: 16.5, // pt — targets a ~22px glyph (fontSize renders as pt, not px)
+            textColor: Color.rgb(60, 64, 68),
+            fill: tint || Color.white,
+            borderRadius: 6,
+            borderWidth: 1,
+            borderColor: Color.rgb(190, 195, 200),
+            align: 'center',
+            padding: lively.Rectangle.inset(0, Math.round((ICON_H - 22) / 2), 0, 0),
+            allowInput: false,
+            selectable: false,
+            clipMode: 'hidden',
+            whiteSpaceHandling: 'pre',
+            handStyle: 'pointer',
+          });
           btn.name = name;
-          btn.applyStyle({ _BorderRadius: 5, _BorderColor: Color.rgb(180, 180, 180) });
-          lively.bindings.connect(btn, 'fire', self, handler);
+          btn.draggingEnabled = false; btn.droppingEnabled = false; btn.grabbingEnabled = false;
+          btn._enabled = true;
+          btn._tint = tint || Color.white;
+          btn.onMouseUp = function () { if (btn._enabled) self[handler](); };
+          btn.enable = function () { btn._enabled = true; btn.applyStyle({ textColor: Color.rgb(60, 64, 68) }); };
+          btn.disable = function () { btn._enabled = false; btn.applyStyle({ textColor: Color.rgb(190, 193, 196) }); };
           bar.addMorph(btn);
           self._toolbarButtons[name] = btn;
-          self._x += w + 8;
+          self._x += ICON_W + 6;
           return btn;
         }
 
-        function addSeparator() { self._x += 6; }
+        function addSeparator() { self._x += 10; }
 
-        addButton('boxBtn', 'Box', 'onArmBox');
-        addButton('cylinderBtn', 'Cylinder', 'onArmCylinder');
-        addButton('sphereBtn', 'Sphere', 'onArmSphere');
+        var CREATE_TINT = Color.rgb(232, 240, 250), BOOL_TINT = Color.rgb(253, 240, 227),
+          EDGE_TINT = Color.rgb(232, 247, 233), HISTORY_TINT = Color.rgb(240, 240, 240),
+          EXPORT_TINT = Color.rgb(245, 235, 250);
+
+        addIconButton('selectBtn', 'near_me', 'onSelectMode', CREATE_TINT);
         addSeparator();
-        addButton('unionBtn', 'Union', 'onUnion');
-        addButton('cutBtn', 'Cut', 'onCut');
-        addButton('intersectBtn', 'Intersect', 'onIntersect');
+        addIconButton('boxBtn', 'crop_square', 'onArmBox', CREATE_TINT);
+        addIconButton('cylinderBtn', 'database', 'onArmCylinder', CREATE_TINT);
+        addIconButton('sphereBtn', 'circle', 'onArmSphere', CREATE_TINT);
         addSeparator();
-        addButton('filletBtn', 'Fillet', 'onEnterFilletMode');
-        addButton('chamferBtn', 'Chamfer', 'onEnterChamferMode');
+        addIconButton('unionBtn', 'join_full', 'onUnion', BOOL_TINT);
+        addIconButton('cutBtn', 'content_cut', 'onCut', BOOL_TINT);
+        addIconButton('intersectBtn', 'join_inner', 'onIntersect', BOOL_TINT);
+        addSeparator();
+        addIconButton('filletBtn', 'rounded_corner', 'onEnterFilletMode', EDGE_TINT);
+        addIconButton('chamferBtn', 'crop', 'onEnterChamferMode', EDGE_TINT);
 
         var amountField = new lively.morphic.Text(lively.rect(this._x, 8, 46, 24), '2');
         amountField.name = 'amountField';
@@ -139,16 +192,16 @@ module('lively.jenga3d.tools.Workspace')
         this._toolbarButtons.amountField = amountField;
         this._x += 54;
 
-        addButton('applyFilletBtn', 'Apply', 'onApplyFillet');
+        addIconButton('applyFilletBtn', 'check', 'onApplyFillet', EDGE_TINT);
         addSeparator();
-        addButton('deleteBtn', 'Delete', 'onDelete');
+        addIconButton('deleteBtn', 'delete', 'onDelete', HISTORY_TINT);
         addSeparator();
-        addButton('undoBtn', 'Undo', 'onUndo');
-        addButton('redoBtn', 'Redo', 'onRedo');
+        addIconButton('undoBtn', 'undo', 'onUndo', HISTORY_TINT);
+        addIconButton('redoBtn', 'redo', 'onRedo', HISTORY_TINT);
         addSeparator();
-        addButton('exportStlBtn', 'Export STL', 'onExportSTL');
-        addButton('exportObjBtn', 'Export OBJ', 'onExportOBJ');
-        addButton('exportStepBtn', 'Export STEP', 'onExportSTEP');
+        addIconButton('exportStlBtn', 'download', 'onExportSTL', EXPORT_TINT);
+        addIconButton('exportObjBtn', 'download', 'onExportOBJ', EXPORT_TINT);
+        addIconButton('exportStepBtn', 'download', 'onExportSTEP', EXPORT_TINT);
 
         // Defensive floor (see this file's _Extent comment on the outer
         // spec) — never let a too-narrow window collapse this to a
@@ -209,12 +262,30 @@ module('lively.jenga3d.tools.Workspace')
         this._shiftHeld = evt.shiftKey;
         if (this.mode === 'edge') { this._handleEdgePick(evt); return; }
         if (this.mode !== 'select' || this._armedCreateToolName) return; // armed create tools own the gesture themselves
+
+        // Rotation rings sit in front of (and can be larger than) the
+        // shape they belong to — check them before falling through to
+        // face-pick/move, same priority a resize handle would get.
+        var ringAxis = this.solid.pickRotationRing(evt.clientX, evt.clientY);
+        if (ringAxis) {
+          var rootId = this.solid.assembly.selectedRootIds[0];
+          var sceneSync = this.assembly().sceneSyncs[rootId];
+          var pivot = this.solid.getRotationGizmoCenter();
+          if (sceneSync && pivot) {
+            this._rotateTool = new lively.jenga3d.tools.RotateTool(this.solid, this.solid.featureTree, sceneSync);
+            this._rotateTool.startDrag(ringAxis, pivot, evt.clientX, evt.clientY);
+            this._rotateDrag = { rootId: rootId, axis: ringAxis };
+            return;
+          }
+        }
+
         var pick = this.solid.pickFaceAt(evt.clientX, evt.clientY);
         if (!pick) { this._moveDrag = null; return; }
         this._moveDrag = { rootId: pick.rootId, startPoint: this._groundPoint(evt), isRealDrag: false };
       },
 
       _onCanvasPointerMove: function (evt) {
+        if (this._rotateDrag) { if (this._rotateTool) this._rotateTool.updateDrag(evt.clientX, evt.clientY); return; }
         var d = this._moveDrag;
         if (!d) return;
         var point = this._groundPoint(evt);
@@ -232,13 +303,29 @@ module('lively.jenga3d.tools.Workspace')
       },
 
       _onCanvasPointerUp: function (evt) {
+        if (this._rotateDrag) {
+          var rd = this._rotateDrag;
+          this._rotateDrag = null;
+          if (this._rotateTool) {
+            var self = this;
+            this._rotateTool.endDrag(evt.clientX, evt.clientY, function () {
+              self.solid._frameAllMeshes();
+              self.solid.showRotationGizmo(rd.rootId); // rings need re-centering on the new position/orientation
+            });
+            this._rotateTool = null;
+          }
+          return;
+        }
         var d = this._moveDrag;
         this._moveDrag = null;
         if (!d) return;
         if (d.isRealDrag && this._moveTool) {
           var point = this._groundPoint(evt) || d.startPoint;
-          var self = this;
-          this._moveTool.endDrag(point, function () { self.solid._frameAllMeshes(); });
+          var self2 = this;
+          this._moveTool.endDrag(point, function () {
+            self2.solid._frameAllMeshes();
+            if (self2.assembly().selectedRootIds[0] === d.rootId) self2.solid.showRotationGizmo(d.rootId);
+          });
           this._moveTool = null;
         } else {
           // A plain click, no real movement — object-select (§14.6),
@@ -274,7 +361,18 @@ module('lively.jenga3d.tools.Workspace')
         return raycaster.ray.intersectPlane(groundPlane, hit) ? hit : null;
       },
 
-      // ─── create-tool arming (§14.7, radio-style) ────────────────────
+      // ─── select/move mode + create-tool arming (§14.7, radio-style) ──
+
+      // Explicit way back to select/move mode (found live to be missing —
+      // before this, the only way to disarm a create tool was re-clicking
+      // its own still-armed button, which a first-time user has no reason
+      // to know). Also exits edge-pick mode, so this one button always
+      // gets back to "click to select, drag to move."
+      onSelectMode: function onSelectMode() {
+        this._disarmCreateTool();
+        if (this.mode === 'edge') { this.mode = 'select'; this.setStatus(''); }
+        this._refreshToolbarState();
+      },
 
       onArmBox: function onArmBox() { this._armCreateTool('box', lively.jenga3d.tools.CreateBoxTool); },
       onArmCylinder: function onArmCylinder() { this._armCreateTool('cylinder', lively.jenga3d.tools.CreateCylinderTool); },
@@ -284,7 +382,12 @@ module('lively.jenga3d.tools.Workspace')
         if (this._armedCreateToolName === name) { this._disarmCreateTool(); return; } // clicking the armed one again disarms it
         this._disarmCreateTool();
         this._armedCreateToolName = name;
-        this._armedCreateTool = new ToolClass(this.solid, this.assembly());
+        var self = this;
+        // Matches a common CAD-viewer behavior: dropping a shape returns to
+        // select/move automatically rather than leaving the tool armed
+        // with no visible way back (the exact trap onSelectMode's own
+        // doc comment names).
+        this._armedCreateTool = new ToolClass(this.solid, this.assembly(), function onCommitted() { self._disarmCreateTool(); });
         this._refreshToolbarState();
       },
 
@@ -379,7 +482,7 @@ module('lively.jenga3d.tools.Workspace')
 
         ['boxBtn', 'cylinderBtn', 'sphereBtn'].forEach(function (name) {
           var isArmed = { boxBtn: 'box', cylinderBtn: 'cylinder', sphereBtn: 'sphere' }[name] === this._armedCreateToolName;
-          btns[name].setFill(isArmed ? Color.rgb(204, 229, 255) : Color.rgb(243, 243, 243));
+          btns[name].setFill(isArmed ? Color.rgb(150, 195, 245) : Color.rgb(232, 240, 250));
         }, this);
 
         var canCombine = selectedCount === 2;
@@ -401,6 +504,27 @@ module('lively.jenga3d.tools.Workspace')
         var ft = this.solid.featureTree;
         if (ft.canUndo()) { btns.undoBtn.enable && btns.undoBtn.enable(); } else { btns.undoBtn.disable && btns.undoBtn.disable(); }
         if (ft.canRedo()) { btns.redoBtn.enable && btns.redoBtn.enable(); } else { btns.redoBtn.disable && btns.redoBtn.disable(); }
+
+        btns.selectBtn.setFill(!this._armedCreateToolName && this.mode === 'select' ? Color.rgb(150, 195, 245) : Color.rgb(232, 240, 250));
+
+        this._syncRotationGizmo();
+      },
+
+      // Shows the rotation rings iff exactly one instance is selected,
+      // we're in plain select mode with nothing else armed, and that
+      // instance is rotatable (its root is a wrapping `transform` node —
+      // RotateTool's own v1 scope, shared with MoveTool). Hides them
+      // otherwise. Called from the same single "state may have changed"
+      // choke point every other toolbar-state refresh already uses.
+      _syncRotationGizmo: function () {
+        var selected = this.assembly().selectedRootIds;
+        var eligible = this.mode === 'select' && !this._armedCreateToolName && selected.length === 1;
+        if (eligible) {
+          var node = this.solid.featureTree.getNode(selected[0]);
+          eligible = !!(node && node.op === 'transform');
+        }
+        if (eligible) this.solid.showRotationGizmo(selected[0]);
+        else this.solid.hideRotationGizmo();
       },
 
       onRemove: function onRemove() {

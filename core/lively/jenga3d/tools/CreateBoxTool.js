@@ -44,9 +44,10 @@ module('lively.jenga3d.tools.CreateBoxTool')
     },
 
     'initializing', {
-      initialize: function (viewport, assembly) {
+      initialize: function (viewport, assembly, onCommitted) {
         this.viewport = viewport;
         this.assembly = assembly;
+        this.onCommitted = onCommitted; // optional — called after a real commit (Workspace uses this to auto-return to select mode)
         this._dragProxy = null;
         this._dragStartPoint = null;
         this._dragActive = false;
@@ -159,6 +160,7 @@ module('lively.jenga3d.tools.CreateBoxTool')
         this.assembly.createInstance('createBox',
           { width: width, height: this.DEFAULT_HEIGHT, depth: depth },
           { translate: [cx - width / 2, 0, cz - depth / 2], rotate: [0, 0, 0], scale: [1, 1, 1] });
+        if (this.onCommitted) this.onCommitted();
       },
     },
 

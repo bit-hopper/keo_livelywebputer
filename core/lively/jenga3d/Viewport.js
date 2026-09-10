@@ -97,7 +97,7 @@ module('lively.jenga3d.Viewport')
     lively.morphic.Morph.subclass('lively.jenga3d.Viewport',
 
     'settings', {
-      doNotSerialize: ['_three', '_meshes', '_selectionOutlines', '_gizmo'],
+      doNotSerialize: ['_three', '_meshes', '_selectionOutlines', '_gizmo', '_rotationGizmo'],
       style: { enableGrabbing: false, enableDropping: false },
     },
 
@@ -108,6 +108,7 @@ module('lively.jenga3d.Viewport')
         this._three = null; // { THREE, scene, camera, renderer } once set up
         this._meshes = {};  // rootId -> { mesh, edgeLines, highlightedGroupIndex, highlightedEdgeGroupIndices: Set }
         this._selectionOutlines = {}; // rootId -> THREE.BoxHelper (§14.4/§14.5 "selected instance" tint)
+        this._rotationGizmo = null; // { rootId, rings: {x,y,z}, center, radius } — RotateTool's drag rings
 
         var self = this;
         this.getShape().onResized = function (extent) { self._onResized(extent); };
@@ -154,6 +155,12 @@ module('lively.jenga3d.Viewport')
         var width = Math.max(1, extent.x), height = Math.max(1, extent.y);
 
         var scene = new THREE.Scene();
+        // A light workplane background rather than the original black-void
+        // one (added along with the ground grid/corner gizmo, §13 step 22)
+        // — a session later found the black background was one of the
+        // biggest visual mismatches against a reference CAD-viewer look,
+        // addressed here alongside real lighting.
+        scene.background = new THREE.Color(0xf4f6f8);
         var camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 100000);
         camera.position.set(100, 100, 100);
         camera.lookAt(0, 0, 0);
@@ -164,6 +171,7 @@ module('lively.jenga3d.Viewport')
 
         this._three = { THREE: THREE, scene: scene, camera: camera, renderer: renderer };
         this._addGroundGrid();
+        this._addLights();
         this._setupGizmo();
         this._attachPicking();
 
@@ -177,7 +185,7 @@ module('lively.jenga3d.Viewport')
         }
       },
 
-      // TinkerCAD-style orientation reference — a static ground grid on
+      // A CAD-viewer-style orientation reference — a static ground grid on
       // the Y=0 plane (§9.1: 1 unit = 1mm; 1000mm/100 divisions = 10mm
       // cells, matching CreateBoxTool's own 10mm default height) so a
       // freshly-opened viewport reads as "an empty workspace," not a
@@ -186,31 +194,147 @@ module('lively.jenga3d.Viewport')
       // .groups, so PickIndex.resolve never matches it) or export.
       _addGroundGrid: function () {
         var THREE = this._three.THREE;
-        var grid = new THREE.GridHelper(1000, 100, 0x666666, 0x333333);
+        // Colors tuned for the light workplane background (see
+        // scene.background above) — the original 0x666666/0x333333 pair
+        // was tuned for a black background and reads as barely-visible
+        // dark-on-dark against the light one.
+        var grid = new THREE.GridHelper(1000, 100, 0xb8bec4, 0xdde2e6);
         this._three.scene.add(grid);
       },
 
-      // A small fixed-size XYZ axis indicator rendered into the canvas's
-      // bottom-left corner (red=X, green=Y, blue=Z) — the other half of
-      // "reads as TinkerCAD" alongside the ground grid. Deliberately a
-      // SEPARATE scene+orthographic-camera pair rendered into its own
-      // viewport/scissor rect each frame, not an AxesHelper dropped into
-      // the main scene: an in-scene gizmo would zoom/shrink with the
-      // model instead of staying a constant on-screen size, and would
-      // need picking/highlight/export to all know to ignore it.
+      // A soft-shaded, CAD-viewer-style look for the display material
+      // (Export is mesh-data-based, not material-based — confirmed by
+      // reading Export.js before this change, so this doesn't touch
+      // STL/OBJ/STEP correctness) needs an actual light or two; the
+      // original MeshNormalMaterial needed none, chosen specifically to
+      // double as a normals sanity-check with no lighting setup required.
+      _addLights: function () {
+        var THREE = this._three.THREE;
+        var ambient = new THREE.AmbientLight(0xffffff, 0.55);
+        var key = new THREE.DirectionalLight(0xffffff, 0.85);
+        key.position.set(60, 120, 80);
+        var fill = new THREE.DirectionalLight(0xffffff, 0.25);
+        fill.position.set(-80, 40, -60);
+        this._three.scene.add(ambient, key, fill);
+      },
+
+      // A labeled navigation cube in the canvas's bottom-left corner
+      // (TOP/BOTTOM/LEFT/RIGHT/FRONT/BACK face labels, plus a small
+      // colored X/Y/Z axis triad poking out of one corner) — modeled
+      // directly on a labeled reference view-cube image rather than the
+      // original bare RGB arrow triad, per a live comparison against
+      // supplied reference images.
+      // Deliberately a SEPARATE scene+orthographic-camera pair rendered
+      // into its own viewport/scissor rect each frame (unchanged from the
+      // original arrow-triad version's own reasoning): an in-scene gizmo
+      // would zoom/shrink with the model instead of staying a constant
+      // on-screen size, and would need picking/highlight/export to all
+      // know to ignore it. Purely a visual orientation reference — no
+      // click-to-snap-view interaction (yet; the reference images didn't
+      // show any, so none was built).
       _setupGizmo: function () {
         var THREE = this._three.THREE;
         var scene = new THREE.Scene();
-        var camera = new THREE.OrthographicCamera(-1.6, 1.6, 1.6, -1.6, 0.1, 10);
+        // Matches the main scene's light background — this is a SEPARATE
+        // scene/camera pair (file doc above), so it needs its own
+        // background set; otherwise its scissored corner renders as a
+        // black square regardless of the main viewport's own background.
+        scene.background = new THREE.Color(0xf4f6f8);
+        // Frustum tightened to just fit the cube + its axis-label
+        // overhang (found live: the original ±2.2 left the cube filling
+        // only ~35% of the real ~90px on-screen square, which combined
+        // with the face labels' original size/contrast made them
+        // effectively unreadable at actual size — verified by cropping
+        // the real rendered corner pixels, not a re-render at a larger
+        // size, which had been hiding this).
+        var camera = new THREE.OrthographicCamera(-1.7, 1.7, 1.7, -1.7, 0.1, 10);
 
-        function addAxis(dir, color) {
-          scene.add(new THREE.ArrowHelper(dir, new THREE.Vector3(0, 0, 0), 1, color, 0.3, 0.18));
+        var cubeSize = 1.6;
+        var cube = new THREE.Mesh(
+          new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize),
+          this._buildGizmoCubeMaterials(THREE)
+        );
+        scene.add(cube);
+        scene.add(new THREE.LineSegments(
+          new THREE.EdgesGeometry(cube.geometry),
+          new THREE.LineBasicMaterial({ color: 0xafb5bb })
+        ));
+
+        // Short colored axis lines + letter labels poking out past the
+        // cube's own +X/+Y/+Z corner (second reference image) — same
+        // red=X/green=Y/blue=Z convention the old arrow triad already
+        // used, just now alongside the labeled cube rather than instead
+        // of it.
+        this._addGizmoAxis(scene, THREE, new THREE.Vector3(1, 0, 0), 0xff4444, 'X', cubeSize);
+        this._addGizmoAxis(scene, THREE, new THREE.Vector3(0, 1, 0), 0x2fb62f, 'Y', cubeSize);
+        this._addGizmoAxis(scene, THREE, new THREE.Vector3(0, 0, 1), 0x3f7fd9, 'Z', cubeSize);
+
+        this._gizmo = { scene: scene, camera: camera, sizeCss: 108, marginCss: 8 };
+      },
+
+      // Builds the cube's 6 face materials as canvas-texture labels, in
+      // THREE.BoxGeometry's own face order ([+X, -X, +Y, -Y, +Z, -Z]).
+      // +Y=TOP/-Y=BOTTOM/+X=RIGHT/-X=LEFT/+Z=FRONT/-Z=BACK — matches the
+      // same world-axis convention (Y up) this file's own §9.1 comment
+      // elsewhere already uses, and lines FRONT up with the +Z axis label
+      // added by _addGizmoAxis below (both point the same direction in
+      // the second reference image).
+      _buildGizmoCubeMaterials: function (THREE) {
+        // 256px source + a much larger, darker, higher-contrast label
+        // than the original 128px/19px/#82898f attempt — found live
+        // (cropping the real rendered ~30px-per-face-on-screen corner
+        // pixels, see _setupGizmo's own comment) that the original sizing
+        // anti-aliased the label down to an illegible smudge at actual
+        // on-screen size, even though a separately-rendered larger copy
+        // of the same scene looked fine and gave false confidence.
+        function faceMaterial(label) {
+          var canvas = document.createElement('canvas');
+          canvas.width = canvas.height = 256;
+          var ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#fafbfc';
+          ctx.fillRect(0, 0, 256, 256);
+          ctx.strokeStyle = '#b7bdc3';
+          ctx.lineWidth = 10;
+          ctx.strokeRect(5, 5, 246, 246);
+          ctx.fillStyle = '#454b51';
+          ctx.font = 'bold 46px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(label, 128, 128);
+          var texture = new THREE.CanvasTexture(canvas);
+          return new THREE.MeshBasicMaterial({ map: texture });
         }
-        addAxis(new THREE.Vector3(1, 0, 0), 0xff4444); // X
-        addAxis(new THREE.Vector3(0, 1, 0), 0x44dd44); // Y
-        addAxis(new THREE.Vector3(0, 0, 1), 0x4488ff); // Z
+        return [
+          faceMaterial('RIGHT'), faceMaterial('LEFT'),
+          faceMaterial('TOP'), faceMaterial('BOTTOM'),
+          faceMaterial('FRONT'), faceMaterial('BACK'),
+        ];
+      },
 
-        this._gizmo = { scene: scene, camera: camera, sizeCss: 72, marginCss: 8 };
+      // One short colored line + a small text-sprite letter label, from
+      // just past the cube's surface outward along `dir`.
+      _addGizmoAxis: function (scene, THREE, dir, color, letter, cubeSize) {
+        var start = dir.clone().multiplyScalar(cubeSize / 2);
+        var end = dir.clone().multiplyScalar(cubeSize / 2 + 0.55);
+        var line = new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints([start, end]),
+          new THREE.LineBasicMaterial({ color: color })
+        );
+        scene.add(line);
+
+        var canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 64;
+        var ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#' + color.toString(16).padStart(6, '0');
+        ctx.font = 'bold 46px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(letter, 32, 34);
+        var texture = new THREE.CanvasTexture(canvas);
+        var sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false }));
+        sprite.scale.set(0.42, 0.42, 1);
+        sprite.position.copy(end).addScaledVector(dir, 0.18);
+        scene.add(sprite);
       },
 
       // Mirrors the main camera's current orientation (not its position/
@@ -271,6 +395,18 @@ module('lively.jenga3d.Viewport')
         return entry ? entry.mesh : null;
       },
 
+      // A small fixed palette (pastel-ish solid colors), picked
+      // deterministically from rootId so the same instance keeps its
+      // color across rebuilds (drag updates, undo/redo resync) without
+      // needing to track per-instance color state separately.
+      _SHAPE_COLORS: [0x5b9bd5, 0xed7d31, 0x70ad47, 0xffc000, 0x9e6ac2, 0xe06666, 0x4fc3c1, 0xd68fb0],
+      _colorForRootId: function (rootId) {
+        var hash = 0;
+        for (var i = 0; i < rootId.length; i++) hash = (hash * 31 + rootId.charCodeAt(i)) | 0;
+        var idx = Math.abs(hash) % this._SHAPE_COLORS.length;
+        return this._SHAPE_COLORS[idx];
+      },
+
       // rootId: which instance this mesh belongs to. mesh: { positions:
       // Float32Array, normals: Float32Array, indices: Uint32Array,
       // groups: [{start, count, occtFaceIndex}] } — the exact shape
@@ -310,7 +446,14 @@ module('lively.jenga3d.Viewport')
           geometry.addGroup(0, mesh.indices.length, 0);
         }
 
-        var material = new THREE.MeshNormalMaterial();
+        // A soft-shaded solid color (needs the lights added in
+        // _addLights) rather than the original MeshNormalMaterial, which
+        // rendered winding/normal direction as color — useful while
+        // debugging the kernel, not for an end-user-facing shape. A small
+        // fixed palette cycled by a hash of rootId gives each instance a
+        // stable, distinct color across rebuilds without needing extra
+        // per-viewport state.
+        var material = new THREE.MeshStandardMaterial({ color: this._colorForRootId(rootId), roughness: 0.55, metalness: 0.05 });
         var highlightMaterial = new THREE.MeshBasicMaterial({ color: 0xffee00 });
         var threeMesh = new THREE.Mesh(geometry, [material, highlightMaterial]);
         threeMesh.userData.rootId = rootId; // §14.4: traces a raycaster hit back to its instance
@@ -372,6 +515,7 @@ module('lively.jenga3d.Viewport')
         }
         delete this._meshes[rootId];
         this._clearSelectionOutline(rootId);
+        if (this._rotationGizmo && this._rotationGizmo.rootId === rootId) this.hideRotationGizmo();
       },
 
       // Points the camera at the union of every current instance's
@@ -568,6 +712,90 @@ module('lively.jenga3d.Viewport')
       // was constructed with, not a rootId, so it must be rebuilt).
       _refreshSelectionOutline: function (rootId) {
         if (this._selectionOutlines[rootId]) this._addSelectionOutline(rootId);
+      },
+    },
+
+    'rotation gizmo (RotateTool — draggable rotation rings, distinct from the corner orientation indicator)', {
+      // Three draggable THREE.TorusGeometry rings (red=X, green=Y, blue=Z,
+      // matching the corner-indicator's own color convention) sized to
+      // rootId's current world bounding sphere and centered on it — shown
+      // while exactly one rotatable instance is selected (Workspace/
+      // Assembly decide eligibility; this just renders/hit-tests whatever
+      // rootId it's told to). Deliberately drawn in the MAIN scene (unlike
+      // the fixed-size corner gizmo) so the rings scale and move with the
+      // actual selected shape.
+      showRotationGizmo: function (rootId) {
+        this.hideRotationGizmo();
+        var entry = this._meshes[rootId];
+        if (!entry || !this._three) return;
+        var THREE = this._three.THREE;
+        var sphere = new THREE.Box3().setFromObject(entry.mesh).getBoundingSphere(new THREE.Sphere());
+        if (!sphere || sphere.radius === 0) return;
+        var radius = sphere.radius * 1.3;
+        var tube = Math.max(radius * 0.035, 0.05);
+
+        function makeRing(color, axis) {
+          var geometry = new THREE.TorusGeometry(radius, tube, 8, 64);
+          var material = new THREE.MeshBasicMaterial({ color: color, depthTest: false, transparent: true, opacity: 0.9 });
+          var ring = new THREE.Mesh(geometry, material);
+          ring.renderOrder = 999;
+          ring.userData.rotateAxis = axis;
+          return ring;
+        }
+
+        // TorusGeometry lies flat in its own local XY plane (hole along
+        // local Z) — rotate each ring so its plane is perpendicular to the
+        // axis it represents (i.e. its hole points along that world axis).
+        var ringX = makeRing(0xff4444, 'x'); ringX.rotation.y = Math.PI / 2;
+        var ringY = makeRing(0x44dd44, 'y'); ringY.rotation.x = Math.PI / 2;
+        var ringZ = makeRing(0x4488ff, 'z'); // default orientation already faces Z
+
+        [ringX, ringY, ringZ].forEach(function (ring) { ring.position.copy(sphere.center); });
+
+        this._three.scene.add(ringX, ringY, ringZ);
+        this._rotationGizmo = { rootId: rootId, rings: { x: ringX, y: ringY, z: ringZ }, center: sphere.center.clone(), radius: radius };
+        this._render();
+      },
+
+      hideRotationGizmo: function () {
+        if (!this._rotationGizmo) return;
+        var self = this;
+        Object.keys(this._rotationGizmo.rings).forEach(function (axis) {
+          var ring = self._rotationGizmo.rings[axis];
+          self._three.scene.remove(ring);
+          ring.geometry.dispose();
+          ring.material.dispose();
+        });
+        this._rotationGizmo = null;
+        this._render();
+      },
+
+      // The world-space point the rings are currently centered on (the
+      // pivot RotateTool rotates around) — null if no gizmo is shown.
+      getRotationGizmoCenter: function () {
+        return this._rotationGizmo ? this._rotationGizmo.center.clone() : null;
+      },
+
+      // Returns 'x'|'y'|'z' for whichever ring is under (clientX, clientY),
+      // or null. Only raycasts the three ring meshes, never the shape
+      // itself — a click that also happens to pass through the shape
+      // shouldn't be mistaken for a ring grab.
+      pickRotationRing: function (clientX, clientY) {
+        if (!this._three || !this._rotationGizmo) return null;
+        var THREE = this._three.THREE;
+        var canvas = this._three.renderer.domElement;
+        var rect = canvas.getBoundingClientRect();
+        var ndc = new THREE.Vector2(
+          ((clientX - rect.left) / rect.width) * 2 - 1,
+          -((clientY - rect.top) / rect.height) * 2 + 1
+        );
+        var raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(ndc, this._three.camera);
+        var rings = this._rotationGizmo.rings;
+        var objects = [rings.x, rings.y, rings.z];
+        var hits = raycaster.intersectObjects(objects);
+        if (hits.length === 0) return null;
+        return hits[0].object.userData.rotateAxis;
       },
     });
 
