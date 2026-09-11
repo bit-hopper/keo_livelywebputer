@@ -20,6 +20,13 @@ module('lively.identity.Inventory').requires('lively.persistence.BuildSpec', 'li
 // browser itself) keep their existing names; renaming those is out of scope.
 lively.BuildSpec('lively.identity.Inventory', {
     _BorderColor: Color.rgb(204,0,0),
+    // Setting _BorderColor without a paired _BorderRadius silently zeroes
+    // the window's corner radius at construction (setBorderColor rewrites
+    // the whole inline border shorthand, radius included) — see CLAUDE.md's
+    // "lively.BuildSpec / Morph#addScript methods lose their closure" doc's
+    // sibling border-radius-reset gotcha. Explicit here so the window keeps
+    // the classic rounded corner instead of rendering hard square ones.
+    _BorderRadius: 3,
     _Extent: lively.pt(820.0,640.0),
     _Position: lively.pt(260.0,140.0),
     _StyleClassNames: ["Morph","Window"],
@@ -33,6 +40,8 @@ lively.BuildSpec('lively.identity.Inventory', {
     sourceModule: "lively.identity.Inventory",
     submorphs: [{
         _BorderColor: Color.rgb(95,94,95),
+        // same border-radius-reset gotcha as the outer window above.
+        _BorderRadius: 3,
         _Extent: lively.pt(812.0,614.0),
         _Fill: Color.rgba(245,245,245,0),
         _Position: lively.pt(4.0,22.0),

@@ -122,9 +122,15 @@
 }
 
 .Button.WindowControl {
-	border: 1px solid #aaa;
-	border-radius: 2px;
-	background: #EEE;
+	border: none;
+	border-radius: 50%;
+	/* Near-opaque neutral backdrop, not a faint tint of whatever's behind
+	   it — a window's own fill can be anything from near-white to a
+	   saturated accent color, and a low-opacity tint reads fine against
+	   light chrome but leaves the (fixed dark) icon glyph with weak
+	   contrast against a colored one. A consistent light backdrop keeps
+	   icon contrast constant regardless of the window's own color. */
+	background: rgba(255,255,255,0.55);
 	font-weight: normal;
 }
 
@@ -132,9 +138,38 @@
 	padding-top: 1px !important;
 }
 
-.Button.WindowControl.close {
-	background: #E73F22;
-	color: white;
+.Button.WindowControl:hover {
+	background: rgba(255,255,255,0.85);
+}
+
+.Button.WindowControl .Text {
+	color: rgba(0,0,0,0.7);
+}
+
+/* close/collapse/menu render as Material Symbols Rounded glyphs (see
+   WindowControl#styleAsIcon in Widgets.js) — scoped to just these three
+   classes, not all .Button.WindowControl, so an unrelated custom
+   WindowControl button (e.g. BrowserFramework.js's "N" nav button) keeps
+   its own literal text/font instead of falling back to a missing glyph. */
+.Button.WindowControl.close .Text,
+.Button.WindowControl.window-collapse-btn .Text,
+.Button.WindowControl.window-menu-btn .Text {
+	font-family: "Material Symbols Rounded";
+	font-size: 13px;
+}
+
+.Button.WindowControl.close:hover {
+	background: rgba(224,66,66,0.9);
+}
+.Button.WindowControl.close:hover .Text {
+	color: #fff;
+}
+
+.Button.WindowControl.window-collapse-btn:hover {
+	background: rgba(76,175,80,0.9);
+}
+.Window.is-collapsed .Button.WindowControl.window-collapse-btn:hover {
+	background: rgba(255,193,7,0.9);
 }
 
 /* Lists */

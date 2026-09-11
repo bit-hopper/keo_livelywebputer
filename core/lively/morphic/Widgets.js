@@ -2651,6 +2651,30 @@ lively.morphic.Button.subclass("lively.morphic.WindowControl",
         $super(bnds, labelString)
         this.label.setExtent(this.getExtent());
     },
+},
+'icon styling', {
+    // Renders this control as a Material Symbols Rounded icon glyph
+    // instead of literal text (see core/styles/material-symbols.css).
+    // The label position below is a static, empirically-converged offset
+    // for this button's fixed 17x17 extent + 12px glyph — not computed
+    // via runtime DOM measurement, since styleAsIcon() runs during Window
+    // construction, before the morph is added to the world and has a
+    // real renderContext to measure. Verified live via iterative
+    // getBoundingClientRect convergence across close/collapse/menu on
+    // multiple windows; see LivelyMorphic.md §8.
+    styleAsIcon: function(ligature) {
+        this.label.setTextString(ligature);
+        this.label.applyStyle({
+            fontFamily: "'Material Symbols Rounded'", fontSize: 12,
+            fixedWidth: true, fixedHeight: true, clipMode: 'hidden',
+            borderWidth: 0, fill: null
+        });
+        this.label.setExtent(this.getExtent());
+        this.label.setPosition(lively.pt(-1.875, -2.3));
+        this.draggingEnabled = false;
+        this.grabbingEnabled = false;
+        this.droppingEnabled = false;
+    }
 });
 
 lively.morphic.Box.subclass("lively.morphic.TitleBar",
@@ -2660,6 +2684,12 @@ lively.morphic.Box.subclass("lively.morphic.TitleBar",
 'properties', {
     controlSpacing: 3,
     barHeight: 22,
+    // Vertical position of close/collapse/menu buttons within barHeight —
+    // NOT the naive (barHeight-buttonHeight)/2 = 2.5, which measures
+    // visibly off-center once buttons actually render (a button's real
+    // rendered height doesn't equal its own getExtent().y). Converged
+    // empirically via iterative pixel measurement; see LivelyMorphic.md §8.
+    controlVerticalOffset: 3.5,
     shortBarHeight: 15,
     accessibleInInactiveWindow: true,
     style: {
@@ -2730,18 +2760,31 @@ lively.morphic.Box.subclass("lively.morphic.TitleBar",
 'layouting', {
     adjustElementPositions: function() {
         var innerBounds = this.innerBounds(),
-            sp = this.controlSpacing;
+            sp = this.controlSpacing,
+            btnY = this.controlVerticalOffset;
 
         var buttonLocation = this.innerBounds().topRight().subXY(sp, -sp);
 
         this.buttons.forEach(function(ea) {
             buttonLocation = buttonLocation.subXY(ea.shape.bounds().width, 0);
-            ea.setPosition(buttonLocation);
+            ea.setPosition(lively.pt(buttonLocation.x, btnY));
             buttonLocation = buttonLocation.subXY(sp, 0)
         });
 
+        var labelStart = this.innerBounds().topLeft().x + sp;
+
+        // The kebab/menu button is deliberately kept OUT of `this.buttons`
+        // (the right-anchored array above) so it can float at the title
+        // bar's left edge instead, immediately before the title label —
+        // see Window#makeTitleBar and LivelyMorphic.md §8.
+        if (this.menuButton && this.menuButton.owner) {
+            var mExt = this.menuButton.shape.bounds().extent(), menuGap = 6;
+            this.menuButton.setPosition(lively.pt(labelStart, btnY));
+            labelStart = labelStart + mExt.x + menuGap;
+        }
+
         if (this.label) {
-            var start = this.innerBounds().topLeft().addXY(sp, sp),
+            var start = lively.pt(labelStart, this.innerBounds().topLeft().y + sp),
                 end = lively.pt(buttonLocation.x,
                         innerBounds.bottomRight().y).subXY(sp, sp);
             this.label.setBounds(rect(start, end));
@@ -2849,12 +2892,28 @@ lively.morphic.Morph.subclass('lively.morphic.Window', Trait('lively.morphic.Dra
 
         this.closeButton = titleBar.addNewButton("X", pt(0,-1));
         this.closeButton.addStyleClassName('close');
+        this.closeButton.styleAsIcon('close');
+
         this.collapseButton = titleBar.addNewButton("–", pt(0,1));
-        this.menuButton = titleBar.addNewButton("Menu", null, 40);
+        this.collapseButton.addStyleClassName('window-collapse-btn');
+        this.collapseButton.styleAsIcon('remove');
+
+        // Square (not the old wide "Menu" text button), and created via
+        // createNewButton (not addNewButton) so it's deliberately kept
+        // OUT of titleBar.buttons, the right-anchored array — it floats
+        // at the title bar's LEFT edge instead, tracked separately as
+        // titleBar.menuButton. See TitleBar#adjustElementPositions and
+        // LivelyMorphic.md §8.
+        this.menuButton = titleBar.createNewButton('', null);
+        this.menuButton.addStyleClassName('window-menu-btn');
+        titleBar.menuButton = this.menuButton;
+        this.menuButton.styleAsIcon('more_vert');
 
         connect(this.closeButton, 'fire', this, 'initiateShutdown');
         connect(this.menuButton, 'fire', this, 'showTargetMorphMenu');
         connect(this.collapseButton, 'fire', this, 'toggleCollapse');
+
+        titleBar.adjustElementPositions();
 
         return titleBar;
     },
@@ -3105,7 +3164,16 @@ lively.morphic.Morph.subclass('lively.morphic.Window', Trait('lively.morphic.Dra
         var offset = buttonOffset.negated().addPt(labelTopRight);
         var buttonBoundsShiftedLeft = buttonBounds.reduce(function(akk, ea) {
             return akk.union(ea.translatedBy(offset)); }, rect(0,0,0,0));
-        return buttonBoundsShiftedLeft.extent().addXY(20,0);
+        var optimalExtent = buttonBoundsShiftedLeft.extent().addXY(20,0);
+        // The kebab/menu button is deliberately excluded from
+        // titleBar.buttons (see makeTitleBar) so it isn't accounted for
+        // above — reserve its own width + gap or the collapsed pill
+        // overlaps it. See LivelyMorphic.md §8.
+        var menuBtn = win.titleBar.menuButton;
+        if (menuBtn && menuBtn.owner) {
+            optimalExtent = optimalExtent.addXY(menuBtn.shape.bounds().width + 6, 0);
+        }
+        return optimalExtent;
     },
     toggleCollapse: function() {
         return this.isCollapsed() ? this.expand() : this.collapse();
@@ -3120,7 +3188,9 @@ lively.morphic.Morph.subclass('lively.morphic.Window', Trait('lively.morphic.Dra
         this.helperMorphs.invoke('remove');
         this.collapsedExtent = this.computeOptimalCollapsedExtent(this.collapsedExtent);
         if (this.titleBar.lookCollapsedOrNot) this.titleBar.lookCollapsedOrNot(true);
-        if (this.collapseButton) this.collapseButton.setLabel("+");
+        if (this.collapseButton && this.collapseButton.styleAsIcon) this.collapseButton.styleAsIcon('add');
+        else if (this.collapseButton) this.collapseButton.setLabel("+");
+        this.addStyleClassName('is-collapsed');
         var self = this;
         return new Promise(function(resolve, reject) {
           self.withCSSTransitionForAllSubmorphsDo(function finCollapse() {
@@ -3139,7 +3209,9 @@ lively.morphic.Morph.subclass('lively.morphic.Window', Trait('lively.morphic.Dra
         this.collapsedExtent = this.innerBounds().extent();
         this.collapsedPosition = this.getPosition();
         if (this.titleBar.lookCollapsedOrNot) this.titleBar.lookCollapsedOrNot(false);
-        if (this.collapseButton) this.collapseButton.setLabel("–");
+        if (this.collapseButton && this.collapseButton.styleAsIcon) this.collapseButton.styleAsIcon('remove');
+        else if (this.collapseButton) this.collapseButton.setLabel("–");
+        this.removeStyleClassName('is-collapsed');
         var self = this;
         return new Promise(function(resolve, reject) {
           self.withCSSTransitionForAllSubmorphsDo(function() {
