@@ -71,6 +71,7 @@ var auth = require("./identity/AuthMiddleware");
 var constellationRegistry = require("./identity/ConstellationRegistry");
 var friendRegistry = require("./identity/FriendRegistry");
 var dmMailbox = require("./identity/DMMailbox");
+var dmSignalingTokenStore = require("./support/dm-signaling-token-store");
 var cryptoVerify = require("./identity/CryptoVerify");
 var domainVerifier = require("./identity/DomainVerifier");
 var constellationSpace = require("./identity/ConstellationSpace");
@@ -2568,6 +2569,36 @@ module.exports = function (route, app) {
     dmMailbox.deleteMessage(req.params.msgId, req.identity.did, function (err, deleted) {
       if (err) return res.status(500).json({ error: String(err) });
       res.json({ ok: true, deleted: deleted });
+    });
+  });
+
+  // Mints a one-time token for DMSignalingServer.js's WS join handshake — a
+  // raw WS upgrade can't see the session cookie auth.requireAuth relies on,
+  // same bridge-the-cookie-gap reasoning as RoomSignalingServer.js's own
+  // token route. Registered HERE rather than in DMSignalingServer.js itself
+  // (which is where this logically belongs, and where it originally lived)
+  // because of a real, confirmed-live routing-order bug: this file's own
+  // catch-all below (`app.all("/@:handle/*", ...)`) gets unshifted in front
+  // of DMSignalingServer.js's routes whenever this file happens to load
+  // after it (life_star's subserver loader always reprioritizes a
+  // later-loaded subserver's new routes ahead of an earlier-loaded one's —
+  // see CLAUDE.md's "Server routes" section), silently 404ing any
+  // `/@:handle/...`-shaped route registered in a different subserver file.
+  // Room's own token route never hits this because its path
+  // (`/c/:name/rooms/:roomId/signaling-token`) doesn't match this file's
+  // `/@:handle/*` pattern at all. Keeping this route inside the same file
+  // as the catch-all — same as `/@:handle/dm/mailbox` above already does —
+  // sidesteps the ordering dependency entirely rather than relying on
+  // subserver load order (filesystem readdir order, not something this
+  // codebase controls or should depend on for correctness).
+  app.post("/@:handle/dm/signaling-token", auth.requireAuth, function (req, res) {
+    if (req.identity.handle !== req.params.handle) {
+      return res.status(403).json({ error: "Forbidden: not your token" });
+    }
+    dmSignalingTokenStore.mintToken(req.identity.did, req.identity.handle).then(function (token) {
+      res.json({ token: token, wsPath: "DMSignalingServer/connect" });
+    }).catch(function (err) {
+      res.status(500).json({ error: String(err) });
     });
   });
 

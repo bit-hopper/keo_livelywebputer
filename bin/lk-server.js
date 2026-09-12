@@ -457,6 +457,11 @@ function launchServer() {
   // exists means every worker's very first request is already covered.
   require("../core/servers/support/room-token-store").wireClusterPrimary();
 
+  // DMSignalingServer.js's join handshake has the exact same mint-then-
+  // consume-on-a-different-worker shape as RoomSignalingServer.js's above --
+  // same fix, same wiring point.
+  require("../core/servers/support/dm-signaling-token-store").wireClusterPrimary();
+
   // LiveDocSyncServer.js no longer runs its own standalone http.Server --
   // it rides the shared per-worker listener the same way SessionTracker.js/
   // RoomSignalingServer.js already do, registered from inside each

@@ -1,13 +1,16 @@
 /**
  * core/lively/identity/DMChat.js
  *
- * P2P E2EE direct messages — v1 slice of the design in p2pchat.md (repo
- * root). This pass implements the store-and-forward mailbox path only
- * (p2pchat.md §5/§6): a real WebRTC live data-channel path is deliberately
- * deferred to a follow-up pass, same staged approach the rooms feature's
- * own chat-then-video build took (see project-spaces-rooms-feature
- * memory). Every message still goes end-to-end encrypted through
- * /@:handle/dm/mailbox either way — there is no plaintext-relay fallback.
+ * P2P E2EE direct messages — the design in p2pchat.md (repo root). Two
+ * delivery paths, chosen per-send (p2pchat.md §5a): a live WebRTC data
+ * channel when the recipient is already connected to DM signaling this
+ * session (near-instant), falling back to the store-and-forward mailbox
+ * (p2pchat.md §6) otherwise — same envelope shape and the same
+ * decrypt/verify/persist path either way (_processEnvelope), so the two
+ * transports are interchangeable from the receiving side. Every message
+ * goes end-to-end encrypted either way — there is no plaintext-relay
+ * fallback, and the live path is defense-in-depth on top of an already-
+ * DTLS-encrypted data channel, not a relaxation of it.
  *
  * Crypto (p2pchat.md §4, "one encryption plane" per Encryption.md):
  *   - Confidentiality: lively.identity.crypto.sealForRecipient/openSealedBox
@@ -18,8 +21,8 @@
  *     sealForRecipient alone is an anonymous sealed box with no sender
  *     binding (confirmed by reading Crypto.js).
  *   - Gate: friend-gated server-side (FriendRegistry.areFriends) on both
- *     the mailbox POST and (once built) DM signaling — nothing new to
- *     design for "who can message whom," per p2pchat.md §1.
+ *     the mailbox POST and DM signaling's presence-check/offer — nothing
+ *     new to design for "who can message whom," per p2pchat.md §1.
  *
  * Storage: IndexedDB only (p2pchat.md §7) — the server-side mailbox row is
  * deleted as soon as a message is decrypted and saved locally. No
@@ -407,6 +410,16 @@ module('lively.identity.DMChat')
       },
 
       // ─── send / receive ─────────────────────────────────────────────────
+      // sendMessage's seal+sign step is unchanged from Phase 1; only the
+      // delivery branch is new (p2pchat.md §5a): a presence-check ahead of
+      // the existing mailbox POST, trying a live data channel first when
+      // the peer is reachable this session. Any failure or timeout of the
+      // live attempt falls through to the exact same mailbox POST used
+      // when the peer is offline — the message is never dropped either
+      // way. Receiving is unified too: _processEnvelope (below, in the new
+      // "webrtc" category) is the one decrypt/verify/persist path for both
+      // a mailbox row (pollOnce) and a live data-channel message
+      // (_wireDataChannel's onmessage).
 
       sendMessage: function (peerHandle, peerDid, text, thenDo) {
         var self = this;
@@ -430,22 +443,45 @@ module('lively.identity.DMChat')
               if (err) return thenDo(err);
               self.getMyDevicePub(function (err, myDevicePub) {
                 if (err) return thenDo(err);
-                fetch('/@' + peerHandle + '/dm/mailbox', {
-                  method: 'POST', credentials: 'include',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    msgId: msgId, threadId: threadId, senderDevicePub: myDevicePub,
-                    ciphertext: ciphertext, sig: sig, sentAt: sentAt,
-                  }),
-                }).then(function (res) {
-                  if (!res.ok) return res.json().then(function (e) { throw new Error(e.error || ('HTTP ' + res.status)); });
-                  return res.json();
-                }).then(function () {
+                // Full p2pchat.md §4 envelope shape, including senderDid/
+                // recipientDid — required for the live path (there's no
+                // server hop to derive them from) and for signature
+                // verification on receipt either way. The mailbox POST
+                // route ignores these two extra fields (it derives its own
+                // senderDid/recipientDid from the authenticated session and
+                // the URL's :handle rather than trusting the body), so one
+                // envelope object is safe to reuse as both the live-channel
+                // payload and the mailbox POST body.
+                var envelope = {
+                  msgId: msgId, threadId: threadId,
+                  senderDid: user.did, recipientDid: peerDid,
+                  senderDevicePub: myDevicePub, ciphertext: ciphertext,
+                  sig: sig, sentAt: sentAt,
+                };
+                function finishLocal(err) {
+                  if (err) return thenDo(err);
                   self.saveLocalMessage({
                     msgId: msgId, threadId: threadId, peerHandle: peerHandle, peerDid: peerDid,
                     myDid: user.did, text: text, sentAt: sentAt, direction: 'out',
                   }, function (err) { thenDo(err || null); });
-                }).catch(thenDo);
+                }
+                function sendViaMailbox() {
+                  fetch('/@' + peerHandle + '/dm/mailbox', {
+                    method: 'POST', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(envelope),
+                  }).then(function (res) {
+                    if (!res.ok) return res.json().then(function (e) { throw new Error(e.error || ('HTTP ' + res.status)); });
+                    return res.json();
+                  }).then(function () { finishLocal(null); }).catch(finishLocal);
+                }
+                self.presenceCheck(peerDid, function (err, online) {
+                  if (!online) return sendViaMailbox();
+                  self._trySendLive(peerDid, envelope, function (sent) {
+                    if (sent) return finishLocal(null);
+                    sendViaMailbox(); // live attempt failed/timed out — never silently drop
+                  });
+                });
               });
             });
           });
@@ -457,6 +493,8 @@ module('lively.identity.DMChat')
         var self = this;
         this._pollTimerId = setInterval(function () { self.pollOnce(); }, 4000);
         this.pollOnce();
+        this._connectSignaling();
+        this._warmDeviceKey();
       },
 
       pollOnce: function () {
@@ -466,7 +504,12 @@ module('lively.identity.DMChat')
         fetch('/@' + user.handle + '/dm/mailbox', { credentials: 'include' })
           .then(function (r) { return r.ok ? r.json() : { messages: [] }; })
           .then(function (data) {
-            (data.messages || []).forEach(function (row) { self._handleIncoming(row, user); });
+            (data.messages || []).forEach(function (row) {
+              if (!row.senderHandle) return; // can't attribute — leave queued rather than render as "unknown"
+              self._processEnvelope(row, row.senderHandle, row.senderDid, function () {
+                self._ackDelete(user.handle, row.msgId);
+              });
+            });
           })
           .catch(function () {});
       },
@@ -475,42 +518,391 @@ module('lively.identity.DMChat')
         fetch('/@' + myHandle + '/dm/mailbox/' + msgId, { method: 'DELETE', credentials: 'include' }).catch(function () {});
       },
 
-      _handleIncoming: function (row, user) {
+      // Shared decrypt/verify/persist path for one incoming envelope
+      // (p2pchat.md §4 shape), regardless of which transport delivered it —
+      // extracted from the old mailbox-only _handleIncoming so pollOnce and
+      // the live data channel's onmessage (see "webrtc" category below)
+      // call the exact same logic rather than maintaining two copies, per
+      // §5's own "single decrypt/verify/persist function" intent. ackFn is
+      // called only after a successful decrypt+save (or a definitively
+      // invalid signature); the mailbox path's ackFn deletes the server
+      // row, the live path's is a no-op (there's no row).
+      _processEnvelope: function (envelope, peerHandle, peerDid, ackFn) {
         var self = this;
-        if (!row.senderHandle) return; // can't attribute — leave queued rather than render as "unknown"
-        this._getDidDocument(row.senderHandle, function (err, didDocument) {
+        var user = lively.identity.did.currentUser();
+        if (!user || !peerHandle) return;
+        this._getDidDocument(peerHandle, function (err, didDocument) {
           if (err || !didDocument) return; // retry next poll
-          self.verifyMessageSig(row, didDocument, function (err, valid) {
+          self.verifyMessageSig(envelope, didDocument, function (err, valid) {
             if (!valid) {
-              console.warn('[DMChat] Dropping message with invalid signature from @' + row.senderHandle);
-              return self._ackDelete(user.handle, row.msgId);
+              console.warn('[DMChat] Dropping message with invalid signature from @' + peerHandle);
+              return ackFn();
             }
             self.getMyDeviceX25519(function (err, pair) {
               if (err) return; // e.g. WebAuthn prompt dismissed this tick — retry next poll
-              lively.identity.crypto.openSealedBox(row.ciphertext, pair.publicKey, pair.privateKey, function (err, plainBytes) {
+              lively.identity.crypto.openSealedBox(envelope.ciphertext, pair.publicKey, pair.privateKey, function (err, plainBytes) {
                 if (err) {
-                  console.warn('[DMChat] Could not open sealed message from @' + row.senderHandle, err);
-                  return self._ackDelete(user.handle, row.msgId);
+                  console.warn('[DMChat] Could not open sealed message from @' + peerHandle, err);
+                  return ackFn();
                 }
                 var text;
                 try { text = JSON.parse(new TextDecoder().decode(plainBytes)).text; }
-                catch (e) { return self._ackDelete(user.handle, row.msgId); }
+                catch (e) { return ackFn(); }
                 self.saveLocalMessage({
-                  msgId: row.msgId, threadId: row.threadId, peerHandle: row.senderHandle,
-                  peerDid: row.senderDid, myDid: user.did, text: text, sentAt: row.sentAt, direction: 'in',
+                  msgId: envelope.msgId, threadId: envelope.threadId, peerHandle: peerHandle,
+                  peerDid: peerDid, myDid: user.did, text: text, sentAt: envelope.sentAt, direction: 'in',
                 }, function (err) {
                   if (err) { console.warn('[DMChat] Could not save incoming message locally', err); return; }
-                  self._ackDelete(user.handle, row.msgId);
-                  var win = self._windows[row.senderHandle];
-                  if (win && win.world()) win.appendMessage(text, false, row.sentAt);
+                  ackFn();
+                  var win = self._windows[peerHandle];
+                  if (win && win.world()) win.appendMessage(text, false, envelope.sentAt);
                   else if ($world && $world.setStatusMessage) {
-                    $world.setStatusMessage('New message from @' + row.senderHandle, Color.green);
+                    $world.setStatusMessage('New message from @' + peerHandle, Color.green);
                   }
                 });
               });
             });
           });
         });
+      },
+
+      // ─── webrtc — live data-channel path (p2pchat.md §5/§5a) ───────────
+      // Point-to-point, DID-keyed — unlike RoomView.js's mesh call, there's
+      // no roster and no eager pre-connection to every online friend: a
+      // peer connection here is created lazily, on the first real send
+      // attempt or first incoming offer for that DID, and reused for the
+      // rest of the session regardless of who initiated it (a data channel
+      // is bidirectional once open). Signaling connects lazily too, from
+      // ensurePolling's own existing trigger point (first DM window/inbox
+      // opened this session) — not a new always-on-from-login connection.
+      // Any failure anywhere in this category (presence-check timeout,
+      // failed negotiation, ICE failure) just means sendMessage falls back
+      // to the mailbox path — never a lost message.
+
+      ICE_SERVERS: [{ urls: 'stun:stun.l.google.com:19302' }],
+
+      _signalingWs: null,
+      _signalingIntentionallyClosed: false,
+      _pendingSignalingToken: null,
+      _myDid: null,
+      _signalingPeers: {},      // did -> {pc, dc, pendingIce, _openCallbacks}
+      _presenceCallbacks: {},   // did -> [thenDo, ...] pending presence-reply
+      _signalingRejectStreak: 0,
+      _kekWarmed: false,
+      _friendHandleCache: null, // did -> handle, lazily populated from /@:handle/friends
+
+      // Primes WebAuthn.js's own cross-call cache for the device X25519 key
+      // from this window-open click (a real gesture) — p2pchat.md §5a's
+      // resolved decision, riding along with this pass since a live
+      // incoming message reaches getMyDeviceX25519 via dc.onmessage, a
+      // non-gesture context exactly like the already-known §11
+      // mailbox-poll bug. Fire-and-forget: the result/error is discarded
+      // here, real handling happens wherever getMyDeviceX25519 is actually
+      // needed (_processEnvelope).
+      _warmDeviceKey: function () {
+        if (this._kekWarmed) return;
+        this._kekWarmed = true;
+        this.getMyDeviceX25519(function () {});
+      },
+
+      // Only friends can reach us (server-gated), so an incoming offer's
+      // fromDid is guaranteed to be in our own friends list even though we
+      // don't otherwise know its handle — fetched and cached once per
+      // session rather than on every incoming offer.
+      _resolveHandleForDid: function (did, thenDo) {
+        if (this._friendHandleCache && this._friendHandleCache[did]) {
+          return thenDo(null, this._friendHandleCache[did]);
+        }
+        var self = this;
+        var user = lively.identity.did.currentUser();
+        if (!user) return thenDo(new Error('Not logged in'));
+        fetch('/@' + user.handle + '/friends', { credentials: 'include' })
+          .then(function (r) { return r.ok ? r.json() : { friends: [] }; })
+          .then(function (data) {
+            var cache = {};
+            (data.friends || []).forEach(function (f) { if (f.handle) cache[f.did] = f.handle; });
+            self._friendHandleCache = cache;
+            thenDo(null, cache[did] || null);
+          })
+          .catch(thenDo);
+      },
+
+      _connectSignaling: function () {
+        var self = this;
+        var user = lively.identity.did.currentUser();
+        if (!user) return;
+        fetch('/@' + user.handle + '/dm/signaling-token', { method: 'POST', credentials: 'include' })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (data) {
+            if (!data) { console.warn('[DMChat] Could not get signaling token'); return; }
+            self._openSignalingSocket(data.token, data.wsPath);
+          })
+          .catch(function () { console.warn('[DMChat] Network error requesting signaling token'); });
+      },
+
+      _openSignalingSocket: function (token, wsPath) {
+        var self = this;
+        this._signalingIntentionallyClosed = false;
+        this._pendingSignalingToken = token;
+        var url = URL.nodejsBase.withFilename(wsPath).toString();
+        var ws = new lively.net.WebSocket(url, { protocol: 'lively-json' });
+        this._signalingWs = ws;
+        lively.bindings.connect(ws, 'opened', self, '_onSignalingOpened');
+        lively.bindings.connect(ws, 'closed', self, '_onSignalingClosed');
+        lively.bindings.connect(ws, 'lively-message', self, '_onSignalingMessage');
+        ws.connect();
+      },
+
+      _onSignalingOpened: function () {
+        if (!this._signalingWs || !this._pendingSignalingToken) return;
+        this._signalingWs.send({ action: 'join', data: { token: this._pendingSignalingToken } });
+        this._pendingSignalingToken = null;
+      },
+
+      // Same unconditional-retry idiom as RoomView.js's own
+      // _onSignalingClosed: every existing peer connection is torn down
+      // (nothing to salvage once the signaling link that would relay their
+      // renegotiation/ICE is gone) and a fresh token+socket+join cycle
+      // starts after a short delay.
+      _onSignalingClosed: function () {
+        if (this._signalingIntentionallyClosed) return;
+        var self = this;
+        Object.keys(this._signalingPeers).forEach(function (did) { self._teardownPeer(did); });
+        this._signalingWs = null;
+        this._myDid = null;
+        setTimeout(function () {
+          if (self._signalingIntentionallyClosed) return;
+          self._connectSignaling();
+        }, 1500);
+      },
+
+      _onSignalingMessage: function (msg) {
+        switch (msg.action) {
+          case 'joined':
+            this._signalingRejectStreak = 0;
+            this._myDid = msg.data.did;
+            break;
+          case 'presence-reply': this._onPresenceReply(msg.data); break;
+          case 'signal': this._onSignalingSignal(msg.data); break;
+          case 'join-rejected':
+            // Same backoff idiom as RoomView.js's own join-rejected handler
+            // — a stale/expired token is the routine, self-correcting case
+            // (retry fast); a persistent rejection escalates to a louder,
+            // slower retry rather than silently hammering the server.
+            this._signalingRejectStreak++;
+            var retryDelay = this._signalingRejectStreak > 3 ? 5000 : 1000;
+            if (this._signalingRejectStreak === 4) {
+              console.error('[DMChat] Signaling join rejected ' + this._signalingRejectStreak +
+                ' times in a row — retrying every ' + retryDelay + 'ms.');
+            }
+            this._signalingIntentionallyClosed = true;
+            try { this._signalingWs.close(); } catch (e) {}
+            this._signalingWs = null;
+            var self = this;
+            setTimeout(function () { self._connectSignaling(); }, retryDelay);
+            break;
+        }
+      },
+
+      // Resolves thenDo(null, false) after a short timeout if no reply
+      // arrives — same-server round trip, not an ICE negotiation, so this
+      // should be fast (p2pchat.md §5's own ~1.5s starting guess). Not
+      // ready to signal yet (socket not open / not joined) also resolves
+      // false immediately rather than blocking sendMessage.
+      presenceCheck: function (targetDid, thenDo) {
+        if (!this._signalingWs || !this._myDid) return thenDo(null, false);
+        var self = this;
+        (this._presenceCallbacks[targetDid] || (this._presenceCallbacks[targetDid] = [])).push(thenDo);
+        this._signalingWs.send({ action: 'presence-check', data: { targetDid: targetDid } });
+        setTimeout(function () {
+          var cbs = self._presenceCallbacks[targetDid];
+          if (!cbs || !cbs.length) return;
+          delete self._presenceCallbacks[targetDid];
+          cbs.forEach(function (cb) { cb(null, false); });
+        }, 1500);
+      },
+
+      _onPresenceReply: function (data) {
+        var cbs = this._presenceCallbacks[data.targetDid];
+        if (!cbs) return;
+        delete this._presenceCallbacks[data.targetDid];
+        cbs.forEach(function (cb) { cb(null, !!data.online); });
+      },
+
+      // Returns the existing peer for targetDid if it's still usable,
+      // otherwise creates a fresh one. amInitiator only matters for a
+      // brand-new peer: the initiator creates the data channel and sends
+      // the offer; the answerer waits for ondatachannel/setRemoteDescription
+      // to supply both (same "let setRemoteDescription auto-create it"
+      // idiom RoomView.js's own comment documents for transceivers,
+      // applied here to the channel instead).
+      _getOrCreatePeer: function (targetDid, amInitiator) {
+        var existing = this._signalingPeers[targetDid];
+        if (existing) {
+          var state = existing.pc.connectionState;
+          if (state !== 'closed' && state !== 'failed') return existing;
+          this._teardownPeer(targetDid); // stale/dead — fall through and recreate
+        }
+        var self = this;
+        var pc = new RTCPeerConnection({ iceServers: this.ICE_SERVERS });
+        var peer = { pc: pc, dc: null, pendingIce: [], _openCallbacks: [] };
+        this._signalingPeers[targetDid] = peer;
+
+        pc.onicecandidate = function (e) {
+          if (e.candidate) self._sendSignalTo(targetDid, { type: 'ice', candidate: e.candidate });
+        };
+        pc.oniceconnectionstatechange = function () {
+          var state = pc.iceConnectionState;
+          if (state === 'failed' || state === 'closed') self._teardownPeer(targetDid);
+        };
+
+        if (amInitiator) {
+          peer.dc = pc.createDataChannel('dm', { ordered: true });
+          self._wireDataChannel(targetDid, peer);
+          pc.createOffer().then(function (offer) {
+            return pc.setLocalDescription(offer);
+          }).then(function () {
+            self._sendSignalTo(targetDid, { type: 'offer', sdp: pc.localDescription });
+          }).catch(function (e) {
+            console.error('[DMChat] createOffer failed', e);
+            self._teardownPeer(targetDid);
+          });
+        } else {
+          pc.ondatachannel = function (e) {
+            peer.dc = e.channel;
+            self._wireDataChannel(targetDid, peer);
+          };
+        }
+
+        return peer;
+      },
+
+      _wireDataChannel: function (targetDid, peer) {
+        var self = this;
+        function wakePendingSenders() {
+          var cbs = peer._openCallbacks;
+          peer._openCallbacks = [];
+          cbs.forEach(function (cb) { cb(); });
+        }
+        peer.dc.onopen = wakePendingSenders;
+        peer.dc.onclose = wakePendingSenders; // wake pending waiters so they can fail out and fall back to mailbox
+        peer.dc.onmessage = function (e) {
+          var envelope;
+          try { envelope = JSON.parse(e.data); } catch (err) { return; }
+          self._resolveHandleForDid(targetDid, function (err, handle) {
+            if (!handle) return; // shouldn't happen (friend-gated at the signaling server), but be safe
+            self._processEnvelope(envelope, handle, targetDid, function () {});
+          });
+        };
+      },
+
+      // Attempts the live path for one send. Resolves thenDo(true) only
+      // once the envelope has actually been handed to an open channel;
+      // ANY failure or timeout resolves thenDo(false) so sendMessage can
+      // fall back to the mailbox — this never throws the message away on
+      // its own.
+      _trySendLive: function (targetDid, envelope, thenDo) {
+        var peer = this._getOrCreatePeer(targetDid, true);
+        var settled = false;
+        function settle(ok) { if (settled) return; settled = true; thenDo(ok); }
+        function trySend() {
+          if (peer.dc && peer.dc.readyState === 'open') {
+            try { peer.dc.send(JSON.stringify(envelope)); settle(true); }
+            catch (e) { settle(false); }
+          } else {
+            settle(false);
+          }
+        }
+        if (peer.dc && peer.dc.readyState === 'open') { trySend(); return; }
+        peer._openCallbacks.push(trySend);
+        setTimeout(function () { settle(false); }, 9000); // p2pchat.md §5's own ~8-10s ICE-timeout guess
+      },
+
+      _sendSignalTo: function (targetDid, signal) {
+        if (!this._signalingWs) return;
+        this._signalingWs.send({ action: 'signal', data: { to: targetDid, signal: signal } });
+      },
+
+      _onSignalingSignal: function (data) {
+        var fromDid = data.from;
+        var signal = data.signal;
+        if (signal.type === 'offer') return this._onOffer(fromDid, signal);
+        var peer = this._signalingPeers[fromDid];
+        if (!peer) return; // no pc for this peer any more — drop
+        if (signal.type === 'answer') return this._onAnswer(peer, signal);
+        if (signal.type === 'ice') return this._onIce(peer, signal);
+      },
+
+      // Perfect-negotiation-style glare handling, same shape as
+      // RoomView.js's own _onOffer, restated in DID terms per p2pchat.md
+      // §5's "compare the two DIDs, not peerIds" note: the
+      // lexicographically smaller DID always initiates and wins glare
+      // (impolite), the larger DID yields (polite) — both sides reach this
+      // independently from the same rule, so it can't deadlock.
+      _onOffer: function (fromDid, signal) {
+        var self = this;
+        var peer = this._signalingPeers[fromDid];
+        var isPolite = this._myDid > fromDid;
+
+        if (peer && peer.pc.signalingState === 'have-local-offer') {
+          if (!isPolite) return; // impolite: ignore theirs, ours will win
+          peer.pc.setLocalDescription({ type: 'rollback' }).then(function () {
+            self._answerOffer(fromDid, peer, signal);
+          }).catch(function (e) { console.error('[DMChat] Glare rollback failed', e); });
+          return;
+        }
+
+        if (!peer) peer = this._getOrCreatePeer(fromDid, false);
+        self._answerOffer(fromDid, peer, signal);
+      },
+
+      _answerOffer: function (fromDid, peer, signal) {
+        var self = this;
+        peer.pc.setRemoteDescription(new RTCSessionDescription(signal.sdp)).then(function () {
+          self._flushPendingIce(peer);
+          return peer.pc.createAnswer();
+        }).then(function (answer) {
+          return peer.pc.setLocalDescription(answer);
+        }).then(function () {
+          self._sendSignalTo(fromDid, { type: 'answer', sdp: peer.pc.localDescription });
+        }).catch(function (e) {
+          console.error('[DMChat] Failed to answer offer', e);
+          self._teardownPeer(fromDid);
+        });
+      },
+
+      _onAnswer: function (peer, signal) {
+        var self = this;
+        peer.pc.setRemoteDescription(new RTCSessionDescription(signal.sdp)).then(function () {
+          self._flushPendingIce(peer);
+        }).catch(function (e) { console.error('[DMChat] setRemoteDescription (answer) failed', e); });
+      },
+
+      _onIce: function (peer, signal) {
+        if (peer.pc.remoteDescription && peer.pc.remoteDescription.type) {
+          peer.pc.addIceCandidate(new RTCIceCandidate(signal.candidate)).catch(function (e) {
+            console.warn('[DMChat] addIceCandidate failed', e);
+          });
+        } else {
+          peer.pendingIce.push(signal.candidate);
+        }
+      },
+
+      _flushPendingIce: function (peer) {
+        var candidates = peer.pendingIce;
+        peer.pendingIce = [];
+        candidates.forEach(function (c) {
+          peer.pc.addIceCandidate(new RTCIceCandidate(c)).catch(function (e) {
+            console.warn('[DMChat] addIceCandidate (flush) failed', e);
+          });
+        });
+      },
+
+      _teardownPeer: function (targetDid) {
+        var peer = this._signalingPeers[targetDid];
+        if (!peer) return;
+        delete this._signalingPeers[targetDid];
+        try { peer.pc.close(); } catch (e) {}
       },
 
       // ─── shared UI helpers (plain functions — safe to close over freely,
