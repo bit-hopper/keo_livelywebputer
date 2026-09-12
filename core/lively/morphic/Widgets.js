@@ -2683,6 +2683,12 @@ lively.morphic.Box.subclass("lively.morphic.TitleBar",
 },
 'properties', {
     controlSpacing: 3,
+    // Gap between adjacent right-anchored title bar buttons (close/
+    // collapse) specifically — kept separate from controlSpacing (which
+    // also sets the corner margin to the window edge and the menu
+    // button's left margin) so close/minimize can be spaced apart to
+    // reduce misclicks without also pushing the corner or menu button.
+    controlButtonGap: 8,
     barHeight: 22,
     // Vertical position of close/collapse/menu buttons within barHeight —
     // NOT the naive (barHeight-buttonHeight)/2 = 2.5, which measures
@@ -2761,6 +2767,7 @@ lively.morphic.Box.subclass("lively.morphic.TitleBar",
     adjustElementPositions: function() {
         var innerBounds = this.innerBounds(),
             sp = this.controlSpacing,
+            btnGap = this.controlButtonGap,
             btnY = this.controlVerticalOffset;
 
         var buttonLocation = this.innerBounds().topRight().subXY(sp, -sp);
@@ -2768,7 +2775,7 @@ lively.morphic.Box.subclass("lively.morphic.TitleBar",
         this.buttons.forEach(function(ea) {
             buttonLocation = buttonLocation.subXY(ea.shape.bounds().width, 0);
             ea.setPosition(lively.pt(buttonLocation.x, btnY));
-            buttonLocation = buttonLocation.subXY(sp, 0)
+            buttonLocation = buttonLocation.subXY(btnGap, 0)
         });
 
         var labelStart = this.innerBounds().topLeft().x + sp;
