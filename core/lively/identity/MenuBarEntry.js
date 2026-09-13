@@ -27,6 +27,12 @@ module("lively.identity.MenuBarEntry")
     // machinery reachable everywhere login can happen" require).
     lively.require("lively.identity.UploadMigration").toRun(function () {});
 
+    // Auto-launches a ?template= preset (e.g. Shop) into a freshly created
+    // world -- see WorldTemplateLauncher.js's own header for the full flow.
+    lively.require("lively.identity.WorldTemplateLauncher").toRun(function () {
+      lively.identity.WorldTemplateLauncher.runIfRequested();
+    });
+
     lively.BuildSpec(
       "lively.identity.MenuBarEntry",
       lively.BuildSpec("lively.morphic.tools.MenuBarEntry").customize({
