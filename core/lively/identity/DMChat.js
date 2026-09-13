@@ -31,19 +31,24 @@
  *
  * UI: classic lively.morphic.Window chrome (proven drag/resize/close —
  * see the note below on why a from-scratch custom window shell was NOT
- * used here) wrapping a from-scratch, softer-styled content area (rounded
- * message bubbles, avatar, accent color) — the actual "new style" ground
- * for this session's other goal, deliberately scoped to the CONTENT area
- * rather than the window chrome itself. Reusing Window's own title
- * bar/close/drag avoids re-deriving two things this codebase has already
- * had to debug the hard way: (a) WarpDrop.md's bringToFront/remove()
- * teardown-ordering trap — addMorph() calls remove() on a morph that
- * already has an owner (confirmed by reading Core.js:284), so any custom
- * close/remove teardown here would hit the exact same hazard the moment
- * .comeForward() is called right after creation; (b) reinventing
- * title-bar-drag-only dragging correctly. Both are real, verifiable-later
- * follow-ups if a fully custom window shell is wanted, not skipped by
- * accident.
+ * used here), now styled per the codebase-wide "wiki icon controls"
+ * window-chrome convention (LivelyMorphic.md §8): the window's own _Fill
+ * is the accent color and shows through the (transparent-by-default)
+ * title bar as a matte frame around an inset, lighter content pane —
+ * close/collapse/menu already render as Material Symbols icon buttons
+ * for every classic Window by default (Widgets.js), no per-window work
+ * needed for that part. DMChat.applyAccentChrome (below) only adds the
+ * one thing the convention doesn't cover declaratively: white title text
+ * + suppressing the base theme's focus-ring border, both CSS-only. Reusing
+ * Window's own title bar/close/drag avoids re-deriving two things this
+ * codebase has already had to debug the hard way: (a) WarpDrop.md's
+ * bringToFront/remove() teardown-ordering trap — addMorph() calls
+ * remove() on a morph that already has an owner (confirmed by reading
+ * Core.js:284), so any custom close/remove teardown here would hit the
+ * exact same hazard the moment .comeForward() is called right after
+ * creation; (b) reinventing title-bar-drag-only dragging correctly. Both
+ * are real, verifiable-later follow-ups if a fully custom window shell is
+ * wanted, not skipped by accident.
  */
 
 module('lively.identity.DMChat')
@@ -79,55 +84,38 @@ module('lively.identity.DMChat')
       BUBBLE_OTHER: Color.rgb(237, 237, 241),
       ROW_HOVER:    Color.rgb(248, 248, 252),
 
-      // Recolors a classic lively.morphic.Window's own title bar to match
-      // this feature's accent, so the stock chrome and the from-scratch
-      // content area read as one cohesive header instead of two competing
-      // bars (p2pchat.md's "UI is not visually finished" note — this was
-      // the single biggest visual complaint). Only touches fill/label
-      // color, never the TitleBar's own layout/drag/button logic.
-      styleWindowChrome: function (win) {
-        var tb = win.titleBar;
-        tb.applyStyle({ fill: this.ACCENT, borderWidth: 0 });
-        tb.label.setTextColor(Color.white);
-        tb.label.applyStyle({ fontWeight: 'bold' });
-        // The applyStyle/setTextColor calls above update Lively's own
-        // model state correctly (getFill()/getTextColor() report the new
-        // values) but — confirmed live, a real DOM/pixel check, not just
-        // a screenshot — never actually reach the rendered title bar node.
-        // This matches feedback_morph_dialog_baseline_polish's already-
-        // documented gotcha for morphs styled procedurally after creation
-        // ("border-width is the one style property that DOES reach the
-        // DOM via the model layer" — everything else here needed the
-        // direct-DOM fallback that memory prescribes).
-        var tbNode = tb.renderContext && tb.renderContext().shapeNode;
-        if (tbNode) tbNode.style.background = this.ACCENT.toString();
-        var labelNode = tb.label.renderContext && tb.label.renderContext().shapeNode;
-        if (labelNode) {
-          labelNode.style.color = '#fff';
-          labelNode.style.fontWeight = 'bold';
-          var inner = labelNode.querySelector('div');
-          if (inner) { inner.style.color = '#fff'; inner.style.fontWeight = 'bold'; }
-        }
-        // A window with a real border (e.g. DMInboxWindow's 11px frame)
-        // needs its title bar inset by that same amount — otherwise the
-        // title bar (a child positioned at the window's own (0,0), same
-        // width as the window's full declared extent) sits flush with the
-        // OUTER edge of the window and visually covers/erases the border
-        // for its own height, instead of the border wrapping evenly around
-        // all four sides including the top. This reuses the EXISTING
-        // classic titleBar morph (just repositions/resizes it) rather than
-        // adding a second one. Reading the border width back from the
-        // window itself (not a hardcoded number) keeps this correct for
-        // any window regardless of its own border, and is a no-op for a
-        // window with no real border (DMChatWindow today).
-        var borderW = win.getBorderWidth() || 0;
-        if (borderW > 0) {
-          var winExtent = win.getExtent();
-          var titleH = tb.getExtent().y;
-          tb.setPosition(lively.pt(borderW, borderW));
-          tb.setExtent(lively.pt(winExtent.x - borderW * 2, titleH));
-          if (tb.adjustElementPositions) tb.adjustElementPositions();
-        }
+      // Applies the codebase-wide "wiki icon controls" window-chrome
+      // convention's one non-declarative piece (LivelyMorphic.md §8) to a
+      // classic Window whose own top-level BuildSpec _Fill is already this
+      // feature's accent color: the base theme's `.Window .TitleBar` rule
+      // is transparent by design, so that _Fill already shows through as
+      // the title bar's background for free (and, being a BuildSpec-baked
+      // fill, applies correctly at construction — no procedural
+      // setFill()-never-reaches-DOM workaround needed here, unlike a
+      // Window recolored after the fact). All that's left is the part the
+      // base theme can't know per-window: the default dark title-text
+      // color (#555/#333) doesn't have enough contrast against a
+      // saturated accent, and the base theme's `.Window.highlighted` rule
+      // adds a white focus-ring border/shadow tuned for the light default
+      // chrome that reads as a stray ring on a colored one. Both are
+      // scoped to a small `dm-accent-chrome` class (added below) so they
+      // never affect any other window.
+      _ensureAccentChromeCss: function () {
+        var STYLE_ID = 'dm-chat-accent-chrome-style';
+        if (document.getElementById(STYLE_ID)) return;
+        var styleEl = document.createElement('style');
+        styleEl.id = STYLE_ID;
+        styleEl.textContent = [
+          '.Window.dm-accent-chrome .Text.window-title { color: #fff; }',
+          '.Window.dm-accent-chrome.highlighted .Text.window-title { color: #fff; font-weight: bold; }',
+          '.Window.dm-accent-chrome.highlighted { border: none !important; box-shadow: 0px 3px 10px rgba(20,40,90,0.35) !important; }',
+        ].join('\n');
+        document.head.appendChild(styleEl);
+      },
+
+      applyAccentChrome: function (win) {
+        this._ensureAccentChromeCss();
+        win.addStyleClassName('dm-accent-chrome');
       },
 
       _formatTime: function (isoOrNull) {
@@ -156,17 +144,7 @@ module('lively.identity.DMChat')
         this._windows[peerHandle] = content;
         win.setTitle('@' + peerHandle);
         $world.addMorph(win);
-        // Must come AFTER addMorph — styling a title bar that hasn't been
-        // rendered into the live DOM yet is the same class of bug as
-        // Text#fit() needing a real world/DOM to measure against (see
-        // _fitBubble above): the model layer happily reports the new
-        // fill/textColor, but the actual paint can silently keep using
-        // whatever was baked in at BuildSpec-creation time. Confirmed live
-        // during this pass — calling it pre-addMorph left one window's
-        // title bar genuinely unstyled (verified via a real screenshot,
-        // not just getFill()) while another, by pure luck of render
-        // timing, looked right.
-        this.styleWindowChrome(win);
+        this.applyAccentChrome(win);
         win.setPosition($world.visibleBounds().center().subPt(win.getExtent().scaleBy(0.5)));
         win.comeForward();
         content.startChat();
@@ -185,7 +163,7 @@ module('lively.identity.DMChat')
         var content = win.targetMorph || win.get('DMInboxWindow');
         this._inboxWindow = content;
         $world.addMorph(win);
-        this.styleWindowChrome(win); // must come after addMorph — see open()'s comment
+        this.applyAccentChrome(win);
         win.setPosition($world.visibleBounds().center().subPt(win.getExtent().scaleBy(0.5)));
         win.comeForward();
         content.refresh();
@@ -1020,12 +998,25 @@ module('lively.identity.DMChat')
         avatarImg.eventsAreIgnored = true;
         row.addMorph(avatarImg);
 
-        var nameM = new lively.morphic.Text(lively.rect(60, 10, width - 72, 18), '@' + thread.peerHandle);
+        // Real, confirmed-live bug fixed here: fontSize on a Text morph
+        // renders in POINTS, not pixels (CLAUDE.md's fontSize gotcha), so
+        // a bold 13pt handle actually needs ~23px of real line height and
+        // a regular 12pt preview needs ~22px — both well past the 18px
+        // box these previously used. Combined with clipMode:'hidden'
+        // (needed below to stop overflow bleeding into the next row),
+        // the extra few px were silently sliced off the BOTTOM of every
+        // glyph, most visibly on descenders ("reply" rendered as "replv").
+        // Heights below (23/23) were converged empirically — iteratively
+        // measuring the real rendered span's bottom edge against the
+        // box's own clipped bottom edge until nothing overshot — not
+        // computed from the nominal pt/px ratio, which doesn't account
+        // for real line-height metrics on top of the glyph size itself.
+        var nameM = new lively.morphic.Text(lively.rect(60, 8, width - 72, 23), '@' + thread.peerHandle);
         nameM.applyStyle({ allowInput: false, fontSize: 13, fontWeight: 'bold',
           fill: null, borderWidth: 0, textColor: Color.rgb(30, 30, 30),
           // Single-line label — without this, a long handle can wrap onto
-          // a second line and, since the box height is a fixed 18px with
-          // no clip, that second line silently bleeds down past the row
+          // a second line and, since the box height is fixed with no
+          // clip, that second line silently bleeds down past the row
           // (confirmed live, same bug the preview label below had,
           // matching AmbientPresencePanel.js's own name/status labels'
           // idiom for a one-line box).
@@ -1036,7 +1027,7 @@ module('lively.identity.DMChat')
 
         var preview = (thread.lastText || '').replace(/\s+/g, ' ').trim();
         if (preview.length > 48) preview = preview.slice(0, 47) + '…';
-        var previewM = new lively.morphic.Text(lively.rect(60, 30, width - 72, 18), preview);
+        var previewM = new lively.morphic.Text(lively.rect(60, 33, width - 72, 23), preview);
         previewM.applyStyle({ allowInput: false, fontSize: 12,
           fill: null, borderWidth: 0, textColor: Color.rgb(120, 120, 128),
           // Real, confirmed-live bug fixed here: a 47-char preview can
@@ -1073,32 +1064,35 @@ module('lively.identity.DMChat')
     // ground for this session's window-foundation goal.
 
     lively.BuildSpec('lively.identity.DMChatWindow', {
-      _BorderColor: Color.rgb(95, 94, 95),
-      _Extent: lively.pt(360, 480),
+      // Mat-frame accent chrome (LivelyMorphic.md §8): this _Fill IS the
+      // window's whole chrome color — the classic TitleBar renders
+      // transparent by default (base_theme.css's `.Window .TitleBar`) so
+      // it shows this color through directly, and the content pane below
+      // is inset from all four edges (8/24/8/10, top kept close to the
+      // real 22px title-bar height per §8.1 bug #7 — a bigger top gap
+      // reads as "icons pinned to the top" even when they're centered)
+      // so the accent reads as a matte border around a lighter interior,
+      // no real border stroke needed. See DMChat.applyAccentChrome for
+      // the one thing this can't express declaratively (title-text color).
+      _Fill: lively.identity.DMChat.ACCENT,
+      _BorderRadius: 12,
+      _Extent: lively.pt(368, 488),
       className: "lively.morphic.Window",
-      contentOffset: lively.pt(4, 22),
+      contentOffset: lively.pt(8, 24),
       draggingEnabled: true,
       layout: { adjustForNewBounds: true },
       name: "DMChatWindow",
       submorphs: [{
-        _BorderColor: Color.rgb(224, 224, 232),
         _BorderRadius: 10,
-        _BorderWidth: 1,
         _Extent: lively.pt(352, 454),
-        // Real, confirmed-live bug fixed here: this content pane never had
-        // an explicit _Position, so it defaulted to (0,0) — flush with the
-        // WINDOW's own top-left corner — instead of respecting the
-        // Window's own contentOffset (4,22) above. contentOffset only
-        // feeds the Window's initial bounds math, it does NOT reposition
-        // a target morph supplied declaratively via BuildSpec submorphs.
-        // Net effect: this whole content pane silently overlapped the
-        // title bar's own 22px band. Usually invisible by luck (PeerInfo's
-        // first 60px absorbed the overlap, leaving only its own avatar
-        // slightly high), but on DMInboxWindow — no such buffer — it
-        // visibly clipped the first thread row's avatar/text under the
-        // title bar (confirmed via a live getBoundingClientRect() compare:
-        // content top === window top, not window top + 22).
-        _Position: lively.pt(4, 22),
+        // Must match contentOffset above — a classic Window BuildSpec
+        // that declares its target morph as a plain submorph (rather
+        // than via `new lively.morphic.Window(target, title)`) never
+        // gets contentOffset applied as an actual position; omitting
+        // this silently overlaps the content pane with the title bar
+        // (confirmed live — see CLAUDE.md's classic-Window-content-
+        // offset gotcha).
+        _Position: lively.pt(8, 24),
         _Fill: Color.rgb(250, 250, 252),
         className: "lively.morphic.Box",
         _ClipMode: "hidden",
@@ -1109,8 +1103,8 @@ module('lively.identity.DMChat')
         sourceModule: "lively.morphic.Core",
         submorphs: [{
           // ── peer info strip ───────────────────────────────────────────
-          // Same accent as the (now-recolored, see DMChat.styleWindowChrome)
-          // classic title bar above it, so the two read as one continuous
+          // Same accent as the window's own mat/title bar above it (see
+          // DMChat.applyAccentChrome), so the two read as one continuous
           // header block rather than two mismatched bars — the single
           // biggest visual complaint from the first pass (p2pchat.md).
           _Extent: lively.pt(352, 60),
@@ -1265,8 +1259,34 @@ module('lively.identity.DMChat')
 
         appendMessage: function appendMessage(text, isOwn, sentAt) {
           var list = this.get('MessageList');
-          var width = list.getExtent().x;
-          var y = list.submorphs.length ? list.submorphs.last().bounds().bottom() + 4 : 8;
+          // Real, confirmed-live bug fixed here: list.getExtent().x is the
+          // BOX's full declared model width (352), but MessageList's own
+          // _ClipMode sets a permanent y:"scroll" — the vertical scrollbar
+          // always reserves ~15px of real width regardless of whether it's
+          // actually needed, which the model-level extent knows nothing
+          // about. Sizing bubbles/timestamps off the un-reduced 352 let
+          // right-aligned ("own") ones reach past the real visible edge,
+          // so their rightmost ~7px sat hidden under the scrollbar.
+          // clientWidth is the DOM's own already-scrollbar-adjusted content
+          // width — read directly rather than guessing a fixed scrollbar
+          // px constant, since that varies by OS/browser.
+          var listNode = list.renderContext && list.renderContext().shapeNode;
+          var width = listNode ? listNode.clientWidth : list.getExtent().x;
+          // Real, confirmed-live bug fixed here: bounds() unions in
+          // submorph bounds AND caches the result on first read
+          // (Core.js's Morph#bounds), and nothing invalidates that cache
+          // when a DESCENDANT (bubble/timestamp, both nested inside this
+          // row) moves later via _fitBubble's own setPosition/setExtent
+          // calls — only a direct child of the row being ADDED does that.
+          // The stale cached value came out ~43px taller than the row's
+          // own real, final getExtent().y, so every message after the
+          // first opened up a large dead gap before it, making each
+          // timestamp read as floating far from the next bubble rather
+          // than sitting close under its own. getPosition()/getExtent()
+          // are the plain, always-fresh model values _fitBubble itself
+          // sets — safe to use here instead of the cache-prone bounds().
+          var last = list.submorphs.length ? list.submorphs.last() : null;
+          var y = last ? (last.getPosition().y + last.getExtent().y + 4) : 8;
           var row = lively.identity.DMChat.createMessageBubble(text, isOwn, width, sentAt);
           row.setPosition(lively.pt(8, y));
           list.addMorph(row);
@@ -1300,27 +1320,23 @@ module('lively.identity.DMChat')
     // ─── DMInboxWindow: thread list ───────────────────────────────────────
 
     lively.BuildSpec('lively.identity.DMInboxWindow', {
-      _BorderColor: Color.rgb(0xD0, 0xB0, 0xB0),
-      _BorderRadius: 16,
-      _BorderWidth: 11,
-      _Extent: lively.pt(320, 440),
-      _Fill: Color.rgb(0xCC, 0x00, 0x57),
+      // Same mat-frame accent chrome as DMChatWindow above — see its own
+      // comment for the full rationale. This replaces the window's old
+      // real 11px border (a placeholder from before the convention
+      // existed) with the same _Fill-shows-through-the-transparent-
+      // title-bar technique, same 8/24/8/10 inset.
+      _Fill: lively.identity.DMChat.ACCENT,
+      _BorderRadius: 12,
+      _Extent: lively.pt(314, 430),
       className: "lively.morphic.Window",
-      contentOffset: lively.pt(4, 22),
+      contentOffset: lively.pt(8, 24),
       draggingEnabled: true,
       layout: { adjustForNewBounds: true },
       name: "DMInboxWindow",
       submorphs: [{
-        _BorderColor: Color.rgb(224, 224, 232),
         _BorderRadius: 10,
-        _BorderWidth: 1,
-        // Inset by the window's own 11px border on all sides, plus the
-        // 22px title bar height on top — matches styleWindowChrome's own
-        // runtime inset of the title bar itself (see DMChat.styleWindowChrome),
-        // so the border wraps evenly around title bar + content instead of
-        // the content pane poking out past/underneath it.
-        _Extent: lively.pt(320 - 11 * 2, 440 - 11 - 22 - 11),
-        _Position: lively.pt(11, 11 + 22),
+        _Extent: lively.pt(298, 396),
+        _Position: lively.pt(8, 24),
         _Fill: Color.white,
         className: "lively.morphic.Box",
         _ClipMode: "hidden",
@@ -1329,7 +1345,7 @@ module('lively.identity.DMChat')
         name: "DMInboxWindow",
         sourceModule: "lively.morphic.Core",
         submorphs: [{
-          _Extent: lively.pt(320 - 11 * 2, 440 - 11 - 22 - 11), // matches the content pane's own extent above
+          _Extent: lively.pt(298, 396), // matches the content pane's own extent above
           _Fill: Color.white,
           _Position: lively.pt(0, 0),
           className: "lively.morphic.Box",
