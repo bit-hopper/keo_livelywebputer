@@ -329,7 +329,7 @@ module("lively.identity.ConstellationsBrowser")
           nameText.grabbingEnabled = false;
           row.addMorph(nameText);
 
-          var openLink = new lively.morphic.Text(lively.rect(w - 68, 6, 58, 18), "open →");
+          var openLink = new lively.morphic.Text(lively.rect(w - 50, 6, 40, 18), "open");
           openLink.applyStyle({ allowInput: false, fontSize: 12, textColor: PINK, fill: null, borderWidth: 0, borderColor: null });
           openLink.draggingEnabled = false;
           openLink.droppingEnabled = false;
