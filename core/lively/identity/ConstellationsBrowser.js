@@ -102,9 +102,8 @@ module("lively.identity.ConstellationsBrowser")
         var pad = 12;
         var w = content.getExtent().x - pad * 2;
         var y = pad;
-        var PINK       = Color.rgb(240, 26, 105);
-        var PINK_HOVER = Color.rgb(190, 15, 82);
-        var GRAY       = Color.rgb(140, 140, 140);
+        var PINK = Color.rgb(240, 26, 105);
+        var GRAY = Color.rgb(140, 140, 140);
 
         var header = new lively.morphic.Text(lively.rect(pad, y, w, 18), "Create a constellation");
         header.applyStyle({ allowInput: false, fontSize: 13, fontWeight: "bold", textColor: Color.rgb(40, 40, 40), fill: null, borderWidth: 0, borderColor: null });
@@ -137,22 +136,36 @@ module("lively.identity.ConstellationsBrowser")
         this._visBtn = visBtn;
         y += 34;
 
-        var createLink = new lively.morphic.Text(lively.rect(pad, y, 100, 20), "Create →");
-        createLink.applyStyle({ allowInput: false, fontSize: 13, fontWeight: "bold", textColor: PINK, fill: null, borderWidth: 0, borderColor: null });
+        // Create — real pill button (fill/border/radius), hug-fit to its own
+        // measured text (59px at this font/weight, confirmed live) plus the
+        // same +28 padding compensation as the rest of this file's hug-fit
+        // labels — NOT a runtime querySelector('span').offsetWidth read
+        // right after addMorph: confirmed live that read comes back 0 (the
+        // text hasn't actually been laid out yet at that synchronous point),
+        // which silently shrank this button to a useless 28px box and wrapped
+        // "Create →" onto two lines. Hardcoding the verified width sidesteps
+        // that timing gotcha entirely.
+        var createLink = new lively.morphic.Text(lively.rect(pad, y, 87, 22), "Create →");
+        createLink.applyStyle({
+          allowInput: false, fontSize: 13, fontWeight: "bold", textColor: PINK,
+          fill: Color.rgb(255, 240, 247), borderWidth: 1, borderColor: Color.rgb(240, 190, 210),
+          borderRadius: 5,
+        });
         createLink.draggingEnabled = false;
         createLink.droppingEnabled = false;
         createLink.grabbingEnabled = false;
-        createLink.renderContext().shapeNode.style.cursor = "pointer";
-        createLink.onMouseOver = function () { createLink.setTextColor(PINK_HOVER); };
-        createLink.onMouseOut  = function () { createLink.setTextColor(PINK); };
-        createLink.onMouseDown = function () { self.createConstellation(); };
         content.addMorph(createLink);
+        createLink.renderContext().shapeNode.style.cursor = "pointer";
+        createLink.onMouseOver = function () { createLink.setFill(Color.rgb(255, 224, 238)); };
+        createLink.onMouseOut  = function () { createLink.setFill(Color.rgb(255, 240, 247)); };
+        createLink.onMouseDown = function () { self.createConstellation(); };
 
-        var statusText = new lively.morphic.Text(lively.rect(pad + 100, y + 2, w - 100, 18), "");
+        var statusX = createLink.bounds().right() + 10;
+        var statusText = new lively.morphic.Text(lively.rect(statusX, y + 3, pad + w - statusX, 18), "");
         statusText.applyStyle({ allowInput: false, fontSize: 11, textColor: GRAY, fill: null, borderWidth: 0, borderColor: null });
         content.addMorph(statusText);
         this._statusText = statusText;
-        y += 30;
+        y += 32;
 
         var div = new lively.morphic.Box(lively.rect(pad, y, w, 1));
         div.applyStyle({ fill: Color.rgb(220, 220, 220), borderWidth: 0 });
@@ -173,7 +186,31 @@ module("lively.identity.ConstellationsBrowser")
         this._listBox = listBox;
         y += listH + 10;
 
-        var openInput = new lively.morphic.Text(lively.rect(pad, y, w - 90, 24), "");
+        // Open — real pill button, built FIRST (right-anchored, fixed width —
+        // see the Create button's comment above for why this is a hardcoded,
+        // live-verified width rather than a runtime measurement) so the
+        // input field beside it can be sized to fill exactly what's left.
+        var openLinkW = 73;
+        var openLink = new lively.morphic.Text(lively.rect(pad + w - openLinkW, y + 1, openLinkW, 22), "Open →");
+        openLink.applyStyle({
+          allowInput: false, fontSize: 12, fontWeight: "bold", textColor: PINK,
+          fill: Color.rgb(255, 240, 247), borderWidth: 1, borderColor: Color.rgb(240, 190, 210),
+          borderRadius: 5,
+        });
+        openLink.draggingEnabled = false;
+        openLink.droppingEnabled = false;
+        openLink.grabbingEnabled = false;
+        content.addMorph(openLink);
+        openLink.renderContext().shapeNode.style.cursor = "pointer";
+        openLink.onMouseOver = function () { openLink.setFill(Color.rgb(255, 224, 238)); };
+        openLink.onMouseOut  = function () { openLink.setFill(Color.rgb(255, 240, 247)); };
+        openLink.onMouseDown = function () {
+          var name = (self._openInput.textString || "").trim();
+          if (name) window.location.href = "/c/" + encodeURIComponent(name);
+        };
+
+        var openInputW = openLink.bounds().left() - pad - 10;
+        var openInput = new lively.morphic.Text(lively.rect(pad, y, openInputW, 24), "");
         openInput.name = "openInput";
         openInput.applyStyle({
           allowInput: true, fontSize: 12, fill: Color.white, borderWidth: 1,
@@ -199,20 +236,6 @@ module("lively.identity.ConstellationsBrowser")
         openIcon.grabbingEnabled = false;
         content.addMorph(openIcon);
         openIcon.renderContext().shapeNode.style.pointerEvents = "none";
-
-        var openLink = new lively.morphic.Text(lively.rect(pad + w - 78, y + 2, 78, 20), "Open →");
-        openLink.applyStyle({ allowInput: false, fontSize: 12, textColor: PINK, fill: null, borderWidth: 0, borderColor: null });
-        openLink.draggingEnabled = false;
-        openLink.droppingEnabled = false;
-        openLink.grabbingEnabled = false;
-        openLink.renderContext().shapeNode.style.cursor = "pointer";
-        openLink.onMouseOver = function () { openLink.setTextColor(PINK_HOVER); };
-        openLink.onMouseOut  = function () { openLink.setTextColor(PINK); };
-        openLink.onMouseDown = function () {
-          var name = (self._openInput.textString || "").trim();
-          if (name) window.location.href = "/c/" + encodeURIComponent(name);
-        };
-        content.addMorph(openLink);
       },
 
       setStatus: function setStatus(msg, isError) {
