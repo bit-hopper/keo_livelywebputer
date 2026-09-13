@@ -1343,17 +1343,17 @@ module("lively.identity.ConstellationLounge")
         // Banner + avatar, same layout idiom as ProfileCard.js's read view
         // (a full-width banner strip, a circular avatar straddling its
         // bottom-left corner in a white "ring") scaled down for this much
-        // shorter panel. Neither constellations have an uploadable
-        // banner/avatar yet (no bannerUrl/avatarUrl field exists — same gap
-        // as the bots section's missing settings UI), so both render their
-        // permanent fallback for now: a flat placeholder banner (identical
-        // color to ProfileCard's own "no bannerUrl" fallback) and a
-        // deterministic identicon avatar seeded off this constellation's
-        // own name, exactly like every member/comment avatar elsewhere in
-        // this file already is off a DID.
+        // shorter panel. Constellations have no uploadable banner/avatar
+        // yet (no bannerUrl/avatarUrl field exists — same gap as the bots
+        // section's missing settings UI), so both render their permanent
+        // fallback for now: a quilt-pattern banner (same seeded-pick
+        // treatment as ProfileCard.js's own "no bannerUrl" fallback) and a
+        // deterministic identicon avatar, both seeded off this
+        // constellation's own name, exactly like every member/comment
+        // avatar elsewhere in this file already is off a DID.
         var BANNER_H = 130, AVATAR = 64, RING = 3;
         var banner = new lively.morphic.Box(lively.rect(0, 0, w, BANNER_H));
-        banner.applyStyle({ fill: Color.rgb(225, 222, 232), borderWidth: 0 });
+        lively.identity.quiltPatterns.applyQuiltBackground(banner, "c/" + this._name);
         this._quickInfoBox.addMorph(banner);
 
         var avX = 20, avY = BANNER_H - Math.floor(AVATAR / 2);
