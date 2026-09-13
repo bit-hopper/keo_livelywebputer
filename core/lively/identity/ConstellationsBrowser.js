@@ -57,6 +57,11 @@ module("lively.identity.ConstellationsBrowser")
 
     lively.BuildSpec("lively.identity.ConstellationsBrowser", {
       _Extent: lively.pt(460, 460),
+      _BorderRadius: 8,
+      // Fill-frame/mat technique (see NewWikiPageDialog.js/ProfileCard.js):
+      // the window's own fill shows through as a colored margin around the
+      // gray content pane below and behind the title bar.
+      _Fill: Color.rgb(103, 58, 183),
       className: "lively.morphic.Window",
       contentOffset: lively.pt(3, 22),
       draggingEnabled: true,
@@ -66,7 +71,9 @@ module("lively.identity.ConstellationsBrowser")
       submorphs: [
         {
           _Extent: lively.pt(454, 435),
-          _Fill: Color.rgb(250, 250, 250),
+          _BorderColor: Color.rgb(95, 94, 95),
+          _BorderRadius: 4,
+          _Fill: Color.rgb(243, 243, 243),
           _Position: lively.pt(3, 22),
           className: "lively.morphic.Box",
           layout: { adjustForNewBounds: true, resizeHeight: true, resizeWidth: true },
@@ -95,11 +102,12 @@ module("lively.identity.ConstellationsBrowser")
         var pad = 12;
         var w = content.getExtent().x - pad * 2;
         var y = pad;
-        var PINK = Color.rgb(240, 26, 105);
-        var GRAY = Color.rgb(140, 140, 140);
+        var PINK       = Color.rgb(240, 26, 105);
+        var PINK_HOVER = Color.rgb(190, 15, 82);
+        var GRAY       = Color.rgb(140, 140, 140);
 
         var header = new lively.morphic.Text(lively.rect(pad, y, w, 18), "Create a constellation");
-        header.applyStyle({ allowInput: false, fontSize: 13, fontWeight: "bold", textColor: Color.rgb(40, 40, 40), fill: null });
+        header.applyStyle({ allowInput: false, fontSize: 13, fontWeight: "bold", textColor: Color.rgb(40, 40, 40), fill: null, borderWidth: 0, borderColor: null });
         content.addMorph(header);
         y += 26;
 
@@ -107,14 +115,20 @@ module("lively.identity.ConstellationsBrowser")
         nameInput.name = "nameInput";
         nameInput.applyStyle({
           allowInput: true, fontSize: 12, fill: Color.white, borderWidth: 1,
-          borderColor: Color.rgb(190, 190, 190), borderRadius: 3, padding: lively.rect(6, 5, 0, 0),
+          borderColor: Color.rgb(190, 190, 190), borderRadius: 4, padding: lively.rect(6, 5, 0, 0),
         });
         nameInput.beInputLine();
         content.addMorph(nameInput);
         this._nameInput = nameInput;
 
         var visBtn = new lively.morphic.Text(lively.rect(pad + w - 84, y + 2, 84, 22), "Public ▾");
-        visBtn.applyStyle({ allowInput: false, fontSize: 12, textColor: PINK, fill: Color.rgb(255, 255, 255), borderWidth: 1, borderColor: Color.rgb(220, 220, 220), borderRadius: 3 });
+        visBtn.applyStyle({ allowInput: false, fontSize: 12, textColor: PINK, fill: Color.rgb(255, 255, 255), borderWidth: 1, borderColor: Color.rgb(220, 220, 220), borderRadius: 4 });
+        visBtn.draggingEnabled = false;
+        visBtn.droppingEnabled = false;
+        visBtn.grabbingEnabled = false;
+        visBtn.renderContext().shapeNode.style.cursor = "pointer";
+        visBtn.onMouseOver = function () { visBtn.setFill(Color.rgb(250, 245, 248)); };
+        visBtn.onMouseOut  = function () { visBtn.setFill(Color.rgb(255, 255, 255)); };
         visBtn.onMouseDown = function () {
           self._visibility = self._visibility === "public" ? "private" : "public";
           visBtn.setTextString(self._visibility === "public" ? "Public ▾" : "Private ▾");
@@ -124,12 +138,18 @@ module("lively.identity.ConstellationsBrowser")
         y += 34;
 
         var createLink = new lively.morphic.Text(lively.rect(pad, y, 100, 20), "Create →");
-        createLink.applyStyle({ allowInput: false, fontSize: 13, fontWeight: "bold", textColor: PINK, fill: null });
+        createLink.applyStyle({ allowInput: false, fontSize: 13, fontWeight: "bold", textColor: PINK, fill: null, borderWidth: 0, borderColor: null });
+        createLink.draggingEnabled = false;
+        createLink.droppingEnabled = false;
+        createLink.grabbingEnabled = false;
+        createLink.renderContext().shapeNode.style.cursor = "pointer";
+        createLink.onMouseOver = function () { createLink.setTextColor(PINK_HOVER); };
+        createLink.onMouseOut  = function () { createLink.setTextColor(PINK); };
         createLink.onMouseDown = function () { self.createConstellation(); };
         content.addMorph(createLink);
 
         var statusText = new lively.morphic.Text(lively.rect(pad + 100, y + 2, w - 100, 18), "");
-        statusText.applyStyle({ allowInput: false, fontSize: 11, textColor: GRAY, fill: null });
+        statusText.applyStyle({ allowInput: false, fontSize: 11, textColor: GRAY, fill: null, borderWidth: 0, borderColor: null });
         content.addMorph(statusText);
         this._statusText = statusText;
         y += 30;
@@ -140,15 +160,16 @@ module("lively.identity.ConstellationsBrowser")
         y += 12;
 
         var knownHeader = new lively.morphic.Text(lively.rect(pad, y, w, 18), "Constellations");
-        knownHeader.applyStyle({ allowInput: false, fontSize: 13, fontWeight: "bold", textColor: Color.rgb(40, 40, 40), fill: null });
+        knownHeader.applyStyle({ allowInput: false, fontSize: 13, fontWeight: "bold", textColor: Color.rgb(40, 40, 40), fill: null, borderWidth: 0, borderColor: null });
         content.addMorph(knownHeader);
         y += 24;
 
         var listH = content.getExtent().y - y - pad - 40;
         var listBox = new lively.morphic.Box(lively.rect(pad, y, w, listH));
         listBox.name = "knownList";
-        listBox.applyStyle({ fill: Color.white, clipMode: "auto", borderWidth: 1, borderColor: Color.rgb(220, 220, 220), borderRadius: 3 });
+        listBox.applyStyle({ fill: Color.white, clipMode: "auto", borderWidth: 1, borderColor: Color.rgb(220, 220, 220), borderRadius: 4 });
         content.addMorph(listBox);
+        listBox.renderContext().shapeNode.style.overflowX = "hidden";
         this._listBox = listBox;
         y += listH + 10;
 
@@ -156,14 +177,37 @@ module("lively.identity.ConstellationsBrowser")
         openInput.name = "openInput";
         openInput.applyStyle({
           allowInput: true, fontSize: 12, fill: Color.white, borderWidth: 1,
-          borderColor: Color.rgb(190, 190, 190), borderRadius: 3, padding: lively.rect(6, 4, 0, 0),
+          borderColor: Color.rgb(190, 190, 190), borderRadius: 4, padding: lively.rect(26, 4, 0, 0),
         });
         openInput.beInputLine();
         content.addMorph(openInput);
         this._openInput = openInput;
 
+        var openIcon = new lively.morphic.Text(lively.rect(pad + 6, y + 3, 16, 16), "link");
+        openIcon.applyStyle({
+          allowInput: false,
+          fontFamily: "'Material Symbols Rounded'",
+          fontSize: 12,
+          textColor: Color.rgb(150, 150, 150),
+          fill: null,
+          borderWidth: 0,
+          borderColor: null,
+        });
+        openIcon.eventsAreIgnored = true;
+        openIcon.draggingEnabled = false;
+        openIcon.droppingEnabled = false;
+        openIcon.grabbingEnabled = false;
+        content.addMorph(openIcon);
+        openIcon.renderContext().shapeNode.style.pointerEvents = "none";
+
         var openLink = new lively.morphic.Text(lively.rect(pad + w - 78, y + 2, 78, 20), "Open →");
-        openLink.applyStyle({ allowInput: false, fontSize: 12, textColor: PINK, fill: null });
+        openLink.applyStyle({ allowInput: false, fontSize: 12, textColor: PINK, fill: null, borderWidth: 0, borderColor: null });
+        openLink.draggingEnabled = false;
+        openLink.droppingEnabled = false;
+        openLink.grabbingEnabled = false;
+        openLink.renderContext().shapeNode.style.cursor = "pointer";
+        openLink.onMouseOver = function () { openLink.setTextColor(PINK_HOVER); };
+        openLink.onMouseOut  = function () { openLink.setTextColor(PINK); };
         openLink.onMouseDown = function () {
           var name = (self._openInput.textString || "").trim();
           if (name) window.location.href = "/c/" + encodeURIComponent(name);
@@ -235,12 +279,14 @@ module("lively.identity.ConstellationsBrowser")
           .concat(publicOnly.map(function (c) { return { name: c.name, isPublic: true }; }));
 
         var w = listBox.getExtent().x;
-        var PINK = Color.rgb(240, 26, 105);
-        var GRAY = Color.rgb(170, 170, 170);
+        var PINK       = Color.rgb(240, 26, 105);
+        var PINK_HOVER = Color.rgb(190, 15, 82);
+        var GRAY       = Color.rgb(170, 170, 170);
+        var ROW_HOVER  = Color.rgb(237, 231, 246);
 
         if (!rows.length) {
           var none = new lively.morphic.Text(lively.rect(10, 10, w - 20, 20), "None yet — create one above.");
-          none.applyStyle({ allowInput: false, fontSize: 11, textColor: GRAY, fill: null });
+          none.applyStyle({ allowInput: false, fontSize: 11, textColor: GRAY, fill: null, borderWidth: 0, borderColor: null });
           listBox.addMorph(none);
           return;
         }
@@ -250,20 +296,35 @@ module("lively.identity.ConstellationsBrowser")
         rows.forEach(function (k) {
           var row = new lively.morphic.Box(lively.rect(0, y, w, rowH));
           row.applyStyle({ fill: null, borderWidth: 0 });
+          row.draggingEnabled = false;
+          row.droppingEnabled = false;
+          row.grabbingEnabled = false;
+          row.onMouseOver = function () { row.setFill(ROW_HOVER); };
+          row.onMouseOut  = function () { row.setFill(null); };
 
           var label = k.isPublic ? (k.name + "  ·  public") : k.name;
           var nameText = new lively.morphic.Text(lively.rect(10, 6, w - 90, 18), label);
-          nameText.applyStyle({ allowInput: false, fontSize: 12, textColor: k.isPublic ? GRAY : Color.rgb(40, 40, 40), fill: null });
+          nameText.applyStyle({ allowInput: false, fontSize: 12, textColor: k.isPublic ? GRAY : Color.rgb(40, 40, 40), fill: null, borderWidth: 0, borderColor: null });
+          nameText.eventsAreIgnored = true;
+          nameText.draggingEnabled = false;
+          nameText.droppingEnabled = false;
+          nameText.grabbingEnabled = false;
           row.addMorph(nameText);
 
           var openLink = new lively.morphic.Text(lively.rect(w - 68, 6, 58, 18), "open →");
-          openLink.applyStyle({ allowInput: false, fontSize: 12, textColor: PINK, fill: null });
+          openLink.applyStyle({ allowInput: false, fontSize: 12, textColor: PINK, fill: null, borderWidth: 0, borderColor: null });
+          openLink.draggingEnabled = false;
+          openLink.droppingEnabled = false;
+          openLink.grabbingEnabled = false;
+          openLink.renderContext().shapeNode.style.cursor = "pointer";
           openLink._url = "/c/" + encodeURIComponent(k.name);
+          openLink.onMouseOver = function () { openLink.setTextColor(PINK_HOVER); };
+          openLink.onMouseOut  = function () { openLink.setTextColor(PINK); };
           openLink.onMouseDown = function () { window.location.href = this._url; };
           row.addMorph(openLink);
 
           var sep = new lively.morphic.Box(lively.rect(10, rowH - 1, w - 20, 1));
-          sep.applyStyle({ fill: Color.rgb(238, 238, 238), borderWidth: 0 });
+          sep.applyStyle({ fill: Color.rgb(228, 228, 228), borderWidth: 0 });
           row.addMorph(sep);
 
           listBox.addMorph(row);
