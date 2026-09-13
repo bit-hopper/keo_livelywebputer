@@ -68,14 +68,33 @@ Object.subclass('lively.identity.Crypto',
 
   // Deterministic JSON serialization with recursively sorted keys (RFC 8785 spirit).
   // Used for signing so key ordering doesn't affect the digest regardless of engine.
+  //
+  // undefined handling must mirror real JSON.stringify exactly (omit an
+  // undefined-valued object property entirely; emit `null` for an undefined
+  // array element) — confirmed live as a real bug: this function used to
+  // fall through to `JSON.stringify(k) + ':' + self.canonicalJson(obj[k])`
+  // even when obj[k] === undefined, and the base case's `JSON.stringify(undefined)`
+  // returns the actual JS `undefined` value (not a string), which string
+  // concatenation then coerces to the literal text `undefined` — producing
+  // syntactically invalid JSON (e.g. `{"pointerId":undefined}`) that the
+  // server's decodeJwsPayload's JSON.parse rejects with "Unexpected token
+  // 'u' ... is not valid JSON". Signing a whole serialized world's object
+  // graph (SignedSerializer.js) only needs ONE stray undefined-valued
+  // property anywhere in that huge tree to corrupt the entire signature —
+  // e.g. Events.js's onMouseUpEntry does `evt.hand.pointerId = undefined`,
+  // and a Hand's captured state can end up serialized as part of the world.
   canonicalJson: function(obj) {
     if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
     if (Array.isArray(obj)) {
       var self = this;
-      return '[' + obj.map(function(item) { return self.canonicalJson(item); }).join(',') + ']';
+      return '[' + obj.map(function(item) {
+        return item === undefined ? 'null' : self.canonicalJson(item);
+      }).join(',') + ']';
     }
     var self = this;
-    var keys = Object.keys(obj).sort();
+    var keys = Object.keys(obj).filter(function(k) {
+      return obj[k] !== undefined;
+    }).sort();
     return '{' + keys.map(function(k) {
       return JSON.stringify(k) + ':' + self.canonicalJson(obj[k]);
     }).join(',') + '}';

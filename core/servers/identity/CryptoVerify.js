@@ -31,12 +31,22 @@ function base64urlEncode(buffer) {
 
 // Direct port of Crypto.js canonicalJson: recursively sorted-key JSON
 // serialization so signing/verification don't depend on key order.
+// Must stay byte-for-byte behaviorally identical to Crypto.js's client-side
+// canonicalJson — including undefined handling (mirrors real JSON.stringify:
+// omit an undefined object property, `null` for an undefined array element).
+// See Crypto.js's canonicalJson comment for the exact bug this fixed
+// (a stray undefined-valued property anywhere in a signed object graph used
+// to produce invalid JSON, e.g. `{"pointerId":undefined}`).
 function canonicalJson(obj) {
   if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
   if (Array.isArray(obj)) {
-    return '[' + obj.map(canonicalJson).join(',') + ']';
+    return '[' + obj.map(function (item) {
+      return item === undefined ? 'null' : canonicalJson(item);
+    }).join(',') + ']';
   }
-  var keys = Object.keys(obj).sort();
+  var keys = Object.keys(obj).filter(function (k) {
+    return obj[k] !== undefined;
+  }).sort();
   return '{' + keys.map(function (k) {
     return JSON.stringify(k) + ':' + canonicalJson(obj[k]);
   }).join(',') + '}';
