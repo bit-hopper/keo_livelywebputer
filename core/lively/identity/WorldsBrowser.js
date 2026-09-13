@@ -683,11 +683,12 @@ module("lively.identity.WorldsBrowser")
         y += 10;
 
         var templates = [
-          { icon: "storefront",     title: "Shop",    subtitle: "A storefront to sell items.",     enabled: true,  key: "shop" },
-          { icon: "photo_library",  title: "Gallery", subtitle: "Organize and display photos.",     enabled: false, key: "gallery" },
-          { icon: "movie",          title: "Movie",   subtitle: "Organize your favorite movies.",   enabled: false, key: "movie" },
-          { icon: "menu_book",      title: "Books",   subtitle: "Organize your book collection.",   enabled: false, key: "books" },
-          { icon: "sports_esports", title: "Game",    subtitle: "Organize your video games.",       enabled: false, key: "game" },
+          { icon: "storefront",     title: "Shop",                   subtitle: "A storefront to sell items.",              enabled: true,  key: "shop" },
+          { icon: "inventory_2",    title: "Import from Inventory",  subtitle: "Browse your parts and drag one in.",       enabled: true,  key: "inventory" },
+          { icon: "photo_library",  title: "Gallery",                subtitle: "Organize and display photos.",             enabled: false, key: "gallery" },
+          { icon: "movie",          title: "Movie",                  subtitle: "Organize your favorite movies.",           enabled: false, key: "movie" },
+          { icon: "menu_book",      title: "Books",                  subtitle: "Organize your book collection.",           enabled: false, key: "books" },
+          { icon: "sports_esports", title: "Game",                   subtitle: "Organize your video games.",               enabled: false, key: "game" },
         ];
 
         var rowH = 58;
@@ -734,7 +735,9 @@ module("lively.identity.WorldsBrowser")
         content.addMorph(backLink);
         y += 28;
 
-        var titleStr = template === "shop" ? "New Shop world" : "New blank world";
+        var titleStr = template === "shop" ? "New Shop world"
+          : template === "inventory" ? "New world with Inventory"
+          : "New blank world";
         var header = new lively.morphic.Text(lively.rect(pad, y, w, 18), titleStr);
         header.applyStyle({ allowInput: false, fontSize: 13, fontWeight: "bold", textColor: Color.rgb(40, 40, 40), fill: null, borderWidth: 0, borderColor: null });
         content.addMorph(header);
