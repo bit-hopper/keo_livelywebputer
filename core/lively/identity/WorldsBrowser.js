@@ -7,13 +7,34 @@
  * The search input filters by name (Enter to apply).
  * A "history" link drills into version history with per-version restore.
  *
+ * A "Create" button opens a picker for three ways to make something new:
+ *   - Blank world: a genuinely empty world under a chosen name. Built by
+ *     fetching /blank.html (an already-proven, previously-saved empty world)
+ *     and reusing its embedded <script type="text/x-lively-world"> JSON
+ *     directly as the new envelope's record.payload — this sidesteps ever
+ *     constructing/rendering a live World object (which would either miss
+ *     internal setup World.createOn normally does, or clobber the live
+ *     session's own $world if createOn were called directly).
+ *   - Wiki page: a pure launcher into the existing NewWikiPageDialog/
+ *     WikiEditor flow. Wiki pages save as type "wikipage", not "world", so
+ *     they intentionally never show up back in this list.
+ *   - Template: a single list of presets that pre-populate a new world
+ *     (only Shop is wired up; Gallery/Movie/Books/Game are inert
+ *     "Coming soon" placeholders for now). A chosen template is launched
+ *     into the fresh world via a one-time ?template= query param, handled by
+ *     WorldTemplateLauncher.js after the redirect.
+ *
  * Dependencies:
  *   lively.identity.DID — isLoggedIn, currentUser
+ *   lively.identity.WebKey — generateGenesisObjId (objId minting for new worlds)
+ *   lively.identity.SignedSerializer — serializeToEnvelope (envelope build + sign)
  */
 
 module("lively.identity.WorldsBrowser")
   .requires(
     "lively.identity.DID",
+    "lively.identity.WebKey",
+    "lively.identity.SignedSerializer",
     "lively.persistence.BuildSpec",
     "lively.morphic.Complete",
   )
@@ -67,7 +88,10 @@ module("lively.identity.WorldsBrowser")
         var w = content.getExtent().x - pad * 2;
         var y = pad;
 
-        var searchInput = new lively.morphic.Text(lively.rect(pad, y, w, 26), "");
+        var createBtnW = 74;
+        var searchW = w - createBtnW - 8;
+
+        var searchInput = new lively.morphic.Text(lively.rect(pad, y, searchW, 26), "");
         searchInput.name = "searchInput";
         searchInput.applyStyle({
           allowInput: true,
@@ -97,6 +121,24 @@ module("lively.identity.WorldsBrowser")
         searchIcon.grabbingEnabled = false;
         content.addMorph(searchIcon);
         searchIcon.renderContext().shapeNode.style.pointerEvents = "none";
+
+        var createBtn = new lively.morphic.Text(lively.rect(pad + searchW + 8, y, createBtnW, 26), "Create");
+        createBtn.applyStyle({
+          allowInput: false, fontSize: 13, fontWeight: "bold", textColor: Color.rgb(240, 26, 105),
+          fill: Color.rgb(255, 240, 247), borderWidth: 1, borderColor: Color.rgb(240, 190, 210),
+          borderRadius: 5,
+        });
+        createBtn.draggingEnabled = false;
+        createBtn.droppingEnabled = false;
+        createBtn.grabbingEnabled = false;
+        createBtn.renderContext().shapeNode.style.cursor = "pointer";
+        createBtn.onMouseOver = function () { createBtn.setFill(Color.rgb(255, 224, 238)); };
+        createBtn.onMouseOut  = function () { createBtn.setFill(Color.rgb(255, 240, 247)); };
+        createBtn.onMouseDown = function () {
+          var win = lively.morphic.World.current().get("WorldsBrowser");
+          if (win) win.showCreatePicker();
+        };
+        content.addMorph(createBtn);
         y += 34;
 
         var listH = content.getExtent().y - y - pad;
@@ -445,6 +487,381 @@ module("lively.identity.WorldsBrowser")
       showWorlds: function showWorlds() {
         this.buildUI();
         this.loadWorlds();
+      },
+
+      // ── create flow ─────────────────────────────────────────────────────────
+
+      // Shared row builder for the create-picker's 3 top-level cards and the
+      // template list's items — a spec-level method (this._buildCreateCardRow),
+      // not a free function in the enclosing .toRun() closure, since BuildSpec
+      // method bodies are eval'd independently and don't share that closure
+      // (see this file's other methods / ConstellationsBrowser.js's header note
+      // for the same discipline).
+      _buildCreateCardRow: function _buildCreateCardRow(w, rowH, iconName, title, subtitle, enabled, tagText) {
+        var TEAL = Color.rgb(0, 150, 136);
+        var GRAY = Color.rgb(160, 160, 160);
+        var DARK = Color.rgb(40, 40, 40);
+        var HOVER = Color.rgb(224, 247, 244);
+
+        var row = new lively.morphic.Box(lively.rect(0, 0, w, rowH));
+        row.applyStyle({ fill: Color.white, borderWidth: 1, borderColor: Color.rgb(228, 228, 228), borderRadius: 6 });
+        row.draggingEnabled = false;
+        row.droppingEnabled = false;
+        row.grabbingEnabled = false;
+        if (enabled) {
+          row.renderContext().shapeNode.style.cursor = "pointer";
+          row.onMouseOver = function () { row.setFill(HOVER); };
+          row.onMouseOut  = function () { row.setFill(Color.white); };
+        } else {
+          row.renderContext().shapeNode.title = "Coming soon — not available yet";
+        }
+
+        var icon = new lively.morphic.Text(lively.rect(16, (rowH - 24) / 2, 24, 24), iconName);
+        icon.applyStyle({
+          allowInput: false, fontFamily: "'Material Symbols Rounded'", fontSize: 18,
+          textColor: enabled ? TEAL : GRAY, fill: null, borderWidth: 0, borderColor: null,
+        });
+        icon.eventsAreIgnored = true;
+        icon.draggingEnabled = false;
+        icon.droppingEnabled = false;
+        icon.grabbingEnabled = false;
+        row.addMorph(icon);
+
+        var textW = tagText ? w - 60 - 100 : w - 60;
+
+        var titleT = new lively.morphic.Text(lively.rect(52, 12, textW, 18), title);
+        titleT.applyStyle({
+          allowInput: false, fontSize: 13, fontWeight: "bold",
+          textColor: enabled ? DARK : GRAY, fill: null, borderWidth: 0, borderColor: null,
+        });
+        titleT.eventsAreIgnored = true;
+        titleT.draggingEnabled = false;
+        titleT.droppingEnabled = false;
+        titleT.grabbingEnabled = false;
+        row.addMorph(titleT);
+
+        var subT = new lively.morphic.Text(lively.rect(52, 32, textW, 16), subtitle);
+        subT.applyStyle({ allowInput: false, fontSize: 11, textColor: GRAY, fill: null, borderWidth: 0, borderColor: null });
+        subT.eventsAreIgnored = true;
+        subT.draggingEnabled = false;
+        subT.droppingEnabled = false;
+        subT.grabbingEnabled = false;
+        row.addMorph(subT);
+
+        if (tagText) {
+          var tag = new lively.morphic.Text(lively.rect(w - 106, (rowH - 20) / 2, 92, 20), tagText);
+          tag.applyStyle({
+            allowInput: false, fontSize: 10, textColor: Color.rgb(150, 150, 150),
+            fill: Color.rgb(238, 238, 238), borderWidth: 1, borderColor: Color.rgb(220, 220, 220),
+            borderRadius: 4,
+          });
+          tag.eventsAreIgnored = true;
+          tag.draggingEnabled = false;
+          tag.droppingEnabled = false;
+          tag.grabbingEnabled = false;
+          row.addMorph(tag);
+        }
+
+        return row;
+      },
+
+      showCreatePicker: function showCreatePicker() {
+        var self = this;
+        var content = this.get("worldsBrowserContent");
+        if (!content) return;
+        content.removeAllMorphs();
+
+        var pad = 12;
+        var w = content.getExtent().x - pad * 2;
+        var y = pad;
+        var PINK       = Color.rgb(240, 26, 105);
+        var PINK_HOVER = Color.rgb(190, 15, 82);
+
+        var backLink = new lively.morphic.Text(lively.rect(pad, y, 110, 18), "← My worlds");
+        backLink.applyStyle({ allowInput: false, fontSize: 12, textColor: PINK, fill: null, borderWidth: 0, borderColor: null });
+        backLink.draggingEnabled = false;
+        backLink.droppingEnabled = false;
+        backLink.grabbingEnabled = false;
+        backLink.renderContext().shapeNode.style.cursor = "pointer";
+        backLink.onMouseOver = function () { backLink.setTextColor(PINK_HOVER); };
+        backLink.onMouseOut  = function () { backLink.setTextColor(PINK); };
+        backLink.onMouseDown = function () {
+          var win = lively.morphic.World.current().get("WorldsBrowser");
+          if (win) win.showWorlds();
+        };
+        content.addMorph(backLink);
+        y += 28;
+
+        var header = new lively.morphic.Text(lively.rect(pad, y, w, 18), "Create new");
+        header.applyStyle({ allowInput: false, fontSize: 13, fontWeight: "bold", textColor: Color.rgb(40, 40, 40), fill: null, borderWidth: 0, borderColor: null });
+        content.addMorph(header);
+        y += 26;
+
+        var div = new lively.morphic.Box(lively.rect(pad, y, w, 1));
+        div.applyStyle({ fill: Color.rgb(220, 220, 220), borderWidth: 0 });
+        content.addMorph(div);
+        y += 10;
+
+        var cards = [
+          { icon: "note_add",            title: "Blank world", subtitle: "Start with a completely empty world.", action: "blank" },
+          { icon: "article",             title: "Wiki page",   subtitle: "Create a wiki page for your profile.", action: "wiki" },
+          { icon: "dashboard_customize", title: "Template",    subtitle: "Start from a preset like Shop.",       action: "template" },
+        ];
+
+        var rowH = 62;
+        cards.forEach(function (card) {
+          var row = self._buildCreateCardRow(w, rowH, card.icon, card.title, card.subtitle, true, null);
+          row.onMouseDown = function () {
+            var win = lively.morphic.World.current().get("WorldsBrowser");
+            if (!win) return;
+            if (card.action === "blank") win.showCreateForm(null);
+            else if (card.action === "wiki") win.launchWikiCreation();
+            else if (card.action === "template") win.showCreateTemplateList();
+          };
+          row.setPosition(lively.pt(pad, y));
+          content.addMorph(row);
+          y += rowH + 6;
+        });
+      },
+
+      launchWikiCreation: function launchWikiCreation() {
+        var user = lively.identity.did.currentUser();
+        if (!user) return;
+        lively.require("lively.identity.NewWikiPageDialog").toRun(function () {
+          lively.identity.NewWikiPageDialog.open({
+            scope: { handle: user.handle },
+            onCreate: function (fields) {
+              lively.require("lively.identity.WikiEditor").toRun(function () {
+                lively.identity.WikiEditor.newCard(user.handle, {
+                  wikiName: fields.wikiName,
+                  category: fields.category,
+                  tags: fields.tags,
+                });
+              });
+            },
+          });
+        });
+        var win = lively.morphic.World.current().get("WorldsBrowser");
+        if (win) win.showWorlds();
+      },
+
+      showCreateTemplateList: function showCreateTemplateList() {
+        var self = this;
+        var content = this.get("worldsBrowserContent");
+        if (!content) return;
+        content.removeAllMorphs();
+
+        var pad = 12;
+        var w = content.getExtent().x - pad * 2;
+        var y = pad;
+        var PINK       = Color.rgb(240, 26, 105);
+        var PINK_HOVER = Color.rgb(190, 15, 82);
+
+        var backLink = new lively.morphic.Text(lively.rect(pad, y, 70, 18), "← Back");
+        backLink.applyStyle({ allowInput: false, fontSize: 12, textColor: PINK, fill: null, borderWidth: 0, borderColor: null });
+        backLink.draggingEnabled = false;
+        backLink.droppingEnabled = false;
+        backLink.grabbingEnabled = false;
+        backLink.renderContext().shapeNode.style.cursor = "pointer";
+        backLink.onMouseOver = function () { backLink.setTextColor(PINK_HOVER); };
+        backLink.onMouseOut  = function () { backLink.setTextColor(PINK); };
+        backLink.onMouseDown = function () {
+          var win = lively.morphic.World.current().get("WorldsBrowser");
+          if (win) win.showCreatePicker();
+        };
+        content.addMorph(backLink);
+        y += 28;
+
+        var header = new lively.morphic.Text(lively.rect(pad, y, w, 18), "Choose a template");
+        header.applyStyle({ allowInput: false, fontSize: 13, fontWeight: "bold", textColor: Color.rgb(40, 40, 40), fill: null, borderWidth: 0, borderColor: null });
+        content.addMorph(header);
+        y += 26;
+
+        var div = new lively.morphic.Box(lively.rect(pad, y, w, 1));
+        div.applyStyle({ fill: Color.rgb(220, 220, 220), borderWidth: 0 });
+        content.addMorph(div);
+        y += 10;
+
+        var templates = [
+          { icon: "storefront",     title: "Shop",    subtitle: "A storefront to sell items.",     enabled: true,  key: "shop" },
+          { icon: "photo_library",  title: "Gallery", subtitle: "Organize and display photos.",     enabled: false, key: "gallery" },
+          { icon: "movie",          title: "Movie",   subtitle: "Organize your favorite movies.",   enabled: false, key: "movie" },
+          { icon: "menu_book",      title: "Books",   subtitle: "Organize your book collection.",   enabled: false, key: "books" },
+          { icon: "sports_esports", title: "Game",    subtitle: "Organize your video games.",       enabled: false, key: "game" },
+        ];
+
+        var rowH = 58;
+        templates.forEach(function (t) {
+          var row = self._buildCreateCardRow(w, rowH, t.icon, t.title, t.subtitle, t.enabled, t.enabled ? null : "Coming soon");
+          if (t.enabled) {
+            row.onMouseDown = function () {
+              var win = lively.morphic.World.current().get("WorldsBrowser");
+              if (win) win.showCreateForm(t.key);
+            };
+          }
+          row.setPosition(lively.pt(pad, y));
+          content.addMorph(row);
+          y += rowH + 6;
+        });
+      },
+
+      showCreateForm: function showCreateForm(template) {
+        var content = this.get("worldsBrowserContent");
+        if (!content) return;
+        content.removeAllMorphs();
+
+        var pad = 12;
+        var w = content.getExtent().x - pad * 2;
+        var y = pad;
+        var PINK       = Color.rgb(240, 26, 105);
+        var PINK_HOVER = Color.rgb(190, 15, 82);
+        var GRAY       = Color.rgb(140, 140, 140);
+
+        var backLink = new lively.morphic.Text(lively.rect(pad, y, 70, 18), "← Back");
+        backLink.applyStyle({ allowInput: false, fontSize: 12, textColor: PINK, fill: null, borderWidth: 0, borderColor: null });
+        backLink.draggingEnabled = false;
+        backLink.droppingEnabled = false;
+        backLink.grabbingEnabled = false;
+        backLink.renderContext().shapeNode.style.cursor = "pointer";
+        backLink.onMouseOver = function () { backLink.setTextColor(PINK_HOVER); };
+        backLink.onMouseOut  = function () { backLink.setTextColor(PINK); };
+        backLink.onMouseDown = function () {
+          var win = lively.morphic.World.current().get("WorldsBrowser");
+          if (!win) return;
+          if (template) win.showCreateTemplateList();
+          else win.showCreatePicker();
+        };
+        content.addMorph(backLink);
+        y += 28;
+
+        var titleStr = template === "shop" ? "New Shop world" : "New blank world";
+        var header = new lively.morphic.Text(lively.rect(pad, y, w, 18), titleStr);
+        header.applyStyle({ allowInput: false, fontSize: 13, fontWeight: "bold", textColor: Color.rgb(40, 40, 40), fill: null, borderWidth: 0, borderColor: null });
+        content.addMorph(header);
+        y += 30;
+
+        var label = new lively.morphic.Text(lively.rect(pad, y, w, 16), "Name");
+        label.applyStyle({ allowInput: false, fontFamily: "Arial, sans-serif", fontSize: 11, textColor: GRAY, fill: null, borderWidth: 0, borderColor: null });
+        content.addMorph(label);
+        y += 20;
+
+        var nameInput = new lively.morphic.Text(lively.rect(pad, y, w, 26), "");
+        nameInput.name = "createNameInput";
+        nameInput.applyStyle({
+          allowInput: true, fontSize: 12, fill: Color.white, borderWidth: 1,
+          borderColor: Color.rgb(190, 190, 190), borderRadius: 4, padding: lively.rect(6, 5, 0, 0),
+        });
+        nameInput.beInputLine();
+        content.addMorph(nameInput);
+        this._createNameInput = nameInput;
+        y += 36;
+
+        var createBtn = new lively.morphic.Text(lively.rect(pad, y, 90, 26), "Create");
+        createBtn.applyStyle({
+          allowInput: false, fontSize: 13, fontWeight: "bold", textColor: PINK,
+          fill: Color.rgb(255, 240, 247), borderWidth: 1, borderColor: Color.rgb(240, 190, 210),
+          borderRadius: 5,
+        });
+        createBtn.draggingEnabled = false;
+        createBtn.droppingEnabled = false;
+        createBtn.grabbingEnabled = false;
+        createBtn.renderContext().shapeNode.style.cursor = "pointer";
+        createBtn.onMouseOver = function () { createBtn.setFill(Color.rgb(255, 224, 238)); };
+        createBtn.onMouseOut  = function () { createBtn.setFill(Color.rgb(255, 240, 247)); };
+        createBtn.onMouseDown = function () {
+          var win = lively.morphic.World.current().get("WorldsBrowser");
+          if (win) win.submitCreate(template);
+        };
+        content.addMorph(createBtn);
+
+        var statusText = new lively.morphic.Text(lively.rect(pad + 100, y + 4, w - 100, 18), "");
+        statusText.applyStyle({ allowInput: false, fontSize: 11, textColor: GRAY, fill: null, borderWidth: 0, borderColor: null });
+        content.addMorph(statusText);
+        this._createStatusText = statusText;
+      },
+
+      setCreateStatus: function setCreateStatus(msg, isError) {
+        if (!this._createStatusText) return;
+        this._createStatusText.setTextString(msg || "");
+        this._createStatusText.setTextColor(isError ? Color.rgb(200, 50, 50) : Color.rgb(140, 140, 140));
+      },
+
+      submitCreate: function submitCreate(template) {
+        var name = ((this._createNameInput && this._createNameInput.textString) || "").trim();
+        if (!name) return this.setCreateStatus("Enter a name first.", true);
+        this.setCreateStatus("Fetching template…");
+        this.createWorld(name, template);
+      },
+
+      // Fetches blank.html's already-serialized empty-world JSO and reuses it
+      // directly as the new envelope's record.payload -- see this file's
+      // header comment for why (no live World construction/rendering needed).
+      createWorld: function createWorld(name, template) {
+        var self = this;
+        var did = lively.identity.did;
+        var user = did.currentUser();
+        if (!user) return self.setCreateStatus("Sign in required.", true);
+
+        fetch("/blank.html")
+          .then(function (r) { return r.text(); })
+          .then(function (html) {
+            var m = html.match(/<script[^>]*type="text\/x-lively-world"[^>]*>([\s\S]*?)<\/script>/);
+            if (!m) throw new Error("blank world template not found");
+            var jso = JSON.parse(m[1]);
+
+            // Scrub stale dev-machine bookkeeping baked into blank.html's own
+            // last save (a local filesystem user id + working directories) --
+            // cosmetic only, not required for the world to load.
+            var rootObj = jso.registry && jso.registry[jso.id];
+            if (rootObj) {
+              delete rootObj.currentUser;
+              delete rootObj.knownWorkingDirectories;
+            }
+
+            self.setCreateStatus("Generating…");
+            lively.identity.webKey.generateGenesisObjId(user.did, function (err, gen) {
+              if (err) return self.setCreateStatus("Error: " + err.message, true);
+
+              var method = did.findMethodByCredentialId(user.document, user.credentialId);
+
+              self.setCreateStatus("Signing… (confirm your passkey if prompted)");
+              lively.identity.signedSerializer.serializeToEnvelope({
+                jso: jso,
+                type: "world",
+                objId: gen.objId,
+                genesisNonce: gen.genesisNonce,
+                publicKeyJwk: method ? method.publicKeyJwk : null,
+                stateMeta: { name: name },
+              }, function (err, envelope) {
+                if (err) return self.setCreateStatus("Error: " + err.message, true);
+
+                self.setCreateStatus("Creating…");
+                fetch("/@" + user.handle + "/" + gen.objId, {
+                  method: "PUT",
+                  credentials: "include",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(envelope),
+                })
+                  .then(function (r) { return r.json(); })
+                  .then(function (body) {
+                    if (!body.ok) return self.setCreateStatus("Create failed: " + (body.error || "?"), true);
+                    self.setCreateStatus("Created — opening…");
+                    // Without this, navigating away from the CURRENT world
+                    // triggers a real "leave site?" beforeunload confirm
+                    // (askBeforeQuit) that blocks the redirect until a human
+                    // dismisses it -- confirmed live. Widgets.js's own
+                    // "Save world as..."/"Save world" do the same before
+                    // their redirect.
+                    if (lively.Config) lively.Config.askBeforeQuit = false;
+                    var url = "/@" + user.handle + "/" + gen.objId;
+                    if (template) url += "?template=" + encodeURIComponent(template);
+                    window.location.href = url;
+                  })
+                  .catch(function (e) { self.setCreateStatus("Create failed: " + e.message, true); });
+              });
+            });
+          })
+          .catch(function (err) { self.setCreateStatus("Could not create world: " + err.message, true); });
       },
     });
   }); // end module('lively.identity.WorldsBrowser')
