@@ -80,11 +80,21 @@ module("lively.identity.SignedSerializer")
         // Serialize obj to a signed envelope.
         //
         // params: {
-        //   obj:         Object   — the morph/part/object to serialize
+        //   obj:         Object   — the morph/part/object to serialize (ignored if jso is given)
+        //   jso:         Object   — a pre-built {id, registry} JSO to use directly instead
+        //                           of running the inner serializer on obj (e.g. WorldsBrowser.js's
+        //                           create-world flow reuses blank.html's already-serialized
+        //                           empty-world JSO rather than serializing a live World)
         //   type:        String   — "world" | "part" | "file" | "settings"
         //   publicKeyJwk: Object  — device public key JWK (used to derive objId)
         //   prevEnvelope: Object|null — previous version envelope for chaining
         //   stateMeta:   Object   — free-form metadata for envelope.state
+        //   genesisNonce: String  — required on any genesis write (no prevEnvelope/prevCid);
+        //                           IdentityServer.js's PUT route hard-rejects a genesis write
+        //                           with no genesisNonce, for every type, no exemption. Must be
+        //                           set on the envelope BEFORE signing (the server verifies the
+        //                           signature against the whole envelope minus sig, exactly as
+        //                           received) — see the genesisNonce assignment below.
         // }
         // IDENTITY: privateKey removed — envelope signing deferred.
         //
@@ -103,16 +113,20 @@ module("lively.identity.SignedSerializer")
             );
           }
 
-          // Step 1: Inner serialization (sync)
+          // Step 1: Inner serialization (sync) — or use a pre-built JSO directly.
           var jso;
-          try {
-            jso = self._innerSerializeToJso(params.obj);
-          } catch (e) {
-            return thenDo(
-              new Error(
-                "serializeToEnvelope: inner serialization failed: " + e.message,
-              ),
-            );
+          if (params.jso) {
+            jso = params.jso;
+          } else {
+            try {
+              jso = self._innerSerializeToJso(params.obj);
+            } catch (e) {
+              return thenDo(
+                new Error(
+                  "serializeToEnvelope: inner serialization failed: " + e.message,
+                ),
+              );
+            }
           }
           if (!jso)
             return thenDo(
@@ -137,6 +151,8 @@ module("lively.identity.SignedSerializer")
                 record: { cid: cid, prevCid: prevCid, payload: jso },
                 state: params.stateMeta || {},
               };
+              // Must be set before signing — see this function's params doc above.
+              if (params.genesisNonce) envelope.genesisNonce = params.genesisNonce;
 
               // Sign with the device soft key if delegation cert + KEK are available.
               // Resolves the long-standing "IDENTITY: privateKey removed — envelope signing deferred".
