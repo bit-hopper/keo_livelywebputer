@@ -26,6 +26,12 @@ module("lively.identity.ProfileCard")
     lively.BuildSpec("lively.identity.ProfileCard", {
       _Extent:         lively.pt(840, 620),
       _BorderRadius:   10,
+      // Fill-frame/mat technique (see NewWikiPageDialog.js): the window's
+      // own fill shows through as a colored margin around the white
+      // ProfileCardPane below and behind the title bar (which has its own
+      // background: none in base_theme.css), giving a colored frame with
+      // no separate border morph needed.
+      _Fill:           Color.rgb(0xCC, 0x00, 0x57),
       className:       "lively.morphic.Window",
       contentOffset:   lively.pt(3, 22),
       draggingEnabled: true,
