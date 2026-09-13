@@ -137,15 +137,10 @@ module("lively.identity.ConstellationsBrowser")
         y += 34;
 
         // Create — real pill button (fill/border/radius), hug-fit to its own
-        // measured text (59px at this font/weight, confirmed live) plus the
-        // same +28 padding compensation as the rest of this file's hug-fit
-        // labels — NOT a runtime querySelector('span').offsetWidth read
-        // right after addMorph: confirmed live that read comes back 0 (the
-        // text hasn't actually been laid out yet at that synchronous point),
-        // which silently shrank this button to a useless 28px box and wrapped
-        // "Create →" onto two lines. Hardcoding the verified width sidesteps
-        // that timing gotcha entirely.
-        var createLink = new lively.morphic.Text(lively.rect(pad, y, 87, 22), "Create →");
+        // measured text, hardcoded rather than measured inline (see the
+        // span.offsetWidth-returns-0-same-tick and padding/max-width gotchas
+        // now in CLAUDE.md — both bit this exact button).
+        var createLink = new lively.morphic.Text(lively.rect(pad, y, 70, 22), "Create");
         createLink.applyStyle({
           allowInput: false, fontSize: 13, fontWeight: "bold", textColor: PINK,
           fill: Color.rgb(255, 240, 247), borderWidth: 1, borderColor: Color.rgb(240, 190, 210),
@@ -187,11 +182,11 @@ module("lively.identity.ConstellationsBrowser")
         y += listH + 10;
 
         // Open — real pill button, built FIRST (right-anchored, fixed width —
-        // see the Create button's comment above for why this is a hardcoded,
-        // live-verified width rather than a runtime measurement) so the
-        // input field beside it can be sized to fill exactly what's left.
-        var openLinkW = 73;
-        var openLink = new lively.morphic.Text(lively.rect(pad + w - openLinkW, y + 1, openLinkW, 22), "Open →");
+        // see the Create button's comment above for why this is a hardcoded
+        // width rather than a runtime measurement) so the input field beside
+        // it can be sized to fill exactly what's left.
+        var openLinkW = 58;
+        var openLink = new lively.morphic.Text(lively.rect(pad + w - openLinkW, y + 1, openLinkW, 22), "Open");
         openLink.applyStyle({
           allowInput: false, fontSize: 12, fontWeight: "bold", textColor: PINK,
           fill: Color.rgb(255, 240, 247), borderWidth: 1, borderColor: Color.rgb(240, 190, 210),
