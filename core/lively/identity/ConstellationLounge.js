@@ -80,6 +80,7 @@ module("lively.identity.ConstellationLounge")
     "lively.identity.PostCardView",
     "lively.identity.WikiView",
     "lively.identity.PostCardUtils",
+    "lively.identity.QuiltPatterns",
     "lively.morphic.Complete",
   )
   .toRun(function () {
@@ -146,7 +147,6 @@ module("lively.identity.ConstellationLounge")
     // feature rather than reusing the postcard-compose color.
     var ROOM_ACCENT = Color.rgb(79, 11, 67);
     var ROOM_GREEN = Color.rgb(46, 160, 90);
-    var ROOM_BANNER_COLOR = Color.rgb(0xDA, 0x7D, 0xE2); // #DA7DE2
     var NEW_ROOM_BTN_H = 28;
     var ROOM_CARD_PAD = 14;
     // Fixed tile size (not "stretch to fill the panel") — cards wrap into a
@@ -996,7 +996,7 @@ module("lively.identity.ConstellationLounge")
         this._spacesBox.addMorph(card);
 
         var banner = noDrag(new lively.morphic.Box(lively.rect(0, 0, w, ROOM_BANNER_H)));
-        banner.applyStyle({ fill: ROOM_BANNER_COLOR, borderWidth: 0 });
+        lively.identity.quiltPatterns.applyQuiltBackground(banner, String(room.id));
         banner.eventsAreIgnored = true;
         card.addMorph(banner);
 
