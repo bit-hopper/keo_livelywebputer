@@ -16,10 +16,14 @@
  *     co-creator) beside the postcard reel, below the search row, at a
  *     fixed size (not derived from the viewport)
  *   - a postcard "turnover" reel: newest-first, one card visible at a
- *     time, turned via a literal 3D flip-away (CSS perspective/rotateY,
- *     same technique PostCardView.js's own front/back flip uses, applied
- *     here to stack navigation instead) — prev/next buttons, and arrow
- *     keys turn it. Reply-driven activity never reorders the stack.
+ *     time, turned via a Tinder-style swipe-away (translate + rotate +
+ *     fade off-screen, then the new card settles in from a smaller
+ *     "just-revealed" state) — prev/next buttons, and arrow keys turn it.
+ *     "Next" flies off to the left (direction +1) and "previous" flies
+ *     off to the right (direction -1), matching the common photo-viewer
+ *     swipe convention rather than this panel's own left=older/
+ *     right=newer button-and-arrow-key layout. Reply-driven activity
+ *     never reorders the stack.
  *   - below the active card: a recursively nested, lazily
  *     expanded reply tree (GET /@:handle/:objId/replies is objId-generic —
  *     the :handle path segment is unused server-side, confirmed by reading
@@ -424,10 +428,8 @@ module("lively.identity.ConstellationLounge")
         this._frontCardBox = new lively.morphic.Box(lively.rect(0, 0, CARD_W, CARD_H));
         $world.addMorph(this._frontCardBox);
         var frontNode = this._frontCardBox.renderContext().shapeNode;
-        frontNode.style.transformStyle = "preserve-3d";
-        frontNode.style.transformOrigin = "0% 50%";
-        frontNode.style.transition = "transform 420ms ease, opacity 420ms ease";
-        frontNode.parentNode && (frontNode.parentNode.style.perspective = "1400px");
+        frontNode.style.transformOrigin = "50% 50%";
+        frontNode.style.transition = "transform 260ms ease, opacity 260ms ease";
 
         this._navBox = new lively.morphic.Box(lively.rect(0, 0, 120, 32));
         this._navBox.applyStyle({ fill: null, borderWidth: 0 });
@@ -1956,6 +1958,14 @@ module("lively.identity.ConstellationLounge")
       // direction: -1 (older) or 1 (newer). Strictly moves the top-level
       // stack position — reply-thread focus never affects this (confirmed
       // requirement: replies don't reorder or otherwise move the stack).
+      //
+      // Tinder-style swipe: the active card is flicked off-screen (translate
+      // + rotate + fade, exiting left for "next"/+1, right for "previous"/-1
+      // — see the file-header comment for why that's the opposite of this
+      // panel's own left=older/right=newer button layout), then the new
+      // card is snapped into a smaller "just-revealed" state and eased up
+      // to full size/opacity, mimicking a card being promoted off the
+      // bottom of a stack.
       _turn: function (direction) {
         var self = this;
         var nextIndex = this._activeIndex + direction;
@@ -1966,23 +1976,25 @@ module("lively.identity.ConstellationLounge")
           });
         }
 
+        var exitSign = direction > 0 ? -1 : 1;
         var frontNode = this._frontCardBox.renderContext().shapeNode;
-        frontNode.style.transform = "rotateY(" + (direction > 0 ? "-100deg" : "100deg") + ")";
+        frontNode.style.transition = "transform 260ms cubic-bezier(.4,0,1,1), opacity 260ms ease-in";
+        frontNode.style.transform = "translate(" + (exitSign * 620) + "px, 36px) rotate(" + (exitSign * 18) + "deg)";
         frontNode.style.opacity = "0";
 
         setTimeout(function () {
           self._activeIndex = nextIndex;
           self._showActiveCard();
           frontNode.style.transition = "none";
-          frontNode.style.transform = "rotateY(90deg)";
+          frontNode.style.transform = "translate(0px, 0px) scale(0.92)";
           frontNode.style.opacity = "0";
           // Force layout before re-enabling the transition, so the
-          // turn-in animates rather than snapping.
+          // settle-in animates rather than snapping.
           frontNode.offsetHeight;
-          frontNode.style.transition = "transform 420ms ease, opacity 420ms ease";
-          frontNode.style.transform = "rotateY(0deg)";
+          frontNode.style.transition = "transform 260ms cubic-bezier(0,0,.2,1), opacity 220ms ease-out";
+          frontNode.style.transform = "translate(0px, 0px) scale(1)";
           frontNode.style.opacity = "1";
-        }, 420);
+        }, 260);
       },
 
       _showActiveCard: function () {
