@@ -602,6 +602,19 @@ module("lively.identity.WorldsBrowser")
         content.addMorph(div);
         y += 10;
 
+        // Scrollable container for the cards, same idiom as the worlds list
+        // / version-history list elsewhere in this file -- a fixed content
+        // pane can't just keep growing to fit however many cards there are,
+        // so cards go in their own clipped, independently-scrolling box
+        // rather than straight into `content` (confirmed live: without
+        // this, the template list's 6 rows ran ~80px past the window's own
+        // bottom edge with nothing to clip or scroll them).
+        var listH = content.getExtent().y - y - pad;
+        var listBox = new lively.morphic.Box(lively.rect(pad, y, w, listH));
+        listBox.applyStyle({ fill: null, clipMode: "auto", borderWidth: 0 });
+        content.addMorph(listBox);
+        listBox.renderContext().shapeNode.style.overflowX = "hidden";
+
         var cards = [
           { icon: "note_add",            title: "Blank world", subtitle: "Start with a completely empty world.", action: "blank" },
           { icon: "article",             title: "Wiki page",   subtitle: "Create a wiki page for your profile.", action: "wiki" },
@@ -609,6 +622,7 @@ module("lively.identity.WorldsBrowser")
         ];
 
         var rowH = 62;
+        var ry = 0;
         cards.forEach(function (card) {
           var row = self._buildCreateCardRow(w, rowH, card.icon, card.title, card.subtitle, true, null);
           row.onMouseDown = function () {
@@ -618,9 +632,9 @@ module("lively.identity.WorldsBrowser")
             else if (card.action === "wiki") win.launchWikiCreation();
             else if (card.action === "template") win.showCreateTemplateList();
           };
-          row.setPosition(lively.pt(pad, y));
-          content.addMorph(row);
-          y += rowH + 6;
+          row.setPosition(lively.pt(0, ry));
+          listBox.addMorph(row);
+          ry += rowH + 6;
         });
       },
 
@@ -682,6 +696,16 @@ module("lively.identity.WorldsBrowser")
         content.addMorph(div);
         y += 10;
 
+        // Scrollable container, same reasoning as showCreatePicker's own --
+        // this list has grown past what the fixed content pane can show
+        // without clipping/scrolling (confirmed live: 6 rows ran ~80px past
+        // the window's bottom edge when added straight to `content`).
+        var listH = content.getExtent().y - y - pad;
+        var listBox = new lively.morphic.Box(lively.rect(pad, y, w, listH));
+        listBox.applyStyle({ fill: null, clipMode: "auto", borderWidth: 0 });
+        content.addMorph(listBox);
+        listBox.renderContext().shapeNode.style.overflowX = "hidden";
+
         var templates = [
           { icon: "storefront",     title: "Shop",                   subtitle: "A storefront to sell items.",              enabled: true,  key: "shop" },
           { icon: "inventory_2",    title: "Import from Inventory",  subtitle: "Browse your parts and drag one in.",       enabled: true,  key: "inventory" },
@@ -692,6 +716,7 @@ module("lively.identity.WorldsBrowser")
         ];
 
         var rowH = 58;
+        var ry = 0;
         templates.forEach(function (t) {
           var row = self._buildCreateCardRow(w, rowH, t.icon, t.title, t.subtitle, t.enabled, t.enabled ? null : "Coming soon");
           if (t.enabled) {
@@ -700,9 +725,9 @@ module("lively.identity.WorldsBrowser")
               if (win) win.showCreateForm(t.key);
             };
           }
-          row.setPosition(lively.pt(pad, y));
-          content.addMorph(row);
-          y += rowH + 6;
+          row.setPosition(lively.pt(0, ry));
+          listBox.addMorph(row);
+          ry += rowH + 6;
         });
       },
 
