@@ -3,7 +3,7 @@
  *
  * Floating window listing all worlds saved under the current user's identity.
  * Each row shows the world's human-readable name, its web key (objId), and an
- * "open →" link that navigates to /@handle/objId.
+ * "open" link that navigates to /@handle/objId.
  * The search input filters by name (Enter to apply).
  * A "history" link drills into version history with per-version restore.
  *
@@ -252,7 +252,7 @@ module("lively.identity.WorldsBrowser")
           };
           row.addMorph(historyLink);
 
-          var openLink = new lively.morphic.Text(lively.rect(w - 58, 16, 50, 18), "open →");
+          var openLink = new lively.morphic.Text(lively.rect(w - 42, 16, 34, 18), "open");
           openLink.applyStyle({
             allowInput: false,
             fontSize: 12,
