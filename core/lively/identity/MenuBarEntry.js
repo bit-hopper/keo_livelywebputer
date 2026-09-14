@@ -64,10 +64,7 @@ module("lively.identity.MenuBarEntry")
             ];
           }
           return [
-            ["Compose", [
-              ["Postcard", function () { self.newPostcard(); }],
-              ["Wiki",     function () { self.newWiki(); }],
-            ]],
+            ["Compose",            function () { self.newPostcard(); }],
             ["My profile",         function () { self.openMyProfile(); }],
             ["Messages",           function () { self.openMessages(); }],
             ["My worlds",          function () { self.openMyWorlds(); }],
@@ -154,13 +151,6 @@ module("lively.identity.MenuBarEntry")
             // literally prepends '/@' to it (same convention as PostCardMailbox's
             // inbox/deliveries/settings routes).
             lively.identity.PostCardEditor.newCard(handle);
-          });
-        },
-
-        newWiki: function newWiki() {
-          var handle = lively.identity.did.currentUser().handle;
-          lively.require("lively.identity.WikiEditor").toRun(function () {
-            lively.identity.WikiEditor.newCard(handle);
           });
         },
 
