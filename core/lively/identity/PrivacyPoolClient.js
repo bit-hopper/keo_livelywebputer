@@ -110,24 +110,57 @@ Object.subclass('lively.identity.PrivacyPoolClient',
   },
 
   // §12: REQUIRED, no default shipped — set a real value in localconfig.js.
+  // Deposit/withdraw/exit/ASP calls always go through this (mainnet only,
+  // unaffected by whichever network the plain-wallet UI has selected below)
+  // — the Privacy Pools Entrypoint/Pool contracts and the ASP API
+  // (config.json's own privacyPool* keys) only exist on mainnet.
   _withPublicClient: function(thenDo) {
+    this._withPublicClientFor('mainnet', thenDo);
+  },
+
+  // Plain-wallet (balance/send) network support — WalletSpec.md's privacy
+  // pool flows are mainnet-only (see _withPublicClient above), but the
+  // ordinary "check balance / sign a transfer" path has no such
+  // restriction, so it can point at any configured chain. Sepolia is the
+  // one other network wired up so far; adding another later is just another
+  // NETWORKS entry + a matching viem/chains export in
+  // privacy-pool-client-libs.js.
+  NETWORKS: {
+    mainnet: {
+      key: 'mainnet', label: 'Ethereum Mainnet', short: 'Mainnet',
+      chainLib: 'mainnet', rpcConfigKey: 'ethereumRpcUrl',
+      explorerUrl: 'https://etherscan.io',
+    },
+    sepolia: {
+      key: 'sepolia', label: 'Sepolia Testnet', short: 'Sepolia',
+      chainLib: 'sepolia', rpcConfigKey: 'ethereumSepoliaRpcUrl',
+      explorerUrl: 'https://sepolia.etherscan.io',
+    },
+  },
+
+  getNetworks: function() { return this.NETWORKS; },
+
+  _withPublicClientFor: function(network, thenDo) {
     var self = this;
-    if (this._publicClient) return thenDo(null, this._publicClient);
-    var rpcUrl = lively.Config && lively.Config.get('ethereumRpcUrl');
+    var netConfig = this.NETWORKS[network];
+    if (!netConfig) return thenDo(new Error('PrivacyPoolClient: unknown network "' + network + '"'));
+    this._publicClients = this._publicClients || {};
+    if (this._publicClients[network]) return thenDo(null, this._publicClients[network]);
+    var rpcUrl = lively.Config && lively.Config.get(netConfig.rpcConfigKey);
     if (!rpcUrl) {
       return thenDo(new Error(
-        'PrivacyPoolClient: ethereumRpcUrl is not configured (WalletSpec.md §12/§14 item 1) — ' +
-        'set it in core/lively/localconfig.js.'
+        'PrivacyPoolClient: ' + netConfig.rpcConfigKey + ' is not configured for ' +
+        netConfig.label + ' — set it in core/lively/localconfig.js.'
       ));
     }
     this.withClientLibs(function(err, libs) {
       if (err) return thenDo(err);
       try {
-        self._publicClient = libs.createPublicClient({
-          chain: libs.mainnet,
+        self._publicClients[network] = libs.createPublicClient({
+          chain: libs[netConfig.chainLib],
           transport: libs.http(rpcUrl)
         });
-        thenDo(null, self._publicClient);
+        thenDo(null, self._publicClients[network]);
       } catch (e) { thenDo(e); }
     });
   }
@@ -138,19 +171,24 @@ Object.subclass('lively.identity.PrivacyPoolClient',
 
 'balance', {
 
-  // Returns thenDo(null, chainId).
-  getChainId: function(thenDo) {
-    this._withPublicClient(function(err, client) {
+  // Returns thenDo(null, chainId). `network` (optional, default 'mainnet')
+  // is only meaningful for plain-wallet callers — the withdraw/exit flows
+  // that call this without a network arg keep getting mainnet, unchanged.
+  getChainId: function(network, thenDo) {
+    if (typeof network === 'function') { thenDo = network; network = 'mainnet'; }
+    this._withPublicClientFor(network, function(err, client) {
       if (err) return thenDo(err);
       client.getChainId().then(function(chainId) { thenDo(null, chainId); })
         .catch(function(e) { thenDo(e); });
     });
   },
 
-  // Returns thenDo(null, { wei: bigint, eth: string }).
-  getBalance: function(address, thenDo) {
+  // Returns thenDo(null, { wei: bigint, eth: string }). `network` optional,
+  // default 'mainnet' — see getChainId above.
+  getBalance: function(address, network, thenDo) {
+    if (typeof network === 'function') { thenDo = network; network = 'mainnet'; }
     var self = this;
-    this._withPublicClient(function(err, client) {
+    this._withPublicClientFor(network, function(err, client) {
       if (err) return thenDo(err);
       self.withClientLibs(function(err2, libs) {
         if (err2) return thenDo(err2);
@@ -167,14 +205,16 @@ Object.subclass('lively.identity.PrivacyPoolClient',
 
 'transfer', {
 
-  // { to, amountEth }: to is a checksummed/hex address string, amountEth a
-  // decimal string ("0.01"). Calls thenDo(null, { signedRawTx, unsignedTx }).
-  // Fetches nonce/gas/chainId (public data, no secrets) here, signs only
-  // via lively.identity.walletBridge.signTransaction (the vault), and never
-  // calls sendRawTransaction — see this file's own header.
+  // { to, amountEth, network }: to is a checksummed/hex address string,
+  // amountEth a decimal string ("0.01"), network optional (default
+  // 'mainnet' — see getChainId above). Calls thenDo(null, { signedRawTx,
+  // unsignedTx }). Fetches nonce/gas/chainId (public data, no secrets) here,
+  // signs only via lively.identity.walletBridge.signTransaction (the
+  // vault), and never calls sendRawTransaction — see this file's own
+  // header.
   buildAndSignTransfer: function(options, thenDo) {
     var self = this;
-    this._withPublicClient(function(err, client) {
+    this._withPublicClientFor(options.network || 'mainnet', function(err, client) {
       if (err) return thenDo(err);
       self.withClientLibs(function(err2, libs) {
         if (err2) return thenDo(err2);

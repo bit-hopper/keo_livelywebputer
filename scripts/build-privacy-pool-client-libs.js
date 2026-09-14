@@ -58,6 +58,7 @@
  *   window.privacyPoolClientLibs.createPublicClient
  *   window.privacyPoolClientLibs.http
  *   window.privacyPoolClientLibs.mainnet    — viem/chains chain definition
+ *   window.privacyPoolClientLibs.sepolia    — viem/chains chain definition (plain-wallet network switcher only — the privacy-pool contracts/ASP below are mainnet-only, see WalletSpec.md)
  *   window.privacyPoolClientLibs.parseEther
  *   window.privacyPoolClientLibs.formatEther
  *   window.privacyPoolClientLibs.encodeFunctionData
@@ -84,7 +85,7 @@ var privacyPoolAbiPath = path.join(sdkAbiDir, 'IPrivacyPool.ts');
 
 var entryContents = [
   "import { createPublicClient, http, parseEther, formatEther, encodeFunctionData, decodeEventLog, getAddress } from 'viem';",
-  "import { mainnet } from 'viem/chains';",
+  "import { mainnet, sepolia } from 'viem/chains';",
   "import { IEntrypointABI } from " + JSON.stringify(entrypointAbiPath) + ";",
   "import { IPrivacyPoolABI } from " + JSON.stringify(privacyPoolAbiPath) + ";",
   "import { generateMerkleProof } from '@0xbow/privacy-pools-core-sdk';",
@@ -92,6 +93,7 @@ var entryContents = [
   "  createPublicClient: createPublicClient,",
   "  http: http,",
   "  mainnet: mainnet,",
+  "  sepolia: sepolia,",
   "  parseEther: parseEther,",
   "  formatEther: formatEther,",
   "  encodeFunctionData: encodeFunctionData,",

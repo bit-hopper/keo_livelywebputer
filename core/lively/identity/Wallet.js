@@ -57,7 +57,7 @@ module('lively.identity.Wallet')
     var WalletClass = lively.morphic.Box.subclass('lively.identity.Wallet',
 
     'serialization', {
-      doNotSerialize: ['_contentDiv', '_toolbarDiv'],
+      doNotSerialize: ['_contentDiv', '_toolbarDiv', '_tabbarDiv'],
     },
 
     'initialization', {
@@ -66,7 +66,30 @@ module('lively.identity.Wallet')
         $super(bounds);
         this._contentDiv = null;
         this._toolbarDiv = null;
+        this._tabbarDiv = null;
+        this._activeTab = 'wallet';
+        this._network = this._loadStoredNetwork();
         this._buildChrome();
+        this._refresh();
+      },
+
+      // Persisted across sessions the same way PrivacyPoolClient's own
+      // per-device bookkeeping is (plain localStorage, no server round
+      // trip) — this is just a UI preference, not wallet state.
+      _NETWORK_STORAGE_KEY: 'lively.wallet.selectedNetwork',
+
+      _loadStoredNetwork: function () {
+        try {
+          var stored = window.localStorage.getItem(this._NETWORK_STORAGE_KEY);
+          if (stored && lively.identity.privacyPoolClient.getNetworks()[stored]) return stored;
+        } catch (e) {}
+        return 'mainnet';
+      },
+
+      _setNetwork: function (network) {
+        if (!lively.identity.privacyPoolClient.getNetworks()[network]) return;
+        this._network = network;
+        try { window.localStorage.setItem(this._NETWORK_STORAGE_KEY, network); } catch (e) {}
         this._refresh();
       },
 
@@ -80,27 +103,135 @@ module('lively.identity.Wallet')
       // same baseline polish (radii/colors/spacing) established for morph
       // dialogs elsewhere, without editing every call site individually.
       _ensureBaseStyles: function () {
-        if (document.getElementById('lively-wallet-dashboard-styles')) return;
+        var STYLE_ID = 'lively-wallet-dashboard-styles';
+        var FONT_STACK = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
+        var existing = document.getElementById(STYLE_ID);
+        if (existing) { existing.remove(); }
         var style = document.createElement('style');
-        style.id = 'lively-wallet-dashboard-styles';
+        style.id = STYLE_ID;
         style.textContent = [
+          '.lively-wallet-dashboard { font-family: ' + FONT_STACK + '; background: #F6F6FB; }',
+
+          // toolbar / tab bar
+          '.lively-wallet-dashboard .lw-toolbar { display:flex; align-items:center; gap:6px; }',
+          '.lively-wallet-dashboard .lw-icon-btn {',
+          '  display:flex; align-items:center; justify-content:center; width:26px; height:26px;',
+          '  border-radius:8px; border:1px solid transparent !important; background:transparent !important;',
+          '  color:#6C4CE0; cursor:pointer; padding:0 !important;',
+          '}',
+          '.lively-wallet-dashboard .lw-icon-btn:hover { background:#EDE9FB !important; }',
+          '.lively-wallet-dashboard .lw-icon-btn .material-symbols-rounded { font-size:15px; }',
+          '.lively-wallet-dashboard .lw-tabbar {',
+          '  display:flex; gap:20px; padding:0 16px; background:#fff;',
+          '  border-bottom:1px solid #E4E4EE; height:33px; align-items:flex-end;',
+          '}',
+          '.lively-wallet-dashboard .lw-tab {',
+          '  padding-bottom:9px; font-size:12.5px; font-weight:600; color:#9a9aa2;',
+          '  cursor:pointer; border-bottom:2px solid transparent; user-select:none;',
+          '}',
+          '.lively-wallet-dashboard .lw-tab.active { color:#6C4CE0; border-bottom-color:#6C4CE0; }',
+          '.lively-wallet-dashboard .lw-tab:hover:not(.active) { color:#57575c; }',
+
+          // cards + typography — border is a faint tint of the window
+          // frame's own indigo (#6C4CE0) rather than plain gray, so cards
+          // read as belonging to this wallet rather than generic chrome.
+          '.lively-wallet-dashboard .lw-card {',
+          '  background:#fff; border:1px solid #DCD3F7; border-radius:12px;',
+          '  padding:16px; margin-bottom:14px; box-shadow:0 1px 2px rgba(108,76,224,0.06);',
+          '}',
+          '.lively-wallet-dashboard .lw-heading { font-weight:600; font-size:13px; color:#1c1c1e; margin-bottom:10px; }',
+          '.lively-wallet-dashboard .lw-label {',
+          '  color:#9a9aa2; font-size:10.5px; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.04em; font-weight:600;',
+          '}',
+          '.lively-wallet-dashboard .lw-value { font-size:14px; color:#1c1c1e; }',
+          '.lively-wallet-dashboard .lw-hint { color:#8e8e93; font-size:11.5px; line-height:1.5; }',
+          '.lively-wallet-dashboard .lw-error {',
+          '  color:#b00020; background:#FDEEF0; border:1px solid #F5C6CE; border-radius:8px;',
+          '  padding:8px 10px; font-size:12px; margin:8px 0;',
+          '}',
+          '.lively-wallet-dashboard .lw-warning {',
+          '  color:#8a5a00; background:#FFF6E8; border:1px solid #F5DFA8; border-radius:8px;',
+          '  padding:10px 12px; font-size:12px; margin-bottom:12px;',
+          '}',
+          '.lively-wallet-dashboard .lw-warning.danger {',
+          '  color:#b00020; background:#FDEEF0; border-color:#F5C6CE; font-weight:600;',
+          '}',
+          '.lively-wallet-dashboard .lw-danger-text { color:#b00020; font-size:12px; margin-bottom:12px; }',
+          '.lively-wallet-dashboard .lw-success { color:#1f8a3d; font-weight:600; font-size:13px; margin-bottom:12px; }',
+
+          // pills / badges — green for Mainnet (the "real, live" network),
+          // yellow for Sepolia (the "test" network), a common convention
+          // for network status indicators.
+          '.lively-wallet-dashboard .lw-pill {',
+          '  display:inline-flex; align-items:center; gap:5px; font-size:10.5px; font-weight:700;',
+          '  padding:3px 10px; border-radius:20px; background:#E3F8E9; color:#1f8a3d; vertical-align:middle;',
+          '}',
+          '.lively-wallet-dashboard .lw-pill.sepolia { background:#FFF6D6; color:#9a7b00; }',
+          '.lively-wallet-dashboard .lw-pill-dot { width:6px; height:6px; border-radius:50%; background:currentColor; }',
+
+          // balance
+          '.lively-wallet-dashboard .lw-balance-row { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }',
+          '.lively-wallet-dashboard .lw-balance { font-size:27px; font-weight:700; color:#1c1c1e; letter-spacing:-0.02em; }',
+
+          // segmented control (network switcher)
+          '.lively-wallet-dashboard .lw-segmented { display:inline-flex; background:#F0F0F5; border-radius:9px; padding:3px; gap:2px; }',
+          '.lively-wallet-dashboard .lw-segmented button {',
+          '  border:1px solid transparent !important; background:transparent !important; padding:6px 16px !important;',
+          '  border-radius:7px !important; font-size:12px !important; font-weight:600; color:#6e6e73;',
+          '}',
+          '.lively-wallet-dashboard .lw-segmented button:hover { background:transparent !important; }',
+          '.lively-wallet-dashboard .lw-segmented button.active {',
+          '  background:#fff !important; color:#1c1c1e; box-shadow:0 1px 3px rgba(0,0,0,0.14);',
+          '}',
+
+          // buttons / inputs
           '.lively-wallet-dashboard button {',
-          '  font-family: sans-serif; font-size: 12px; padding: 6px 14px;',
-          '  cursor: pointer; border: 1px solid #d6d6d6; border-radius: 5px;',
-          '  background: #f2f2f2; color: #1c1c1e;',
+          '  font-family: inherit; font-size: 12px; padding: 8px 16px;',
+          '  cursor: pointer; border: 1px solid #E4E4EE; border-radius: 8px;',
+          '  background: #fff; color: #1c1c1e; transition: background .12s ease;',
           '}',
-          '.lively-wallet-dashboard button:hover { background: #e8e8e8; }',
-          '.lively-wallet-dashboard button:disabled { opacity: 0.5; cursor: default; }',
-          '.lively-wallet-dashboard button.primary {',
-          '  background: #eaffea; border-color: #96d696; color: #1a7a1a;',
-          '}',
-          '.lively-wallet-dashboard button.primary:hover { background: #ddffdd; }',
+          '.lively-wallet-dashboard button:hover { background: #F6F6FB; }',
+          '.lively-wallet-dashboard button:disabled { opacity: 0.45; cursor: default; }',
+          '.lively-wallet-dashboard button.primary { background: #6C4CE0; border-color: #6C4CE0; color: #fff; font-weight:600; }',
+          '.lively-wallet-dashboard button.primary:hover { background: #5b3ed1; }',
+          '.lively-wallet-dashboard button.danger { color:#b00020; border-color:#f0c4cc; }',
+          '.lively-wallet-dashboard button.danger:hover { background:#FFF3F5; }',
           '.lively-wallet-dashboard input[type=text],',
           '.lively-wallet-dashboard input[type=password],',
           '.lively-wallet-dashboard input[type=number] {',
-          '  font-family: sans-serif; font-size: 12px; padding: 5px 6px;',
-          '  border: 1px solid #cbcbcb; border-radius: 3.75px; box-sizing: border-box;',
+          '  font-family: inherit; font-size: 13px; padding: 8px 10px;',
+          '  border: 1px solid #E4E4EE; border-radius: 8px; box-sizing: border-box; background:#fbfbfd;',
           '}',
+          '.lively-wallet-dashboard input:focus { outline:none; border-color:#6C4CE0; background:#fff; }',
+
+          // Single-card wrapper for the step-by-step deposit/withdraw/exit
+          // screens (Amount -> Review -> Sign -> ... -> Success/Error) —
+          // toggled on _contentDiv itself via _setContentMode('flow')
+          // rather than wrapping every individual screen's markup in its
+          // own card element. The dashboard/settings tabs stay in 'flat'
+          // mode (transparent, multiple independent .lw-card children).
+          '.lively-wallet-dashboard .lw-content-flow {',
+          '  left:16px !important; right:16px !important; bottom:16px !important;',
+          '  background:#fff !important; border:1px solid #DCD3F7; border-radius:12px;',
+          '  box-shadow:0 1px 2px rgba(108,76,224,0.06); padding:20px !important;',
+          '}',
+
+          '.lively-wallet-dashboard .lw-divider { height:1px; background:#ECECF3; margin:14px 0; border:none; }',
+          '.lively-wallet-dashboard .lw-mono { font-family: SFMono-Regular, Consolas, monospace; }',
+
+          // Scrollbar on the content area — the browser default (chunky,
+          // square, light gray) clashes with everything else here; a thin
+          // rounded thumb that only tints on hover reads as part of the
+          // same design system instead of bolted on. Webkit-only (Blink/
+          // Safari, i.e. everywhere this Electron-ish embedded Chrome
+          // renders); `scrollbar-width: thin` covers Firefox as a fallback.
+          '.lively-wallet-dashboard .lw-scroll { scrollbar-width: thin; scrollbar-color: #D3D3E0 transparent; }',
+          '.lively-wallet-dashboard .lw-scroll::-webkit-scrollbar { width: 9px; height: 9px; }',
+          '.lively-wallet-dashboard .lw-scroll::-webkit-scrollbar-track { background: transparent; }',
+          '.lively-wallet-dashboard .lw-scroll::-webkit-scrollbar-thumb {',
+          '  background-color: #D3D3E0; border-radius: 5px; border: 2px solid transparent; background-clip: padding-box;',
+          '}',
+          '.lively-wallet-dashboard .lw-scroll::-webkit-scrollbar-thumb:hover { background-color: #B7B7CE; }',
         ].join('\n');
         document.head.appendChild(style);
       },
@@ -118,25 +249,32 @@ module('lively.identity.Wallet')
         shapeNode.classList.add('lively-wallet-dashboard');
 
         var toolbarDiv = document.createElement('div');
+        toolbarDiv.className = 'lw-toolbar';
         toolbarDiv.style.cssText = [
           'position:absolute', 'top:0', 'left:0', 'right:0', 'height:34px',
-          'background:#f2f2f7', 'border-bottom:1px solid #d1d1d6',
-          'display:flex', 'align-items:center', 'padding:0 10px',
-          'box-sizing:border-box', 'gap:8px', 'font-family:sans-serif',
+          'background:#fff', 'border-bottom:1px solid #E4E4EE',
+          'padding:0 12px', 'box-sizing:border-box',
         ].join(';');
         shapeNode.appendChild(toolbarDiv);
         this._toolbarDiv = toolbarDiv;
 
+        var tabbarDiv = document.createElement('div');
+        tabbarDiv.className = 'lw-tabbar';
+        tabbarDiv.style.cssText = 'position:absolute;top:34px;left:0;right:0;';
+        shapeNode.appendChild(tabbarDiv);
+        this._tabbarDiv = tabbarDiv;
+
         var contentDiv = document.createElement('div');
+        contentDiv.className = 'lw-scroll';
         contentDiv.style.cssText = [
-          'position:absolute', 'top:34px', 'left:0', 'right:0', 'bottom:0',
-          'overflow-y:auto', 'padding:12px 16px', 'box-sizing:border-box',
-          'font-family:sans-serif', 'font-size:13px',
+          'position:absolute', 'top:67px', 'left:0', 'right:0', 'bottom:0',
+          'overflow-y:auto', 'padding:16px', 'box-sizing:border-box', 'font-size:13px',
         ].join(';');
         shapeNode.appendChild(contentDiv);
         this._contentDiv = contentDiv;
 
         this._renderToolbar();
+        this._renderTabs();
       },
 
       _renderToolbar: function () {
@@ -144,31 +282,81 @@ module('lively.identity.Wallet')
         var bar = this._toolbarDiv;
         bar.innerHTML = '';
 
-        var label = document.createElement('span');
-        label.textContent = 'Public tab';
-        label.style.cssText = 'flex:1;color:#1c1c1e;font-weight:600;font-size:12px;';
-        bar.appendChild(label);
+        var title = document.createElement('span');
+        title.textContent = 'Wallet';
+        title.style.cssText = 'flex:1;color:#1c1c1e;font-weight:700;font-size:12.5px;';
+        bar.appendChild(title);
 
-        var refreshBtn = this._makeToolbarBtn('Refresh');
+        var refreshBtn = this._makeIconBtn('refresh', 'Refresh');
         refreshBtn.addEventListener('click', function () { self._refresh(); });
         bar.appendChild(refreshBtn);
 
-        var lockBtn = this._makeToolbarBtn('Lock');
+        var lockBtn = this._makeIconBtn('lock', 'Lock wallet');
         lockBtn.addEventListener('click', function () {
           lively.identity.walletBridge.lock(function () { self._refresh(); });
         });
         bar.appendChild(lockBtn);
       },
 
-      _makeToolbarBtn: function (label) {
+      _makeIconBtn: function (iconName, title) {
         var btn = document.createElement('button');
-        btn.textContent = label;
-        btn.style.cssText = [
-          'font-size:11px', 'padding:4px 10px', 'cursor:pointer',
-          'border:1px solid #007aff', 'color:#007aff',
-          'background:#fff', 'border-radius:4px', 'white-space:nowrap',
-        ].join(';');
+        btn.className = 'lw-icon-btn';
+        btn.title = title;
+        var icon = document.createElement('span');
+        icon.className = 'material-symbols-rounded';
+        icon.textContent = iconName;
+        btn.appendChild(icon);
         return btn;
+      },
+
+      // Small pill-style icon+label button used for inline actions (Copy,
+      // etc.) inside content cards — distinct from the toolbar's bare
+      // icon-only buttons and from the primary/secondary action buttons.
+      _makeSmallBtn: function (iconName, label) {
+        var btn = document.createElement('button');
+        btn.style.cssText = 'display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:5px 10px;white-space:nowrap;';
+        if (iconName) {
+          var icon = document.createElement('span');
+          icon.className = 'material-symbols-rounded';
+          icon.style.fontSize = '13px';
+          icon.textContent = iconName;
+          btn.appendChild(icon);
+        }
+        var text = document.createElement('span');
+        text.textContent = label;
+        btn.appendChild(text);
+        return btn;
+      },
+
+      // Hidden while locked (nothing to switch between yet — the unlock
+      // form is the only screen); shown once unlocked.
+      _renderTabs: function () {
+        var self = this;
+        var bar = this._tabbarDiv;
+        bar.innerHTML = '';
+
+        [['wallet', 'Wallet'], ['settings', 'Settings']].forEach(function (pair) {
+          var tab = document.createElement('div');
+          tab.className = 'lw-tab' + (self._activeTab === pair[0] ? ' active' : '');
+          tab.textContent = pair[1];
+          tab.addEventListener('click', function () {
+            if (self._activeTab === pair[0]) return;
+            self._activeTab = pair[0];
+            self._refresh();
+          });
+          bar.appendChild(tab);
+        });
+      },
+
+      // 'flat': transparent scroll area, screens build their own
+      // independent .lw-card children (dashboard, settings, unlock).
+      // 'flow': the scroll area itself becomes one card, for the
+      // step-by-step deposit/withdraw/exit screens — see this class's own
+      // comment in _ensureBaseStyles for why that's a toggle on the
+      // container rather than a wrapper element repeated in every screen.
+      _setContentMode: function (mode) {
+        if (mode === 'flow') this._contentDiv.classList.add('lw-content-flow');
+        else this._contentDiv.classList.remove('lw-content-flow');
       },
 
     },
@@ -205,15 +393,26 @@ module('lively.identity.Wallet')
 
       // Decides locked vs unlocked by trying getAddress — no separate
       // "isUnlocked" RPC method exists; a locked vault's getAddress simply
-      // errors, which is exactly the branch this needs.
+      // errors, which is exactly the branch this needs. The tab strip only
+      // makes sense once unlocked (there's nothing to switch between on the
+      // unlock screen), so it's hidden/shown alongside that decision.
       _refresh: function () {
         var self = this;
         this._contentDiv.innerHTML = '<div style="color:#999;padding:20px 0;">Loading…</div>';
         lively.identity.walletBridge.getAddress(function (err, address) {
-          if (err) return self._renderUnlockForm();
+          self._setContentMode('flat');
+          if (err) {
+            self._tabbarDiv.style.display = 'none';
+            self._contentDiv.style.top = '34px';
+            return self._renderUnlockForm();
+          }
+          self._tabbarDiv.style.display = '';
+          self._contentDiv.style.top = '67px';
+          self._renderTabs();
           self._address = address;
+          if (self._activeTab === 'settings') return self._renderSettingsTab(address);
           self._renderDashboard(address);
-          lively.identity.privacyPoolClient.getBalance(address, function (err2, balance) {
+          lively.identity.privacyPoolClient.getBalance(address, self._network, function (err2, balance) {
             if (err2) return self._setBalanceText('(balance unavailable: ' + err2.message + ')');
             self._setBalanceText(balance.eth + ' ETH');
           });
@@ -229,25 +428,37 @@ module('lively.identity.Wallet')
         var content = this._contentDiv;
         content.innerHTML = '';
 
+        var card = document.createElement('div');
+        card.className = 'lw-card';
+        card.style.cssText += 'max-width:280px;margin:24px auto 0;';
+        content.appendChild(card);
+
+        var icon = document.createElement('div');
+        icon.style.cssText = 'display:flex;justify-content:center;margin-bottom:10px;';
+        icon.innerHTML = '<span class="material-symbols-rounded" style="font-size:26px;color:#6C4CE0;">lock</span>';
+        card.appendChild(icon);
+
         var heading = document.createElement('div');
         heading.textContent = 'Unlock your wallet';
-        heading.style.cssText = 'font-weight:600;margin-bottom:12px;';
-        content.appendChild(heading);
+        heading.className = 'lw-heading';
+        heading.style.cssText += 'text-align:center;';
+        card.appendChild(heading);
 
         var passwordInput = document.createElement('input');
         passwordInput.type = 'password';
         passwordInput.placeholder = 'Password (if you set one up)';
-        passwordInput.style.cssText = 'display:block;width:100%;max-width:280px;box-sizing:border-box;padding:6px 8px;margin-bottom:8px;';
-        content.appendChild(passwordInput);
+        passwordInput.style.cssText = 'display:block;width:100%;margin-bottom:10px;';
+        card.appendChild(passwordInput);
 
         var errorMsg = document.createElement('div');
-        errorMsg.style.cssText = 'color:#ff3b30;margin-bottom:8px;display:none;';
-        content.appendChild(errorMsg);
+        errorMsg.className = 'lw-error';
+        errorMsg.style.display = 'none';
+        card.appendChild(errorMsg);
 
         var unlockPwBtn = document.createElement('button');
         unlockPwBtn.textContent = 'Unlock with password';
         unlockPwBtn.className = 'primary';
-        unlockPwBtn.style.cssText = 'margin-right:8px;';
+        unlockPwBtn.style.cssText = 'display:block;width:100%;margin-bottom:8px;';
         unlockPwBtn.addEventListener('click', function () {
           lively.identity.walletBridge.unlock({ password: passwordInput.value }, function (err) {
             if (err) {
@@ -258,11 +469,11 @@ module('lively.identity.Wallet')
             self._refresh();
           });
         });
-        content.appendChild(unlockPwBtn);
+        card.appendChild(unlockPwBtn);
 
         var unlockPasskeyBtn = document.createElement('button');
         unlockPasskeyBtn.textContent = 'Unlock with passkey';
-        unlockPasskeyBtn.className = 'primary';
+        unlockPasskeyBtn.style.cssText = 'display:block;width:100%;';
         unlockPasskeyBtn.addEventListener('click', function () {
           lively.identity.walletBridge.unlock({}, function (err) {
             if (err) {
@@ -273,92 +484,134 @@ module('lively.identity.Wallet')
             self._refresh();
           });
         });
-        content.appendChild(unlockPasskeyBtn);
+        card.appendChild(unlockPasskeyBtn);
       },
 
       _renderDashboard: function (address) {
         var self = this;
         var content = this._contentDiv;
         content.innerHTML = '';
+        var netConfig = lively.identity.privacyPoolClient.getNetworks()[this._network];
+        var onMainnet = this._network === 'mainnet';
 
-        // ── address ──
-        var addrLabel = document.createElement('div');
-        addrLabel.textContent = 'Address';
-        addrLabel.style.cssText = 'color:#8e8e93;font-size:11px;margin-bottom:4px;';
-        content.appendChild(addrLabel);
+        // ── balance + address card ──
+        var balanceCard = document.createElement('div');
+        balanceCard.className = 'lw-card';
+        content.appendChild(balanceCard);
 
-        var addrRow = document.createElement('div');
-        addrRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:16px;';
-        var addrText = document.createElement('span');
-        addrText.textContent = address;
-        addrText.style.cssText = 'font-family:monospace;font-size:12px;word-break:break-all;';
-        addrRow.appendChild(addrText);
-        var copyBtn = this._makeToolbarBtn('Copy');
-        copyBtn.addEventListener('click', function () { self._copyToClipboard(address, copyBtn); });
-        addrRow.appendChild(copyBtn);
-        content.appendChild(addrRow);
+        var balanceRow = document.createElement('div');
+        balanceRow.className = 'lw-balance-row';
+        balanceCard.appendChild(balanceRow);
 
-        // ── balance ──
-        var balLabel = document.createElement('div');
-        balLabel.textContent = 'Balance';
-        balLabel.style.cssText = 'color:#8e8e93;font-size:11px;margin-bottom:4px;';
-        content.appendChild(balLabel);
         var balText = document.createElement('div');
+        balText.className = 'lw-balance';
         balText.textContent = 'Loading…';
-        balText.style.cssText = 'font-size:16px;font-weight:600;margin-bottom:16px;';
-        content.appendChild(balText);
+        balanceRow.appendChild(balText);
         this._balanceTextEl = balText;
 
-        // ── deposit / withdraw CTAs (§9.3 deposit / §9.4 withdrawal —
-        //    real flows, §15 steps 7/8). No tab affordance yet (same
-        //    reasoning as this file's own header note) — both are just
-        //    buttons off the one dashboard screen for now. ──
+        var pill = document.createElement('span');
+        pill.className = 'lw-pill' + (onMainnet ? '' : ' ' + this._network);
+        pill.innerHTML = '<span class="lw-pill-dot"></span>' + netConfig.short;
+        balanceRow.appendChild(pill);
+
+        var addrLabel = document.createElement('div');
+        addrLabel.className = 'lw-label';
+        addrLabel.textContent = 'Address';
+        balanceCard.appendChild(addrLabel);
+
+        var addrRow = document.createElement('div');
+        addrRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
+        balanceCard.appendChild(addrRow);
+        var addrText = document.createElement('span');
+        addrText.className = 'lw-mono';
+        addrText.textContent = address;
+        addrText.style.cssText = 'font-size:12px;color:#4c4c52;word-break:break-all;';
+        addrRow.appendChild(addrText);
+        var copyBtn = this._makeSmallBtn('content_copy', 'Copy');
+        copyBtn.addEventListener('click', function () { self._copyToClipboard(address, copyBtn); });
+        addrRow.appendChild(copyBtn);
+
+        // ── shielded pool card (§9.3 deposit / §9.4 withdrawal — real
+        //    flows, §15 steps 7/8). Mainnet-only: the Privacy Pools
+        //    contracts/ASP have no known Sepolia deployment, so these are
+        //    disabled (with an explanatory note) whenever a non-mainnet
+        //    network is selected in Settings. ──
+        var poolCard = document.createElement('div');
+        poolCard.className = 'lw-card';
+        content.appendChild(poolCard);
+
+        var poolHeading = document.createElement('div');
+        poolHeading.className = 'lw-heading';
+        poolHeading.textContent = 'Shielded pool';
+        poolCard.appendChild(poolHeading);
+
+        if (!onMainnet) {
+          var note = document.createElement('div');
+          note.className = 'lw-hint';
+          note.style.marginBottom = '10px';
+          note.textContent =
+            'Only available on Ethereum Mainnet — switch networks in Settings to use deposit/withdraw/exit.';
+          poolCard.appendChild(note);
+        }
+
         var depositBtn = document.createElement('button');
         depositBtn.textContent = 'Deposit into pool';
         depositBtn.className = 'primary';
-        depositBtn.style.cssText = 'margin-bottom:8px;margin-right:8px;';
+        depositBtn.style.cssText = 'margin-right:8px;';
+        depositBtn.disabled = !onMainnet;
         depositBtn.addEventListener('click', function () { self._renderDepositAmount(); });
-        content.appendChild(depositBtn);
+        poolCard.appendChild(depositBtn);
 
         var withdrawBtn = document.createElement('button');
         withdrawBtn.textContent = 'Withdraw from pool';
         withdrawBtn.className = 'primary';
-        withdrawBtn.style.cssText = 'margin-bottom:20px;';
+        withdrawBtn.disabled = !onMainnet;
         withdrawBtn.addEventListener('click', function () { self._renderWithdrawList(); });
-        content.appendChild(withdrawBtn);
-        content.appendChild(document.createElement('br'));
+        poolCard.appendChild(withdrawBtn);
 
-        // ── send ──
+        // ── send card ──
+        var sendCard = document.createElement('div');
+        sendCard.className = 'lw-card';
+        content.appendChild(sendCard);
+
         var sendHeading = document.createElement('div');
-        sendHeading.textContent = 'Send (builds and signs a real transaction, does not broadcast it)';
-        sendHeading.style.cssText = 'font-weight:600;margin-bottom:8px;';
-        content.appendChild(sendHeading);
+        sendHeading.className = 'lw-heading';
+        sendHeading.textContent = 'Send';
+        sendCard.appendChild(sendHeading);
+
+        var sendHint = document.createElement('div');
+        sendHint.className = 'lw-hint';
+        sendHint.style.marginBottom = '10px';
+        sendHint.textContent = 'Builds and signs a real transaction on ' + netConfig.label + ' — does not broadcast it.';
+        sendCard.appendChild(sendHint);
 
         var toInput = document.createElement('input');
         toInput.type = 'text';
         toInput.placeholder = 'Recipient address (0x…)';
-        toInput.style.cssText = 'display:block;width:100%;max-width:340px;box-sizing:border-box;padding:6px 8px;margin-bottom:6px;font-family:monospace;';
-        content.appendChild(toInput);
+        toInput.className = 'lw-mono';
+        toInput.style.cssText = 'display:block;width:100%;box-sizing:border-box;margin-bottom:8px;';
+        sendCard.appendChild(toInput);
 
         var amountInput = document.createElement('input');
         amountInput.type = 'text';
         amountInput.placeholder = 'Amount (ETH), e.g. 0.001';
-        amountInput.style.cssText = 'display:block;width:100%;max-width:200px;box-sizing:border-box;padding:6px 8px;margin-bottom:6px;';
-        content.appendChild(amountInput);
+        amountInput.style.cssText = 'display:block;width:100%;max-width:200px;box-sizing:border-box;margin-bottom:10px;';
+        sendCard.appendChild(amountInput);
 
         var signBtn = document.createElement('button');
         signBtn.textContent = 'Sign (test only — not broadcast)';
-        content.appendChild(signBtn);
+        sendCard.appendChild(signBtn);
 
         var sendResult = document.createElement('div');
-        sendResult.style.cssText = 'margin-top:10px;font-family:monospace;font-size:11px;word-break:break-all;';
-        content.appendChild(sendResult);
+        sendResult.className = 'lw-mono';
+        sendResult.style.cssText = 'margin-top:10px;font-size:11px;word-break:break-all;color:#4c4c52;';
+        sendCard.appendChild(sendResult);
 
         signBtn.addEventListener('click', function () {
           sendResult.textContent = 'Building and signing…';
           signBtn.disabled = true;
           lively.identity.privacyPoolClient.buildAndSignTransfer(
-            { to: toInput.value, amountEth: amountInput.value },
+            { to: toInput.value, amountEth: amountInput.value, network: self._network },
             function (err, result) {
               signBtn.disabled = false;
               if (err) {
@@ -370,9 +623,6 @@ module('lively.identity.Wallet')
             },
           );
         });
-
-        content.appendChild(document.createElement('br'));
-        self._renderFilesBackupSection(content);
       },
 
       // ── Files backup (§7.2, §15 step 10) ──
@@ -386,15 +636,17 @@ module('lively.identity.Wallet')
       _renderFilesBackupSection: function (content) {
         var heading = document.createElement('div');
         heading.textContent = 'Encrypted Files backup (optional)';
-        heading.style.cssText = 'font-weight:600;margin-bottom:8px;';
+        heading.className = 'lw-heading';
         content.appendChild(heading);
 
         var statusLine = document.createElement('div');
-        statusLine.style.cssText = 'color:#8e8e93;font-size:12px;margin-bottom:8px;';
+        statusLine.className = 'lw-hint';
+        statusLine.style.marginBottom = '10px';
         content.appendChild(statusLine);
 
         var errorMsg = document.createElement('div');
-        errorMsg.style.cssText = 'color:#ff3b30;font-size:12px;margin-bottom:8px;display:none;';
+        errorMsg.className = 'lw-error';
+        errorMsg.style.display = 'none';
         content.appendChild(errorMsg);
 
         var btnRow = document.createElement('div');
@@ -494,6 +746,54 @@ module('lively.identity.Wallet')
         refresh();
       },
 
+      // ── Settings tab ──
+      // Houses wallet-wide settings that aren't part of the everyday
+      // balance/send/deposit/withdraw flow: the network switcher (plain
+      // wallet only — see PrivacyPoolClient.js's NETWORKS section for why
+      // the shielded pool stays mainnet-only regardless of this) and the
+      // Files backup section, moved here from the Wallet tab. Unlock-method
+      // management / reveal recovery phrase / RPC endpoint display remain a
+      // later step's addition to this same tab.
+      _renderSettingsTab: function (address) {
+        var self = this;
+        var content = this._contentDiv;
+        content.innerHTML = '';
+
+        var networkCard = document.createElement('div');
+        networkCard.className = 'lw-card';
+        content.appendChild(networkCard);
+
+        var networkHeading = document.createElement('div');
+        networkHeading.className = 'lw-heading';
+        networkHeading.textContent = 'Network';
+        networkCard.appendChild(networkHeading);
+
+        var networkHint = document.createElement('div');
+        networkHint.className = 'lw-hint';
+        networkHint.style.marginBottom = '12px';
+        networkHint.textContent =
+          'Applies to balance and Send only. Deposit/Withdraw/Exit always use Ethereum Mainnet, since the shielded pool has no Sepolia deployment.';
+        networkCard.appendChild(networkHint);
+
+        var segmented = document.createElement('div');
+        segmented.className = 'lw-segmented';
+        networkCard.appendChild(segmented);
+
+        var networks = lively.identity.privacyPoolClient.getNetworks();
+        Object.keys(networks).forEach(function (key) {
+          var btn = document.createElement('button');
+          btn.textContent = networks[key].short;
+          btn.className = self._network === key ? 'active' : '';
+          btn.addEventListener('click', function () { self._setNetwork(key); });
+          segmented.appendChild(btn);
+        });
+
+        var backupCard = document.createElement('div');
+        backupCard.className = 'lw-card';
+        content.appendChild(backupCard);
+        this._renderFilesBackupSection(backupCard);
+      },
+
       // ── deposit flow (§9.3, §15 step 7) ──
       // Same single-content-div-swap navigation already used for
       // locked/unlocked/dashboard — Amount -> Review -> Sign -> (real,
@@ -506,12 +806,13 @@ module('lively.identity.Wallet')
 
       _renderDepositAmount: function () {
         var self = this;
+        this._setContentMode('flow');
         var content = this._contentDiv;
         content.innerHTML = '';
 
         var heading = document.createElement('div');
         heading.textContent = 'Deposit into the shielded pool';
-        heading.style.cssText = 'font-weight:600;margin-bottom:12px;';
+        heading.className = 'lw-heading';
         content.appendChild(heading);
 
         var amountInput = document.createElement('input');
@@ -521,7 +822,8 @@ module('lively.identity.Wallet')
         content.appendChild(amountInput);
 
         var errorMsg = document.createElement('div');
-        errorMsg.style.cssText = 'color:#ff3b30;margin-bottom:8px;display:none;';
+        errorMsg.className = 'lw-error';
+        errorMsg.style.display = 'none';
         content.appendChild(errorMsg);
 
         var reviewBtn = document.createElement('button');
@@ -547,6 +849,7 @@ module('lively.identity.Wallet')
 
       _renderDepositReview: function (amountEth) {
         var self = this;
+        this._setContentMode('flow');
         var content = this._contentDiv;
         content.innerHTML = '<div style="color:#999;padding:20px 0;">Loading pool config…</div>';
 
@@ -559,7 +862,7 @@ module('lively.identity.Wallet')
             content.innerHTML = '';
             var heading = document.createElement('div');
             heading.textContent = 'Review deposit';
-            heading.style.cssText = 'font-weight:600;margin-bottom:12px;';
+            heading.className = 'lw-heading';
             content.appendChild(heading);
 
             function row(label, value) {
@@ -576,7 +879,8 @@ module('lively.identity.Wallet')
             row('Gas', 'shown on the next screen, after signing');
 
             var errorMsg = document.createElement('div');
-            errorMsg.style.cssText = 'color:#ff3b30;margin:8px 0;display:none;';
+            errorMsg.className = 'lw-error';
+            errorMsg.style.display = 'none';
             content.appendChild(errorMsg);
 
             if (amountWei < assetConfig.minimumDepositAmount) {
@@ -610,16 +914,18 @@ module('lively.identity.Wallet')
 
       _renderDepositSign: function (result) {
         var self = this;
+        this._setContentMode('flow');
         var content = this._contentDiv;
         content.innerHTML = '';
 
         var heading = document.createElement('div');
         heading.textContent = 'Signed — ready to broadcast';
-        heading.style.cssText = 'font-weight:600;margin-bottom:12px;';
+        heading.className = 'lw-heading';
         content.appendChild(heading);
 
         var detail = document.createElement('div');
-        detail.style.cssText = 'font-family:monospace;font-size:11px;word-break:break-all;margin-bottom:12px;';
+        detail.className = 'lw-mono';
+        detail.style.cssText += 'font-size:11px;word-break:break-all;margin-bottom:12px;color:#4c4c52;';
         detail.innerHTML =
           '<div>precommitment: ' + result.precommitment.toString() + '</div>' +
           '<div>scope: ' + result.scope.toString() + '</div>' +
@@ -630,7 +936,7 @@ module('lively.identity.Wallet')
 
         var warning = document.createElement('div');
         warning.textContent = 'Broadcasting submits a REAL mainnet transaction and moves real ETH.';
-        warning.style.cssText = 'color:#b00020;font-weight:600;margin-bottom:12px;';
+        warning.className = 'lw-warning danger';
         content.appendChild(warning);
 
         var broadcastBtn = document.createElement('button');
@@ -674,16 +980,18 @@ module('lively.identity.Wallet')
 
       _renderDepositSuccess: function (deposited, txHash) {
         var self = this;
+        this._setContentMode('flow');
         var content = this._contentDiv;
         content.innerHTML = '';
 
         var heading = document.createElement('div');
         heading.textContent = 'Deposit confirmed';
-        heading.style.cssText = 'font-weight:600;margin-bottom:12px;color:#34c759;';
+        heading.className = 'lw-heading lw-success';
         content.appendChild(heading);
 
         var detail = document.createElement('div');
-        detail.style.cssText = 'font-family:monospace;font-size:11px;word-break:break-all;margin-bottom:12px;';
+        detail.className = 'lw-mono';
+        detail.style.cssText += 'font-size:11px;word-break:break-all;margin-bottom:12px;color:#4c4c52;';
         detail.innerHTML =
           '<div>tx: ' + txHash + '</div>' +
           '<div>commitment: ' + deposited.commitment.toString() + '</div>' +
@@ -699,17 +1007,19 @@ module('lively.identity.Wallet')
 
       _renderDepositError: function (message, backFn) {
         var self = this;
+        this._setContentMode('flow');
         var content = this._contentDiv;
         content.innerHTML = '';
 
         var heading = document.createElement('div');
         heading.textContent = 'Deposit failed';
-        heading.style.cssText = 'font-weight:600;margin-bottom:12px;color:#ff3b30;';
+        heading.className = 'lw-heading';
+        heading.style.color = '#b00020';
         content.appendChild(heading);
 
         var detail = document.createElement('div');
         detail.textContent = message;
-        detail.style.cssText = 'margin-bottom:12px;font-size:12px;';
+        detail.style.cssText = 'margin-bottom:12px;font-size:12px;color:#4c4c52;';
         content.appendChild(detail);
 
         var backBtn = document.createElement('button');
@@ -732,6 +1042,7 @@ module('lively.identity.Wallet')
 
       _renderWithdrawList: function () {
         var self = this;
+        this._setContentMode('flow');
         var content = this._contentDiv;
         content.innerHTML = '<div style="color:#999;padding:20px 0;">Loading spendable deposits…</div>';
 
@@ -745,7 +1056,7 @@ module('lively.identity.Wallet')
             content.innerHTML = '';
             var heading = document.createElement('div');
             heading.textContent = 'Spendable deposits';
-            heading.style.cssText = 'font-weight:600;margin-bottom:12px;';
+            heading.className = 'lw-heading';
             content.appendChild(heading);
 
             if (deposits.length === 0) {
@@ -771,7 +1082,7 @@ module('lively.identity.Wallet')
 
             deposits.forEach(function (entry) {
               var row = document.createElement('div');
-              row.style.cssText = 'border:1px solid #d1d1d6;border-radius:6px;padding:10px;margin-bottom:8px;';
+              row.style.cssText = 'border:1px solid #ECECF3;border-radius:10px;padding:12px;margin-bottom:8px;';
 
               var amountLine = document.createElement('div');
               amountLine.style.cssText = 'font-weight:600;margin-bottom:4px;';
@@ -827,12 +1138,13 @@ module('lively.identity.Wallet')
 
       _renderWithdrawRecipient: function (commitment) {
         var self = this;
+        this._setContentMode('flow');
         var content = this._contentDiv;
         content.innerHTML = '';
 
         var heading = document.createElement('div');
         heading.textContent = 'Withdraw ' + (Number(commitment.value) / 1e18) + ' ETH';
-        heading.style.cssText = 'font-weight:600;margin-bottom:12px;';
+        heading.className = 'lw-heading';
         content.appendChild(heading);
 
         var recipientInput = document.createElement('input');
@@ -850,7 +1162,8 @@ module('lively.identity.Wallet')
         content.appendChild(hint);
 
         var errorMsg = document.createElement('div');
-        errorMsg.style.cssText = 'color:#ff3b30;margin-bottom:8px;display:none;';
+        errorMsg.className = 'lw-error';
+        errorMsg.style.display = 'none';
         content.appendChild(errorMsg);
 
         var reviewBtn = document.createElement('button');
@@ -879,12 +1192,13 @@ module('lively.identity.Wallet')
 
       _renderWithdrawReview: function (commitment, recipient) {
         var self = this;
+        this._setContentMode('flow');
         var content = this._contentDiv;
         content.innerHTML = '';
 
         var heading = document.createElement('div');
         heading.textContent = 'Review withdrawal';
-        heading.style.cssText = 'font-weight:600;margin-bottom:12px;';
+        heading.className = 'lw-heading';
         content.appendChild(heading);
 
         function row(label, value) {
@@ -920,12 +1234,13 @@ module('lively.identity.Wallet')
       // proveWithdrawal genuinely takes real wall-clock time.
       _renderWithdrawProving: function (commitment, recipient) {
         var self = this;
+        this._setContentMode('flow');
         var content = this._contentDiv;
         content.innerHTML = '';
 
         var heading = document.createElement('div');
         heading.textContent = 'Generating proof…';
-        heading.style.cssText = 'font-weight:600;margin-bottom:12px;';
+        heading.className = 'lw-heading';
         content.appendChild(heading);
 
         var phaseText = document.createElement('div');
@@ -951,16 +1266,18 @@ module('lively.identity.Wallet')
 
       _renderWithdrawSign: function (commitment, result) {
         var self = this;
+        this._setContentMode('flow');
         var content = this._contentDiv;
         content.innerHTML = '';
 
         var heading = document.createElement('div');
         heading.textContent = 'Signed — ready to broadcast';
-        heading.style.cssText = 'font-weight:600;margin-bottom:12px;';
+        heading.className = 'lw-heading';
         content.appendChild(heading);
 
         var detail = document.createElement('div');
-        detail.style.cssText = 'font-family:monospace;font-size:11px;word-break:break-all;margin-bottom:12px;';
+        detail.className = 'lw-mono';
+        detail.style.cssText += 'font-size:11px;word-break:break-all;margin-bottom:12px;color:#4c4c52;';
         detail.innerHTML =
           '<div>gas: ' + result.unsignedTx.gas.toString() + '</div>' +
           '<div>signed raw tx: ' + result.signedRawTx + '</div>';
@@ -968,7 +1285,7 @@ module('lively.identity.Wallet')
 
         var warning = document.createElement('div');
         warning.textContent = 'Broadcasting submits a REAL mainnet transaction and moves real ETH out of the shielded pool.';
-        warning.style.cssText = 'color:#b00020;font-weight:600;margin-bottom:12px;';
+        warning.className = 'lw-warning danger';
         content.appendChild(warning);
 
         var broadcastBtn = document.createElement('button');
@@ -1005,16 +1322,18 @@ module('lively.identity.Wallet')
 
       _renderWithdrawSuccess: function (withdrawn, txHash) {
         var self = this;
+        this._setContentMode('flow');
         var content = this._contentDiv;
         content.innerHTML = '';
 
         var heading = document.createElement('div');
         heading.textContent = 'Withdrawal confirmed';
-        heading.style.cssText = 'font-weight:600;margin-bottom:12px;color:#34c759;';
+        heading.className = 'lw-heading lw-success';
         content.appendChild(heading);
 
         var detail = document.createElement('div');
-        detail.style.cssText = 'font-family:monospace;font-size:11px;word-break:break-all;margin-bottom:12px;';
+        detail.className = 'lw-mono';
+        detail.style.cssText += 'font-size:11px;word-break:break-all;margin-bottom:12px;color:#4c4c52;';
         detail.innerHTML =
           '<div>tx: ' + txHash + '</div>' +
           '<div>recipient: ' + withdrawn.processooor + '</div>' +
@@ -1029,17 +1348,19 @@ module('lively.identity.Wallet')
 
       _renderWithdrawError: function (message, backFn) {
         var self = this;
+        this._setContentMode('flow');
         var content = this._contentDiv;
         content.innerHTML = '';
 
         var heading = document.createElement('div');
         heading.textContent = 'Withdrawal failed';
-        heading.style.cssText = 'font-weight:600;margin-bottom:12px;color:#ff3b30;';
+        heading.className = 'lw-heading';
+        heading.style.color = '#b00020';
         content.appendChild(heading);
 
         var detail = document.createElement('div');
         detail.textContent = message;
-        detail.style.cssText = 'margin-bottom:12px;font-size:12px;';
+        detail.style.cssText = 'margin-bottom:12px;font-size:12px;color:#4c4c52;';
         content.appendChild(detail);
 
         var backBtn = document.createElement('button');
@@ -1063,16 +1384,18 @@ module('lively.identity.Wallet')
 
       _renderExitConfirm: function (commitment) {
         var self = this;
+        this._setContentMode('flow');
         var content = this._contentDiv;
         content.innerHTML = '';
 
         var heading = document.createElement('div');
         heading.textContent = 'Exit ' + (Number(commitment.value) / 1e18) + ' ETH from the pool';
-        heading.style.cssText = 'font-weight:600;margin-bottom:12px;';
+        heading.className = 'lw-heading';
         content.appendChild(heading);
 
         var warning = document.createElement('div');
-        warning.style.cssText = 'color:#b00020;font-size:12px;margin-bottom:12px;max-width:360px;';
+        warning.className = 'lw-warning danger';
+        warning.style.maxWidth = '360px';
         warning.textContent =
           'Exit is a PUBLIC, unshielded reclaim — it publicly links this ' +
           'deposit to your wallet address on-chain, unlike a normal ' +
@@ -1103,12 +1426,13 @@ module('lively.identity.Wallet')
       // genuinely-slow ZK proving work.
       _renderExitProving: function (commitment) {
         var self = this;
+        this._setContentMode('flow');
         var content = this._contentDiv;
         content.innerHTML = '';
 
         var heading = document.createElement('div');
         heading.textContent = 'Generating proof…';
-        heading.style.cssText = 'font-weight:600;margin-bottom:12px;';
+        heading.className = 'lw-heading';
         content.appendChild(heading);
 
         var phaseText = document.createElement('div');
@@ -1134,16 +1458,18 @@ module('lively.identity.Wallet')
 
       _renderExitSign: function (commitment, result) {
         var self = this;
+        this._setContentMode('flow');
         var content = this._contentDiv;
         content.innerHTML = '';
 
         var heading = document.createElement('div');
         heading.textContent = 'Signed — ready to broadcast';
-        heading.style.cssText = 'font-weight:600;margin-bottom:12px;';
+        heading.className = 'lw-heading';
         content.appendChild(heading);
 
         var detail = document.createElement('div');
-        detail.style.cssText = 'font-family:monospace;font-size:11px;word-break:break-all;margin-bottom:12px;';
+        detail.className = 'lw-mono';
+        detail.style.cssText += 'font-size:11px;word-break:break-all;margin-bottom:12px;color:#4c4c52;';
         detail.innerHTML =
           '<div>gas: ' + result.unsignedTx.gas.toString() + '</div>' +
           '<div>signed raw tx: ' + result.signedRawTx + '</div>';
@@ -1151,7 +1477,7 @@ module('lively.identity.Wallet')
 
         var warning = document.createElement('div');
         warning.textContent = 'Broadcasting submits a REAL mainnet transaction, publicly reclaiming this deposit back to your own address.';
-        warning.style.cssText = 'color:#b00020;font-weight:600;margin-bottom:12px;';
+        warning.className = 'lw-warning danger';
         content.appendChild(warning);
 
         var broadcastBtn = document.createElement('button');
@@ -1188,16 +1514,18 @@ module('lively.identity.Wallet')
 
       _renderExitSuccess: function (ragequit, txHash) {
         var self = this;
+        this._setContentMode('flow');
         var content = this._contentDiv;
         content.innerHTML = '';
 
         var heading = document.createElement('div');
         heading.textContent = 'Exit confirmed';
-        heading.style.cssText = 'font-weight:600;margin-bottom:12px;color:#34c759;';
+        heading.className = 'lw-heading lw-success';
         content.appendChild(heading);
 
         var detail = document.createElement('div');
-        detail.style.cssText = 'font-family:monospace;font-size:11px;word-break:break-all;margin-bottom:12px;';
+        detail.className = 'lw-mono';
+        detail.style.cssText += 'font-size:11px;word-break:break-all;margin-bottom:12px;color:#4c4c52;';
         detail.innerHTML =
           '<div>tx: ' + txHash + '</div>' +
           '<div>ragequitter: ' + ragequit.ragequitter + '</div>' +
@@ -1212,17 +1540,19 @@ module('lively.identity.Wallet')
 
       _renderExitError: function (message, backFn) {
         var self = this;
+        this._setContentMode('flow');
         var content = this._contentDiv;
         content.innerHTML = '';
 
         var heading = document.createElement('div');
         heading.textContent = 'Exit failed';
-        heading.style.cssText = 'font-weight:600;margin-bottom:12px;color:#ff3b30;';
+        heading.className = 'lw-heading';
+        heading.style.color = '#b00020';
         content.appendChild(heading);
 
         var detail = document.createElement('div');
         detail.textContent = message;
-        detail.style.cssText = 'margin-bottom:12px;font-size:12px;';
+        detail.style.cssText = 'margin-bottom:12px;font-size:12px;color:#4c4c52;';
         content.appendChild(detail);
 
         var backBtn = document.createElement('button');
