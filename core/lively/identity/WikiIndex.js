@@ -981,8 +981,31 @@ module("lively.identity.WikiIndex")
           var w = self._contentWidth();
           var opts = { bounds: lively.rect(0, 0, w, 780) };
           if (envelope) opts.envelope = envelope;
+          opts.onEdit = function (h, o) { self._editExistingPage(h, o); };
           self._setActiveContentMorph(lively.identity.WikiView.open(handle, page.objId, opts));
         });
+      },
+
+      // Mirrors _createNewPage below, but for an already-existing page
+      // (openCard, not newCard) -- wired as _openPage's opts.onEdit so
+      // clicking Edit swaps the WikiView in this slot for a WikiEditor in
+      // place, symmetric to the editor->view swap _createNewPage already
+      // does on Save.
+      _editExistingPage: function (handle, objId) {
+        var self = this;
+        var w = self._contentWidth();
+        var editor = lively.identity.WikiEditor.openCard(handle, objId, {
+          target: $world,
+          bounds: lively.rect(0, 0, w, 780),
+          onSaved: function (h, o) {
+            self._setActiveContentMorph(lively.identity.WikiView.open(h, o, {
+              target: $world,
+              bounds: lively.rect(0, 0, self._contentWidth(), 780),
+              onEdit: function (h2, o2) { self._editExistingPage(h2, o2); },
+            }));
+          },
+        });
+        self._setActiveContentMorph(editor);
       },
 
       // Both the read-only WikiView (existing page) and the editable

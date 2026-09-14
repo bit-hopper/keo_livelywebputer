@@ -396,18 +396,25 @@ module('lively.identity.WikiPlayback')
           var Editor = lively.Class.forName(editorModule);
           if (isOwner) {
             var existing = null;
-            // withAllSubmorphsDo, not world.submorphs — Editor.openCard opens
-            // via editor.openInWindow(), so the editor instance is nested
-            // inside a separately-created Window morph, not a direct world
-            // child. Confirmed live: the shallow world.submorphs scan this
-            // used to do never matched anything, so every "Live" click while
-            // an editor was already open behind the playback panel opened a
-            // second, duplicate editor window instead of resurfacing it.
-            lively.morphic.World.current().withAllSubmorphsDo(function (m) {
-              if (m instanceof Editor && m._handle === self._handle && m._objId === self._objId) {
-                existing = m;
+            if (isWiki) {
+              // WikiEditor tracks the one standalone-in-world instance
+              // directly (_currentWorldEditor) now that openCard no longer
+              // opens a lively.morphic.Window — no need to scan the world.
+              var current = Editor._currentWorldEditor;
+              if (current && current.world() && current._handle === self._handle && current._objId === self._objId) {
+                existing = current;
               }
-            });
+            } else {
+              // PostCardEditor still opens via editor.openInWindow(), so its
+              // instance is nested inside a separately-created Window morph,
+              // not a direct world child — withAllSubmorphsDo, not
+              // world.submorphs, is still required for that branch.
+              lively.morphic.World.current().withAllSubmorphsDo(function (m) {
+                if (m instanceof Editor && m._handle === self._handle && m._objId === self._objId) {
+                  existing = m;
+                }
+              });
+            }
             if (existing) {
               existing.bringToFront();
             } else {

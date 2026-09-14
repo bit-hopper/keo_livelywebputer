@@ -84,6 +84,7 @@ module("lively.identity.WikiView")
           "_verifyBadgeEl",
           "_editBtn",
           "_contentLoadStarted",
+          "_onEdit",
         ],
       },
 
@@ -188,8 +189,10 @@ module("lively.identity.WikiView")
             editBtn.addEventListener(t, function (e) {
               e.preventDefault();
               e.stopPropagation();
-              if (t === "click")
-                lively.identity.WikiEditor.openCard(self._handle, self._objId);
+              if (t === "click") {
+                if (self._onEdit) self._onEdit(self._handle, self._objId, self);
+                else self._startEditDefault();
+              }
             });
           });
           topBar.appendChild(editBtn);
@@ -415,6 +418,39 @@ module("lively.identity.WikiView")
             } catch (e) {}
           };
           xhr.send();
+        },
+
+        // Default Edit behavior when no embedding caller supplied
+        // opts.onEdit (e.g. a bare WikiView.open(...) call from the SSR
+        // share-link page, or WikiPlayback's exit) -- swaps this view for a
+        // WikiEditor occupying the exact same owner/position/extent, with
+        // no lively.morphic.Window involved either way. WikiEditor.js stays
+        // completely unaware of WikiView.js; this file already
+        // .requires("lively.identity.WikiEditor") (one-directional, no
+        // require cycle), so it's safe to close over WikiEditor.openCard
+        // directly here.
+        _startEditDefault: function () {
+          var owner = this.owner; // a plain property (Core.js's addMorph sets morph.owner = newOwner), not a method
+          var pos = this.getPosition();
+          var extent = this.getExtent();
+          var bounds = lively.rect(0, 0, extent.x, extent.y);
+          var handle = this._handle, objId = this._objId;
+          this.remove();
+          var editor = lively.identity.WikiEditor.openCard(handle, objId, {
+            // A falsy target correctly falls through to WikiEditor's own
+            // standalone-in-world branch when this view had no owner of its
+            // own (i.e. it was itself standalone via _openInWorld).
+            target: owner || null,
+            bounds: bounds,
+            onSaved: function (h, o) {
+              var view = lively.identity.WikiView.open(h, o, { target: owner || null, bounds: bounds });
+              // target-embed doesn't auto-center/reposition; standalone-in-
+              // world does its own centering, so only reposition when we
+              // had a real owner slot to return to.
+              if (owner) view.setPosition(pos);
+            },
+          });
+          if (owner) editor.setPosition(pos);
         },
 
         // Shared by the top-bar avatar and each Author/Contributors chip.
@@ -657,6 +693,11 @@ module("lively.identity.WikiView")
       // options.envelope    -> render immediately, skip the fetch
       // options.cid         -> view a specific historical version
       // options.bounds      -> override the default extent
+      // options.onEdit(handle, objId, view) -> caller-supplied hook fired by
+      // the Edit button, mirroring WikiEditor's opts.onSaved -- lets an
+      // embedding caller (e.g. WikiIndex.js) swap this view for an editor in
+      // its own managed slot. If omitted, the view falls back to swapping
+      // itself for a standalone editor in place -- see _startEditDefault.
       open: function (handle, objId, options) {
         var opts = options || {};
         var view = new lively.identity.WikiView(
@@ -667,6 +708,7 @@ module("lively.identity.WikiView")
         view._objId = objId;
         view._cid = opts.cid || null;
         view._envelope = opts.envelope || null;
+        view._onEdit = opts.onEdit || null;
         if (opts.target) {
           opts.target.addMorph(view);
           view._setup();

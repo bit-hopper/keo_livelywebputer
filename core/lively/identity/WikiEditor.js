@@ -88,7 +88,8 @@ module('lively.identity.WikiEditor')
     // ─── serialization guard ──────────────────────────────────────────────────────
 
     'serialization', {
-      doNotSerialize: ['editorView', 'yDoc', 'wsProvider', '_saveTimer', '_pmContainer', '_contentLoadStarted', '_onSaved'],
+      doNotSerialize: ['editorView', 'yDoc', 'wsProvider', '_saveTimer', '_pmContainer', '_contentLoadStarted', '_onSaved',
+        '_previewContainer', '_previewMode', '_activeDropdown', '_outsideClickHandler'],
     },
 
     // ─── initialization ──────────────────────────────────────────────────────────
@@ -96,10 +97,11 @@ module('lively.identity.WikiEditor')
     'initialization', {
 
       _setup: function () {
-        // This morph is meant to live inside a lively.morphic.Window (see
-        // openCard/newCard) whose title bar is the drag handle — without this,
-        // Lively's default whole-body dragging intercepts mousedown on pmDiv
-        // before native text-selection drag ever gets a chance.
+        // Whether embedded via opts.target or standalone-in-world (see
+        // openCard/newCard), this morph is never meant to be whole-body
+        // draggable — without this, Lively's default whole-body dragging
+        // intercepts mousedown on pmDiv before native text-selection drag
+        // ever gets a chance.
         this.disableDragging();
         this.disableGrabbing();
         this._envelope = null;
@@ -108,6 +110,10 @@ module('lively.identity.WikiEditor')
         this.wsProvider = null;
         this._saveTimer = null;
         this._pmContainer = null;
+        this._previewContainer = null;
+        this._previewMode = false;
+        this._activeDropdown = null;
+        this._outsideClickHandler = null;
         this._statusLabel = null;
         this._statusEl = null;
         this._toolbarDiv = null;
@@ -184,7 +190,7 @@ module('lively.identity.WikiEditor')
 
         var toolbarDiv = document.createElement('div');
         toolbarDiv.style.cssText = [
-          'position:absolute', 'top:0', 'left:0', 'right:0', 'height:64px',
+          'position:absolute', 'top:0', 'left:0', 'right:0', 'height:40px',
           'background:#f0f0f5', 'border-bottom:1px solid #ccc', 'box-sizing:border-box',
           'overflow:hidden',
         ].join(';');
@@ -206,12 +212,25 @@ module('lively.identity.WikiEditor')
         var pmDiv = document.createElement('div');
         pmDiv.className = 'lively-postcard-editor-container selectable';
         pmDiv.style.cssText = [
-          'position:absolute', 'top:64px', 'left:0', 'right:0', 'bottom:36px',
+          'position:absolute', 'top:40px', 'left:0', 'right:0', 'bottom:36px',
           'overflow-y:auto', 'padding:16px 20px', 'box-sizing:border-box',
           'font-family:sans-serif', 'font-size:14px', 'line-height:1.6', 'white-space:pre-wrap',
         ].join(';');
         shapeNode.appendChild(pmDiv);
         this._pmContainer = pmDiv;
+
+        // Preview mode's read-only render target -- a sibling of pmDiv,
+        // hidden until _togglePreview shows it. Reuses WikiView's own
+        // content class so the rendered HTML looks identical to how the
+        // page will actually appear once published.
+        var previewDiv = document.createElement('div');
+        previewDiv.className = 'lively-wiki-view-content selectable';
+        previewDiv.style.cssText = [
+          'position:absolute', 'top:40px', 'left:0', 'right:0', 'bottom:36px',
+          'overflow-y:auto', 'padding:16px 20px', 'box-sizing:border-box', 'display:none',
+        ].join(';');
+        shapeNode.appendChild(previewDiv);
+        this._previewContainer = previewDiv;
 
         // Shared stylesheet with PostCardEditor.js — same class names, same
         // rendering rules (math/embed/image), so it's fine for both editors
@@ -257,53 +276,25 @@ module('lively.identity.WikiEditor')
         });
       },
 
-      // Two evenly-balanced formatting rows — identical to PostCardEditor.js's
-      // toolbar (generic ProseMirror commands, never postcard-specific).
+      // A single toolbar row: frequently-used flat buttons, then Style/
+      // Template/More dropdowns for the long tail, then Preview pinned to
+      // the right edge. Every command still dispatches through the same
+      // _execToolbarCmd switch used before this reorganization -- dropdown
+      // rows and flat buttons share one btnDef shape and one dispatch path.
       _buildToolbar: function (toolbarDiv) {
         var self = this;
 
-        var markDefs = [
-          { label: 'B',    title: 'Bold',              cmd: 'toggleMark', markType: 'bold' },
-          { label: 'I',    title: 'Italic',             cmd: 'toggleMark', markType: 'italic' },
-          { label: 'U',    title: 'Underline',          cmd: 'toggleMark', markType: 'underline' },
-          { label: 'S',    title: 'Strikethrough',      cmd: 'toggleMark', markType: 'strike' },
-          { label: 'x²',   title: 'Superscript',        cmd: 'toggleMark', markType: 'superscript' },
-          { label: 'x₂',   title: 'Subscript',          cmd: 'toggleMark', markType: 'subscript' },
-          { label: '`',    title: 'Inline code',        cmd: 'toggleMark', markType: 'code' },
-          { label: 'H1',   title: 'Heading 1',          cmd: 'setBlockType', nodeType: 'heading', attrs: { level: 1 } },
-          { label: 'H2',   title: 'Heading 2',          cmd: 'setBlockType', nodeType: 'heading', attrs: { level: 2 } },
-        ];
-
-        var blockDefs = [
-          { label: '•',    title: 'Bullet list',        cmd: 'wrapInList',   nodeType: 'bullet_list' },
-          { label: '1.',   title: 'Ordered list',       cmd: 'wrapInList',   nodeType: 'ordered_list' },
-          { label: '❝',    title: 'Blockquote',         cmd: 'wrapIn',       nodeType: 'blockquote' },
-          { label: '</>',  title: 'Code block',         cmd: 'setBlockType', nodeType: 'code_block', attrs: {} },
-          { label: '≡',    title: 'Cycle alignment (left/center/right/justify)', cmd: 'cycleAlign' },
-          { label: '→|',   title: 'Indent',             cmd: 'indent' },
-          { label: '|←',   title: 'Outdent',            cmd: 'outdent' },
-          { label: '✕',    title: 'Clear formatting',   cmd: 'clearFormatting' },
-          { label: '🔗',   title: 'Insert/remove link', cmd: 'link' },
-          { label: '📎',   title: 'Insert attachment',  cmd: 'attachment' },
-          { label: '🧩',   title: 'Insert part',        cmd: 'insertPart' },
-          { label: '∑',    title: 'Math inline',        cmd: 'insertMath', mathType: 'inline' },
-          { label: '∑²',   title: 'Math display',       cmd: 'insertMath', mathType: 'display' },
-        ];
-
-        function buildRow(top) {
-          var row = document.createElement('div');
-          row.style.cssText = [
-            'position:absolute', 'top:' + top + 'px', 'left:6px', 'right:6px', 'height:26px',
-            'display:flex', 'align-items:center', 'gap:6px', 'padding:0 2px',
-            'overflow-x:auto', 'overflow-y:hidden', 'white-space:nowrap',
-          ].join(';');
-          toolbarDiv.appendChild(row);
-          return row;
-        }
+        var row = document.createElement('div');
+        row.style.cssText = [
+          'position:absolute', 'top:0', 'left:6px', 'right:6px', 'bottom:0',
+          'display:flex', 'align-items:center', 'gap:6px', 'padding:0 2px',
+          'overflow-x:auto', 'overflow-y:hidden', 'white-space:nowrap',
+        ].join(';');
+        toolbarDiv.appendChild(row);
 
         this._toggleButtons = [];
 
-        function addButtons(row, defs) {
+        function addButtons(defs) {
           defs.forEach(function (btnDef) {
             var w = btnDef.label.length > 1 ? 32 : 24;
             var btn = document.createElement('button');
@@ -326,19 +317,200 @@ module('lively.identity.WikiEditor')
           });
         }
 
-        var rowA = buildRow(2);
-        addButtons(rowA, markDefs);
-        this._textColorInput = this._buildColorInput('textColor', 'Text color', '#000000');
-        rowA.appendChild(this._textColorInput);
-        this._bgColorInput = this._buildColorInput('backgroundColor', 'Background color', '#ffffff');
-        rowA.appendChild(this._bgColorInput);
-        this._fontFamilySelect = this._buildFontFamilySelect();
-        rowA.appendChild(this._fontFamilySelect);
-        this._fontSizeInput = this._buildFontSizeInput();
-        rowA.appendChild(this._fontSizeInput);
+        addButtons([
+          { label: 'B', title: 'Bold',         cmd: 'toggleMark', markType: 'bold' },
+          { label: 'I', title: 'Italic',        cmd: 'toggleMark', markType: 'italic' },
+          { label: 'U', title: 'Underline',     cmd: 'toggleMark', markType: 'underline' },
+          { label: 'S', title: 'Strikethrough', cmd: 'toggleMark', markType: 'strike' },
+          { label: '`', title: 'Inline code',   cmd: 'toggleMark', markType: 'code' },
+        ]);
 
-        var rowB = buildRow(32);
-        addButtons(rowB, blockDefs);
+        addButtons([
+          { label: '🖼', title: 'Insert image',      cmd: 'attachment', accept: 'image/*' },
+          { label: '🎬', title: 'Insert video',      cmd: 'attachment', accept: 'video/*' },
+          { label: '🎵', title: 'Insert audio',      cmd: 'attachment', accept: 'audio/*' },
+          { label: '🔗', title: 'Insert/remove link', cmd: 'link' },
+          { label: '📎', title: 'Insert attachment', cmd: 'attachment' },
+          { label: '🧩', title: 'Insert part',       cmd: 'insertPart' },
+        ]);
+
+        addButtons([
+          { label: '•',  title: 'Bullet list',  cmd: 'wrapInList', nodeType: 'bullet_list' },
+          { label: '1.', title: 'Ordered list', cmd: 'wrapInList', nodeType: 'ordered_list' },
+          { label: '≡',  title: 'Cycle alignment (left/center/right/justify)', cmd: 'cycleAlign' },
+        ]);
+
+        this._buildDropdown(row, {
+          label: 'Style',
+          buildPanel: function (panel, close) {
+            self._buildDropdownRow(panel, 'Paragraph', { cmd: 'setBlockType', nodeType: 'paragraph', attrs: {} }, close);
+            for (var level = 1; level <= 6; level++) {
+              self._buildDropdownRow(panel, 'Heading ' + level, { cmd: 'setBlockType', nodeType: 'heading', attrs: { level: level } }, close);
+            }
+            self._buildDropdownRow(panel, 'Blockquote', { cmd: 'wrapIn', nodeType: 'blockquote' }, close);
+            self._buildDropdownRow(panel, 'Code block', { cmd: 'setBlockType', nodeType: 'code_block', attrs: {} }, close);
+          },
+        });
+
+        this._buildDropdown(row, {
+          label: 'Template',
+          buildPanel: function (panel, close) {
+            self._buildDropdownRow(panel, 'Math (inline)', { cmd: 'insertMath', mathType: 'inline' }, close);
+            self._buildDropdownRow(panel, 'Math (display)', { cmd: 'insertMath', mathType: 'display' }, close);
+          },
+        });
+
+        this._buildDropdown(row, {
+          label: 'More',
+          buildPanel: function (panel, close) {
+            self._buildDropdownRow(panel, 'Superscript', { cmd: 'toggleMark', markType: 'superscript' }, close);
+            self._buildDropdownRow(panel, 'Subscript', { cmd: 'toggleMark', markType: 'subscript' }, close);
+            self._buildDropdownRow(panel, 'Clear formatting', { cmd: 'clearFormatting' }, close);
+            self._buildDropdownRow(panel, 'Indent', { cmd: 'indent' }, close);
+            self._buildDropdownRow(panel, 'Outdent', { cmd: 'outdent' }, close);
+
+            var divider = document.createElement('div');
+            divider.style.cssText = 'height:1px;background:#eee;margin:4px 2px;';
+            panel.appendChild(divider);
+
+            var colorRow = document.createElement('div');
+            colorRow.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 10px;';
+            self._textColorInput = self._buildColorInput('textColor', 'Text color', '#000000');
+            self._bgColorInput = self._buildColorInput('backgroundColor', 'Background color', '#ffffff');
+            colorRow.appendChild(self._textColorInput);
+            colorRow.appendChild(self._bgColorInput);
+            panel.appendChild(colorRow);
+
+            var fontRow = document.createElement('div');
+            fontRow.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 10px;';
+            self._fontFamilySelect = self._buildFontFamilySelect();
+            self._fontSizeInput = self._buildFontSizeInput();
+            fontRow.appendChild(self._fontFamilySelect);
+            fontRow.appendChild(self._fontSizeInput);
+            panel.appendChild(fontRow);
+          },
+        });
+
+        var spacer = document.createElement('div');
+        spacer.style.cssText = 'flex:1 1 auto;';
+        row.appendChild(spacer);
+
+        var previewBtn = document.createElement('button');
+        previewBtn.textContent = 'Preview';
+        previewBtn.title = 'Preview the current draft as it will look published';
+        previewBtn.style.cssText = [
+          'flex:0 0 auto', 'height:24px', 'padding:0 10px', 'font-size:12px', 'cursor:pointer',
+          'border:1px solid #ccc', 'border-radius:3px', 'background:#fff',
+        ].join(';');
+        previewBtn.addEventListener('mousedown', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          self._togglePreview();
+        });
+        row.appendChild(previewBtn);
+        this._previewButton = previewBtn;
+      },
+
+      // A native-DOM dropdown (trigger button + absolutely-positioned
+      // panel), NOT the morphic Box+Text popup pattern used elsewhere in
+      // this codebase (NewWikiPageDialog's Category picker, WikiIndex's
+      // sort-by dropdown) -- this toolbar is deliberately plain native DOM
+      // appended straight to shapeNode (see file header), kept out of
+      // Lively's morph hierarchy so drag/grab can't grab it as an
+      // independent morph. A morphic popup here would need constant manual
+      // getBoundingClientRect() translation and risks z-order bugs once the
+      // editor is embedded at an arbitrary position; a plain
+      // position:absolute panel anchored to its own trigger has neither
+      // problem.
+      _buildDropdown: function (toolbarDiv, opts) {
+        var self = this;
+        // The panel is appended to shapeNode, NOT to the trigger's own
+        // wrapper -- the toolbar row scrolls horizontally
+        // (overflow-x:auto), which per the CSS overflow spec forces its
+        // computed overflow-y to 'auto' too (an explicit non-'visible' on
+        // one axis promotes 'visible' on the other to 'auto'), so any
+        // dropdown panel nested inside that row would get clipped/scrolled
+        // away instead of shown. Appending to shapeNode and computing its
+        // position from the trigger's live getBoundingClientRect() escapes
+        // that clipping entirely.
+        var shapeNode = this.renderContext().shapeNode;
+        var wrapper = document.createElement('div');
+        wrapper.style.cssText = 'position:relative;flex:0 0 auto;';
+
+        var trigger = document.createElement('button');
+        trigger.textContent = opts.label + ' ▾';
+        trigger.title = opts.label;
+        trigger.style.cssText = [
+          'height:24px', 'padding:0 8px', 'font-size:12px', 'cursor:pointer',
+          'border:1px solid #ccc', 'border-radius:3px', 'background:#fff', 'white-space:nowrap',
+        ].join(';');
+
+        var panel = document.createElement('div');
+        panel.style.cssText = [
+          'position:absolute', 'min-width:150px',
+          'background:#fff', 'border:1px solid #ccc', 'border-radius:4px',
+          'box-shadow:0 2px 8px rgba(0,0,0,0.15)', 'z-index:10000', 'display:none',
+          'padding:4px', 'box-sizing:border-box',
+        ].join(';');
+        shapeNode.appendChild(panel);
+
+        function close() {
+          panel.style.display = 'none';
+          if (self._activeDropdown === panel) self._activeDropdown = null;
+          if (self._outsideClickHandler) {
+            document.removeEventListener('mousedown', self._outsideClickHandler, true);
+            self._outsideClickHandler = null;
+          }
+        }
+        function open() {
+          if (self._activeDropdown && self._activeDropdown !== panel) {
+            self._activeDropdown.style.display = 'none';
+          }
+          if (self._outsideClickHandler) {
+            document.removeEventListener('mousedown', self._outsideClickHandler, true);
+          }
+          var triggerRect = trigger.getBoundingClientRect();
+          var shapeRect = shapeNode.getBoundingClientRect();
+          panel.style.left = (triggerRect.left - shapeRect.left) + 'px';
+          panel.style.top = (triggerRect.bottom - shapeRect.top + 2) + 'px';
+          panel.style.display = 'block';
+          self._activeDropdown = panel;
+          self._outsideClickHandler = function (e) {
+            if (!wrapper.contains(e.target) && !panel.contains(e.target)) close();
+          };
+          document.addEventListener('mousedown', self._outsideClickHandler, true);
+        }
+        trigger.addEventListener('mousedown', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (panel.style.display === 'block') close();
+          else open();
+        });
+
+        opts.buildPanel(panel, close);
+        wrapper.appendChild(trigger);
+        toolbarDiv.appendChild(wrapper);
+        return wrapper;
+      },
+
+      _buildDropdownRow: function (panel, label, btnDef, close) {
+        var self = this;
+        var row = document.createElement('div');
+        row.textContent = label;
+        row.style.cssText = [
+          'padding:5px 10px', 'font-size:12px', 'cursor:pointer', 'border-radius:3px',
+          'white-space:nowrap',
+        ].join(';');
+        row.addEventListener('mouseover', function () { row.style.background = '#eef4ff'; });
+        row.addEventListener('mouseout', function () { row.style.background = ''; });
+        row.addEventListener('mousedown', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          self._execToolbarCmd(btnDef);
+          close();
+        });
+        panel.appendChild(row);
+        return row;
       },
 
       _buildColorInput: function (markName, title, fallback) {
@@ -1007,13 +1179,64 @@ module('lively.identity.WikiEditor')
         };
       },
 
+      // Reversibly makes the editor inert and visually dimmed -- shared by
+      // _applyReadOnlyMode's permanent (non-writer) case and Preview mode's
+      // temporary case below. Unlike _applyReadOnlyMode, this never resizes
+      // or wipes the toolbar/footer DOM, so Preview can flip it back
+      // instantly with the exact same controls still in place.
+      _setChromeDisabled: function (disabled, opts) {
+        var except = (opts && opts.except) || [];
+        if (this.editorView) {
+          this.editorView.setProps({ editable: function () { return !disabled; } });
+        }
+        [this._toolbarDiv, this._footerDiv].forEach(function (container) {
+          if (!container) return;
+          var controls = container.querySelectorAll('button, select, input');
+          for (var i = 0; i < controls.length; i++) {
+            var el = controls[i];
+            if (except.indexOf(el) !== -1) continue;
+            el.disabled = disabled;
+            el.style.opacity = disabled ? '0.4' : '';
+          }
+        });
+      },
+
+      // Toggles between the live ProseMirror editor and a read-only render
+      // of the CURRENT unsaved draft, in place. _extractSnapshot reads the
+      // live in-memory Y.Doc directly -- independent of _scheduleSave's
+      // debounce timer, so this always reflects exactly what's on screen,
+      // never a stale last-saved version, with no need to flush/await an
+      // autosave first. The real EditorView is only hidden, never destroyed
+      // or recreated, so cursor position/undo history survive the
+      // round-trip and Save always persists from it, never from
+      // _previewContainer's disconnected HTML copy.
+      _togglePreview: function () {
+        if (!this._previewContainer || !this._pmContainer) return;
+        if (!this._previewMode) {
+          var snapshot = this.yDoc ? lively.identity.wikiSerializer._extractSnapshot(this.yDoc) : null;
+          this._previewContainer.innerHTML = snapshot ? lively.identity.postCardUtils.snapshotToHtml(snapshot) : '';
+          lively.identity.postCardUtils.hydrateEmbeddedParts(this._previewContainer);
+          this._previewContainer.style.top = this._pmContainer.style.top;
+          this._previewContainer.style.bottom = this._pmContainer.style.bottom;
+          this._pmContainer.style.display = 'none';
+          this._previewContainer.style.display = 'block';
+          this._previewMode = true;
+          this._setChromeDisabled(true, { except: [this._previewButton] });
+          if (this._previewButton) this._previewButton.textContent = 'Continue Editing';
+        } else {
+          this._previewContainer.style.display = 'none';
+          this._pmContainer.style.display = '';
+          this._previewMode = false;
+          this._setChromeDisabled(false);
+          if (this._previewButton) this._previewButton.textContent = 'Preview';
+        }
+      },
+
       // Makes the view read-only for a viewer without write access (not the
       // owner, and not a constellation member with canWrite).
       _applyReadOnlyMode: function () {
         if (this._canEdit && !this._forceReadOnly) return;
-        if (this.editorView) {
-          this.editorView.setProps({ editable: function () { return false; } });
-        }
+        this._setChromeDisabled(true);
         if (this._toolbarDiv) {
           this._toolbarDiv.innerHTML = '';
           this._toolbarDiv.style.cssText = [
@@ -1718,7 +1941,7 @@ module('lively.identity.WikiEditor')
             break;
           }
           case 'attachment': {
-            this._promptAttachment();
+            this._promptAttachment(btnDef.accept);
             break;
           }
           case 'insertPart': {
@@ -1756,10 +1979,15 @@ module('lively.identity.WikiEditor')
         view.focus();
       },
 
-      _promptAttachment: function () {
+      // accept: optional file-picker MIME filter (e.g. 'image/*') -- purely
+      // a UX narrowing of the native picker; _uploadAttachment's own
+      // isImage/isVideo/isAudio MIME sniff (below) still decides the actual
+      // schema node type regardless of what accept was passed here.
+      _promptAttachment: function (accept) {
         var self = this;
         var input = document.createElement('input');
         input.type = 'file';
+        if (accept) input.accept = accept;
         input.style.display = 'none';
         document.body.appendChild(input);
         input.addEventListener('change', function () {
@@ -2089,18 +2317,22 @@ module('lively.identity.WikiEditor')
 
     Object.extend(WikiEditorClass, {
 
-      // Unlike WikiView (a plain self-rendering Box, no window — see that
-      // file), the editor is opened inside a lively.morphic.Window: its
-      // title bar is the only drag handle, since disableDragging() below
-      // turns off whole-body dragging on the editor morph itself (needed so
-      // native text-selection drag inside the ProseMirror pane isn't
-      // hijacked by Lively's default drag-to-move).
-      _openInCenteredWindow: function (editor, title) {
-        var win = editor.openInWindow({ title: title });
-        if (win) {
-          win.align(win.bounds().center(), lively.morphic.World.current().visibleBounds().center());
-          win.bringToFront();
+      // Same pattern as WikiView's _openInWorld/_currentWorldView (see that
+      // file): when no opts.target is given, the editor opens as a plain
+      // self-rendering Box directly in the world, no lively.morphic.Window
+      // chrome, centered on the visible world bounds. Only one standalone
+      // editor is ever in the world at a time — opening another removes
+      // whichever one is already there first.
+      _currentWorldEditor: null,
+
+      _openInWorld: function (editor) {
+        if (WikiEditorClass._currentWorldEditor && WikiEditorClass._currentWorldEditor.world()) {
+          WikiEditorClass._currentWorldEditor.remove();
         }
+        WikiEditorClass._currentWorldEditor = editor;
+        var extent = editor.getExtent();
+        editor.openInWorld(lively.morphic.World.current().visibleBounds().center().subPt(extent.scaleBy(0.5)));
+        editor.bringToFront();
       },
 
       // Load an existing wiki page and open the editor.
@@ -2123,7 +2355,7 @@ module('lively.identity.WikiEditor')
           opts.target.addMorph(editor);
           editor._setup();
         } else {
-          this._openInCenteredWindow(editor, 'Wiki Page');
+          WikiEditorClass._openInWorld(editor);
           editor._setup();
         }
         return editor;
@@ -2155,7 +2387,7 @@ module('lively.identity.WikiEditor')
           opts.target.addMorph(editor);
           editor._setup();
         } else {
-          this._openInCenteredWindow(editor, 'New Wiki Page');
+          WikiEditorClass._openInWorld(editor);
           editor._setup();
         }
         return editor;
