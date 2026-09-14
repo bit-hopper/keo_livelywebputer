@@ -35,7 +35,7 @@ module('lively.identity.PostCardMailbox')
     'serialization', {
       doNotSerialize: [
         '_contentDiv', '_tabBtns', '_openMenuEl', '_openMenuAnchor', '_menuCloseHandler',
-        '_searchBar', '_searchInput', '_contentLoadStarted',
+        '_searchBar', '_searchInput', '_contentLoadStarted', '_leafletMap',
       ],
     },
 
@@ -50,6 +50,7 @@ module('lively.identity.PostCardMailbox')
         this._openMenuAnchor = null;
         this._menuCloseHandler = null;
         this._searchQuery = '';
+        this._leafletMap = null;
         this._buildChrome();
         // Guards prepareForNewRenderContext below against redundantly
         // re-running _switchTab once this constructor returns and
@@ -70,10 +71,9 @@ module('lively.identity.PostCardMailbox')
       // It ALSO fires as an *immediate* same-turn duplicate of the
       // constructor's own explicit _buildChrome()/_switchTab() call above:
       // PostCardMailbox.open() attaches this freshly-constructed morph to
-      // the world right after construction (openInWorldCenter ->
-      // openInWorld -> world.addMorph -> Core.js's addMorph ->
-      // renderAfterUsing/replaceRenderContextWith -> this method), and by
-      // then _activeTab is already set, so the guard above doesn't skip
+      // the world (via openInWindow's wrapping classic Window) right after
+      // construction, which re-triggers this method, and by then
+      // _activeTab is already set, so the guard above doesn't skip
       // it — same mechanism as the identical fix in PostCardEditor.js/
       // PostCardView.js. _buildChrome() still runs every time (cheap,
       // idempotent, and needed for the genuine restore case); only the
@@ -88,41 +88,32 @@ module('lively.identity.PostCardMailbox')
         this._openMenuEl = null;
         this._openMenuAnchor = null;
         this._menuCloseHandler = null;
+        // _buildChrome() below rebuilds _contentDiv from scratch, orphaning
+        // whatever DOM node any live Leaflet map (Map tab) was attached to
+        // — tear it down first rather than leaking it.
+        if (this._leafletMap) { this._leafletMap.remove(); this._leafletMap = null; }
         this._buildChrome();
         if (this._contentLoadStarted) return;
         this._contentLoadStarted = true;
         this._switchTab(tab);
       },
 
+      // Chrome (title bar, close button) is now the real classic
+      // lively.morphic.Window this morph is framed in via openInWindow()
+      // below — see CalendarApp.js's identical precedent — so this only
+      // builds the tab bar / search bar / content area, not a hand-rolled
+      // title bar.
       _buildChrome: function () {
         var self = this;
         this.setFill(Color.white);
         this.setDroppingEnabled(false);
         var shapeNode = this.renderContext().shapeNode;
         shapeNode.innerHTML = ''; // idempotent: safe if this ever runs twice on one instance
-        shapeNode.style.borderRadius = '8px';
-        shapeNode.style.boxShadow    = '0 4px 16px rgba(0,0,0,0.18)';
-
-        // ── title bar ──
-        var titleBar = document.createElement('div');
-        titleBar.style.cssText = [
-          'position:absolute', 'top:0', 'left:0', 'right:0', 'height:36px',
-          'background:#2c2c2e', 'border-radius:8px 8px 0 0',
-          'display:flex', 'align-items:center', 'justify-content:space-between',
-          'padding:0 12px', 'box-sizing:border-box',
-        ].join(';');
-        var titleText = document.createElement('span');
-        titleText.textContent = 'Mailbox';
-        titleText.style.cssText = 'color:#fff;font-size:13px;font-weight:600;font-family:sans-serif;';
-        titleBar.appendChild(titleText);
-        var closeBtn = this._makeCloseButton(function () { self.remove(); });
-        titleBar.appendChild(closeBtn);
-        shapeNode.appendChild(titleBar);
 
         // ── tab bar ──
         var tabBar = document.createElement('div');
         tabBar.style.cssText = [
-          'position:absolute', 'top:36px', 'left:0', 'right:0', 'height:36px',
+          'position:absolute', 'top:0', 'left:0', 'right:0', 'height:36px',
           'background:#f2f2f7', 'border-bottom:1px solid #d1d1d6',
           'display:flex', 'align-items:stretch', 'box-sizing:border-box',
         ].join(';');
@@ -135,6 +126,8 @@ module('lively.identity.PostCardMailbox')
           { id: 'own',       label: 'My Postcards' },
           { id: 'aliases',   label: 'Aliases' },
           { id: 'friends',   label: 'Friends' },
+          { id: 'rss',       label: 'RSS' },
+          { id: 'map',       label: 'Map' },
         ];
         tabs.forEach(function (t) {
           var btn = document.createElement('button');
@@ -160,7 +153,7 @@ module('lively.identity.PostCardMailbox')
         // reload a search itself triggers.
         var searchBar = document.createElement('div');
         searchBar.style.cssText = [
-          'position:absolute', 'top:72px', 'left:0', 'right:0', 'height:32px',
+          'position:absolute', 'top:36px', 'left:0', 'right:0', 'height:32px',
           'background:#fff', 'border-bottom:1px solid #e5e5ea',
           'display:none', 'align-items:center', 'padding:0 12px', 'box-sizing:border-box',
         ].join(';');
@@ -184,30 +177,12 @@ module('lively.identity.PostCardMailbox')
         // ── content area ──
         var contentDiv = document.createElement('div');
         contentDiv.style.cssText = [
-          'position:absolute', 'top:104px', 'left:0', 'right:0', 'bottom:0',
+          'position:absolute', 'top:68px', 'left:0', 'right:0', 'bottom:0',
           'overflow-y:auto', 'padding:12px 16px', 'box-sizing:border-box',
           'font-family:sans-serif', 'font-size:13px',
         ].join(';');
         shapeNode.appendChild(contentDiv);
         this._contentDiv = contentDiv;
-      },
-
-      // "x" close button for the black title bar -- this window has no
-      // standard Lively Window chrome (it's a bare Box positioned via
-      // openInWorldCenter), so without this there is no way to dismiss it
-      // short of the morph halo.
-      _makeCloseButton: function (onClick) {
-        var btn = document.createElement('span');
-        btn.textContent = '✕';
-        btn.title = 'Close';
-        btn.style.cssText = [
-          'color:#fff', 'font-size:13px', 'line-height:1', 'cursor:pointer',
-          'padding:3px 6px', 'border-radius:3px', 'flex-shrink:0',
-        ].join(';');
-        btn.addEventListener('mouseenter', function () { btn.style.background = 'rgba(255,255,255,0.15)'; });
-        btn.addEventListener('mouseleave', function () { btn.style.background = 'transparent'; });
-        btn.addEventListener('click', onClick);
-        return btn;
       },
 
       _switchTab: function (tab) {
@@ -233,6 +208,15 @@ module('lively.identity.PostCardMailbox')
         var searchable = tab === 'received' || tab === 'delivered' || tab === 'returned' || tab === 'own';
         if (this._searchBar) this._searchBar.style.display = searchable ? 'flex' : 'none';
 
+        // The Map tab's Leaflet instance owns real DOM nodes inside
+        // _contentDiv — tear it down before that div gets wiped below (not
+        // after), and before its container is orphaned out from under it.
+        if (this._leafletMap) { this._leafletMap.remove(); this._leafletMap = null; }
+        // Only the Map tab wants a full-bleed content area; every other
+        // tab (including a tab switched away from Map) uses the normal
+        // padded/scrollable card layout.
+        this._contentDiv.style.padding = tab === 'map' ? '0' : '12px 16px';
+
         this._contentDiv.innerHTML = '<div style="color:#999;padding:20px 0;">Loading…</div>';
 
         if (tab === 'received')  this._loadReceived();
@@ -242,6 +226,8 @@ module('lively.identity.PostCardMailbox')
         if (tab === 'own')       this._loadOwn();
         if (tab === 'aliases')   this._loadAliases();
         if (tab === 'friends')   this._loadFriends();
+        if (tab === 'rss')       this._loadRssFeeds();
+        if (tab === 'map')       this._loadMapTab();
       },
 
       // Re-runs whichever load function backs the active tab — used by the
@@ -349,6 +335,234 @@ module('lively.identity.PostCardMailbox')
         };
         xhr.onerror = function () { if (self._activeTab === 'blocked') self._showError('Network error'); };
         xhr.send();
+      },
+
+      // Subscribed feed URLs live in the same settings envelope as the
+      // block list (state.rssFeeds — an array of { url }), reusing
+      // _patchSettings for writes; this tab's own GET populates
+      // _settingsEnvelope independently of whether the Blocked tab has
+      // ever been visited this session.
+      _loadRssFeeds: function () {
+        var self   = this;
+        var handle = lively.identity.did.currentUser().handle;
+        var base   = lively.identity.did.baseUrl();
+        var xhr    = new XMLHttpRequest();
+        xhr.open('GET', base + '/@' + handle + '/settings');
+        xhr.withCredentials = true;
+        xhr.onload = function () {
+          if (self._activeTab !== 'rss') return;
+          if (xhr.status !== 200) return self._showError('Could not load settings (' + xhr.status + ')');
+          var env;
+          try { env = JSON.parse(xhr.responseText); } catch (e) { return self._showError('Bad response'); }
+          self._settingsEnvelope = env;
+          self._renderRssTab((env.state && env.state.rssFeeds) || []);
+        };
+        xhr.onerror = function () { if (self._activeTab === 'rss') self._showError('Network error'); };
+        xhr.send();
+      },
+
+      _addRssFeed: function (url, thenDo) {
+        this._patchSettings(function (state) {
+          state.rssFeeds = state.rssFeeds || [];
+          if (!state.rssFeeds.some(function (f) { return f.url === url; })) {
+            state.rssFeeds.push({ url: url });
+          }
+        }, thenDo);
+      },
+
+      _removeRssFeed: function (url, thenDo) {
+        this._patchSettings(function (state) {
+          state.rssFeeds = (state.rssFeeds || []).filter(function (f) { return f.url !== url; });
+        }, thenDo);
+      },
+
+      // Fetches every subscribed feed's entries in parallel through the
+      // server-side proxy (RssProxyServer.js — a plain browser fetch()
+      // straight to an external feed almost always fails on CORS), merges
+      // them into one newest-first list. A feed that errors just
+      // contributes nothing rather than failing the whole tab. Calls
+      // thenDo(entries) — never thenDo(err, ...), since a total failure
+      // just means an empty list.
+      _fetchFeedEntries: function (feeds, thenDo) {
+        var base = lively.identity.did.baseUrl();
+        if (!feeds.length) return thenDo([]);
+        var remaining = feeds.length;
+        var allEntries = [];
+        feeds.forEach(function (feed) {
+          var xhr = new XMLHttpRequest();
+          xhr.open('GET', base + '/nodejs/RssProxyServer/fetch?url=' + encodeURIComponent(feed.url));
+          xhr.withCredentials = true;
+          xhr.onload = function () {
+            if (xhr.status === 200) {
+              try {
+                var result = JSON.parse(xhr.responseText);
+                (result.entries || []).forEach(function (e) {
+                  allEntries.push({
+                    title: e.title, link: e.link, published: e.published, summary: e.summary,
+                    feedTitle: result.title || feed.url,
+                    _ts: e.published ? Date.parse(e.published) : NaN,
+                  });
+                });
+              } catch (e) { /* malformed proxy response — contributes nothing */ }
+            }
+            if (--remaining === 0) finish();
+          };
+          xhr.onerror = function () { if (--remaining === 0) finish(); };
+          xhr.send();
+        });
+        function finish() {
+          allEntries.sort(function (a, b) {
+            var ta = isNaN(a._ts) ? -Infinity : a._ts;
+            var tb = isNaN(b._ts) ? -Infinity : b._ts;
+            return tb - ta;
+          });
+          thenDo(allEntries);
+        }
+      },
+
+      // ── Map tab (postcards you authored that carry a location tag) ──────────
+      // Reuses the same server-known locations as "My Postcards" (state.
+      // location is already part of the full envelope /@:handle/postcards
+      // returns — Received/Delivered/Returned are metadata-only logs with
+      // no state at all, so this can only ever plot cards you authored
+      // yourself, not mail you received). Leaflet + open-location-code are
+      // the same lazily-loaded runtime LocalMap.js/PostCardEditor.js
+      // already use (core/lib/geo/geo-runtime.js) — duplicated here rather
+      // than shared, matching this codebase's existing tolerance for small
+      // per-module copies of this exact pattern (see LocalMap.js's own
+      // comment on _ensureGeoRuntime).
+      _loadMapTab: function () {
+        var self = this;
+        var mapEl = document.createElement('div');
+        mapEl.style.cssText = 'position:absolute;inset:0;';
+        this._contentDiv.innerHTML = '';
+        this._contentDiv.appendChild(mapEl);
+
+        var statusEl = document.createElement('div');
+        statusEl.style.cssText = [
+          'position:absolute', 'inset:0', 'display:flex', 'align-items:center',
+          'justify-content:center', 'color:#999', 'font-size:13px', 'text-align:center',
+          'padding:20px', 'box-sizing:border-box', 'background:#fff',
+        ].join(';');
+        statusEl.textContent = 'Loading…';
+        this._contentDiv.appendChild(statusEl);
+
+        this._ensureGeoRuntime(function () {
+          self._fetchOwnLocatedPostcards(function (err, postcards) {
+            if (self._activeTab !== 'map') return;
+            if (err) { statusEl.textContent = 'Could not load postcards for the map.'; return; }
+            if (!postcards.length) {
+              statusEl.textContent = 'No located postcards yet — tag a postcard with a ' +
+                'location when composing to see it here.';
+              return;
+            }
+            statusEl.remove();
+            self._initMailboxMap(mapEl, postcards);
+          });
+        });
+      },
+
+      // Same guard/poll/CSS-link shape as LocalMap.js's own
+      // _ensureGeoRuntime — intentionally duplicated, not shared (see this
+      // method's caller for why).
+      _ensureGeoRuntime: function (callback) {
+        if (window.L && window.OpenLocationCode) return callback();
+        if (window._geoRuntimeLoading) {
+          var poll = setInterval(function () {
+            if (window.L && window.OpenLocationCode) { clearInterval(poll); callback(); }
+          }, 80);
+          return;
+        }
+        window._geoRuntimeLoading = true;
+        if (!document.getElementById('leaflet-css')) {
+          var link = document.createElement('link');
+          link.id = 'leaflet-css';
+          link.rel = 'stylesheet';
+          link.href = '/core/lib/geo/leaflet.css';
+          document.head.appendChild(link);
+        }
+        var s = document.createElement('script');
+        s.src = '/core/lib/geo/geo-runtime.js';
+        s.onload = function () { window._geoRuntimeLoading = false; callback(); };
+        s.onerror = function () { window._geoRuntimeLoading = false; callback(); };
+        document.head.appendChild(s);
+      },
+
+      _fetchOwnLocatedPostcards: function (thenDo) {
+        var handle = lively.identity.did.currentUser().handle;
+        var base   = lively.identity.did.baseUrl();
+        var xhr    = new XMLHttpRequest();
+        xhr.open('GET', base + '/@' + handle + '/postcards?limit=100');
+        xhr.withCredentials = true;
+        xhr.onload = function () {
+          if (xhr.status !== 200) return thenDo(new Error('Could not load postcards (' + xhr.status + ')'));
+          var result;
+          try { result = JSON.parse(xhr.responseText); } catch (e) { return thenDo(new Error('Bad response')); }
+          var located = (result.postcards || []).filter(function (pc) { return pc.state && pc.state.location; });
+          thenDo(null, located);
+        };
+        xhr.onerror = function () { thenDo(new Error('Network error')); };
+        xhr.send();
+      },
+
+      // Groups postcards by their (already-floored) location cell first, so
+      // a cell with more than one postcard spreads its markers on a small
+      // deterministic ring instead of stacking exactly on top of each other
+      // — same technique and same constant as LocalMap.js's _placeMarkers/
+      // _offsetPosition.
+      _initMailboxMap: function (mapEl, postcards) {
+        var self   = this;
+        var handle = lively.identity.did.currentUser().handle;
+        var olc    = new window.OpenLocationCode();
+
+        if (this._leafletMap) { this._leafletMap.remove(); this._leafletMap = null; }
+        var map = window.L.map(mapEl);
+        this._leafletMap = map;
+        window.L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        }).addTo(map);
+
+        var groups = {};
+        postcards.forEach(function (pc) {
+          (groups[pc.state.location] = groups[pc.state.location] || []).push(pc);
+        });
+
+        var bounds = [];
+        Object.keys(groups).forEach(function (loc) {
+          var area;
+          try { area = olc.decode(loc); } catch (e) { return; }
+          var center = [area.latitudeCenter, area.longitudeCenter];
+          var group = groups[loc];
+          group.forEach(function (pc, idx) {
+            var pos = self._offsetMapPosition(center, idx, group.length);
+            bounds.push(pos);
+            var icon = window.L.divIcon({
+              className: 'lively-mailbox-map-marker',
+              html: '<div style="width:24px;height:24px;display:flex;align-items:center;' +
+                'justify-content:center;background:#fff;border:2px solid #61D565;' +
+                'border-radius:50%;box-shadow:0 1px 4px rgba(0,0,0,0.3);' +
+                'font-size:12px;line-height:1;">✉️</div>',
+              iconSize: [24, 24],
+              iconAnchor: [12, 12],
+            });
+            var marker = window.L.marker(pos, { icon: icon }).addTo(map);
+            marker.bindTooltip((pc.state && pc.state.title) || '(untitled)');
+            marker.on('click', function () {
+              lively.identity.PostCardView.open(handle, pc.objId, {});
+            });
+          });
+        });
+
+        if (bounds.length === 1) map.setView(bounds[0], 12);
+        else if (bounds.length > 1) map.fitBounds(bounds, { padding: [24, 24] });
+      },
+
+      _offsetMapPosition: function (center, idx, groupSize) {
+        if (groupSize <= 1) return center;
+        var OFFSET = 0.0006; // ~60-70m at mid-latitudes — see LocalMap.js's identical constant
+        var angle = (2 * Math.PI * idx) / groupSize;
+        return [center[0] + OFFSET * Math.sin(angle), center[1] + OFFSET * Math.cos(angle)];
       },
 
       _loadAliases: function () {
@@ -917,6 +1131,152 @@ module('lively.identity.PostCardMailbox')
         });
       },
 
+      // Add-feed row + subscribed-feed chips + a merged, newest-first entry
+      // list fetched through RssProxyServer.js. Every feed-supplied string
+      // (title/summary/link) is untrusted third-party content — this
+      // renders it via textContent/href assignment only, never innerHTML,
+      // and _safeHref below blocks a javascript: URL hiding in a malicious
+      // feed's <link>.
+      _renderRssTab: function (feeds) {
+        var self    = this;
+        var content = this._contentDiv;
+        content.innerHTML = '';
+
+        var addRow = document.createElement('div');
+        addRow.style.cssText = 'display:flex;gap:6px;margin-bottom:12px;';
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.placeholder = 'https://example.com/feed.xml';
+        input.style.cssText = 'flex:1;font-size:12px;padding:6px 8px;border:1px solid #d1d1d6;border-radius:4px;box-sizing:border-box;';
+        addRow.appendChild(input);
+        var addBtn = document.createElement('button');
+        addBtn.textContent = 'Add';
+        addBtn.style.cssText = 'font-size:12px;padding:6px 12px;cursor:pointer;border:1px solid #007aff;color:#007aff;background:#fff;border-radius:4px;';
+        function submitAdd() {
+          var url = input.value.trim();
+          if (!url) return;
+          addBtn.disabled = true;
+          self._addRssFeed(url, function (err) {
+            addBtn.disabled = false;
+            if (err) return self._showError(err.message || 'Failed to add feed');
+            input.value = '';
+            self._loadRssFeeds();
+          });
+        }
+        addBtn.addEventListener('click', submitAdd);
+        input.addEventListener('keydown', function (e) { if (e.key === 'Enter') submitAdd(); });
+        addRow.appendChild(addBtn);
+        content.appendChild(addRow);
+
+        if (!feeds.length) {
+          var empty = document.createElement('div');
+          empty.style.cssText = 'color:#999;padding:20px 0;text-align:center;';
+          empty.textContent = 'No feeds yet — add an RSS or Atom feed URL above.';
+          content.appendChild(empty);
+          return;
+        }
+
+        var chipsRow = document.createElement('div');
+        chipsRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;';
+        feeds.forEach(function (feed) {
+          var chip = document.createElement('div');
+          chip.style.cssText = [
+            'display:inline-flex', 'align-items:center', 'gap:5px', 'max-width:260px',
+            'background:#eef0ff', 'color:#4a55c4', 'font-size:11px',
+            'padding:4px 8px', 'border-radius:12px',
+          ].join(';');
+          var label = document.createElement('span');
+          label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+          label.textContent = feed.url;
+          chip.appendChild(label);
+          var removeBtn = document.createElement('span');
+          removeBtn.textContent = '✕';
+          removeBtn.title = 'Unsubscribe';
+          removeBtn.style.cssText = 'cursor:pointer;font-weight:600;flex-shrink:0;';
+          removeBtn.addEventListener('click', function () {
+            self._removeRssFeed(feed.url, function (err) {
+              if (err) return self._showError(err.message || 'Failed to remove feed');
+              self._loadRssFeeds();
+            });
+          });
+          chip.appendChild(removeBtn);
+          chipsRow.appendChild(chip);
+        });
+        content.appendChild(chipsRow);
+
+        var entriesDiv = document.createElement('div');
+        entriesDiv.style.cssText = 'color:#999;padding:20px 0;text-align:center;';
+        entriesDiv.textContent = 'Loading entries…';
+        content.appendChild(entriesDiv);
+
+        this._fetchFeedEntries(feeds, function (entries) {
+          if (self._activeTab !== 'rss') return;
+          entriesDiv.innerHTML = '';
+          if (!entries.length) {
+            entriesDiv.style.cssText = 'color:#999;padding:20px 0;text-align:center;';
+            entriesDiv.textContent = 'No entries found (feeds may be unreachable or empty).';
+            return;
+          }
+          entriesDiv.style.cssText = '';
+          entries.forEach(function (entry) {
+            var card = self._makeCard();
+
+            var feedBadge = document.createElement('div');
+            feedBadge.style.cssText = 'display:inline-block;margin-bottom:4px;padding:2px 7px;' +
+              'font-size:10px;border-radius:9px;background:#eef0ff;color:#4a55c4;';
+            feedBadge.textContent = entry.feedTitle;
+            card.appendChild(feedBadge);
+
+            var titleEl = document.createElement('div');
+            titleEl.style.cssText = 'font-weight:600;color:#1c1c1e;margin-bottom:3px;';
+            var safeLink = self._safeHref(entry.link);
+            if (safeLink) {
+              var a = document.createElement('a');
+              a.href = safeLink;
+              a.target = '_blank';
+              a.rel = 'noopener noreferrer';
+              a.style.cssText = 'color:#1c1c1e;text-decoration:none;';
+              a.textContent = entry.title || '(untitled)';
+              titleEl.appendChild(a);
+            } else {
+              titleEl.textContent = entry.title || '(untitled)';
+            }
+            card.appendChild(titleEl);
+
+            if (entry.published) {
+              var when = document.createElement('div');
+              when.style.cssText = 'color:#8e8e93;font-size:11px;margin-bottom:4px;';
+              when.textContent = self._formatDate(entry.published);
+              card.appendChild(when);
+            }
+
+            if (entry.summary) {
+              var summary = document.createElement('div');
+              summary.style.cssText = 'color:#3a3a3c;font-size:12px;line-height:1.4;';
+              summary.textContent = entry.summary;
+              card.appendChild(summary);
+            }
+
+            entriesDiv.appendChild(card);
+          });
+        });
+      },
+
+      // Only http(s)/mailto get through — blocks a javascript: (or other
+      // executable-scheme) URL hiding in a feed's <link>, same rule
+      // PostCardUtils.js's own internal safeHref applies to postcard body
+      // content, duplicated here rather than exported since it's this
+      // small (see LocalMap.js's _ensureGeoRuntime comment on this
+      // codebase's tolerance for small per-module copies).
+      _safeHref: function (raw) {
+        var s = String(raw || '').trim();
+        if (!s) return null;
+        var m = /^([a-z][a-z0-9+.\-]*):/i.exec(s);
+        if (!m) return s; // relative/anchor — allowed
+        var scheme = m[1].toLowerCase();
+        return (scheme === 'http' || scheme === 'https' || scheme === 'mailto') ? s : null;
+      },
+
       // ── shared row-action helpers ────────────────────────────────────────
 
       // A single top-right [⋯][Open]-shaped cluster — every row in this
@@ -1310,7 +1670,9 @@ module('lively.identity.PostCardMailbox')
         var self = this;
         lively.identity.webKey.resolveHandle(handle, function (err, info) {
           var did = (!err && info) ? info.did : null;
-          self._patchBlockList(function (state) {
+          self._patchSettings(function (state) {
+            state.blockedDids    = state.blockedDids    || [];
+            state.blockedHandles = state.blockedHandles || [];
             if (state.blockedHandles.indexOf(handle) === -1) state.blockedHandles.push(handle);
             if (did && state.blockedDids.indexOf(did) === -1) state.blockedDids.push(did);
           }, thenDo);
@@ -1318,28 +1680,28 @@ module('lively.identity.PostCardMailbox')
       },
 
       _unblockHandle: function (handle, thenDo) {
-        this._patchBlockList(function (state) {
-          state.blockedHandles = state.blockedHandles.filter(function (h) { return h !== handle; });
+        this._patchSettings(function (state) {
+          state.blockedHandles = (state.blockedHandles || []).filter(function (h) { return h !== handle; });
           // Any DID entry for this handle is left as-is here — a stale DID
           // left in blockedDids fails closed (over-blocks), not open, so
           // it's not a correctness risk, just a minor cleanup gap.
         }, thenDo);
       },
 
-      // mutate(state) edits state.blockedDids/blockedHandles in place. The
-      // settings payload never changes here (block list lives in state per
-      // tranche 2's F18), but record.cid is still recomputed over it before
-      // every PUT — same discipline as the rest of this codebase's
-      // envelope writes, cheap and avoids ever landing a stale cid.
-      _patchBlockList: function (mutate, thenDo) {
+      // mutate(state) edits the settings envelope's state object in place
+      // (block list, RSS feed subscriptions — whatever a caller needs
+      // persisted server-side and readable without decrypting a payload,
+      // per tranche 2's F18). The settings payload itself never changes
+      // here, but record.cid is still recomputed over it before every PUT —
+      // same discipline as the rest of this codebase's envelope writes,
+      // cheap and avoids ever landing a stale cid.
+      _patchSettings: function (mutate, thenDo) {
         var handle = lively.identity.did.currentUser().handle;
         var base   = lively.identity.did.baseUrl();
         var env    = this._settingsEnvelope;
         if (!env) return thenDo(new Error('Settings not loaded yet'));
 
         env.state = env.state || {};
-        env.state.blockedDids    = env.state.blockedDids    || [];
-        env.state.blockedHandles = env.state.blockedHandles || [];
         mutate(env.state);
 
         var payload = (env.record && env.record.payload) || {};
@@ -1422,11 +1784,39 @@ module('lively.identity.PostCardMailbox')
 
     // ── class-side entry point ───────────────────────────────────────────────
 
+    // A plain setFill()/applyStyle({fill:...}) on an already-rendered
+    // classic Window can silently update the model without ever reaching
+    // the DOM (see CLAUDE.md's applyStyle-DOM-sync gotcha) — this drives
+    // the color via a scoped CSS class instead (same technique DMChat.js's
+    // applyAccentChrome uses), which also survives collapse/expand and any
+    // other Window-internal re-render, unlike a one-off inline style write.
+    // `!important` beats base_theme.css's own `.Window.highlighted`
+    // background rule so the color doesn't fade to gray when unfocused.
+    function _ensureAccentChromeCss() {
+      var STYLE_ID = 'postcard-mailbox-accent-chrome-style';
+      if (document.getElementById(STYLE_ID)) return;
+      var styleEl = document.createElement('style');
+      styleEl.id = STYLE_ID;
+      styleEl.textContent = '.Window.mailbox-accent-chrome { background-color: #61D565 !important; }';
+      document.head.appendChild(styleEl);
+    }
+
     Object.extend(MailboxClass, {
       open: function (tab) {
         var morph = new lively.identity.PostCardMailbox(lively.rect(0, 0, 560, 480));
-        morph.openInWorldCenter();
-        morph.bringToFront();
+        morph.setName('Mailbox');
+        // Real classic Window chrome (drag/resize/collapse/close, Material
+        // Symbols icon controls by default) rather than the hand-rolled
+        // title bar this used to draw itself — same pattern as
+        // CalendarApp.js's CalendarAppClass.open.
+        morph.openInWindow({
+          title: 'Mailbox',
+          pos: lively.morphic.World.current().visibleBounds().center().subPt(lively.pt(280, 240)),
+        });
+        var win = morph.getWindow();
+        _ensureAccentChromeCss();
+        win.addStyleClassName('mailbox-accent-chrome');
+        win.comeForward();
         if (tab && tab !== 'received') morph._switchTab(tab);
         return morph;
       },
