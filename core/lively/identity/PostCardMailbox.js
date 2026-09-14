@@ -379,15 +379,19 @@ module('lively.identity.PostCardMailbox')
       // Fetches every subscribed feed's entries in parallel through the
       // server-side proxy (RssProxyServer.js — a plain browser fetch()
       // straight to an external feed almost always fails on CORS), merges
-      // them into one newest-first list. A feed that errors just
-      // contributes nothing rather than failing the whole tab. Calls
-      // thenDo(entries) — never thenDo(err, ...), since a total failure
-      // just means an empty list.
+      // them into one newest-first list. A feed that errors contributes no
+      // entries but is NOT silently dropped — its message is collected into
+      // `errors` (feed url -> message) so _renderRssTab can show the real
+      // reason (bad hostname, timeout, 502, malformed feed, ...) instead of
+      // an undifferentiated "nothing here." Calls thenDo(entries, errors) —
+      // never a top-level err, since a total failure is just every feed
+      // having its own entry in `errors`.
       _fetchFeedEntries: function (feeds, thenDo) {
         var base = lively.identity.did.baseUrl();
-        if (!feeds.length) return thenDo([]);
+        if (!feeds.length) return thenDo([], {});
         var remaining = feeds.length;
         var allEntries = [];
+        var errors = {};
         feeds.forEach(function (feed) {
           var xhr = new XMLHttpRequest();
           xhr.open('GET', base + '/nodejs/RssProxyServer/fetch?url=' + encodeURIComponent(feed.url));
@@ -403,11 +407,18 @@ module('lively.identity.PostCardMailbox')
                     _ts: e.published ? Date.parse(e.published) : NaN,
                   });
                 });
-              } catch (e) { /* malformed proxy response — contributes nothing */ }
+              } catch (e) { errors[feed.url] = 'Malformed response from the feed proxy'; }
+            } else {
+              var msg = 'Request failed (' + xhr.status + ')';
+              try { msg = JSON.parse(xhr.responseText).error || msg; } catch (e) {}
+              errors[feed.url] = msg;
             }
             if (--remaining === 0) finish();
           };
-          xhr.onerror = function () { if (--remaining === 0) finish(); };
+          xhr.onerror = function () {
+            errors[feed.url] = 'Network error';
+            if (--remaining === 0) finish();
+          };
           xhr.send();
         });
         function finish() {
@@ -416,7 +427,7 @@ module('lively.identity.PostCardMailbox')
             var tb = isNaN(b._ts) ? -Infinity : b._ts;
             return tb - ta;
           });
-          thenDo(allEntries);
+          thenDo(allEntries, errors);
         }
       },
 
@@ -1292,15 +1303,31 @@ module('lively.identity.PostCardMailbox')
         entriesDiv.textContent = 'Loading entries…';
         content.appendChild(entriesDiv);
 
-        this._fetchFeedEntries(feeds, function (entries) {
+        this._fetchFeedEntries(feeds, function (entries, errors) {
           if (self._activeTab !== 'rss') return;
           entriesDiv.innerHTML = '';
+          entriesDiv.style.cssText = '';
+
+          var errorUrls = Object.keys(errors);
+          errorUrls.forEach(function (url) {
+            var errDiv = document.createElement('div');
+            errDiv.style.cssText = [
+              'color:#ff3b30', 'font-size:11px', 'padding:6px 10px', 'margin-bottom:8px',
+              'background:#fff5f5', 'border:1px solid #ffd7d7', 'border-radius:6px', 'word-break:break-all',
+            ].join(';');
+            errDiv.textContent = 'Could not load ' + url + ': ' + errors[url];
+            entriesDiv.appendChild(errDiv);
+          });
+
           if (!entries.length) {
-            entriesDiv.style.cssText = 'color:#999;padding:20px 0;text-align:center;';
-            entriesDiv.textContent = 'No entries found (feeds may be unreachable or empty).';
+            var emptyMsg = document.createElement('div');
+            emptyMsg.style.cssText = 'color:#999;padding:20px 0;text-align:center;';
+            emptyMsg.textContent = errorUrls.length
+              ? 'No entries could be loaded — see the error' + (errorUrls.length > 1 ? 's' : '') + ' above.'
+              : 'No entries found in your subscribed feeds.';
+            entriesDiv.appendChild(emptyMsg);
             return;
           }
-          entriesDiv.style.cssText = '';
           entries.forEach(function (entry) {
             var card = self._makeCard();
 
