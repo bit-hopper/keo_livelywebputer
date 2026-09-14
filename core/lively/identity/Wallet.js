@@ -105,34 +105,21 @@ module('lively.identity.Wallet')
         document.head.appendChild(style);
       },
 
+      // Chrome (title bar, close button) is now the real classic
+      // lively.morphic.Window this morph is framed in via openInWindow()
+      // below — see FilesBrowser.js/PostCardMailbox.js's identical
+      // precedent — so this only builds the toolbar / content area, not a
+      // hand-rolled title bar.
       _buildChrome: function () {
-        var self = this;
         this._ensureBaseStyles();
         this.setFill(Color.white);
         this.setDroppingEnabled(false);
         var shapeNode = this.renderContext().shapeNode;
         shapeNode.classList.add('lively-wallet-dashboard');
-        shapeNode.style.borderRadius = '8px';
-        shapeNode.style.boxShadow    = '0 4px 16px rgba(0,0,0,0.18)';
-
-        var titleBar = document.createElement('div');
-        titleBar.style.cssText = [
-          'position:absolute', 'top:0', 'left:0', 'right:0', 'height:36px',
-          'background:#2c2c2e', 'border-radius:8px 8px 0 0',
-          'display:flex', 'align-items:center', 'justify-content:space-between',
-          'padding:0 12px', 'box-sizing:border-box',
-        ].join(';');
-        var titleText = document.createElement('span');
-        titleText.textContent = 'Wallet';
-        titleText.style.cssText = 'color:#fff;font-size:13px;font-weight:600;font-family:sans-serif;';
-        titleBar.appendChild(titleText);
-        var closeBtn = this._makeCloseButton(function () { self.remove(); });
-        titleBar.appendChild(closeBtn);
-        shapeNode.appendChild(titleBar);
 
         var toolbarDiv = document.createElement('div');
         toolbarDiv.style.cssText = [
-          'position:absolute', 'top:36px', 'left:0', 'right:0', 'height:34px',
+          'position:absolute', 'top:0', 'left:0', 'right:0', 'height:34px',
           'background:#f2f2f7', 'border-bottom:1px solid #d1d1d6',
           'display:flex', 'align-items:center', 'padding:0 10px',
           'box-sizing:border-box', 'gap:8px', 'font-family:sans-serif',
@@ -142,7 +129,7 @@ module('lively.identity.Wallet')
 
         var contentDiv = document.createElement('div');
         contentDiv.style.cssText = [
-          'position:absolute', 'top:70px', 'left:0', 'right:0', 'bottom:0',
+          'position:absolute', 'top:34px', 'left:0', 'right:0', 'bottom:0',
           'overflow-y:auto', 'padding:12px 16px', 'box-sizing:border-box',
           'font-family:sans-serif', 'font-size:13px',
         ].join(';');
@@ -150,24 +137,6 @@ module('lively.identity.Wallet')
         this._contentDiv = contentDiv;
 
         this._renderToolbar();
-      },
-
-      // "x" close button for the black title bar -- this window has no
-      // standard Lively Window chrome (it's a bare Box positioned via
-      // openInWorldCenter), so without this there is no way to dismiss it
-      // short of the morph halo.
-      _makeCloseButton: function (onClick) {
-        var btn = document.createElement('span');
-        btn.textContent = '✕';
-        btn.title = 'Close';
-        btn.style.cssText = [
-          'color:#fff', 'font-size:13px', 'line-height:1', 'cursor:pointer',
-          'padding:3px 6px', 'border-radius:3px', 'flex-shrink:0',
-        ].join(';');
-        btn.addEventListener('mouseenter', function () { btn.style.background = 'rgba(255,255,255,0.15)'; });
-        btn.addEventListener('mouseleave', function () { btn.style.background = 'transparent'; });
-        btn.addEventListener('click', onClick);
-        return btn;
       },
 
       _renderToolbar: function () {
@@ -1290,19 +1259,63 @@ module('lively.identity.Wallet')
 
     // ── class-side entry point ───────────────────────────────────────────────
 
+    // A plain setFill()/applyStyle({fill:...}) on an already-rendered
+    // classic Window can silently update the model without ever reaching
+    // the DOM (see CLAUDE.md's applyStyle-DOM-sync gotcha) — this drives
+    // the color via a scoped CSS class instead (same technique DMChat.js's
+    // applyAccentChrome and PostCardMailbox.js's _ensureAccentChromeCss
+    // use), which also survives collapse/expand and any other
+    // Window-internal re-render, unlike a one-off inline style write.
+    // Indigo-violet keeps this visually distinct from Mailbox's green and
+    // DM chat's blue-indigo accents; white title text + a suppressed
+    // focus-ring border are needed (unlike Mailbox's lighter green) since
+    // this fill is dark/saturated enough that the base theme's default
+    // #555/#333 title-text color and white focus ring would both read
+    // poorly against it.
+    function _ensureAccentChromeCss() {
+      var STYLE_ID = 'wallet-accent-chrome-style';
+      if (document.getElementById(STYLE_ID)) return;
+      var styleEl = document.createElement('style');
+      styleEl.id = STYLE_ID;
+      styleEl.textContent = [
+        '.Window.wallet-accent-chrome { background-color: #6C4CE0 !important; }',
+        '.Window.wallet-accent-chrome .Text.window-title { color: #fff; }',
+        '.Window.wallet-accent-chrome.highlighted .Text.window-title { color: #fff; font-weight: bold; }',
+        '.Window.wallet-accent-chrome.highlighted { border: none !important; box-shadow: 0px 3px 10px rgba(20,10,60,0.35) !important; }',
+      ].join('\n');
+      document.head.appendChild(styleEl);
+    }
+
     Object.extend(WalletClass, {
       // §9.1: no-wallet-yet routes to WalletSetupDialog; has-a-wallet opens
       // this dashboard directly (which itself handles locked vs unlocked).
       open: function () {
         lively.identity.walletBridge.isSetUp(function (err, isSetUp) {
           if (err || !isSetUp) {
-            lively.BuildSpec('lively.identity.WalletSetupDialog').createMorph().openInWorldCenter();
+            var dialogWin = lively.BuildSpec('lively.identity.WalletSetupDialog').createMorph();
+            dialogWin.openInWorldCenter();
+            lively.identity.Wallet.applyAccentChrome(dialogWin);
             return;
           }
           var morph = new lively.identity.Wallet(lively.rect(0, 0, 480, 520));
-          morph.openInWorldCenter();
-          morph.bringToFront();
+          morph.setName('Wallet');
+          // Real classic Window chrome (drag/resize/collapse/close,
+          // Material Symbols icon controls by default) rather than the
+          // hand-rolled title bar this used to draw itself — same pattern
+          // as FilesBrowser.js's/PostCardMailbox.js's open().
+          morph.openInWindow({
+            title: 'Wallet',
+            pos: lively.morphic.World.current().visibleBounds().center().subPt(lively.pt(240, 260)),
+          });
+          var win = morph.getWindow();
+          lively.identity.Wallet.applyAccentChrome(win);
+          win.comeForward();
         });
+      },
+
+      applyAccentChrome: function (win) {
+        _ensureAccentChromeCss();
+        win.addStyleClassName('wallet-accent-chrome');
       },
     });
 
