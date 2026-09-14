@@ -1643,13 +1643,16 @@ function listInboxForHandle(handle, opts, thenDo) {
   });
 }
 
-// Merges envelope.constellation/envelope.state.kind onto each record on the
-// *returned page only* (bounded to `limit`, never the full inbox log) — so
-// PostCardMailbox.js can show a "c/<name>" badge distinguishing e.g. a
-// constellation-join-request card from a regular postcard without a
-// separate per-row fetch when the list first renders. Same bounded-cost
-// per-page envelope lookup _filterRecordsByTitle above already does for
-// search; this just always runs, not only when q is set.
+// Merges envelope.constellation/envelope.state.kind/envelope.state.location
+// onto each record on the *returned page only* (bounded to `limit`, never
+// the full inbox log) — so PostCardMailbox.js can show a "c/<name>" badge
+// distinguishing e.g. a constellation-join-request card from a regular
+// postcard, and (location) plot received mail on its Map tab, without a
+// separate per-row fetch when the list first renders. `location` rides
+// along for free on the same per-record `get()` this function already does
+// for constellation/kind — no extra round trip. Same bounded-cost per-page
+// envelope lookup _filterRecordsByTitle above already does for search; this
+// just always runs, not only when q is set.
 function _enrichWithConstellationTag(page, thenDo) {
   if (!page.length) return thenDo(null, page);
   var remaining = page.length;
@@ -1660,6 +1663,7 @@ function _enrichWithConstellationTag(page, thenDo) {
       if (envelope) {
         rec.constellation = envelope.constellation || null;
         rec.kind = (envelope.state && envelope.state.kind) || null;
+        rec.location = (envelope.state && envelope.state.location) || null;
       }
       if (--remaining === 0) thenDo(firstErr, page);
     });

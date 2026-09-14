@@ -420,17 +420,22 @@ module('lively.identity.PostCardMailbox')
         }
       },
 
-      // ── Map tab (postcards you authored that carry a location tag) ──────────
-      // Reuses the same server-known locations as "My Postcards" (state.
-      // location is already part of the full envelope /@:handle/postcards
-      // returns — Received/Delivered/Returned are metadata-only logs with
-      // no state at all, so this can only ever plot cards you authored
-      // yourself, not mail you received). Leaflet + open-location-code are
-      // the same lazily-loaded runtime LocalMap.js/PostCardEditor.js
-      // already use (core/lib/geo/geo-runtime.js) — duplicated here rather
-      // than shared, matching this codebase's existing tolerance for small
-      // per-module copies of this exact pattern (see LocalMap.js's own
-      // comment on _ensureGeoRuntime).
+      // ── Map tab (postcards you authored + mail you received, either one
+      // carrying a location tag) ───────────────────────────────────────────
+      // Two sources, merged: "My Postcards"' own envelopes (state.location
+      // is already part of the full envelope /@:handle/postcards returns)
+      // and the Received tab's inbox log, whose records are normally
+      // metadata-only but now also carry `location` — piggybacked for free
+      // onto ObjectRepository.js's existing per-page `_enrichWithConstellationTag`
+      // envelope lookup (see that function's own comment). Delivered/
+      // Returned aren't fetched separately: those reference the exact same
+      // cards "My Postcards" already covers, just from the sender's own
+      // side. Leaflet + open-location-code are the same lazily-loaded
+      // runtime LocalMap.js/PostCardEditor.js already use
+      // (core/lib/geo/geo-runtime.js) — duplicated here rather than shared,
+      // matching this codebase's existing tolerance for small per-module
+      // copies of this exact pattern (see LocalMap.js's own comment on
+      // _ensureGeoRuntime).
       _loadMapTab: function () {
         var self = this;
         var mapEl = document.createElement('div');
@@ -448,16 +453,15 @@ module('lively.identity.PostCardMailbox')
         this._contentDiv.appendChild(statusEl);
 
         this._ensureGeoRuntime(function () {
-          self._fetchOwnLocatedPostcards(function (err, postcards) {
+          self._fetchLocatedPostcards(function (items) {
             if (self._activeTab !== 'map') return;
-            if (err) { statusEl.textContent = 'Could not load postcards for the map.'; return; }
-            if (!postcards.length) {
+            if (!items.length) {
               statusEl.textContent = 'No located postcards yet — tag a postcard with a ' +
-                'location when composing to see it here.';
+                'location when composing (or wait for one to arrive) to see it here.';
               return;
             }
             statusEl.remove();
-            self._initMailboxMap(mapEl, postcards);
+            self._initMailboxMap(mapEl, items);
           });
         });
       },
@@ -488,6 +492,44 @@ module('lively.identity.PostCardMailbox')
         document.head.appendChild(s);
       },
 
+      // Fetches both sources in parallel and normalizes them into one
+      // common marker shape: { objId, location, title, openHandle, kind }.
+      // `openHandle` is null for "own" (PostCardView.open falls back to the
+      // current user's own handle) and the sender's handle for "received"
+      // (a received card lives in the SENDER's own object namespace, same
+      // as every other received-card Open button in this file — see
+      // _renderReceivedRecords' own use of rec.senderHandle). A source that
+      // errors just contributes nothing rather than failing the whole map,
+      // same "never thenDo(err, ...)" idiom as _fetchFeedEntries.
+      _fetchLocatedPostcards: function (thenDo) {
+        var remaining = 2;
+        var combined = [];
+        function done() { if (--remaining === 0) thenDo(combined); }
+
+        this._fetchOwnLocatedPostcards(function (postcards) {
+          postcards.forEach(function (pc) {
+            combined.push({
+              objId: pc.objId, location: pc.state.location,
+              title: (pc.state && pc.state.title) || '(untitled)',
+              openHandle: null, kind: 'own',
+            });
+          });
+          done();
+        });
+
+        this._fetchReceivedLocatedPostcards(function (records) {
+          records.forEach(function (rec) {
+            combined.push({
+              objId: rec.objId, location: rec.location,
+              title: rec.senderHandle ? ('From @' + rec.senderHandle) : 'Received card',
+              openHandle: rec.senderHandle || null, kind: 'received',
+            });
+          });
+          done();
+        });
+      },
+
+      // Calls thenDo(postcards) — never an error, an empty array on failure.
       _fetchOwnLocatedPostcards: function (thenDo) {
         var handle = lively.identity.did.currentUser().handle;
         var base   = lively.identity.did.baseUrl();
@@ -495,22 +537,43 @@ module('lively.identity.PostCardMailbox')
         xhr.open('GET', base + '/@' + handle + '/postcards?limit=100');
         xhr.withCredentials = true;
         xhr.onload = function () {
-          if (xhr.status !== 200) return thenDo(new Error('Could not load postcards (' + xhr.status + ')'));
+          if (xhr.status !== 200) return thenDo([]);
           var result;
-          try { result = JSON.parse(xhr.responseText); } catch (e) { return thenDo(new Error('Bad response')); }
-          var located = (result.postcards || []).filter(function (pc) { return pc.state && pc.state.location; });
-          thenDo(null, located);
+          try { result = JSON.parse(xhr.responseText); } catch (e) { return thenDo([]); }
+          thenDo((result.postcards || []).filter(function (pc) { return pc.state && pc.state.location; }));
         };
-        xhr.onerror = function () { thenDo(new Error('Network error')); };
+        xhr.onerror = function () { thenDo([]); };
         xhr.send();
       },
 
-      // Groups postcards by their (already-floored) location cell first, so
-      // a cell with more than one postcard spreads its markers on a small
+      // Calls thenDo(records) — never an error, an empty array on failure.
+      // `location` on inbox records only exists because
+      // ObjectRepository.js's _enrichWithConstellationTag now also copies
+      // it over — see that function's comment.
+      _fetchReceivedLocatedPostcards: function (thenDo) {
+        var handle = lively.identity.did.currentUser().handle;
+        var base   = lively.identity.did.baseUrl();
+        var xhr    = new XMLHttpRequest();
+        xhr.open('GET', base + '/@' + handle + '/inbox?limit=100');
+        xhr.withCredentials = true;
+        xhr.onload = function () {
+          if (xhr.status !== 200) return thenDo([]);
+          var result;
+          try { result = JSON.parse(xhr.responseText); } catch (e) { return thenDo([]); }
+          thenDo((result.records || []).filter(function (rec) { return rec.location; }));
+        };
+        xhr.onerror = function () { thenDo([]); };
+        xhr.send();
+      },
+
+      // Groups items by their (already-floored) location cell first, so a
+      // cell with more than one item spreads its markers on a small
       // deterministic ring instead of stacking exactly on top of each other
       // — same technique and same constant as LocalMap.js's _placeMarkers/
-      // _offsetPosition.
-      _initMailboxMap: function (mapEl, postcards) {
+      // _offsetPosition. "own" and "received" render as different marker
+      // colors/glyphs (green envelope vs. blue inbox tray) so the map reads
+      // as two overlaid layers, not one undifferentiated pile of pins.
+      _initMailboxMap: function (mapEl, items) {
         var self   = this;
         var handle = lively.identity.did.currentUser().handle;
         var olc    = new window.OpenLocationCode();
@@ -524,8 +587,8 @@ module('lively.identity.PostCardMailbox')
         }).addTo(map);
 
         var groups = {};
-        postcards.forEach(function (pc) {
-          (groups[pc.state.location] = groups[pc.state.location] || []).push(pc);
+        items.forEach(function (item) {
+          (groups[item.location] = groups[item.location] || []).push(item);
         });
 
         var bounds = [];
@@ -534,28 +597,48 @@ module('lively.identity.PostCardMailbox')
           try { area = olc.decode(loc); } catch (e) { return; }
           var center = [area.latitudeCenter, area.longitudeCenter];
           var group = groups[loc];
-          group.forEach(function (pc, idx) {
+          group.forEach(function (item, idx) {
             var pos = self._offsetMapPosition(center, idx, group.length);
             bounds.push(pos);
+            var isOwn = item.kind === 'own';
             var icon = window.L.divIcon({
               className: 'lively-mailbox-map-marker',
               html: '<div style="width:24px;height:24px;display:flex;align-items:center;' +
-                'justify-content:center;background:#fff;border:2px solid #61D565;' +
+                'justify-content:center;background:#fff;border:2px solid ' + (isOwn ? '#61D565' : '#007aff') + ';' +
                 'border-radius:50%;box-shadow:0 1px 4px rgba(0,0,0,0.3);' +
-                'font-size:12px;line-height:1;">✉️</div>',
+                'font-size:12px;line-height:1;">' + (isOwn ? '✉️' : '📥') + '</div>',
               iconSize: [24, 24],
               iconAnchor: [12, 12],
             });
             var marker = window.L.marker(pos, { icon: icon }).addTo(map);
-            marker.bindTooltip((pc.state && pc.state.title) || '(untitled)');
+            marker.bindTooltip(item.title);
             marker.on('click', function () {
-              lively.identity.PostCardView.open(handle, pc.objId, {});
+              lively.identity.PostCardView.open(item.openHandle || handle, item.objId, {});
             });
           });
         });
 
         if (bounds.length === 1) map.setView(bounds[0], 12);
         else if (bounds.length > 1) map.fitBounds(bounds, { padding: [24, 24] });
+
+        self._addMapLegend(mapEl);
+      },
+
+      // Small always-on-top key distinguishing the two marker colors —
+      // added without one, the color difference alone would read as
+      // arbitrary rather than meaningful.
+      _addMapLegend: function (mapEl) {
+        var legend = document.createElement('div');
+        legend.style.cssText = [
+          'position:absolute', 'right:10px', 'top:10px', 'z-index:1000',
+          'background:rgba(255,255,255,0.92)', 'border-radius:6px',
+          'box-shadow:0 1px 4px rgba(0,0,0,0.25)', 'padding:6px 10px',
+          'font-size:11px', 'color:#3a3a3c', 'line-height:1.6',
+        ].join(';');
+        legend.innerHTML =
+          '<div>✉️ <span style="color:#61D565;font-weight:600;">&#9679;</span> My Postcards</div>' +
+          '<div>📥 <span style="color:#007aff;font-weight:600;">&#9679;</span> Received</div>';
+        mapEl.appendChild(legend);
       },
 
       _offsetMapPosition: function (center, idx, groupSize) {
@@ -1803,7 +1886,12 @@ module('lively.identity.PostCardMailbox')
 
     Object.extend(MailboxClass, {
       open: function (tab) {
-        var morph = new lively.identity.PostCardMailbox(lively.rect(0, 0, 560, 480));
+        // 700px wide: narrower and the "My Postcards" tab wraps onto two
+        // lines within its fixed-height tab button (confirmed via canvas
+        // text-measurement against the rendered tab bar at several
+        // candidate widths — 680px was the exact wrap/no-wrap boundary
+        // with all 9 tabs).
+        var morph = new lively.identity.PostCardMailbox(lively.rect(0, 0, 700, 480));
         morph.setName('Mailbox');
         // Real classic Window chrome (drag/resize/collapse/close, Material
         // Symbols icon controls by default) rather than the hand-rolled
@@ -1811,7 +1899,7 @@ module('lively.identity.PostCardMailbox')
         // CalendarApp.js's CalendarAppClass.open.
         morph.openInWindow({
           title: 'Mailbox',
-          pos: lively.morphic.World.current().visibleBounds().center().subPt(lively.pt(280, 240)),
+          pos: lively.morphic.World.current().visibleBounds().center().subPt(lively.pt(350, 240)),
         });
         var win = morph.getWindow();
         _ensureAccentChromeCss();
