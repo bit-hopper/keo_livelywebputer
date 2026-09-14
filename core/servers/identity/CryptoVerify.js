@@ -277,8 +277,15 @@ function computeGenesisObjId(authorDid, genesisNonceB64) {
 // producing a different digest than the client's own computeCid — confirmed
 // live 2026-09-05 against a real stored encrypted postcard envelope, which is
 // exactly why this branch exists rather than the naive always-stringify form.
+//
+// The object branch must use canonicalJson, not plain JSON.stringify — see
+// Crypto.js's computeCid comment for the full jsonb-key-reordering bug this
+// fixes (2026-09-13). This function verifies every incoming non-metadata-only
+// PUT's record.cid (IdentityServer.js's generic PUT handler) against the
+// client-computed value, so it must stay byte-for-byte in sync with
+// Crypto.js's client-side computeCid or legitimate saves start failing here.
 function computeCid(payload) {
-  var json = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  var json = typeof payload === 'string' ? payload : canonicalJson(payload);
   return base64urlEncode(sha256(Buffer.from(json, 'utf8')));
 }
 

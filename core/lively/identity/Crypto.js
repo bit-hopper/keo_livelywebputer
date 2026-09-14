@@ -320,12 +320,25 @@ Object.subclass('lively.identity.Crypto',
 
 'hashing', {
 
-  // CID = base64url(SHA-256(canonicalJson(payload)))
+  // CID = base64url(SHA-256(canonicalJson(payload))). Must actually call
+  // canonicalJson, not plain JSON.stringify -- this comment claimed
+  // canonical form for a long time while the code below just did
+  // JSON.stringify, which depends on object key insertion order. Postgres
+  // jsonb storage does not preserve that order, so a payload round-tripped
+  // through the server (saved, then GET'd back) hashed differently than it
+  // did at save time even though nothing changed, producing false "content
+  // tampered" verification failures and, worse, WikiEditor.js's
+  // deserializeFromEnvelope treating that mismatch as fatal and refusing to
+  // load the document at all. Confirmed live 2026-09-13 on wiki pages saved
+  // in prior sessions. CryptoVerify.js's server-side port and
+  // IdentityServer.js's computeCidSync must both stay byte-for-byte in sync
+  // with this algorithm, since the server independently re-verifies
+  // record.cid on every non-metadata-only PUT.
   // Uses Web Crypto API — no external dependency required.
   computeCid: function(payload, thenDo) {
     var self = this;
     try {
-      var json = typeof payload === 'string' ? payload : JSON.stringify(payload);
+      var json = typeof payload === 'string' ? payload : self.canonicalJson(payload);
       self.sha256(json, thenDo);
     } catch (e) { thenDo(e); }
   },

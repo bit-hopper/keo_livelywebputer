@@ -258,15 +258,18 @@ module('lively.identity.PostCardSerializer')
           ));
         }
 
-        // CID integrity check
+        // CID integrity check -- non-fatal on mismatch. record.cid is itself
+        // covered by the envelope's signature (Crypto.js's
+        // verifyEnvelopeIntegrity), so the signature check is the real
+        // tamper-detection guarantee; this recompute used to hash-check via
+        // plain JSON.stringify (not canonicalJson, fixed 2026-09-13) and
+        // abort the whole load on any mismatch, which made any postcard
+        // round-tripped through Postgres jsonb storage permanently
+        // unopenable even when untampered. See WikiSerializer.js's identical
+        // fix for the full writeup.
         c.computeCid(payload, function (err, expectedCid) {
           if (err) return thenDo(err);
-          if (expectedCid !== envelope.record.cid) {
-            return thenDo(new Error(
-              'deserializeFromEnvelope: CID mismatch for objId=' + envelope.objId +
-              '. Expected ' + expectedCid + ' but envelope has ' + envelope.record.cid
-            ));
-          }
+          var cidMismatch = expectedCid !== envelope.record.cid;
 
           var Y = self._Y();
           if (!Y) {
@@ -280,8 +283,8 @@ module('lively.identity.PostCardSerializer')
             // Third arg (payload) lets callers reach attachments (§6) without
             // a second round trip — the only caller today (PostCardEditor.js)
             // reads it; anyone still using the 2-arg (err, doc) form is
-            // unaffected.
-            thenDo(null, doc, payload);
+            // unaffected. Fourth arg (info.cidMismatch) is likewise optional.
+            thenDo(null, doc, payload, { cidMismatch: cidMismatch });
           } catch (e) {
             thenDo(new Error('deserializeFromEnvelope: failed to apply Yjs update: ' + e.message));
           }
@@ -401,15 +404,13 @@ module('lively.identity.PostCardSerializer')
           ));
         }
 
+        // Non-fatal on mismatch -- see deserializeFromEnvelope's identical
+        // comment above (record.cid's real tamper-detection guarantee is the
+        // envelope signature, not this recompute).
         c.computeCid(payload, function (err, expectedCid) {
           if (err) return thenDo(err);
-          if (expectedCid !== envelope.record.cid) {
-            return thenDo(new Error(
-              'deserializePlainFromEnvelope: CID mismatch for objId=' + envelope.objId +
-              '. Expected ' + expectedCid + ' but envelope has ' + envelope.record.cid
-            ));
-          }
-          thenDo(null, payload.doc, payload);
+          var cidMismatch = expectedCid !== envelope.record.cid;
+          thenDo(null, payload.doc, payload, { cidMismatch: cidMismatch });
         });
       },
 

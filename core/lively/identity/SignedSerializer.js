@@ -236,19 +236,22 @@ module("lively.identity.SignedSerializer")
           // IDENTITY: signature verification deferred. CID integrity check still
           // runs — detects accidental corruption at zero extra cost.
 
-          // Step 1: Verify CID integrity of the payload
+          // Step 1: Verify CID integrity of the payload -- non-fatal on
+          // mismatch. This used to hash-check via plain JSON.stringify (not
+          // canonicalJson, fixed 2026-09-13 -- see Crypto.js's computeCid
+          // comment) and abort deserialization entirely on any mismatch,
+          // which made any object round-tripped through Postgres jsonb
+          // storage permanently unloadable even when untampered. Since
+          // signature verification for this generic serializer is deferred
+          // (per the comment above), there's no separate crypto proof to
+          // fall back on here the way Wiki/Postcard have -- just warn
+          // instead of silently swallowing it.
           c.computeCid(envelope.record.payload, function (err, expectedCid) {
             if (err) return thenDo(err);
             if (expectedCid !== envelope.record.cid) {
-              return thenDo(
-                new Error(
-                  "deserializeFromEnvelope: CID mismatch for objId=" +
-                    envelope.objId +
-                    ". Expected " +
-                    expectedCid +
-                    " but envelope has " +
-                    envelope.record.cid,
-                ),
+              console.warn(
+                "[SignedSerializer] CID mismatch for objId=" + envelope.objId +
+                " (loading anyway; signature verification for this type is deferred)"
               );
             }
 

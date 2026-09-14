@@ -243,23 +243,15 @@ function looksLikeObjId(str) {
   return typeof str === "string" && /^[A-Za-z0-9\-_]{12}$/.test(str);
 }
 
-// String-payload branch added 2026-09-05 (previously always JSON.stringify'd
-// unconditionally, matching a since-fixed bug in CryptoVerify.js's port of
-// this same algorithm): an encrypted postcard/part's record.payload is a
-// ciphertext *string*, not a plain object — PostCardSerializer.js/
-// PartSerializer.js hash it directly via Crypto.js's client-side computeCid,
-// which has this same typeof branch. Every existing caller of this function
-// here only ever passes a plain object (world/profile/settings genesis
-// creation), so this is a defensive fix with no behavior change for them —
-// but keeping this in sync with CryptoVerify.js's computeCid (which is
-// exercised against real encrypted envelopes on every PUT) avoids the two
-// implementations silently re-diverging.
+// Was its own standalone implementation (plain JSON.stringify, then a
+// string-payload special case added 2026-09-05) that had to be kept
+// byte-for-byte in sync with CryptoVerify.js's computeCid by hand — a real
+// risk the two would silently re-diverge, and in fact did: this copy never
+// got the canonicalJson fix CryptoVerify.js's computeCid needed 2026-09-13
+// (see Crypto.js's computeCid comment for the jsonb-key-reordering bug).
+// Delegates to the one real implementation instead of maintaining a second.
 function computeCidSync(jso) {
-  var json = typeof jso === "string" ? jso : JSON.stringify(jso);
-  return nodeCrypto.createHash("sha256")
-    .update(json, "utf8")
-    .digest("base64")
-    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+  return cryptoVerify.computeCid(jso);
 }
 
 // Creates a blank home world for a newly registered user.

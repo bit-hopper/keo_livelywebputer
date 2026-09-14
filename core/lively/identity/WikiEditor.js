@@ -925,8 +925,14 @@ module('lively.identity.WikiEditor')
             self._connectSync();
           }
 
-          function onDeserialized(err, doc, payload) {
+          function onDeserialized(err, doc, payload, info) {
             if (err) return self._showError('Failed to deserialize: ' + err.message);
+            if (info && info.cidMismatch) {
+              // Non-fatal by design -- see deserializeFromEnvelope's comment.
+              // WikiView's own signature-based badge is the real trust
+              // signal for this page; just note it happened.
+              console.warn('[WikiEditor] CID mismatch for objId=' + self._objId + ' (loading anyway; see WikiSerializer.js deserializeFromEnvelope)');
+            }
             self.yDoc = doc;
             self._attachments = (payload && payload.attachments) || [];
 

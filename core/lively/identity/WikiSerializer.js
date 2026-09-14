@@ -223,13 +223,22 @@ module('lively.identity.WikiSerializer')
         }
 
         c.computeCid(payload, function (err, expectedCid) {
-          if (err) return thenDo(err);
-          if (expectedCid !== envelope.record.cid) {
-            return thenDo(new Error(
-              'deserializeFromEnvelope: CID mismatch for objId=' + envelope.objId +
-              '. Expected ' + expectedCid + ' but envelope has ' + envelope.record.cid
-            ));
-          }
+          // A CID mismatch is NOT treated as fatal here -- record.cid is
+          // itself covered by the envelope's signature (Crypto.js's
+          // verifyEnvelopeIntegrity signs envelope-minus-sig-minus-state,
+          // which includes record.cid), so the signature check is the real
+          // tamper-detection guarantee and it already uses canonicalJson
+          // (robust to jsonb key reordering). This computeCid comparison
+          // used to hash-check independently via plain JSON.stringify and
+          // abort the whole load on any mismatch -- which made every wiki
+          // page ever saved-then-reloaded through a jsonb round-trip
+          // permanently uneditable (Edit opened a blank editor) even though
+          // nothing was tampered, since the fix to computeCid itself
+          // (2026-09-13) can't retroactively correct a CID that was already
+          // baked into an existing signed envelope. Surface the mismatch as
+          // a flag instead so WikiView's already-correct signature-based
+          // badge can inform the user, without blocking editing.
+          var cidMismatch = !err && expectedCid !== envelope.record.cid;
 
           var Y = self._Y();
           if (!Y) {
@@ -240,7 +249,7 @@ module('lively.identity.WikiSerializer')
           try {
             var updateBytes = c.base64urlDecode(payload.update);
             Y.applyUpdate(doc, updateBytes);
-            thenDo(null, doc, payload);
+            thenDo(null, doc, payload, { cidMismatch: cidMismatch });
           } catch (e) {
             thenDo(new Error('deserializeFromEnvelope: failed to apply Yjs update: ' + e.message));
           }

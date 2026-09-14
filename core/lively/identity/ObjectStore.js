@@ -264,7 +264,14 @@ Object.subclass('lively.identity.ObjectStore',
   // Verify an incoming envelope's CID integrity, then store it.
   // IDENTITY: signature verification deferred — WebAuthn assertion signing
   // comes in a future iteration. CID check catches accidental corruption and
-  // costs nothing since the payload is already loaded.
+  // costs nothing since the payload is already loaded. Non-fatal on
+  // mismatch: this used to hash-check via plain JSON.stringify (not
+  // canonicalJson, fixed 2026-09-13 -- see Crypto.js's computeCid comment)
+  // and reject the sync entirely on any mismatch, which made any object
+  // round-tripped through Postgres jsonb storage permanently unsyncable even
+  // when untampered. No separate crypto proof exists for this generic sync
+  // path (signature verification is deferred per the comment above), so warn
+  // instead of silently swallowing it.
   // Calls thenDo(err, result).
   _verifyAndPut: function(envelope, thenDo) {
     var self = this;
@@ -274,10 +281,10 @@ Object.subclass('lively.identity.ObjectStore',
     lively.identity.crypto.computeCid(envelope.record.payload, function(err, expectedCid) {
       if (err) return thenDo(err);
       if (expectedCid !== envelope.record.cid) {
-        return thenDo(new Error(
+        console.warn(
           'ObjectStore: CID mismatch on incoming envelope ' + envelope.objId +
-          ' — content may be corrupted'
-        ));
+          ' (syncing anyway; signature verification for this path is deferred)'
+        );
       }
       self.put(envelope, thenDo);
     });
