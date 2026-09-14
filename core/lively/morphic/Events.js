@@ -1147,6 +1147,24 @@ handleOnCapture);
     },
     processCommandKeys: function(evt) {
         if (!this.isFocused()) return false;
+        // isFocused() is Lively's own morphic-focus bookkeeping, not real
+        // DOM focus — same distinction onBackspacePressed's identical guard
+        // already documents. A morph can be morphic-focused (e.g. from an
+        // earlier mousedown) while a native <input>/<textarea>/<select>/
+        // contenteditable nested inside it genuinely holds DOM focus.
+        // Without this guard, Ctrl+V here hijacked the keystroke into
+        // Lively's own morph-clipboard paste (doKeyPaste's
+        // createClipboardCapture yanks real DOM focus onto a throwaway
+        // hidden <input> to capture it) instead of letting the browser's
+        // native paste land in the actually-focused control — confirmed
+        // live: pasting into a plain native <input> nested in a
+        // self-rendering morph (PostCardMailbox.js's RSS-feed-URL field)
+        // silently did nothing, and real DOM focus was gone from the input
+        // entirely afterward, not just the paste.
+        var activeEl = document.activeElement;
+        if (activeEl && (/^(INPUT|TEXTAREA|SELECT)$/.test(activeEl.tagName) || activeEl.isContentEditable)) {
+            return false;
+        }
         var result = false, c = evt.getKeyChar();
         switch(c && c.toLowerCase()) {
             case 'c': result = this.doKeyCopy(evt); break;
