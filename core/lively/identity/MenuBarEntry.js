@@ -72,11 +72,7 @@ module("lively.identity.MenuBarEntry")
             ["Map",                function () { self.openMaps(); }],
             ["Calendar",           function () { self.openCalendar(); }],
             ["Wallet",             function () { self.openWallet(); }],
-            ["Mailbox", [
-              ["Received",  function () { self.openMailbox("received");  }],
-              ["Delivered", function () { self.openMailbox("delivered"); }],
-              ["Returned",  function () { self.openMailbox("returned");  }],
-            ]],
+            ["Mailbox",            function () { self.openMailbox(); }],
             ["Files",              function () { self.openFiles(); }],
             ["Settings",           function () { self.openSettings(); }],
             ["Add device",         function () { self.openRegisterDialog(); }],
