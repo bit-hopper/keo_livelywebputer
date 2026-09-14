@@ -1886,12 +1886,11 @@ module('lively.identity.PostCardMailbox')
 
     Object.extend(MailboxClass, {
       open: function (tab) {
-        // 700px wide: narrower and the "My Postcards" tab wraps onto two
-        // lines within its fixed-height tab button (confirmed via canvas
-        // text-measurement against the rendered tab bar at several
-        // candidate widths — 680px was the exact wrap/no-wrap boundary
-        // with all 9 tabs).
-        var morph = new lively.identity.PostCardMailbox(lively.rect(0, 0, 700, 480));
+        // 780px wide: 680px was the exact wrap/no-wrap boundary for all 9
+        // tabs (confirmed via canvas text-measurement against the rendered
+        // tab bar at several candidate widths) — this leaves real breathing
+        // room above that boundary rather than sitting right on it.
+        var morph = new lively.identity.PostCardMailbox(lively.rect(0, 0, 780, 480));
         morph.setName('Mailbox');
         // Real classic Window chrome (drag/resize/collapse/close, Material
         // Symbols icon controls by default) rather than the hand-rolled
@@ -1899,7 +1898,7 @@ module('lively.identity.PostCardMailbox')
         // CalendarApp.js's CalendarAppClass.open.
         morph.openInWindow({
           title: 'Mailbox',
-          pos: lively.morphic.World.current().visibleBounds().center().subPt(lively.pt(350, 240)),
+          pos: lively.morphic.World.current().visibleBounds().center().subPt(lively.pt(390, 240)),
         });
         var win = morph.getWindow();
         _ensureAccentChromeCss();
