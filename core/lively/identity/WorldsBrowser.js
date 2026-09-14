@@ -650,6 +650,25 @@ module("lively.identity.WorldsBrowser")
                   wikiName: fields.wikiName,
                   category: fields.category,
                   tags: fields.tags,
+                  // Fires once, only after an explicit Save-button click
+                  // succeeds (never the debounced autosave, never on a
+                  // failed save) -- see WikiEditor.js's newCard/
+                  // _buildFooter comments for that guarantee.
+                  onSaved: function (handle, objId) {
+                    // Mirrors "Blank world"/"Template"'s own redirect
+                    // below -- without this, navigating away from the
+                    // CURRENT world triggers a real "leave site?"
+                    // beforeunload confirm that blocks the redirect
+                    // until a human dismisses it.
+                    if (lively.Config) lively.Config.askBeforeQuit = false;
+                    // fields.wikiName (not objId) is the human slug this
+                    // route expects -- the exact value persisted
+                    // server-side as state.wikiName, fixed at creation
+                    // and never editable afterward inside the editor, so
+                    // it's safe to close over here instead of deriving
+                    // anything from objId.
+                    window.location.href = "/@" + user.handle + "/wiki/" + fields.wikiName;
+                  },
                 });
               });
             },
