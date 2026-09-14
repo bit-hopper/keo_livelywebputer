@@ -268,6 +268,21 @@ function computeGenesisObjId(authorDid, genesisNonceB64) {
   return base64urlEncode(sha256(input)).slice(0, 12);
 }
 
+// Sync port of Crypto.js computeWalletBackupObjId — WalletBackup.js's own
+// genesis objId is deterministic per-identity (no random nonce at all, by
+// design: §7.2.1's whole point is that any device authenticating as this DID
+// recomputes the same objId with no local pointer needed), so it carries no
+// envelope.genesisNonce and can't be checked via computeGenesisObjId above —
+// there is no nonce value that would make that formula match. The server can
+// still pin it exactly, though: with no nonce in the derivation, `did` alone
+// determines the expected objId.
+//
+// objId = base64url(SHA-256(authorDid + ":wallet-backup"))[0..12]
+function computeWalletBackupObjId(authorDid) {
+  var input = Buffer.from(authorDid + ':wallet-backup', 'utf8');
+  return base64urlEncode(sha256(input)).slice(0, 12);
+}
+
 // Port of Crypto.js's client-side computeCid — NOT IdentityServer.js's own
 // computeCidSync, which is missing the same string-payload special case this
 // had to gain (see the bug this fixed, below). An encrypted postcard/part's
@@ -336,5 +351,6 @@ module.exports = {
   verifyDelegationCert: verifyDelegationCert,
   verifySignedPayload: verifySignedPayload,
   computeGenesisObjId: computeGenesisObjId,
+  computeWalletBackupObjId: computeWalletBackupObjId,
   computeCid: computeCid
 };

@@ -153,7 +153,9 @@ Object.subclass('lively.identity.WalletBackup',
   // Shared by deleteBackup and by the legacy-pointer migration in
   // _resolve below, which retires the pre-revision envelope once its
   // content has been re-addressed under the new deterministic objId.
-  _tombstone: function (handle, did, objId, prevCid, thenDo) {
+  // Takes the full `user` record (not just handle/did) since it now has to
+  // sign the envelope — see _signEnvelopeIfPossible's own header.
+  _tombstone: function (user, objId, prevCid, thenDo) {
     var self = this;
     var c = lively.identity.crypto;
     var throwawayKek = new Uint8Array(32);
@@ -166,7 +168,7 @@ Object.subclass('lively.identity.WalletBackup',
           if (err3) return thenDo(err3);
           var tombstone = {
             objId: objId,
-            did: did,
+            did: user.did,
             type: 'wallet-backup',
             visibility: 'private',
             created: new Date().toISOString(),
@@ -180,7 +182,55 @@ Object.subclass('lively.identity.WalletBackup',
             },
             state: {},
           };
-          self._putEnvelope(handle, tombstone, thenDo);
+          self._signEnvelopeIfPossible(tombstone, user, c, function (signErr, signed) {
+            if (signErr) console.warn('[WalletBackup] Could not sign tombstone envelope (non-fatal):', signErr.message);
+            self._putEnvelope(user.handle, signed || tombstone, thenDo);
+          });
+        });
+      });
+    });
+  },
+
+  // Mirrors SignedSerializer._signEnvelopeIfPossible / PostCardSerializer.js's
+  // own copy of the same helper — this codebase's established pattern is a
+  // module-local copy per serializer rather than one shared function (see
+  // PostCardSerializer.js/WikiSerializer.js/PartSerializer.js, each with
+  // their own). Needed here because WalletBackup builds its envelopes by
+  // hand rather than going through SignedSerializer, so it never picked up
+  // this step when signature verification became mandatory server-side
+  // (postcard_audit.md F20, 2026-09-05) — every write was landing unsigned
+  // and getting 403'd. Gracefully degrades to an unsigned envelope if
+  // delegation/soft-key setup isn't present or the KEK can't be derived
+  // (mirrors every other call site's behavior); the resulting unsigned PUT
+  // then fails downstream with a real, visible error, same as any other
+  // save.
+  _signEnvelopeIfPossible: function (envelope, user, c, thenDo) {
+    var method = lively.identity.did.findMethodByCredentialId(user.document, user.credentialId);
+    if (!method || !method.lively) return thenDo(null, envelope);
+    var livelyMeta = method.lively;
+    if (!livelyMeta.softSigningKeyWrapped || !livelyMeta.delegationCert) return thenDo(null, envelope);
+    var wa = lively.identity.webAuthn;
+    if (!wa) return thenDo(null, envelope);
+
+    var ch = new Uint8Array(32);
+    crypto.getRandomValues(ch);
+    wa.deriveKek({ credentialId: user.credentialId, rpId: user.rpId, challenge: ch }, function (err, kek) {
+      if (err) {
+        console.warn('[WalletBackup] Could not derive KEK to sign envelope (non-fatal):', err.message);
+        return thenDo(null, envelope);
+      }
+      var wrapped;
+      try { wrapped = JSON.parse(livelyMeta.softSigningKeyWrapped); } catch (e) { return thenDo(e); }
+      c.decryptPayload(wrapped.ciphertext, wrapped.nonce, kek, function (err, softPrivJwk) {
+        if (err) return thenDo(err);
+        c.importPrivateKeyJwk(softPrivJwk, function (err, softPrivKey) {
+          if (err) return thenDo(err);
+          var envelopeToSign = Object.assign({}, envelope);
+          delete envelopeToSign.sig;
+          c.signJws(envelopeToSign, softPrivKey, function (err, sig) {
+            if (err) return thenDo(err);
+            thenDo(null, Object.assign({}, envelope, { sig: sig }));
+          });
         });
       });
     });
@@ -245,14 +295,17 @@ Object.subclass('lively.identity.WalletBackup',
             },
             state: {},
           };
-          self._putEnvelope(user.handle, migrated, function (errPut) {
-            if (errPut) return thenDo(errPut);
-            // Migration succeeding is what matters; a failed tombstone of
-            // the now-superseded legacy envelope isn't worth failing the
-            // whole resolve over.
-            self._tombstone(user.handle, user.did, legacyObjId, legacy.record.cid, function () {
-              self._clearLegacyObjId(user.did);
-              thenDo(null, { objId: objId, exists: true, envelope: migrated });
+          self._signEnvelopeIfPossible(migrated, user, lively.identity.crypto, function (signErr, signed) {
+            if (signErr) console.warn('[WalletBackup] Could not sign migrated envelope (non-fatal):', signErr.message);
+            self._putEnvelope(user.handle, signed || migrated, function (errPut) {
+              if (errPut) return thenDo(errPut);
+              // Migration succeeding is what matters; a failed tombstone of
+              // the now-superseded legacy envelope isn't worth failing the
+              // whole resolve over.
+              self._tombstone(user, legacyObjId, legacy.record.cid, function () {
+                self._clearLegacyObjId(user.did);
+                thenDo(null, { objId: objId, exists: true, envelope: migrated });
+              });
             });
           });
         });
@@ -304,10 +357,13 @@ Object.subclass('lively.identity.WalletBackup',
                 },
                 state: {},
               };
-              onProgress('uploading');
-              self._putEnvelope(user.handle, envelope, function (err6) {
-                if (err6) return thenDo(err6);
-                thenDo(null, { objId: objId });
+              self._signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
+                if (signErr) console.warn('[WalletBackup] Could not sign envelope (non-fatal):', signErr.message);
+                onProgress('uploading');
+                self._putEnvelope(user.handle, signed || envelope, function (err6) {
+                  if (err6) return thenDo(err6);
+                  thenDo(null, { objId: objId });
+                });
               });
             });
           });
@@ -438,7 +494,7 @@ Object.subclass('lively.identity.WalletBackup',
     self._resolve(user, function () {}, function (err, r) {
       if (err) return thenDo(err);
       if (!r.exists) return thenDo(null);
-      self._tombstone(user.handle, user.did, r.objId, r.envelope.record.cid, function (errPut) {
+      self._tombstone(user, r.objId, r.envelope.record.cid, function (errPut) {
         thenDo(errPut || null);
       });
     });

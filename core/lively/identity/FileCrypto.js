@@ -73,6 +73,54 @@ module('lively.identity.FileCrypto')
         wa.deriveKek({ credentialId: user.credentialId, rpId: user.rpId, challenge: ch }, thenDo);
       },
 
+      // Mirrors SignedSerializer._signEnvelopeIfPossible / PostCardSerializer.js's
+      // own copy of the same helper — this codebase's established pattern is a
+      // module-local copy per serializer rather than one shared function (see
+      // PostCardSerializer.js/WikiSerializer.js/PartSerializer.js, each with
+      // their own). Needed here because FileCrypto builds its envelopes by
+      // hand rather than going through SignedSerializer, so it never picked up
+      // this step when signature verification became mandatory server-side
+      // (postcard_audit.md F20, 2026-09-05) — every content write (new file,
+      // new/edited folder) was landing unsigned and getting 403'd. A
+      // metadata-only write (shareFolder/revokeFolderRecipient, which only
+      // ever touch record.recipients/visibility and never change record.cid)
+      // doesn't need this — the server already exempts those entirely.
+      // Gracefully degrades to an unsigned envelope if delegation/soft-key
+      // setup isn't present or the KEK can't be derived (mirrors every other
+      // call site's behavior); the resulting unsigned PUT then fails
+      // downstream with a real, visible error, same as any other save.
+      _signEnvelopeIfPossible: function (envelope, user, c, thenDo) {
+        var method = lively.identity.did.findMethodByCredentialId(user.document, user.credentialId);
+        if (!method || !method.lively) return thenDo(null, envelope);
+        var livelyMeta = method.lively;
+        if (!livelyMeta.softSigningKeyWrapped || !livelyMeta.delegationCert) return thenDo(null, envelope);
+        var wa = lively.identity.webAuthn;
+        if (!wa) return thenDo(null, envelope);
+
+        var ch = new Uint8Array(32);
+        crypto.getRandomValues(ch);
+        wa.deriveKek({ credentialId: user.credentialId, rpId: user.rpId, challenge: ch }, function (err, kek) {
+          if (err) {
+            console.warn('[FileCrypto] Could not derive KEK to sign envelope (non-fatal):', err.message);
+            return thenDo(null, envelope);
+          }
+          var wrapped;
+          try { wrapped = JSON.parse(livelyMeta.softSigningKeyWrapped); } catch (e) { return thenDo(e); }
+          c.decryptPayload(wrapped.ciphertext, wrapped.nonce, kek, function (err, softPrivJwk) {
+            if (err) return thenDo(err);
+            c.importPrivateKeyJwk(softPrivJwk, function (err, softPrivKey) {
+              if (err) return thenDo(err);
+              var envelopeToSign = Object.assign({}, envelope);
+              delete envelopeToSign.sig;
+              c.signJws(envelopeToSign, softPrivKey, function (err, sig) {
+                if (err) return thenDo(err);
+                thenDo(null, Object.assign({}, envelope, { sig: sig }));
+              });
+            });
+          });
+        });
+      },
+
     },
 
     'upload', {
@@ -359,6 +407,7 @@ module('lively.identity.FileCrypto')
                       var envelope = Object.assign({
                         objId: gen.objId,
                         did: user.did,
+                        genesisNonce: gen.genesisNonce,
                         type: 'file',
                         visibility: isPublic ? 'public' : (recipients.length ? 'shared' : 'private'),
                         created: new Date().toISOString(),
@@ -366,19 +415,22 @@ module('lively.identity.FileCrypto')
                         blobCid: blobCid,
                         state: { name: fileName },
                       }, envelopeExtra || {});
-                      self._putEnvelope(user.handle, envelope, function (err) {
-                        if (err) return thenDo(err);
-                        // blobNonce is always null now (public: blob is
-                        // plaintext; private/shared: the header travels
-                        // inline in the blob instead, see
-                        // _encryptFileChunked) — kept in the result shape
-                        // for callers that already read it. `chunked` is
-                        // returned (along with dek) for callers that embed
-                        // both directly rather than going through
-                        // fetchAndDecrypt — e.g. postcard attachments
-                        // (Encryption.md §6), which need it to pick the
-                        // right decrypt path in resolveAttachmentUrl.
-                        thenDo(null, { objId: gen.objId, blobCid: blobCid, blobNonce: null, chunked: cipher.chunked, dek: dek, url: blobUrl });
+                      self._signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
+                        if (signErr) console.warn('[FileCrypto] Could not sign envelope (non-fatal):', signErr.message);
+                        self._putEnvelope(user.handle, signed || envelope, function (err) {
+                          if (err) return thenDo(err);
+                          // blobNonce is always null now (public: blob is
+                          // plaintext; private/shared: the header travels
+                          // inline in the blob instead, see
+                          // _encryptFileChunked) — kept in the result shape
+                          // for callers that already read it. `chunked` is
+                          // returned (along with dek) for callers that embed
+                          // both directly rather than going through
+                          // fetchAndDecrypt — e.g. postcard attachments
+                          // (Encryption.md §6), which need it to pick the
+                          // right decrypt path in resolveAttachmentUrl.
+                          thenDo(null, { objId: gen.objId, blobCid: blobCid, blobNonce: null, chunked: cipher.chunked, dek: dek, url: blobUrl });
+                        });
                       });
                     }
 
@@ -685,6 +737,8 @@ module('lively.identity.FileCrypto')
       _saveFolderVersion: function (handle, prevEnvelope, dek, name, files, thenDo) {
         var self = this;
         var c = lively.identity.crypto;
+        var user = lively.identity.did.currentUser();
+        if (!user) return thenDo(new Error('_saveFolderVersion: no identity session active'));
         var payload = { name: name, files: files };
         c.encryptPayload(payload, dek, function (err, encrypted) {
           if (err) return thenDo(err);
@@ -707,10 +761,13 @@ module('lively.identity.FileCrypto')
               blobCids: files.map(function (f) { return f.blobCid; }),
               state: { name: name, fileCount: files.length },
             };
-            self._putEnvelope(handle, envelope, function (err) {
-              if (err) return thenDo(err);
-              self._cacheFolderDek(envelope.objId, dek);
-              thenDo(null, { objId: envelope.objId, cid: cid, fileCount: files.length });
+            self._signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
+              if (signErr) console.warn('[FileCrypto] Could not sign envelope (non-fatal):', signErr.message);
+              self._putEnvelope(handle, signed || envelope, function (err) {
+                if (err) return thenDo(err);
+                self._cacheFolderDek(envelope.objId, dek);
+                thenDo(null, { objId: envelope.objId, cid: cid, fileCount: files.length });
+              });
             });
           });
         });
@@ -759,6 +816,7 @@ module('lively.identity.FileCrypto')
                     var envelope = {
                       objId: gen.objId,
                       did: user.did,
+                      genesisNonce: gen.genesisNonce,
                       type: 'folder',
                       visibility: recipientWraps.length ? 'shared' : 'private',
                       created: new Date().toISOString(),
@@ -773,10 +831,13 @@ module('lively.identity.FileCrypto')
                       blobCids: [],
                       state: { name: name, fileCount: 0 },
                     };
-                    self._putEnvelope(user.handle, envelope, function (err) {
-                      if (err) return thenDo(err);
-                      self._cacheFolderDek(envelope.objId, dek);
-                      thenDo(null, { objId: envelope.objId, dek: dek });
+                    self._signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
+                      if (signErr) console.warn('[FileCrypto] Could not sign envelope (non-fatal):', signErr.message);
+                      self._putEnvelope(user.handle, signed || envelope, function (err) {
+                        if (err) return thenDo(err);
+                        self._cacheFolderDek(envelope.objId, dek);
+                        thenDo(null, { objId: envelope.objId, dek: dek });
+                      });
                     });
                   });
                 });

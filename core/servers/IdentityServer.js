@@ -2986,21 +2986,39 @@ module.exports = function (route, app) {
     // signing succeeds (see PostCardSerializer.js/WikiSerializer.js/
     // SignedSerializer.js/PartSerializer.js's shared _buildEnvelope
     // pattern), so this is safe to make mandatory with no back-compat risk.
+    //
+    // type: "wallet-backup" is the one exception: WalletBackup.js's own
+    // objId is deterministic per-identity by design (§7.2.1 — no random
+    // nonce at all, so any device authenticating as this DID recomputes the
+    // same objId with no local pointer needed), so it never carries a
+    // genesisNonce and no nonce value could satisfy the check above anyway
+    // (the formula it's derived from doesn't take one). Pin it directly
+    // against did+type instead, which is exactly as unforgeable — nothing
+    // about the derivation is caller-chosen.
     if (!envelope.record.prevCid) {
-      if (!envelope.genesisNonce) {
+      if (envelope.type === "wallet-backup") {
+        var expectedBackupObjId = cryptoVerify.computeWalletBackupObjId(envelope.did);
+        if (expectedBackupObjId !== envelope.objId) {
+          return res.status(400).json({
+            error: "objId does not match H(did:wallet-backup) — expected " +
+              expectedBackupObjId,
+          });
+        }
+      } else if (!envelope.genesisNonce) {
         return res.status(400).json({
           error: "Genesis write missing required field: genesisNonce",
         });
-      }
-      var expectedGenesisObjId = cryptoVerify.computeGenesisObjId(
-        envelope.did,
-        envelope.genesisNonce,
-      );
-      if (expectedGenesisObjId !== envelope.objId) {
-        return res.status(400).json({
-          error: "objId does not match H(did:genesisNonce) — expected " +
-            expectedGenesisObjId,
-        });
+      } else {
+        var expectedGenesisObjId = cryptoVerify.computeGenesisObjId(
+          envelope.did,
+          envelope.genesisNonce,
+        );
+        if (expectedGenesisObjId !== envelope.objId) {
+          return res.status(400).json({
+            error: "objId does not match H(did:genesisNonce) — expected " +
+              expectedGenesisObjId,
+          });
+        }
       }
     }
 
