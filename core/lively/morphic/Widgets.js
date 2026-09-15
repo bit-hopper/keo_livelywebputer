@@ -2228,7 +2228,7 @@ lively.morphic.World.addMethods(
                 ['Set grid spacing', function() { lively.ide.commands.exec("lively.morphic.Morph.setGridSpacing") }]]
             ],
             ['Debugging', this.debuggingMenuItems(world)],
-            ['Wiki', [
+            ['World', [
                 ['View versions of this world', this.openVersionViewer.bind(this, URL.source)],
                 ['Download world', function() {
                     require('lively.persistence.StandAlonePackaging').toRun(function() {
