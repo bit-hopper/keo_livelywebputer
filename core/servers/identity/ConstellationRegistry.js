@@ -163,7 +163,15 @@ var DDL =
   '  requested_at  TEXT NOT NULL,' +
   '  status        TEXT NOT NULL DEFAULT \'pending\',' +
   '  PRIMARY KEY (constellation, did)' +
-  ');';
+  ');\n' +
+  // Ordinary additive schema evolution (unlike the SQLite-era PRAGMA dance
+  // this file's header comment describes) — Postgres' ADD COLUMN IF NOT
+  // EXISTS is idempotent, so this is safe to run on every boot even after
+  // the columns already exist. Backs the settings dialog opened from the
+  // Quick Info panel's gear icon (ConstellationLounge.js, controller-only).
+  'ALTER TABLE constellations ADD COLUMN IF NOT EXISTS avatar_url TEXT;\n' +
+  'ALTER TABLE constellations ADD COLUMN IF NOT EXISTS banner_url TEXT;\n' +
+  'ALTER TABLE constellations ADD COLUMN IF NOT EXISTS description TEXT;';
 
 var _bootstrapped = false;
 
@@ -300,7 +308,10 @@ function _rowToConstellation(row, name) {
     createdAt: row.created_at,
     creationSig: row.creation_sig,
     visibility: row.visibility,
-    bots: bots
+    bots: bots,
+    avatarUrl: row.avatar_url || null,
+    bannerUrl: row.banner_url || null,
+    description: row.description || null
   };
 }
 
@@ -396,6 +407,67 @@ function addMember(name, did, thenDo) {
       var members = constellation.members.concat([did]);
       pool.query('UPDATE constellations SET members = $1 WHERE name = $2',
         [JSON.stringify(members), name],
+        function(err) { thenDo(err || null); });
+    });
+  });
+}
+
+// Updates the avatar/banner/description shown on the Quick Info panel.
+// Controller-only — enforced by the caller (IdentityServer.js's
+// PUT /c/:name/settings), not here. fields: { avatarUrl, bannerUrl,
+// description } — any may be '' to clear.
+// Calls thenDo(err).
+function updateProfile(name, fields, thenDo) {
+  withDB(function(err, pool) {
+    if (err) return thenDo(err);
+    pool.query('UPDATE constellations SET avatar_url = $1, banner_url = $2, description = $3 WHERE name = $4',
+      [fields.avatarUrl || null, fields.bannerUrl || null, fields.description || null, name],
+      function(err) { thenDo(err || null); });
+  });
+}
+
+// Promotes `did` to controller (moderator badge, ConstellationLounge.js's
+// member list) — creator-only, enforced by the caller
+// (IdentityServer.js's POST /c/:name/controllers), not here. Also adds `did`
+// to members if it isn't already one: a controller not in `members` would
+// still render as a moderator (the badge logic only filters `controllers`,
+// it never intersects with `members`), but would show a truncated DID
+// instead of a real @handle everywhere memberHandles is resolved from
+// `members` (e.g. GET /c/:name/space-token) — same as how POST /c/:name
+// already puts the creator's own DID into both arrays at creation time.
+// Calls thenDo(err).
+function addController(name, did, thenDo) {
+  withDB(function(err, pool) {
+    if (err) return thenDo(err);
+    get(name, function(err, constellation) {
+      if (err) return thenDo(err);
+      if (!constellation) return thenDo(new Error('Constellation not found: ' + name));
+      if (constellation.controllers.indexOf(did) !== -1) return thenDo(null);
+      var controllers = constellation.controllers.concat([did]);
+      var members = constellation.members.indexOf(did) !== -1
+        ? constellation.members
+        : constellation.members.concat([did]);
+      pool.query('UPDATE constellations SET controllers = $1, members = $2 WHERE name = $3',
+        [JSON.stringify(controllers), JSON.stringify(members), name],
+        function(err) { thenDo(err || null); });
+    });
+  });
+}
+
+// Demotes `did` from controller back to plain member — creator-only,
+// enforced by the caller, which also blocks removing the creator's own DID
+// (there is always exactly one creator, never zero controllers via this
+// path). Membership itself is untouched: demotion isn't removal.
+// Calls thenDo(err).
+function removeController(name, did, thenDo) {
+  withDB(function(err, pool) {
+    if (err) return thenDo(err);
+    get(name, function(err, constellation) {
+      if (err) return thenDo(err);
+      if (!constellation) return thenDo(new Error('Constellation not found: ' + name));
+      var controllers = constellation.controllers.filter(function (d) { return d !== did; });
+      pool.query('UPDATE constellations SET controllers = $1 WHERE name = $2',
+        [JSON.stringify(controllers), name],
         function(err) { thenDo(err || null); });
     });
   });
@@ -788,6 +860,9 @@ module.exports = {
   canWrite: canWrite,
   isController: isController,
   addMember: addMember,
+  updateProfile: updateProfile,
+  addController: addController,
+  removeController: removeController,
   requestJoin: requestJoin,
   getJoinRequestStatus: getJoinRequestStatus,
   listPendingJoinRequests: listPendingJoinRequests,

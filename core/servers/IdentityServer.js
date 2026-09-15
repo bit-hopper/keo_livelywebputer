@@ -3832,7 +3832,11 @@ module.exports = function (route, app) {
                   createdAt: constellation.createdAt,
                   visibility: constellation.visibility,
                   bots: bots,
-                  nextEvent: nextEvent
+                  nextEvent: nextEvent,
+                  did: constellation.did,
+                  avatarUrl: constellation.avatarUrl,
+                  bannerUrl: constellation.bannerUrl,
+                  description: constellation.description
                 }
               });
             });
@@ -3844,6 +3848,164 @@ module.exports = function (route, app) {
       constellationRegistry.getJoinRequestStatus(name, viewerDid, function (err, status) {
         if (err) return res.status(500).json({ error: String(err) });
         respond(status);
+      });
+    });
+  });
+
+  // Controller-only avatar/banner/description update — backs the settings
+  // dialog opened from the Quick Info panel's gear icon
+  // (ConstellationLounge.js, gear only rendered when isController). The
+  // server re-checks isController itself rather than trusting the
+  // client-side gating, same pattern as every other controller-only
+  // constellation route in this file.
+  // Body: { avatarUrl, bannerUrl, description } — any may be '' to clear.
+  var DESCRIPTION_MAX = 300; // Quick Info panel hard-clips display to 2 wrapped lines regardless — see ConstellationLounge.js
+  app.put("/c/:name/settings", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var body = req.body || {};
+    if (body.avatarUrl != null && typeof body.avatarUrl !== "string") {
+      return res.status(400).json({ error: "avatarUrl must be a string" });
+    }
+    if (body.bannerUrl != null && typeof body.bannerUrl !== "string") {
+      return res.status(400).json({ error: "bannerUrl must be a string" });
+    }
+    if (body.description != null && typeof body.description !== "string") {
+      return res.status(400).json({ error: "description must be a string" });
+    }
+    if (body.description && body.description.length > DESCRIPTION_MAX) {
+      return res.status(400).json({ error: "description must be " + DESCRIPTION_MAX + " characters or fewer" });
+    }
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.isController(constellation, req.identity.did)) {
+        return res.status(403).json({ error: "Forbidden: not a controller" });
+      }
+      constellationRegistry.updateProfile(name, {
+        avatarUrl: body.avatarUrl || "",
+        bannerUrl: body.bannerUrl || "",
+        description: body.description || ""
+      }, function (err) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({ ok: true });
+      });
+    });
+  });
+
+  // ─── constellation domain handles ──────────────────────────────────────────
+  // Same verified-domain mechanism as a personal identity's /@:handle/domains
+  // (see above) — the `domains` table rows are keyed purely by an arbitrary
+  // DID, so a constellation's own `did` field slots in directly, with no new
+  // table. Controller-only for POST/DELETE (server-enforced, same pattern as
+  // /c/:name/settings above); GET is world-readable like the personal-identity
+  // equivalent.
+
+  app.get("/c/:name/domains", auth.optionalAuth, function (req, res) {
+    var name = req.params.name;
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      handleRegistry.listDomainsForDid(constellation.did, function (err2, rows) {
+        if (err2) return res.status(500).json({ error: String(err2) });
+        res.json({
+          domains: rows.map(function (r) {
+            return { domain: r.domain, status: r.status, verifiedAt: r.verified_at, lastCheckedAt: r.last_checked_at };
+          }),
+        });
+      });
+    });
+  });
+
+  app.post("/c/:name/domains", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var domain = req.body && req.body.domain;
+    if (!domain || typeof domain !== "string")
+      return res.status(400).json({ error: "domain is required" });
+    domain = domain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    if (!domain)
+      return res.status(400).json({ error: "domain is required" });
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.isController(constellation, req.identity.did)) {
+        return res.status(403).json({ error: "Forbidden: not a controller" });
+      }
+      domainVerifier.verifyDomainClaim(domain, constellation.did, function (err2, result) {
+        if (err2) return res.status(500).json({ error: String(err2) });
+        if (!result.valid) return res.status(400).json({ error: result.reason });
+        handleRegistry.registerDomain(domain, constellation.did, function (regErr) {
+          if (regErr) return res.status(500).json({ error: String(regErr) });
+          res.json({ ok: true, domain: domain });
+        });
+      });
+    });
+  });
+
+  app.delete("/c/:name/domains/:domain", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.isController(constellation, req.identity.did)) {
+        return res.status(403).json({ error: "Forbidden: not a controller" });
+      }
+      handleRegistry.removeDomain(req.params.domain, constellation.did, function (err2, changed) {
+        if (err2) return res.status(500).json({ error: String(err2) });
+        if (!changed) return res.status(404).json({ error: "Domain not found: " + req.params.domain });
+        res.json({ ok: true });
+      });
+    });
+  });
+
+  // ─── constellation controllers (moderators) ────────────────────────────────
+  // Creator-only, not merely controller-only like the routes above — a
+  // moderator being able to promote further moderators isn't the intended
+  // model (constellation.createdBy is the sole "co-creator", every other
+  // controller is a moderator; see ConstellationDesignSpec.md and
+  // ConstellationLounge.js's member-list badge logic). No client UI exists
+  // for listing controllers separately — the settings dialog reuses
+  // quickInfo.controllers/memberHandles/createdBy it already has from
+  // GET /c/:name/space-token.
+  app.post("/c/:name/controllers", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var handle = req.body && req.body.handle;
+    if (!handle || typeof handle !== "string") {
+      return res.status(400).json({ error: "handle is required" });
+    }
+    handle = handle.trim().replace(/^@/, "");
+    if (!handle) return res.status(400).json({ error: "handle is required" });
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (req.identity.did !== constellation.createdBy) {
+        return res.status(403).json({ error: "Forbidden: only the creator can add controllers" });
+      }
+      handleRegistry.resolve(handle, function (err2, did) {
+        if (err2) return res.status(500).json({ error: String(err2) });
+        if (!did) return res.status(404).json({ error: "Handle not found: @" + handle });
+        constellationRegistry.addController(name, did, function (err3) {
+          if (err3) return res.status(500).json({ error: String(err3) });
+          res.json({ ok: true, did: did, handle: handle });
+        });
+      });
+    });
+  });
+
+  app.delete("/c/:name/controllers/:did", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var did = req.params.did;
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (req.identity.did !== constellation.createdBy) {
+        return res.status(403).json({ error: "Forbidden: only the creator can remove controllers" });
+      }
+      if (did === constellation.createdBy) {
+        return res.status(400).json({ error: "Cannot remove the creator" });
+      }
+      constellationRegistry.removeController(name, did, function (err2) {
+        if (err2) return res.status(500).json({ error: String(err2) });
+        res.json({ ok: true });
       });
     });
   });

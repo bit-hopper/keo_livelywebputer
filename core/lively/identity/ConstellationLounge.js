@@ -81,6 +81,7 @@ module("lively.identity.ConstellationLounge")
     "lively.identity.WikiView",
     "lively.identity.PostCardUtils",
     "lively.identity.QuiltPatterns",
+    "lively.identity.ConstellationSettingsDialog",
     "lively.morphic.Complete",
   )
   .toRun(function () {
@@ -258,6 +259,28 @@ module("lively.identity.ConstellationLounge")
           self._start();
         };
         xhr.onerror = function () { self._showError("Network error loading c/" + self._name); };
+        xhr.send();
+      },
+
+      // Re-fetches quick-info state and re-renders just that panel, without
+      // the full _start() rebuild _loadQuickInfo does on initial boot (which
+      // would re-add DOM listeners/websocket connections). Used after the
+      // settings dialog saves a new avatar/banner/domain.
+      _refreshQuickInfo: function () {
+        var self = this;
+        var base = lively.identity.did.baseUrl();
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", base + "/c/" + encodeURIComponent(this._name) + "/space-token", true);
+        xhr.withCredentials = true;
+        xhr.setRequestHeader("Accept", "application/json");
+        xhr.onload = function () {
+          if (xhr.status !== 200) return;
+          var data;
+          try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
+          self._isController = !!data.isController;
+          self._quickInfo = data.quickInfo || {};
+          self._renderQuickInfo();
+        };
         xhr.send();
       },
 
@@ -1343,17 +1366,22 @@ module("lively.identity.ConstellationLounge")
         // Banner + avatar, same layout idiom as ProfileCard.js's read view
         // (a full-width banner strip, a circular avatar straddling its
         // bottom-left corner in a white "ring") scaled down for this much
-        // shorter panel. Constellations have no uploadable banner/avatar
-        // yet (no bannerUrl/avatarUrl field exists — same gap as the bots
-        // section's missing settings UI), so both render their permanent
-        // fallback for now: a quilt-pattern banner (same seeded-pick
-        // treatment as ProfileCard.js's own "no bannerUrl" fallback) and a
-        // deterministic identicon avatar, both seeded off this
-        // constellation's own name, exactly like every member/comment
-        // avatar elsewhere in this file already is off a DID.
+        // shorter panel. Uses the real uploaded bannerUrl/avatarUrl once a
+        // controller has set one via the settings gear below; falls back to
+        // the permanent quilt-pattern banner / deterministic identicon
+        // (same seeded-pick treatment as ProfileCard.js's own "no
+        // bannerUrl" fallback), both seeded off this constellation's own
+        // name, exactly like every member/comment avatar elsewhere in this
+        // file already is off a DID.
         var BANNER_H = 130, AVATAR = 64, RING = 3;
         var banner = new lively.morphic.Box(lively.rect(0, 0, w, BANNER_H));
-        lively.identity.quiltPatterns.applyQuiltBackground(banner, "c/" + this._name);
+        if (qi.bannerUrl) {
+          banner = new lively.morphic.Image(lively.rect(0, 0, w, BANNER_H));
+          banner.setImageURL(qi.bannerUrl);
+          banner.applyStyle({ borderWidth: 0, clipMode: "hidden" });
+        } else {
+          lively.identity.quiltPatterns.applyQuiltBackground(banner, "c/" + this._name);
+        }
         this._quickInfoBox.addMorph(banner);
 
         var avX = 20, avY = BANNER_H - Math.floor(AVATAR / 2);
@@ -1363,7 +1391,7 @@ module("lively.identity.ConstellationLounge")
         this._quickInfoBox.addMorph(avRing);
 
         var avatar = new lively.morphic.Image(lively.rect(avX, avY, AVATAR, AVATAR));
-        avatar.setImageURL(lively.identity.postCardUtils.identiconDataUrl("c/" + this._name, AVATAR));
+        avatar.setImageURL(qi.avatarUrl || lively.identity.postCardUtils.identiconDataUrl("c/" + this._name, AVATAR));
         avatar.applyStyle({ borderRadius: AVATAR / 2, borderWidth: 0, clipMode: "hidden" });
         this._quickInfoBox.addMorph(avatar);
 
@@ -1503,6 +1531,53 @@ module("lively.identity.ConstellationLounge")
           detailY += lineH + 2;
         });
 
+        // Optional short description, set via the settings gear's dialog
+        // (no panel UI existed for this before) — stacked directly below
+        // the visibility/created-by lines above, same left edge and same
+        // detailW (not included in the detailRight/EVENT_CARD_X probe above,
+        // unlike those two lines: a free-text description can run much
+        // longer than "Created ... by @handle", and letting it influence
+        // the event card's X position would make that placement swing
+        // around based on prose length rather than the compact fields it's
+        // meant to react to — it just wraps within whatever width the
+        // other two lines already established).
+        if (qi.description) {
+          var descT = lively.morphic.Text.makeLabel(qi.description,
+            { fontSize: 12, textColor: Color.rgb(80, 80, 80), whiteSpaceHandling: "normal", fixedWidth: true, fixedHeight: true });
+          descT.setPosition(lively.pt(avX, detailY));
+          descT.setExtent(lively.pt(detailW, 1));
+          self._quickInfoBox.addMorph(descT);
+          var descInner = descT.renderContext().shapeNode.querySelector("div");
+          var naturalDescH = (descInner ? descInner.offsetHeight : 14) + 4;
+          // Hard-capped to 2 wrapped lines regardless of actual length — at
+          // up to 300 chars (DESCRIPTION_MAX, IdentityServer.js) a
+          // description can wrap well past 2 lines in this panel's own
+          // detailW, especially once EVENT_CARD_X/detailW get narrowed by
+          // the event-card layout (a separate, already-known-narrow-in-some-
+          // cases issue, tracked for a later pass — not fixed here).
+          // Confirmed live: an uncapped 2-sentence description rendered a
+          // 4th wrapped line directly on top of the settings gear (fixed
+          // bottom-left of the panel), and ran under the event card too.
+          // No ellipsis — a hard clip, same "just clip, don't bother with
+          // ellipsis" choice already made for the settings dialog's own
+          // controller/domain row labels. The probe measures this panel's
+          // OWN real single-line height at this fontSize/detailW rather
+          // than a hardcoded px guess, so it stays correct if either ever
+          // changes.
+          var probe = lively.morphic.Text.makeLabel("M",
+            { fontSize: 12, whiteSpaceHandling: "normal", fixedWidth: true, fixedHeight: true });
+          probe.setPosition(lively.pt(-9999, -9999));
+          probe.setExtent(lively.pt(detailW, 1));
+          self._quickInfoBox.addMorph(probe);
+          var probeInner = probe.renderContext().shapeNode.querySelector("div");
+          var oneLineH = (probeInner ? probeInner.offsetHeight : 14) + 4;
+          probe.remove();
+          var descH = Math.min(naturalDescH, oneLineH * 2);
+          descT.setExtent(lively.pt(detailW, descH));
+          descT.applyStyle({ clipMode: "hidden" });
+          detailY += descH + 2;
+        }
+
         // Event card — pinned to the top-right corner of the space right
         // of the avatar/title column and below the banner, now that the
         // visibility/members/created details above no longer reserve room
@@ -1523,7 +1598,62 @@ module("lively.identity.ConstellationLounge")
           this._renderEmptyEventCard(EVENT_CARD_X, BANNER_H, visibleW, cardBottomMax);
         }
 
+        // Settings gear — bottom-left of the panel, controller-only (same
+        // isController gate as the Rooms panel's "New Room" button above).
+        // Opens ConstellationSettingsDialog to set avatar/banner/domain;
+        // the server re-checks isController on every write route regardless,
+        // this is purely a "don't show it" convenience for non-controllers.
+        // Single Text-morph-as-icon-button idiom (AmbientPresencePanel.js's
+        // makeIconButton): a fixed-rect Text so align:'center' isn't a
+        // no-op (that gotcha only bites a hug-content box), vertical
+        // centering via top padding rather than verticalAlign (a no-op on
+        // a multi-... well single-line box too, but padding is the already-
+        // proven approach here) — fontSize is pt not px, so 13.5pt targets
+        // an real ~18px glyph inside the 26px circle.
+        if (this._isController) {
+          var GEAR = 26, GEAR_GLYPH_PX = 18;
+          var gearBtn = new lively.morphic.Text(lively.rect(10, h - 10 - GEAR, GEAR, GEAR));
+          gearBtn.textString = "settings";
+          gearBtn.applyStyle({
+            fontFamily: "'Material Symbols Rounded'",
+            fontSize: GEAR_GLYPH_PX * 0.75,
+            textColor: Color.rgb(90, 90, 90),
+            fill: Color.rgba(255, 255, 255, 0.92),
+            borderRadius: GEAR / 2,
+            borderWidth: 1,
+            borderColor: Color.rgb(224, 224, 224),
+            align: "center",
+            padding: lively.Rectangle.inset(0, Math.round((GEAR - GEAR_GLYPH_PX) / 2), 0, 0),
+            allowInput: false,
+            selectable: false,
+            clipMode: "hidden",
+            whiteSpaceHandling: "pre",
+            handStyle: "pointer",
+          });
+          noDrag(gearBtn);
+          gearBtn.toolTip = "Constellation settings";
+          gearBtn.onMouseOver = function () { gearBtn.applyStyle({ fill: Color.rgb(238, 238, 238) }); };
+          gearBtn.onMouseOut = function () { gearBtn.applyStyle({ fill: Color.rgba(255, 255, 255, 0.92) }); };
+          gearBtn.onMouseUp = function (evt) {
+            self._openConstellationSettings();
+            evt.stop();
+            return true;
+          };
+          this._quickInfoBox.addMorph(gearBtn);
+        }
+
         this._disableDragging(this._quickInfoBox);
+      },
+
+      // Opens the avatar/banner/domain settings dialog (controller-only,
+      // gated by the gear button above and re-checked server-side on every
+      // write route it uses). Re-loads quick info on save so the panel
+      // reflects the new avatar/banner immediately.
+      _openConstellationSettings: function () {
+        var self = this;
+        lively.identity.ConstellationSettingsDialog.open(this._name, this._quickInfo, function () {
+          self._refreshQuickInfo();
+        });
       },
 
       // Same bordered slot as _renderEventCard, shown instead of it when
