@@ -47,7 +47,9 @@ module("lively.identity.RegisterDialog")
   )
   .toRun(function () {
     lively.BuildSpec("lively.identity.RegisterDialog", {
-      _Extent: lively.pt(400, 268),
+      _BorderRadius: 7,
+      _Extent: lively.pt(400, 286),
+      _Fill: Color.rgb(255, 16, 144),
       className: "lively.morphic.Window",
       contentOffset: lively.pt(3, 22),
       draggingEnabled: true,
@@ -57,7 +59,7 @@ module("lively.identity.RegisterDialog")
       titleBar: "Create identity",
       submorphs: [
         {
-          _Extent: lively.pt(394, 243),
+          _Extent: lively.pt(394, 258),
           _Fill: Color.rgb(250, 250, 250),
           _Position: lively.pt(3, 22),
           className: "lively.morphic.Box",
@@ -74,7 +76,32 @@ module("lively.identity.RegisterDialog")
       // ─── lifecycle ──────────────────────────────────────────────────────────────
 
       onFromBuildSpecCreated: function onFromBuildSpecCreated() {
+        // Window's own onFromBuildSpecCreated (BuildSpecMorphExtensions.js)
+        // is what actually builds the title bar from the titleBar: BuildSpec
+        // property above -- skipping $super() renders with no title bar at
+        // all (confirmed gotcha, see WalletSetupDialog.js's identical note).
+        $super();
+        this._ensureAccentChromeCss();
+        this.addStyleClassName("identity-accent-chrome");
         this.buildForm();
+      },
+
+      // The base theme's default title-text color (#555) doesn't have
+      // enough contrast against this dialog's saturated pink _Fill (which
+      // already shows through as the title bar's own background for free,
+      // since `.Window .TitleBar` is transparent by design) -- scoped to a
+      // small shared class so it never affects any other window. Same
+      // technique as DMChat.js's applyAccentChrome/_ensureAccentChromeCss.
+      _ensureAccentChromeCss: function () {
+        var STYLE_ID = "identity-accent-chrome-style";
+        if (document.getElementById(STYLE_ID)) return;
+        var styleEl = document.createElement("style");
+        styleEl.id = STYLE_ID;
+        styleEl.textContent = [
+          ".Window.identity-accent-chrome .Text.window-title { color: #fff; }",
+          ".Window.identity-accent-chrome.highlighted .Text.window-title { color: #fff; font-weight: bold; }",
+        ].join("\n");
+        document.head.appendChild(styleEl);
       },
 
       // ─── form construction ──────────────────────────────────────────────────────
@@ -93,12 +120,16 @@ module("lively.identity.RegisterDialog")
           var lbl = new lively.morphic.Text(lively.rect(pad, y, w, 16), text);
           lbl.applyStyle({
             allowInput: false,
+            fontFamily: "Arial, sans-serif",
             fontSize: 11,
             textColor: Color.rgb(70, 70, 70),
+            padding: lively.rect(4, 3, 0, 0),
             fill: null,
+            borderWidth: 0,
+            borderColor: null,
           });
           content.addMorph(lbl);
-          y += 18;
+          y += 22; // 16px label + 6px gap before its input
           return lbl;
         }
 
@@ -107,16 +138,17 @@ module("lively.identity.RegisterDialog")
           inp.name = name;
           inp.applyStyle({
             allowInput: true,
+            fontFamily: "Helvetica",
             fontSize: 12,
             fill: Color.white,
             borderWidth: 1,
-            borderColor: Color.rgb(190, 190, 190),
-            borderRadius: 3,
-            padding: lively.rect(4, 3, 0, 0),
+            borderColor: Color.rgb(203, 203, 203),
+            borderRadius: 3.75,
+            padding: lively.rect(4, 4, 0, 0),
           });
           inp.beInputLine();
           content.addMorph(inp);
-          y += 28;
+          y += 34; // 22px field + 12px gap before the next label
           return inp;
         }
 
@@ -135,35 +167,86 @@ module("lively.identity.RegisterDialog")
           "",
         );
         statusText.name = "statusText";
-        statusText.applyStyle({ allowInput: false, fontSize: 11, fill: null });
+        statusText.applyStyle({ allowInput: false, fontSize: 11, fill: null, borderWidth: 0, borderColor: null });
         content.addMorph(statusText);
         y += 36;
 
+        var isAddDevice = !!(lively.identity.did && lively.identity.did.isLoggedIn());
+
+        function paintButton(btn, borderColor, borderWidth, borderRadius, fill) {
+          // applyStyle alone silently fails to reach the DOM for buttons
+          // created procedurally (new Button(...) + addMorph) rather than
+          // declared as static BuildSpec submorphs — write the real CSS
+          // directly as well, verified via getComputedStyle. Deferred one
+          // tick because a layout pass still in flight right after
+          // construction (content pane's resizeWidth/resizeHeight layout)
+          // otherwise regenerates the shapeNode and discards a same-tick
+          // direct-DOM write.
+          btn.applyStyle({
+            borderColor: borderColor,
+            borderWidth: borderWidth,
+            borderRadius: borderRadius,
+            fill: fill,
+          });
+          (function () {
+            var node = btn.renderContext && btn.renderContext().shapeNode;
+            if (node) {
+              node.style.borderColor = borderColor;
+              node.style.borderWidth = borderWidth + "px";
+              node.style.borderRadius = borderRadius + "px";
+              node.style.background = fill || "";
+            }
+          }).delay(0);
+        }
+
         var regBtn = new lively.morphic.Button(
-          lively.rect(pad, y, 100, 24),
+          lively.rect(pad + w - 100, y, 100, 24),
           "Register",
         );
         regBtn.name = "registerBtn";
-        lively.bindings.connect(regBtn, "fire", self, "register");
         content.addMorph(regBtn);
+        paintButton(regBtn, "rgb(240,190,210)", 1.184, 5.2, "rgb(255,240,247)");
+        lively.bindings.connect(regBtn, "fire", self, "register");
 
         var cancelBtn = new lively.morphic.Button(
-          lively.rect(pad + 108, y, 80, 24),
-          "Cancel",
+          lively.rect(pad, y, 80, 24),
+          "Back",
         );
         cancelBtn.name = "registerCancelBtn";
-        lively.bindings.connect(cancelBtn, "fire", self, "remove");
         content.addMorph(cancelBtn);
+        paintButton(cancelBtn, "rgb(214,214,214)", 1, 5, null);
+        lively.bindings.connect(cancelBtn, "fire", self, "goBack");
+
+        this._isAddDevice = isAddDevice;
+        this.setTitle(isAddDevice ? "Create new Passkey" : "Create identity");
 
         // Pre-fill and lock handle + displayName when adding a device to an
         // existing session. The server treats this as an upsert on the handle.
-        if (lively.identity.did.isLoggedIn()) {
+        if (isAddDevice) {
           var user = lively.identity.did.currentUser();
+          var lockedStyle = {
+            allowInput: false,
+            fill: Color.rgb(240, 240, 240),
+            textColor: Color.rgb(120, 120, 120),
+          };
           this.get("handleInput").setTextString(user.handle);
-          this.get("handleInput").applyStyle({ allowInput: false });
+          this.get("handleInput").applyStyle(lockedStyle);
           this.get("displayNameInput").setTextString(user.displayName || "");
-          this.get("displayNameInput").applyStyle({ allowInput: false });
+          this.get("displayNameInput").applyStyle(lockedStyle);
         }
+      },
+
+      // ─── navigation ─────────────────────────────────────────────────────────────
+
+      goBack: function goBack() {
+        this.remove();
+        // Add-device mode is opened from the menu bar while already signed
+        // in -- there's no "Start" chooser screen to return to, so Back
+        // there is just a dismiss (matching the old Cancel behavior).
+        if (this._isAddDevice) return;
+        lively.require("lively.identity.AuthChoiceDialog").toRun(function () {
+          lively.BuildSpec("lively.identity.AuthChoiceDialog").createMorph().openInWorldCenter();
+        });
       },
 
       // ─── registration ceremony ──────────────────────────────────────────────────
@@ -521,7 +604,7 @@ module("lively.identity.RegisterDialog")
         var t = this.get("statusText");
         if (!t) return;
         t.setTextString(msg || "");
-        t.setTextColor(isError ? Color.red : Color.rgb(60, 60, 60));
+        t.setTextColor(isError ? Color.rgb(204, 51, 51) : Color.rgb(153, 153, 153));
       },
     });
   }); // end module('lively.identity.RegisterDialog')

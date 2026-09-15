@@ -3,15 +3,16 @@
  *
  * Window dialog for signing in to an existing identity.
  *
- * Two paths:
+ * Handle is required. Two paths, chosen by whether the typed handle has a
+ * matching credential in the local WebAuthn roster:
  *
- *   Known-device path — local WebAuthn roster has a credential for this rpId.
- *     The handle input narrows which credential to offer; leaving it blank
- *     lets the OS pick from all resident keys on this device.
- *     Succeeds without fetching the DID document from the server because
- *     completeAuthentication() reads it from local lively.IndexedDB.
+ *   Known-device path — local WebAuthn roster has a credential for this
+ *     rpId + handle. Succeeds without fetching the DID document from the
+ *     server because completeAuthentication() reads it from local
+ *     lively.IndexedDB.
  *
- *   New-device path — no local roster entry matches.
+ *   New-device path — no local roster entry matches (e.g. first sign-in on
+ *     this browser).
  *     Uses an empty allowCredentials list so the OS shows a discoverable-
  *     credential picker. After the authenticator fires, the handle is
  *     extracted from userHandle bytes ("lively-user:<handle>"), the server
@@ -37,7 +38,9 @@ module("lively.identity.LoginDialog")
   )
   .toRun(function () {
     lively.BuildSpec("lively.identity.LoginDialog", {
-      _Extent: lively.pt(400, 210),
+      _BorderRadius: 7,
+      _Extent: lively.pt(400, 174),
+      _Fill: Color.rgb(255, 16, 144),
       className: "lively.morphic.Window",
       contentOffset: lively.pt(3, 22),
       draggingEnabled: true,
@@ -47,7 +50,7 @@ module("lively.identity.LoginDialog")
       titleBar: "Sign in",
       submorphs: [
         {
-          _Extent: lively.pt(394, 185),
+          _Extent: lively.pt(394, 146),
           _Fill: Color.rgb(250, 250, 250),
           _Position: lively.pt(3, 22),
           className: "lively.morphic.Box",
@@ -64,7 +67,32 @@ module("lively.identity.LoginDialog")
       // ─── lifecycle ──────────────────────────────────────────────────────────────
 
       onFromBuildSpecCreated: function onFromBuildSpecCreated() {
+        // Window's own onFromBuildSpecCreated (BuildSpecMorphExtensions.js)
+        // is what actually builds the title bar from the titleBar: BuildSpec
+        // property above -- skipping $super() renders with no title bar at
+        // all (confirmed gotcha, see WalletSetupDialog.js's identical note).
+        $super();
+        this._ensureAccentChromeCss();
+        this.addStyleClassName("identity-accent-chrome");
         this.buildForm();
+      },
+
+      // The base theme's default title-text color (#555) doesn't have
+      // enough contrast against this dialog's saturated pink _Fill (which
+      // already shows through as the title bar's own background for free,
+      // since `.Window .TitleBar` is transparent by design) -- scoped to a
+      // small shared class so it never affects any other window. Same
+      // technique as DMChat.js's applyAccentChrome/_ensureAccentChromeCss.
+      _ensureAccentChromeCss: function () {
+        var STYLE_ID = "identity-accent-chrome-style";
+        if (document.getElementById(STYLE_ID)) return;
+        var styleEl = document.createElement("style");
+        styleEl.id = STYLE_ID;
+        styleEl.textContent = [
+          ".Window.identity-accent-chrome .Text.window-title { color: #fff; }",
+          ".Window.identity-accent-chrome.highlighted .Text.window-title { color: #fff; font-weight: bold; }",
+        ].join("\n");
+        document.head.appendChild(styleEl);
       },
 
       // ─── form construction ──────────────────────────────────────────────────────
@@ -83,12 +111,16 @@ module("lively.identity.LoginDialog")
           var lbl = new lively.morphic.Text(lively.rect(pad, y, w, 16), text);
           lbl.applyStyle({
             allowInput: false,
+            fontFamily: "Arial, sans-serif",
             fontSize: 11,
             textColor: Color.rgb(70, 70, 70),
+            padding: lively.rect(4, 3, 0, 0),
             fill: null,
+            borderWidth: 0,
+            borderColor: null,
           });
           content.addMorph(lbl);
-          y += 18;
+          y += 22; // 16px label + 6px gap before its input
           return lbl;
         }
 
@@ -97,20 +129,21 @@ module("lively.identity.LoginDialog")
           inp.name = name;
           inp.applyStyle({
             allowInput: true,
+            fontFamily: "Helvetica",
             fontSize: 12,
             fill: Color.white,
             borderWidth: 1,
-            borderColor: Color.rgb(190, 190, 190),
-            borderRadius: 3,
-            padding: lively.rect(4, 3, 0, 0),
+            borderColor: Color.rgb(203, 203, 203),
+            borderRadius: 3.75,
+            padding: lively.rect(4, 4, 0, 0),
           });
           inp.beInputLine();
           content.addMorph(inp);
-          y += 28;
+          y += 34; // 22px field + 12px gap before the next label
           return inp;
         }
 
-        addLabel("Handle (optional — leave blank for device picker):");
+        addLabel("Handle:");
         addInput("handleInput");
 
         y += 2;
@@ -119,24 +152,61 @@ module("lively.identity.LoginDialog")
           "",
         );
         statusText.name = "statusText";
-        statusText.applyStyle({ allowInput: false, fontSize: 11, fill: null });
+        statusText.applyStyle({ allowInput: false, fontSize: 11, fill: null, borderWidth: 0, borderColor: null });
         content.addMorph(statusText);
         y += 36;
 
+        function paintButton(btn, borderColor, borderWidth, borderRadius, fill) {
+          // applyStyle alone silently fails to reach the DOM for buttons
+          // created procedurally (new Button(...) + addMorph) rather than
+          // declared as static BuildSpec submorphs — write the real CSS
+          // directly as well, verified via getComputedStyle. Deferred one
+          // tick because a layout pass still in flight right after
+          // construction (content pane's resizeWidth/resizeHeight layout)
+          // otherwise regenerates the shapeNode and discards a same-tick
+          // direct-DOM write.
+          btn.applyStyle({
+            borderColor: borderColor,
+            borderWidth: borderWidth,
+            borderRadius: borderRadius,
+            fill: fill,
+          });
+          (function () {
+            var node = btn.renderContext && btn.renderContext().shapeNode;
+            if (node) {
+              node.style.borderColor = borderColor;
+              node.style.borderWidth = borderWidth + "px";
+              node.style.borderRadius = borderRadius + "px";
+              node.style.background = fill || "";
+            }
+          }).delay(0);
+        }
+
         var signInBtn = new lively.morphic.Button(
-          lively.rect(pad, y, 100, 24),
+          lively.rect(pad + w - 100, y, 100, 24),
           "Sign in",
         );
         signInBtn.name = "signInBtn";
-        lively.bindings.connect(signInBtn, "fire", self, "signIn");
         content.addMorph(signInBtn);
+        paintButton(signInBtn, "rgb(240,190,210)", 1.184, 5.2, "rgb(255,240,247)");
+        lively.bindings.connect(signInBtn, "fire", self, "signIn");
 
         var cancelBtn = new lively.morphic.Button(
-          lively.rect(pad + 108, y, 80, 24),
-          "Cancel",
+          lively.rect(pad, y, 80, 24),
+          "Back",
         );
-        lively.bindings.connect(cancelBtn, "fire", self, "remove");
         content.addMorph(cancelBtn);
+        paintButton(cancelBtn, "rgb(214,214,214)", 1, 5, null);
+        lively.bindings.connect(cancelBtn, "fire", self, "goBack");
+      },
+
+      // ─── navigation ─────────────────────────────────────────────────────────────
+
+      goBack: function goBack() {
+        this.remove();
+        lively.require("lively.identity.AuthChoiceDialog").toRun(function () {
+          lively.BuildSpec("lively.identity.AuthChoiceDialog").createMorph().openInWorldCenter();
+        });
       },
 
       // ─── sign-in ceremony ───────────────────────────────────────────────────────
@@ -144,6 +214,9 @@ module("lively.identity.LoginDialog")
       signIn: function signIn() {
         var self = this;
         var typedHandle = (this.get("handleInput").textString || "").trim().replace(/^@/, "");
+        if (!typedHandle) {
+          return this.setStatus("Handle is required.", true);
+        }
         var btn = this.get("signInBtn");
         if (btn) btn.setActive(false);
         this.setStatus("Requesting challenge…");
@@ -164,9 +237,7 @@ module("lively.identity.LoginDialog")
 
               // Filter to credentials matching the typed handle and current rpId.
               var matching = records.filter(function (r) {
-                var rpOk = r.rpId === rpId;
-                if (!typedHandle) return rpOk;
-                return rpOk && r.handle === typedHandle;
+                return r.rpId === rpId && r.handle === typedHandle;
               });
 
               if (matching.length > 0) {
@@ -190,7 +261,7 @@ module("lively.identity.LoginDialog")
                         break;
                       }
                     }
-                    self._postAuthenticate(assertion, typedHandle || matching[0].handle, rpId, btn, rosterRecord);
+                    self._postAuthenticate(assertion, typedHandle, rpId, btn, rosterRecord);
                   },
                 );
               } else {
@@ -203,25 +274,7 @@ module("lively.identity.LoginDialog")
                       if (btn) btn.setActive(true);
                       return self.setStatus("Authentication cancelled: " + authErr.message, true);
                     }
-                    // Extract handle from userHandle bytes ("lively-user:<handle>").
-                    var handle = typedHandle;
-                    if (!handle && assertion.userHandle) {
-                      try {
-                        handle = new TextDecoder()
-                          .decode(c.base64urlDecode(assertion.userHandle))
-                          .replace(/^lively-user:/, "");
-                      } catch (e) {
-                        // userHandle decode failed — fall through with empty handle
-                      }
-                    }
-                    if (!handle) {
-                      if (btn) btn.setActive(true);
-                      return self.setStatus(
-                        "Could not determine handle. Enter your handle and try again.",
-                        true,
-                      );
-                    }
-                    self._postAuthenticateNewDevice(assertion, handle, rpId, btn);
+                    self._postAuthenticateNewDevice(assertion, typedHandle, rpId, btn);
                   },
                 );
               }
@@ -419,7 +472,7 @@ module("lively.identity.LoginDialog")
         var t = this.get("statusText");
         if (!t) return;
         t.setTextString(msg || "");
-        t.setTextColor(isError ? Color.red : Color.rgb(60, 60, 60));
+        t.setTextColor(isError ? Color.rgb(204, 51, 51) : Color.rgb(153, 153, 153));
       },
     });
   }); // end module('lively.identity.LoginDialog')
