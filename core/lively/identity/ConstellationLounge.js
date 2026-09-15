@@ -121,6 +121,21 @@ module("lively.identity.ConstellationLounge")
     // real 45-character title: without this, height ~131px needed but
     // only ~98px was available).
     var QUICK_INFO_W = 974, QUICK_INFO_H = 366;   // about panel
+    // Bare structural safety floor for the right column's shared width
+    // (used by both _quickInfoBox and _spacesBox) — NOT a "comfortable
+    // minimum". It exists only to stop setExtent from ever being handed a
+    // zero/negative width at a pathologically narrow window; it must never
+    // be large enough to force the box wider than the real gap before the
+    // members column, or the box would overlap membersX by construction
+    // (confirmed live: an earlier version of this constant at 520 forced
+    // ~150px of real overlap at an ordinary 1300px window width, because
+    // Math.max(520, availRightW) discarded the true available width
+    // instead of just guarding against a degenerate one). _renderQuickInfo
+    // already has its own, much better-tuned legibility floors
+    // (MIN_CARD_W=160, detailW's 100px floor) that take over gracefully as
+    // this box gets small — this constant just needs to stay below
+    // whatever availRightW can realistically be before those kick in.
+    var MIN_QUICK_INFO_W = 40;
     var MEMBERS_W = 220;       // outer slot width
     var GUTTER = 20;           // column gutter, also the gap before the members column and the page's right edge
     var BOTTOM_MARGIN = 20;    // space left below the comment thread before the viewport's bottom edge
@@ -289,11 +304,14 @@ module("lively.identity.ConstellationLounge")
         this._buildChrome();
         this._renderQuickInfo();
         this._renderMemberList();
+        // Baseline for _onWindowResize's change-detection — this._geom
+        // already exists (_buildChrome's own final _layout() call set it).
+        this._lastRenderedQuickInfoW = this._geom.quickInfoW;
         this._fetchFeed(null);
         this._fetchRooms();
         this._connectPresence();
         this._installMenuBarEntry();
-        window.addEventListener("resize", this._layout.bind(this));
+        window.addEventListener("resize", this._onWindowResize.bind(this));
       },
     },
 
@@ -354,17 +372,27 @@ module("lively.identity.ConstellationLounge")
         var createGapEnd = membersX;
         var createBtnX = createGapStart + (createGapEnd - createGapStart - createBtnW) / 2;
 
+        // Shared right-column width for _quickInfoBox/_spacesBox, derived
+        // from the real gap between the fixed left column and the members
+        // panel instead of the fixed QUICK_INFO_W constant, so their right
+        // edges never run past membersX. Capped at QUICK_INFO_W (only ever
+        // shrinks the panel from its original design width, never grows it
+        // on wide monitors) and floored at MIN_QUICK_INFO_W (see its own
+        // comment).
+        var availRightW = membersX - GUTTER - rightColX;
+        var quickInfoW = Math.min(QUICK_INFO_W, Math.max(MIN_QUICK_INFO_W, availRightW));
+
         var g = this._geom = {
           searchX: searchX, searchY: TOP,
           // Sits in the gap between the postcard's top-right corner and the
           // search box's left edge, same row.
           sortByX: searchX - GUTTER - SORT_W, sortByY: TOP,
           // Sits beside the postcard, below the search row.
-          quickInfoX: rightColX, quickInfoY: quickInfoY, quickInfoW: QUICK_INFO_W, quickInfoH: QUICK_INFO_H,
+          quickInfoX: rightColX, quickInfoY: quickInfoY, quickInfoW: quickInfoW, quickInfoH: QUICK_INFO_H,
           reelX: GUTTER, reelY: reelY,
           navX: GUTTER, navY: reelY + CARD_H + 6,
           threadX: GUTTER, threadY: threadY, threadW: THREAD_W, threadH: threadH,
-          spacesX: rightColX, spacesY: spacesY, spacesW: QUICK_INFO_W, spacesH: threadBottom - spacesY,
+          spacesX: rightColX, spacesY: spacesY, spacesW: quickInfoW, spacesH: threadBottom - spacesY,
           membersX: membersX, membersY: TOP, membersW: MEMBERS_W, membersH: Math.max(120, H - TOP),
           createBtnX: createBtnX, createBtnY: TOP,
         };
@@ -400,6 +428,33 @@ module("lively.identity.ConstellationLounge")
           this._membersBox.setPosition(lively.pt(g.membersX, g.membersY));
           this._membersBox.setExtent(lively.pt(g.membersW, g.membersH));
         }
+      },
+
+      // Runs on every raw browser "resize" event. _layout()'s own box
+      // repositioning/resizing is cheap and stays immediate every time (so
+      // panels keep tracking the cursor smoothly mid-drag), but
+      // _renderQuickInfo()/_renderSpaces() each clear and rebuild their
+      // whole panel's DOM from scratch (banner image, measurement probes,
+      // room-card grid) — too expensive and visibly flickery to run on
+      // every tick of a resize drag. Debounced via the same
+      // lively.lang.fun.debounceNamed(id, ms, fn) idiom
+      // MenuBar.js/AmbientPresencePanel.js already use for onWorldResize
+      // (this controller is a plain Object.subclass, not a morph, so
+      // there's no this.id — this._name is this instance's natural unique
+      // key throughout the file already). Skipped entirely unless
+      // this._geom.quickInfoW — the one quantity that actually affects
+      // either panel's content — has genuinely changed since the last real
+      // re-render, so a pure-height-only resize triggers no rebuild at all.
+      _onWindowResize: function () {
+        this._layout();
+        var w = this._geom.quickInfoW;
+        if (w === this._lastRenderedQuickInfoW) return;
+        lively.lang.fun.debounceNamed("constellation-lounge-resize-render-" + this._name, 150,
+          function () {
+            this._lastRenderedQuickInfoW = w;
+            this._renderQuickInfo();
+            this._renderSpaces();
+          }.bind(this))();
       },
     },
 
@@ -883,11 +938,18 @@ module("lively.identity.ConstellationLounge")
         var self = this;
         (this._spacesBox.submorphs || []).slice().forEach(function (m) { m.remove(); });
 
-        // QUICK_INFO_W (not a live-measured spacesBox extent) — this panel
-        // is fixed-width like every other panel in this file, and
-        // _renderSpaces runs before _layout on first build, so the box's
-        // own rendered extent isn't set yet at that point.
-        var w = QUICK_INFO_W;
+        // Reads the box's own live extent (same idiom _renderQuickInfo/
+        // _renderMemberList already use), now that _layout() keeps it
+        // current — including shrinking it on narrow windows — and
+        // re-invokes this method after any resize that actually changes
+        // it. Exception: this method's very first call (from _buildChrome,
+        // before _layout has ever run) sees _spacesBox's (10,10)
+        // construction placeholder, well below MIN_QUICK_INFO_W, so fall
+        // back to the QUICK_INFO_W design width for that one call;
+        // _layout() runs immediately afterward and resizes the box for
+        // real.
+        var boxW = this._spacesBox.getExtent().x;
+        var w = boxW >= MIN_QUICK_INFO_W ? boxW : QUICK_INFO_W;
         var PAD = 14;
 
         var title = lively.morphic.Text.makeLabel("Rooms", {
@@ -1480,11 +1542,15 @@ module("lively.identity.ConstellationLounge")
         // unclamped EVENT_CARD_X of 276 left only 26px of visibleW for the
         // card, under its own 160px legibility floor, so it silently
         // didn't render at all (neither the populated nor the empty-state
-        // card). MIN_CARD_W/CARD_RIGHT_MARGIN mirror _renderEventCard's
-        // own floor/margin so this clamp lines up with what that function
-        // will actually do with the X it's handed. Below this width the
-        // detail lines fall back to wrapping (already handled below)
-        // rather than the event card losing its slot entirely.
+        // card). MIN_CARD_W matches _renderEventCard's/_renderEmptyEventCard's
+        // own "< 160" bail floor exactly (not their separate, higher
+        // Math.max(220,...) *preferred*-width term) so this clamp reserves
+        // only as much as the card actually needs to stay legible, not
+        // more — a MIN_CARD_W of 220 previously over-reserved by 60px,
+        // which came straight out of detailW below and collapsed the left
+        // column to ~104px at ordinary (~1338px) browser widths. Below this
+        // width the detail lines fall back to wrapping (already handled
+        // below) rather than the event card losing its slot entirely.
         //
         // The high-end cap is itself clamped back up to a titleClearX floor
         // (avatar clearance *and* the title's own real width — a second
@@ -1497,7 +1563,7 @@ module("lively.identity.ConstellationLounge")
         // under the card's left border). Below titleClearX the card is
         // never allowed to start, even if that leaves it a tight (but
         // valid, >= 160px) width rather than the full MIN_CARD_W.
-        var MIN_CARD_W = 220, CARD_RIGHT_MARGIN = 28;
+        var MIN_CARD_W = 160, CARD_RIGHT_MARGIN = 28;
         var titleClearX = Math.max(avX + AVATAR + 24, titleRight + 24);
         var EVENT_CARD_X = Math.max(
           titleClearX,
@@ -1518,7 +1584,7 @@ module("lively.identity.ConstellationLounge")
         // and render — cheap insurance, not the primary mechanism.
         var DETAIL_GAP = 8;
         var detailY = titleY + titleH + DETAIL_GAP;
-        var detailW = Math.max(80, EVENT_CARD_X - avX - 16);
+        var detailW = Math.max(100, EVENT_CARD_X - avX - 16);
         lines.forEach(function (str) {
           var t = lively.morphic.Text.makeLabel(str,
             { fontSize: 12, textColor: Color.rgb(102, 102, 102), whiteSpaceHandling: "normal", fixedWidth: true, fixedHeight: true });
