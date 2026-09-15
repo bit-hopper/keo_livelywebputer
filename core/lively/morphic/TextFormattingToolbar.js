@@ -68,15 +68,16 @@ module("lively.morphic.TextFormattingToolbar")
       // availability check ever runs, rather than depending on incidental
       // prior triggers or racing an in-flight download.
       VENDORED_FONT_NAMES: [
-        'Alex Brush', 'Bitcount Ink', 'Bitcount Prop Double Ink', 'Bitcount Single Ink',
-        'Cedarville Cursive', 'Coiny', 'Creepster', 'Eater', 'Emilys Candy', 'Foldit',
-        'Freckle Face', 'Gloria Hallelujah', 'Gluten', 'Gochi Hand', 'Grandstander',
-        'Gravitas One', 'IBM Plex Serif', 'Indie Flower', 'Jolly Lodger',
-        'Just Me Again Down Here', 'Kablammo', 'Kalnia Glaze', 'Loved by the King',
-        'Manufacturing Consent', 'Matemasie', 'Mea Culpa', 'Menbere', 'Miltonian',
-        'Mystery Quest', 'Offside', 'Patrick Hand', 'Rancho', 'Reem Kufi Fun',
-        'Rubik Beastly', 'Rubik Burned', 'Rubik Distressed', 'Rubik Gemstones',
-        'Rubik Maps', 'Rubik Puddles', 'Shadows Into Light Two', 'Yarndings 20',
+        'Cedarville Cursive', 'Coiny', 'Comic Neue', 'Creepster', 'Eater',
+        'Emilys Candy', 'Freckle Face', 'Give You Glory', 'Gloria Hallelujah', 'Gluten',
+        'Gochi Hand', 'Grandstander', 'Gravitas One', 'IBM Plex Serif', 'Indie Flower',
+        'Jolly Lodger', 'Just Me Again Down Here', 'Kablammo',
+        'Loved by the King', 'Manufacturing Consent', 'Matemasie',
+        'Menbere', 'Miltonian', 'Mystery Quest', 'Offside', 'Patrick Hand', 'Peralta',
+        'Rancho', 'Reem Kufi Fun', 'Rubik Beastly', 'Rubik Burned', 'Rubik Distressed',
+        'Rubik Gemstones', 'Rubik Glitch', 'Rubik Moonrocks',
+        'Rubik Vinyl', 'Shadows Into Light Two', 'Short Stack',
+        'Slackey', 'Stack Sans Notch', 'Sue Ellen Francisco',
         'Yuyu', 'Yuyu Short'
       ],
 

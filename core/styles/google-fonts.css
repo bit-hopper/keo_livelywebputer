@@ -10,38 +10,6 @@
  */
 
 @font-face {
-  font-family: 'Alex Brush';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(../lib/google-fonts/AlexBrush/AlexBrush-Regular.woff2) format('woff2');
-}
-
-@font-face {
-  font-family: 'Bitcount Ink';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(../lib/google-fonts/BitcountInk/BitcountInk-Regular.woff2) format('woff2');
-}
-
-@font-face {
-  font-family: 'Bitcount Prop Double Ink';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(../lib/google-fonts/BitcountPropDoubleInk/BitcountPropDoubleInk-Regular.woff2) format('woff2');
-}
-
-@font-face {
-  font-family: 'Bitcount Single Ink';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(../lib/google-fonts/BitcountSingleInk/BitcountSingleInk-Regular.woff2) format('woff2');
-}
-
-@font-face {
   font-family: 'Cedarville Cursive';
   font-style: normal;
   font-weight: 400;
@@ -55,6 +23,14 @@
   font-weight: 400;
   font-display: swap;
   src: url(../lib/google-fonts/Coiny/Coiny-Regular.woff2) format('woff2');
+}
+
+@font-face {
+  font-family: 'Comic Neue';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(../lib/google-fonts/ComicNeue/ComicNeue-Regular.woff2) format('woff2');
 }
 
 @font-face {
@@ -82,19 +58,19 @@
 }
 
 @font-face {
-  font-family: 'Foldit';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(../lib/google-fonts/Foldit/Foldit-Regular.woff2) format('woff2');
-}
-
-@font-face {
   font-family: 'Freckle Face';
   font-style: normal;
   font-weight: 400;
   font-display: swap;
   src: url(../lib/google-fonts/FreckleFace/FreckleFace-Regular.woff2) format('woff2');
+}
+
+@font-face {
+  font-family: 'Give You Glory';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(../lib/google-fonts/GiveYouGlory/GiveYouGlory-Regular.woff2) format('woff2');
 }
 
 @font-face {
@@ -178,14 +154,6 @@
 }
 
 @font-face {
-  font-family: 'Kalnia Glaze';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(../lib/google-fonts/KalniaGlaze/KalniaGlaze-Regular.woff2) format('woff2');
-}
-
-@font-face {
   font-family: 'Loved by the King';
   font-style: normal;
   font-weight: 400;
@@ -207,14 +175,6 @@
   font-weight: 400;
   font-display: swap;
   src: url(../lib/google-fonts/Matemasie/Matemasie-Regular.woff2) format('woff2');
-}
-
-@font-face {
-  font-family: 'Mea Culpa';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(../lib/google-fonts/MeaCulpa/MeaCulpa-Regular.woff2) format('woff2');
 }
 
 @font-face {
@@ -255,6 +215,14 @@
   font-weight: 400;
   font-display: swap;
   src: url(../lib/google-fonts/PatrickHand/PatrickHand-Regular.woff2) format('woff2');
+}
+
+@font-face {
+  font-family: 'Peralta';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(../lib/google-fonts/Peralta/Peralta-Regular.woff2) format('woff2');
 }
 
 @font-face {
@@ -306,19 +274,27 @@
 }
 
 @font-face {
-  font-family: 'Rubik Maps';
+  font-family: 'Rubik Glitch';
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url(../lib/google-fonts/RubikMaps/RubikMaps-Regular.woff2) format('woff2');
+  src: url(../lib/google-fonts/RubikGlitch/RubikGlitch-Regular.woff2) format('woff2');
 }
 
 @font-face {
-  font-family: 'Rubik Puddles';
+  font-family: 'Rubik Moonrocks';
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url(../lib/google-fonts/RubikPuddles/RubikPuddles-Regular.woff2) format('woff2');
+  src: url(../lib/google-fonts/RubikMoonrocks/RubikMoonrocks-Regular.woff2) format('woff2');
+}
+
+@font-face {
+  font-family: 'Rubik Vinyl';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(../lib/google-fonts/RubikVinyl/RubikVinyl-Regular.woff2) format('woff2');
 }
 
 @font-face {
@@ -330,11 +306,35 @@
 }
 
 @font-face {
-  font-family: 'Yarndings 20';
+  font-family: 'Short Stack';
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url(../lib/google-fonts/Yarndings20/Yarndings20-Regular.woff2) format('woff2');
+  src: url(../lib/google-fonts/ShortStack/ShortStack-Regular.woff2) format('woff2');
+}
+
+@font-face {
+  font-family: 'Slackey';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(../lib/google-fonts/Slackey/Slackey-Regular.woff2) format('woff2');
+}
+
+@font-face {
+  font-family: 'Stack Sans Notch';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(../lib/google-fonts/StackSansNotch/StackSansNotch-Regular.woff2) format('woff2');
+}
+
+@font-face {
+  font-family: 'Sue Ellen Francisco';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(../lib/google-fonts/SueEllenFrancisco/SueEllenFrancisco-Regular.woff2) format('woff2');
 }
 
 @font-face {
