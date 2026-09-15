@@ -1800,10 +1800,50 @@ module("lively.identity.ConstellationLounge")
         card.applyStyle({ borderWidth: 2, borderColor: Color.rgb(232, 73, 126), borderRadius: 12, clipMode: "hidden" });   // COMMENT_ACCENT (#e8497e)
         this._quickInfoBox.addMorph(card);
 
+        // +8/-4 padding-compensation used below for both the icon and the
+        // label: the shapeNode's own small fixed internal padding
+        // (CLAUDE.md's Text-morph sizing gotcha) eats into the content
+        // box, so setting width to exactly the measured glyph/text width
+        // clips the last couple px — pad the extent and shift position
+        // back by half that so the visible content lands centered with
+        // nothing clipped.
+        var SIZE_PAD = 8;
+
         // 28px real glyph size -> fontSize 21 (28*0.75), same pt-not-px
-        // conversion as every other icon in this file.
+        // conversion as every other icon in this file — ICON_PX is
+        // already the glyph's own designed render size, so the box is
+        // sized directly from it rather than measured off the live DOM.
+        // A live measurement was tried here first and confirmed broken:
+        // reading the rendered span's offsetWidth immediately after
+        // setting fontFamily/textString raced the icon font's async load,
+        // briefly reporting ~172px — the width of the literal string
+        // "calendar_month" in a fallback font before Material Symbols
+        // Rounded had actually applied. Same underlying race as the
+        // WindowControl icon-button gotcha elsewhere in this file
+        // (CLAUDE.md), just hit via measurement instead of a textString
+        // swap. Previously left at the full cardW width permanently (via
+        // align:"center" on a fixedWidth box), which looked centered but
+        // left an invisible hit-area spanning the entire card (confirmed
+        // via halo-select) instead of a small box around just the icon.
         var ICON_PX = 28, ICON_FONT = ICON_PX * 0.75, ICON_BOX_H = 34;
-        var icon = new lively.morphic.Text(lively.rect(0, Math.round(cardH / 2) - 34, cardW, ICON_BOX_H), "calendar_month");
+        var iconY = Math.round(cardH / 2) - 34;
+        // Centered x computed up front and baked straight into the
+        // constructor's rect, rather than built at x=0 and repositioned
+        // via a later setPosition call — confirmed live that the latter
+        // corrupts this specific card's render tree: a post-construction
+        // setPosition call here (even placed after card.addMorph(icon), a
+        // fix that looked plausible but didn't hold up) left the icon and
+        // the label below rendering under two different DOM wrapper
+        // nodes despite sharing the same morph-model owner, with the
+        // wrong stacking order on screen (icon below the label) even
+        // though both read back the correct, intended position on the
+        // model. Root cause not fully isolated; matching the label's own
+        // never-reposition-a-fixedWidth-morph-after-the-fact approach
+        // (icon uses fixedWidth:true from the start, so there's no
+        // "measure then shrink" step to require a second call anyway)
+        // sidesteps it entirely and is simpler besides.
+        var iconX = Math.max(0, Math.round((cardW - ICON_PX) / 2) - SIZE_PAD / 2);
+        var icon = new lively.morphic.Text(lively.rect(iconX, iconY, ICON_PX + SIZE_PAD, ICON_BOX_H), "calendar_month");
         icon.applyStyle({
           fontFamily: "'Material Symbols Rounded'", fontSize: ICON_FONT, textColor: Color.rgb(190, 190, 190),
           fill: null, borderWidth: 0, allowInput: false, selectable: false, align: "center",
@@ -1836,14 +1876,6 @@ module("lively.identity.ConstellationLounge")
         // alone just slid that still-full-width box rightward, overflowing
         // past the card's own right edge. Shrinking the extent too is what
         // actually makes it hug the text.
-        //
-        // +8/-4: the shapeNode's own small fixed internal padding (CLAUDE.md's
-        // Text-morph sizing gotcha) eats into the content box, so setting
-        // width to exactly labelW clips the last couple px (confirmed live:
-        // the trailing "d" in "scheduled" was cut off) — pad the extent and
-        // shift position back by half that so the visible glyph still lands
-        // centered with nothing clipped.
-        var SIZE_PAD = 8;
         label.setExtent(lively.pt(labelW + SIZE_PAD, 18));
         label.setPosition(lively.pt(Math.max(0, Math.round((cardW - labelW) / 2) - SIZE_PAD / 2), labelY));
       },
