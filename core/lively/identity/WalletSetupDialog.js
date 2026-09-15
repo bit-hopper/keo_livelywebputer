@@ -195,29 +195,65 @@ module("lively.identity.WalletSetupDialog")
 
       // ─── choice screen ──────────────────────────────────────────────────────
 
+      // Purple-accent pill styling for the three top-level setup choices.
+      // Same DOM-bypass recipe as _paintToggleButton/ConstellationLounge.js's
+      // own _paintPillButton: background/border/radius have to be written
+      // directly to the shapeNode for a procedurally-`new`'d button (the
+      // model-layer applyStyle/setFill call silently never reaches the DOM
+      // for these), while the label's own setTextColor is a plain Text
+      // morph setter and works fine through the normal model layer. Unlike
+      // _paintToggleButton (only ever called on later, already-stable
+      // screens), this runs at dialog CONSTRUCTION time -- a same-tick
+      // direct-DOM write here got silently discarded (confirmed live: only
+      // `border-width` survived, `border-color`/`border-style` were gone)
+      // because a layout pass still in flight right after addMorph
+      // regenerates the shapeNode, same gotcha AuthChoiceDialog.js's own
+      // paintButton already works around with a 0-delay.
+      _paintPillButton: function _paintPillButton(btn, radius) {
+        (function () {
+          var node = btn.renderContext && btn.renderContext().shapeNode;
+          if (node) {
+            node.style.background = "#fff";
+            node.style.border = "2px solid rgb(147,51,234)";
+            node.style.borderRadius = radius + "px";
+          }
+        }).delay(0);
+        if (btn.label) {
+          if (btn.label.setTextColor) btn.label.setTextColor(Color.rgb(88, 28, 135));
+          if (btn.label.applyStyle) btn.label.applyStyle({ fontWeight: "600" });
+        }
+      },
+
       buildChoiceScreen: function buildChoiceScreen() {
         var self = this;
         var content = this._clearContent();
         var y = this._addHeading(content, "Set up your wallet", 14);
+        y += 4;
 
-        var createBtn = new lively.morphic.Button(this._buttonRect(14, y, "Create New Wallet", 28), "Create New Wallet");
-        lively.bindings.connect(createBtn, "fire", self, "startCreate");
-        content.addMorph(createBtn);
-        y += 36;
+        var choices = [
+          { label: "Create New Wallet", action: "startCreate" },
+          { label: "Import Existing Wallet", action: "startImport" },
+          { label: "Recover from Backup", action: "startRecover" },
+        ];
 
-        var importBtn = new lively.morphic.Button(this._buttonRect(14, y, "Import Existing Wallet", 28), "Import Existing Wallet");
-        lively.bindings.connect(importBtn, "fire", self, "startImport");
-        content.addMorph(importBtn);
-        y += 36;
+        var btnHeight = 34;
+        var radius = btnHeight / 2;
+        var contentW = content.getExtent().x;
+        var maxTextW = 0;
+        choices.forEach(function (choice) {
+          maxTextW = Math.max(maxTextW, self._measureTextWidth(choice.label, 13));
+        });
+        var btnWidth = Math.min(contentW - 28, Math.ceil(maxTextW) + 48);
+        var btnX = Math.round((contentW - btnWidth) / 2);
 
-        var recoverBtn = new lively.morphic.Button(this._buttonRect(14, y, "Recover from Backup", 28), "Recover from Backup");
-        lively.bindings.connect(recoverBtn, "fire", self, "startRecover");
-        content.addMorph(recoverBtn);
-        y += 44;
+        choices.forEach(function (choice) {
+          var btn = new lively.morphic.Button(lively.rect(btnX, y, btnWidth, btnHeight), choice.label);
+          lively.bindings.connect(btn, "fire", self, choice.action);
+          content.addMorph(btn);
+          self._paintPillButton(btn, radius);
+          y += btnHeight + 14;
+        });
 
-        var cancelBtn = new lively.morphic.Button(this._buttonRect(14, y, "Cancel"), "Cancel");
-        lively.bindings.connect(cancelBtn, "fire", self, "remove");
-        content.addMorph(cancelBtn);
         this._fitToContent();
       },
 
