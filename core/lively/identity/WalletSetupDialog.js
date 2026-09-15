@@ -92,7 +92,7 @@ module("lively.identity.WalletSetupDialog")
         // resize handles at all.
         $super();
         this._wordCount = 12;
-        this._kdf = "argon2id";
+        this._kdf = "webauthn-prf";
         this.buildChoiceScreen();
       },
 
@@ -191,6 +191,70 @@ module("lively.identity.WalletSetupDialog")
         content.addMorph(t);
         var h = this._fitTextHeight(t, w, fontSize + 6);
         return y + h + 12;
+      },
+
+      // ─── shared action-row buttons (forward action right, back/close left) ──
+      //
+      // Every screen below used to chain its two bottom buttons left-to-right
+      // in whatever order they were coded, with no consistent meaning to the
+      // position. This gives every screen the same affordance instead: a
+      // solid purple pill on the RIGHT is always "move forward" (Continue,
+      // Recover Wallet, Try Again, Open Wallet), a plain ghost-style text
+      // button on the LEFT is always "go back/dismiss" (Back, Close). Both
+      // get soft, fully-rounded (pill) corners rather than the old sharp
+      // rectangular buttons, matching the choice screen's own pill language.
+
+      _addPrimaryButton: function _addPrimaryButton(content, rect, label, action) {
+        var btn = new lively.morphic.Button(rect, label);
+        lively.bindings.connect(btn, "fire", this, action);
+        content.addMorph(btn);
+        (function () {
+          var node = btn.renderContext && btn.renderContext().shapeNode;
+          if (node) {
+            node.style.background = "rgb(147,51,234)";
+            node.style.border = "2px solid rgb(147,51,234)";
+            node.style.borderRadius = (rect.height / 2) + "px";
+          }
+        }).delay(0);
+        if (btn.label && btn.label.setTextColor) btn.label.setTextColor(Color.white);
+        if (btn.label && btn.label.applyStyle) btn.label.applyStyle({ fontWeight: "600" });
+        return btn;
+      },
+
+      _addSecondaryButton: function _addSecondaryButton(content, rect, label, action) {
+        var btn = new lively.morphic.Button(rect, label);
+        lively.bindings.connect(btn, "fire", this, action);
+        content.addMorph(btn);
+        (function () {
+          var node = btn.renderContext && btn.renderContext().shapeNode;
+          if (node) {
+            node.style.background = "transparent";
+            node.style.border = "none";
+            node.style.borderRadius = (rect.height / 2) + "px";
+          }
+        }).delay(0);
+        if (btn.label && btn.label.setTextColor) btn.label.setTextColor(Color.rgb(120, 120, 120));
+        return btn;
+      },
+
+      // Lays out one bottom action row: secondary button (if given) flush
+      // left, primary button flush right, each hugging its own measured
+      // label width rather than a shared fixed width. Returns the row's
+      // bottom y plus both button morphs, so callers that need to
+      // enable/disable the primary button later (e.g. _onRecoverConfirm's
+      // "Recovering…" state) still have a handle on it.
+      _addActionRow: function _addActionRow(content, y, primaryLabel, primaryAction, secondaryLabel, secondaryAction) {
+        var h = 32;
+        var contentW = content.getExtent().x;
+        var primaryW = Math.ceil(this._measureTextWidth(primaryLabel, 13)) + 44;
+        var primaryRect = lively.rect(contentW - 14 - primaryW, y, primaryW, h);
+        var primaryBtn = this._addPrimaryButton(content, primaryRect, primaryLabel, primaryAction);
+        var secondaryBtn = null;
+        if (secondaryLabel) {
+          var secondaryW = Math.ceil(this._measureTextWidth(secondaryLabel, 12)) + 20;
+          secondaryBtn = this._addSecondaryButton(content, lively.rect(14, y + (h - 26) / 2, secondaryW, 26), secondaryLabel, secondaryAction);
+        }
+        return { y: y + h, primaryBtn: primaryBtn, secondaryBtn: secondaryBtn };
       },
 
       // ─── choice screen ──────────────────────────────────────────────────────
@@ -309,7 +373,7 @@ module("lively.identity.WalletSetupDialog")
         var passwordInput = new lively.morphic.Text(lively.rect(14, y + 32, content.getExtent().x - 28, 22), "");
         passwordInput.applyStyle({
           allowInput: true, fontSize: 12, fill: Color.white,
-          borderWidth: 1, borderColor: Color.rgb(190, 190, 190), borderRadius: 3,
+          borderWidth: 1, borderColor: Color.rgb(214, 214, 214), borderRadius: 8,
           padding: lively.rect(4, 3, 0, 0),
         });
         passwordInput.beInputLine();
@@ -332,14 +396,7 @@ module("lively.identity.WalletSetupDialog")
         this._statusText = statusText;
         y += 30;
 
-        var continueRect = this._buttonRect(14, y, "Continue");
-        var continueBtn = new lively.morphic.Button(continueRect, "Continue");
-        lively.bindings.connect(continueBtn, "fire", self, "_onOptionsContinue");
-        content.addMorph(continueBtn);
-
-        var backBtn = new lively.morphic.Button(this._buttonRect(continueRect.right() + 6, y, "Back"), "Back");
-        lively.bindings.connect(backBtn, "fire", self, "buildChoiceScreen");
-        content.addMorph(backBtn);
+        this._addActionRow(content, y, "Continue", "_onOptionsContinue", "Back", "buildChoiceScreen");
         this._fitToContent();
       },
 
@@ -358,12 +415,21 @@ module("lively.identity.WalletSetupDialog")
       _paintToggleButton: function _paintToggleButton(btn, isSelected) {
         btn.setBorderWidth(isSelected ? 2 : 1);
         var node = btn.renderContext().shapeNode;
-        // A solid fill made the button's own (green) label text hard to
-        // read against it -- a translucent tint over the button's existing
-        // white background keeps the selected state obvious while leaving
-        // the label legible.
-        node.style.background = isSelected ? 'rgba(51,122,204,0.25)' : '#fff';
-        node.style.borderColor = isSelected ? 'rgb(51,122,204)' : 'rgb(180,180,180)';
+        // A solid fill made the button's own label text hard to read
+        // against it -- a translucent purple tint over the button's
+        // existing white background keeps the selected state obvious while
+        // leaving the label legible. Matches the choice screen's own
+        // purple-accent pill language instead of the old unrelated blue.
+        node.style.background = isSelected ? 'rgba(147,51,234,0.12)' : '#fff';
+        node.style.borderColor = isSelected ? 'rgb(147,51,234)' : 'rgb(214,214,214)';
+        // Soft rounded corners rather than the sharp default -- kept well
+        // short of a full pill (height/2) since these sit side-by-side in a
+        // segmented-control row, where a full pill reads oddly on inner
+        // touching edges.
+        node.style.borderRadius = '8px';
+        if (btn.label && btn.label.setTextColor) {
+          btn.label.setTextColor(isSelected ? Color.rgb(88, 28, 135) : Color.rgb(90, 90, 90));
+        }
         if (btn.label && btn.label.applyStyle) {
           btn.label.applyStyle({ fontWeight: isSelected ? 'bold' : 'normal' });
         }
@@ -519,15 +585,8 @@ module("lively.identity.WalletSetupDialog")
         this._recoverStatusText = statusText;
         y += 30;
 
-        var recoverRect = this._buttonRect(14, y, "Recover Wallet");
-        var recoverBtn = new lively.morphic.Button(recoverRect, "Recover Wallet");
-        lively.bindings.connect(recoverBtn, "fire", self, "_onRecoverConfirm");
-        content.addMorph(recoverBtn);
-        this._recoverBtn = recoverBtn;
-
-        var backBtn = new lively.morphic.Button(this._buttonRect(recoverRect.right() + 6, y, "Back"), "Back");
-        lively.bindings.connect(backBtn, "fire", self, "buildChoiceScreen");
-        content.addMorph(backBtn);
+        var row = this._addActionRow(content, y, "Recover Wallet", "_onRecoverConfirm", "Back", "buildChoiceScreen");
+        this._recoverBtn = row.primaryBtn;
         this._fitToContent();
       },
 
@@ -552,7 +611,6 @@ module("lively.identity.WalletSetupDialog")
       },
 
       buildRecoverSuccessScreen: function buildRecoverSuccessScreen() {
-        var self = this;
         var content = this._clearContent();
         var y = this._addHeading(content, "Wallet recovered", 14);
         y = this._addText(
@@ -563,23 +621,18 @@ module("lively.identity.WalletSetupDialog")
           { fontSize: 12 },
         );
 
-        var openBtn = new lively.morphic.Button(this._buttonRect(14, y, "Open Wallet"), "Open Wallet");
-        lively.bindings.connect(openBtn, "fire", self, "_onOpenWallet");
-        content.addMorph(openBtn);
+        this._addActionRow(content, y, "Open Wallet", "_onOpenWallet");
         this._fitToContent();
       },
 
       // ─── success / error screens ────────────────────────────────────────────
 
       buildSuccessScreen: function buildSuccessScreen(address) {
-        var self = this;
         var content = this._clearContent();
         var y = this._addHeading(content, "Wallet created", 14);
         y = this._addText(content, "Address:\n" + address, y, { fontSize: 12 });
 
-        var openBtn = new lively.morphic.Button(this._buttonRect(14, y, "Open Wallet"), "Open Wallet");
-        lively.bindings.connect(openBtn, "fire", self, "_onOpenWallet");
-        content.addMorph(openBtn);
+        this._addActionRow(content, y, "Open Wallet", "_onOpenWallet");
         this._fitToContent();
       },
 
@@ -591,19 +644,11 @@ module("lively.identity.WalletSetupDialog")
       },
 
       buildErrorScreen: function buildErrorScreen(err) {
-        var self = this;
         var content = this._clearContent();
         var y = this._addHeading(content, "Setup didn't complete", 14);
         y = this._addText(content, err && err.message ? err.message : String(err), y, { fontSize: 12, fontColor: Color.rgb(180, 40, 40) });
 
-        var retryRect = this._buttonRect(14, y, "Try Again");
-        var retryBtn = new lively.morphic.Button(retryRect, "Try Again");
-        lively.bindings.connect(retryBtn, "fire", self, "buildChoiceScreen");
-        content.addMorph(retryBtn);
-
-        var closeBtn = new lively.morphic.Button(this._buttonRect(retryRect.right() + 6, y, "Close"), "Close");
-        lively.bindings.connect(closeBtn, "fire", self, "remove");
-        content.addMorph(closeBtn);
+        this._addActionRow(content, y, "Try Again", "buildChoiceScreen", "Close", "remove");
         this._fitToContent();
       },
     });
