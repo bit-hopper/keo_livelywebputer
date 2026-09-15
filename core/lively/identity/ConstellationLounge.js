@@ -136,6 +136,12 @@ module("lively.identity.ConstellationLounge")
     // this box gets small — this constant just needs to stay below
     // whatever availRightW can realistically be before those kick in.
     var MIN_QUICK_INFO_W = 40;
+    // Bare structural safety floor for the card/thread column's width —
+    // same "not a comfort floor" philosophy as MIN_QUICK_INFO_W above:
+    // PostCardView's internal content is fluid CSS and reflows on its own
+    // at any width; this just stops setExtent from ever seeing a
+    // zero/negative width.
+    var MIN_CARD_COL_W = 60;
     var MEMBERS_W = 220;       // outer slot width
     var GUTTER = 20;           // column gutter, also the gap before the members column and the page's right edge
     var BOTTOM_MARGIN = 20;    // space left below the comment thread before the viewport's bottom edge
@@ -307,6 +313,7 @@ module("lively.identity.ConstellationLounge")
         // Baseline for _onWindowResize's change-detection — this._geom
         // already exists (_buildChrome's own final _layout() call set it).
         this._lastRenderedQuickInfoW = this._geom.quickInfoW;
+        this._lastRenderedCardW = this._geom.cardW;
         this._fetchFeed(null);
         this._fetchRooms();
         this._connectPresence();
@@ -323,13 +330,33 @@ module("lively.identity.ConstellationLounge")
       // happen where the underlying data changes, not here.
       _layout: function () {
         var W = window.innerWidth, H = window.innerHeight;
-        // Right column (the about panel) starts one gutter past the
-        // postcard's fixed right edge, not a separate "outer slot" constant
-        // — the postcard's own width is now the thing that determines it.
-        var rightColX = GUTTER + CARD_W + GUTTER;
         // GUTTER-width margin on the right too, matching every other
         // column gap instead of running the members list flush to the edge.
         var membersX = W - MEMBERS_W - GUTTER;
+        // Total width shared between the card/thread column and the
+        // quick-info/rooms column, based on the real space left after the
+        // members column and all four gutters (left margin, gap before
+        // quick-info, gap before members, right margin). Split
+        // proportionally to their original design widths
+        // (CARD_W:QUICK_INFO_W) once that combined budget no longer fits,
+        // each floored at its own bare safety minimum — same "degrade,
+        // don't force overlap" lesson learned fixing MIN_QUICK_INFO_W
+        // earlier this session (a floor must never exceed what's actually
+        // available, or it guarantees overlap instead of preventing it).
+        var DESIGN_MIDDLE_TOTAL = CARD_W + QUICK_INFO_W;
+        var middleAvail = Math.max(0, W - MEMBERS_W - GUTTER * 4);
+        var cardW, quickInfoW;
+        if (middleAvail >= DESIGN_MIDDLE_TOTAL) {
+          cardW = CARD_W;
+          quickInfoW = QUICK_INFO_W;
+        } else {
+          cardW = Math.max(MIN_CARD_COL_W, Math.round(middleAvail * CARD_W / DESIGN_MIDDLE_TOTAL));
+          quickInfoW = Math.max(MIN_QUICK_INFO_W, middleAvail - cardW);
+        }
+        // Right column (the about panel) starts one gutter past the
+        // postcard's (now possibly shrunk) right edge.
+        var rightColX = GUTTER + cardW + GUTTER;
+        var threadW = cardW - THREAD_PAD_X * 2;
         // Postcard's top edge lines up with the search box's top edge —
         // both start at TOP — rather than sitting a row below it.
         var reelY = TOP;
@@ -361,26 +388,37 @@ module("lively.identity.ConstellationLounge")
 
         // Nudged right of dead-center, as its own hero row across the full
         // page width, above the reel/quick-info columns rather than
-        // tucked beside them.
-        var searchX = (W - SEARCH_W) / 2 + 100;
+        // tucked beside them. Floored so the row (which shares the
+        // postcard's own top y-coordinate — see reelY above) never drifts
+        // left into the postcard's own column: confirmed live, at ~1300px
+        // window width and narrower this window-centered heuristic alone
+        // put sortByX (searchX's own left neighbor, below) inside the
+        // postcard's real x-range — a bug that predates cardW becoming
+        // responsive, since this formula never referenced the card
+        // column's width at all. minSearchX keeps sortByX at or past
+        // rightColX (already one gutter clear of the postcard's real
+        // right edge), matching this row's own documented intent of
+        // sitting in the gap after the postcard, not on top of it.
+        var minSearchX = rightColX + GUTTER + SORT_W;
+        var searchX = Math.max(minSearchX, (W - SEARCH_W) / 2 + 100);
         // "+ Postcard" sits centered in the horizontal gap between the
         // search box's right edge and the members column's left edge,
         // rather than pinned to either one — width comes from
         // _fitCreatePostcardButton once known, not the guessed constant.
+        // At narrower widths this gap can shrink to nothing (confirmed
+        // live: it was already ~65px short of createBtnW even before
+        // searchX's own minSearchX floor above, which then shrinks it
+        // further) — rather than let the button overlap the search box or
+        // the members column, hide it entirely once it no longer fits,
+        // same "degrade by disappearing" precedent as _renderEventCard's
+        // own no-room bail-out. A menu bar "New postcard" entry
+        // (MenuBarEntry.js) already offers the same action, so hiding
+        // this shortcut isn't a functionality loss.
         var createBtnW = this._createBtnW || CREATE_BTN_W;
         var createGapStart = searchX + SEARCH_W;
         var createGapEnd = membersX;
+        var createBtnFits = (createGapEnd - createGapStart) >= createBtnW + GUTTER * 2;
         var createBtnX = createGapStart + (createGapEnd - createGapStart - createBtnW) / 2;
-
-        // Shared right-column width for _quickInfoBox/_spacesBox, derived
-        // from the real gap between the fixed left column and the members
-        // panel instead of the fixed QUICK_INFO_W constant, so their right
-        // edges never run past membersX. Capped at QUICK_INFO_W (only ever
-        // shrinks the panel from its original design width, never grows it
-        // on wide monitors) and floored at MIN_QUICK_INFO_W (see its own
-        // comment).
-        var availRightW = membersX - GUTTER - rightColX;
-        var quickInfoW = Math.min(QUICK_INFO_W, Math.max(MIN_QUICK_INFO_W, availRightW));
 
         var g = this._geom = {
           searchX: searchX, searchY: TOP,
@@ -389,17 +427,24 @@ module("lively.identity.ConstellationLounge")
           sortByX: searchX - GUTTER - SORT_W, sortByY: TOP,
           // Sits beside the postcard, below the search row.
           quickInfoX: rightColX, quickInfoY: quickInfoY, quickInfoW: quickInfoW, quickInfoH: QUICK_INFO_H,
-          reelX: GUTTER, reelY: reelY,
+          reelX: GUTTER, reelY: reelY, cardW: cardW,
           navX: GUTTER, navY: reelY + CARD_H + 6,
-          threadX: GUTTER, threadY: threadY, threadW: THREAD_W, threadH: threadH,
+          threadX: GUTTER, threadY: threadY, threadW: threadW, threadH: threadH,
           spacesX: rightColX, spacesY: spacesY, spacesW: quickInfoW, spacesH: threadBottom - spacesY,
           membersX: membersX, membersY: TOP, membersW: MEMBERS_W, membersH: Math.max(120, H - TOP),
-          createBtnX: createBtnX, createBtnY: TOP,
+          createBtnX: createBtnX, createBtnY: TOP, createBtnFits: createBtnFits,
         };
 
         if (this._searchBox) this._searchBox.setPosition(lively.pt(g.searchX, g.searchY));
         if (this._sortByBox) this._sortByBox.setPosition(lively.pt(g.sortByX, g.sortByY));
-        if (this._createPostcardBtn) this._createPostcardBtn.setPosition(lively.pt(g.createBtnX, g.createBtnY));
+        if (this._createPostcardBtn) {
+          this._createPostcardBtn.setPosition(lively.pt(g.createBtnX, g.createBtnY));
+          // Combines with the sign-in/write-permission gate set once in
+          // _buildChrome (this._canWrite) — that flag doesn't change on
+          // resize, so re-apply it here alongside the fits-in-the-gap
+          // check rather than letting this overwrite it unconditionally.
+          this._createPostcardBtn.setVisible(!!this._canWrite && g.createBtnFits);
+        }
         if (this._sortByDropdown) {
           this._sortByDropdown.setPosition(lively.pt(g.sortByX, g.sortByY + SORT_H + 4));
         }
@@ -409,11 +454,16 @@ module("lively.identity.ConstellationLounge")
         }
         if (this._frontCardBox) {
           this._frontCardBox.setPosition(lively.pt(g.reelX, g.reelY));
-          this._frontCardBox.setExtent(lively.pt(CARD_W, CARD_H));
+          this._frontCardBox.setExtent(lively.pt(g.cardW, CARD_H));
+          // PostCardView's own internal DOM is fluid CSS (width:100%/
+          // inset:0), so it reflows automatically once its own box extent
+          // changes — no re-fetch or rebuild needed, just propagate the
+          // new size down.
+          (this._frontCardBox.submorphs || []).forEach(function (m) { m.setExtent(lively.pt(g.cardW, CARD_H)); });
         }
         if (this._backCardBox) {
           this._backCardBox.setPosition(lively.pt(g.reelX + 8, g.reelY + 8));
-          this._backCardBox.setExtent(lively.pt(CARD_W, CARD_H));
+          this._backCardBox.setExtent(lively.pt(g.cardW, CARD_H));
         }
         if (this._navBox) this._navBox.setPosition(lively.pt(g.navX, g.navY));
         if (this._threadContainer) {
@@ -432,28 +482,34 @@ module("lively.identity.ConstellationLounge")
 
       // Runs on every raw browser "resize" event. _layout()'s own box
       // repositioning/resizing is cheap and stays immediate every time (so
-      // panels keep tracking the cursor smoothly mid-drag), but
-      // _renderQuickInfo()/_renderSpaces() each clear and rebuild their
-      // whole panel's DOM from scratch (banner image, measurement probes,
-      // room-card grid) — too expensive and visibly flickery to run on
-      // every tick of a resize drag. Debounced via the same
-      // lively.lang.fun.debounceNamed(id, ms, fn) idiom
-      // MenuBar.js/AmbientPresencePanel.js already use for onWorldResize
-      // (this controller is a plain Object.subclass, not a morph, so
-      // there's no this.id — this._name is this instance's natural unique
-      // key throughout the file already). Skipped entirely unless
-      // this._geom.quickInfoW — the one quantity that actually affects
-      // either panel's content — has genuinely changed since the last real
-      // re-render, so a pure-height-only resize triggers no rebuild at all.
+      // panels keep tracking the cursor smoothly mid-drag — this includes
+      // the postcard reel, whose fluid-CSS internal content also reflows
+      // for free as part of that immediate step, no rebuild needed), but
+      // _renderQuickInfo()/_renderSpaces()/_renderThreadTree() each clear
+      // and rebuild their whole panel's DOM from scratch (banner image,
+      // measurement probes, room-card grid, comment rows) — too expensive
+      // and visibly flickery to run on every tick of a resize drag.
+      // Debounced via the same lively.lang.fun.debounceNamed(id, ms, fn)
+      // idiom MenuBar.js/AmbientPresencePanel.js already use for
+      // onWorldResize (this controller is a plain Object.subclass, not a
+      // morph, so there's no this.id — this._name is this instance's
+      // natural unique key throughout the file already). Skipped entirely
+      // unless this._geom.quickInfoW/cardW — the quantities that actually
+      // affect these panels' content — have genuinely changed since the
+      // last real re-render, so a pure-height-only resize triggers no
+      // rebuild at all.
       _onWindowResize: function () {
         this._layout();
-        var w = this._geom.quickInfoW;
-        if (w === this._lastRenderedQuickInfoW) return;
+        var quickInfoW = this._geom.quickInfoW;
+        var cardW = this._geom.cardW;
+        if (quickInfoW === this._lastRenderedQuickInfoW && cardW === this._lastRenderedCardW) return;
         lively.lang.fun.debounceNamed("constellation-lounge-resize-render-" + this._name, 150,
           function () {
-            this._lastRenderedQuickInfoW = w;
+            this._lastRenderedQuickInfoW = quickInfoW;
+            this._lastRenderedCardW = cardW;
             this._renderQuickInfo();
             this._renderSpaces();
+            if (this._threadContainer) this._renderThreadTree();
           }.bind(this))();
       },
     },
