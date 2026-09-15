@@ -663,6 +663,57 @@
     return el;
   };
 
+  // Purple-accent button pair matching WalletSetupDialog.js's own pill
+  // language (rgb(147,51,234)) -- kept as plain inline CSS here since this
+  // file is deliberately framework-free (see the file header) and has no
+  // access to that dialog's morph-specific paint helpers. "Primary" (the
+  // forward-moving action) is a solid purple pill; "secondary" (Back) is a
+  // plain ghost-style text button -- same right/left action-row convention
+  // WalletSetupDialog.js's own screens now use.
+  function _stylePrimaryButton(btn) {
+    btn.style.cssText =
+      'background:rgb(147,51,234);color:#fff;border:none;border-radius:999px;' +
+      'padding:9px 22px;font:600 14px -apple-system,sans-serif;cursor:pointer;';
+  }
+
+  function _styleSecondaryButton(btn) {
+    btn.style.cssText =
+      'background:transparent;color:#aaa;border:none;border-radius:999px;' +
+      'padding:9px 14px;font:14px -apple-system,sans-serif;cursor:pointer;';
+  }
+
+  // Lays out a bottom action row: secondary (Back, if given) flush left,
+  // primary (Continue/Confirm) flush right -- mirrors
+  // WalletSetupDialog.js's _addActionRow. No "Cancel" button here by
+  // design: the outer WalletSetupDialog morph window already has its own
+  // close (X) button, which triggers that dialog's onRemove and safely
+  // tears down the vault frame/sync loop -- a second, redundant Cancel
+  // inside the iframe's own content was removed from all three screens
+  // below (write-down, quiz, import) rather than kept as a duplicate.
+  function _appendActionRow(container, primaryLabel, onPrimary, secondaryLabel, onSecondary) {
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-top:16px;';
+
+    if (secondaryLabel) {
+      var secondaryBtn = document.createElement('button');
+      secondaryBtn.textContent = secondaryLabel;
+      _styleSecondaryButton(secondaryBtn);
+      secondaryBtn.addEventListener('click', onSecondary);
+      row.appendChild(secondaryBtn);
+    } else {
+      row.appendChild(document.createElement('span'));
+    }
+
+    var primaryBtn = document.createElement('button');
+    primaryBtn.textContent = primaryLabel;
+    _stylePrimaryButton(primaryBtn);
+    primaryBtn.addEventListener('click', onPrimary);
+    row.appendChild(primaryBtn);
+
+    container.appendChild(row);
+    return primaryBtn;
+  }
+
   // mnemonic: string (already generated). onDone: thenDo(err) — no result,
   // just "confirmed, proceed" or "failed/cancelled."
   WalletVault.prototype._showMnemonicConfirmation = function (mnemonic, onDone) {
@@ -673,55 +724,56 @@
       container.innerHTML = '';
 
       var heading = document.createElement('h2');
+      heading.style.cssText = 'margin:0 0 10px;';
       heading.textContent = 'Write down your recovery phrase';
       container.appendChild(heading);
 
       var warn = document.createElement('p');
+      warn.style.cssText = 'margin:0 0 14px;';
       warn.textContent =
         'This is the ONLY way to recover your wallet. Write it down and ' +
         'store it somewhere safe — it will not be shown again unless ' +
         'you unlock and reveal it later.';
       container.appendChild(warn);
 
+      // 4 columns (rather than 3) so a 24-word phrase needs only 6 rows
+      // instead of 8 -- shrinks the grid's total height enough, combined
+      // with WalletSetupDialog.js's own widened/heightened vault-flow
+      // window, that this screen renders in full with no scrolling even
+      // at 24 words (confirmed live at the actual iframe size, see
+      // startVaultFlow's own sizing comment).
       var grid = document.createElement('div');
-      grid.style.cssText = 'display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:16px 0;max-width:480px;';
+      grid.style.cssText = 'display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:0 0 14px;';
       words.forEach(function (w, i) {
         var cell = document.createElement('div');
-        cell.style.cssText = 'background:#262626;padding:8px;border-radius:4px;font-family:monospace;';
+        cell.style.cssText = 'background:#262626;padding:6px 8px;border-radius:6px;font-family:monospace;font-size:13px;';
         cell.textContent = (i + 1) + '. ' + w;
         grid.appendChild(cell);
       });
       container.appendChild(grid);
 
       var ackLabel = document.createElement('label');
-      ackLabel.style.cssText = 'display:block;margin:16px 0;';
+      ackLabel.style.cssText = 'display:block;margin:0;';
       var ackBox = document.createElement('input');
       ackBox.type = 'checkbox';
       ackLabel.appendChild(ackBox);
       ackLabel.appendChild(document.createTextNode(' I have written this phrase down and stored it safely'));
       container.appendChild(ackLabel);
 
-      var continueBtn = document.createElement('button');
-      continueBtn.textContent = 'Continue';
-      continueBtn.disabled = true;
-      ackBox.addEventListener('change', function () { continueBtn.disabled = !ackBox.checked; });
-      continueBtn.addEventListener('click', renderQuizScreen);
-      container.appendChild(continueBtn);
-
-      var cancelBtn = document.createElement('button');
-      cancelBtn.textContent = 'Cancel';
-      cancelBtn.style.marginLeft = '8px';
-      cancelBtn.addEventListener('click', function () {
-        document.body.removeChild(container);
-        onDone(new Error('Setup cancelled'));
+      var primaryBtn = _appendActionRow(container, 'Continue', renderQuizScreen);
+      primaryBtn.disabled = true;
+      primaryBtn.style.opacity = '0.5';
+      ackBox.addEventListener('change', function () {
+        primaryBtn.disabled = !ackBox.checked;
+        primaryBtn.style.opacity = ackBox.checked ? '1' : '0.5';
       });
-      container.appendChild(cancelBtn);
     }
 
     function renderQuizScreen() {
       container.innerHTML = '';
 
       var heading = document.createElement('h2');
+      heading.style.cssText = 'margin:0 0 10px;';
       heading.textContent = 'Confirm your recovery phrase';
       container.appendChild(heading);
 
@@ -751,9 +803,7 @@
       errorMsg.textContent = "Those don't match — check your written-down copy and try again.";
       container.appendChild(errorMsg);
 
-      var confirmBtn = document.createElement('button');
-      confirmBtn.textContent = 'Confirm';
-      confirmBtn.addEventListener('click', function () {
+      _appendActionRow(container, 'Confirm', function () {
         var allCorrect = inputs.every(function (pair) {
           return pair.input.value.trim().toLowerCase() === words[pair.idx].toLowerCase();
         });
@@ -763,23 +813,7 @@
         }
         document.body.removeChild(container);
         onDone(null);
-      });
-      container.appendChild(confirmBtn);
-
-      var backBtn = document.createElement('button');
-      backBtn.textContent = 'Back';
-      backBtn.style.marginLeft = '8px';
-      backBtn.addEventListener('click', renderWriteDownScreen);
-      container.appendChild(backBtn);
-
-      var cancelBtn = document.createElement('button');
-      cancelBtn.textContent = 'Cancel';
-      cancelBtn.style.marginLeft = '8px';
-      cancelBtn.addEventListener('click', function () {
-        document.body.removeChild(container);
-        onDone(new Error('Setup cancelled'));
-      });
-      container.appendChild(cancelBtn);
+      }, 'Back', renderWriteDownScreen);
     }
 
     renderWriteDownScreen();
@@ -793,10 +827,12 @@
     var container = this._overlayContainer();
 
     var heading = document.createElement('h2');
+    heading.style.cssText = 'margin:0 0 10px;';
     heading.textContent = 'Import your recovery phrase';
     container.appendChild(heading);
 
     var info = document.createElement('p');
+    info.style.cssText = 'margin:0 0 14px;';
     info.textContent = 'Enter your 12 or 24-word recovery phrase, separated by spaces.';
     container.appendChild(info);
 
@@ -804,17 +840,16 @@
     textarea.rows = 4;
     textarea.autocomplete = 'off';
     textarea.spellcheck = false;
-    textarea.style.cssText = 'width:100%;max-width:480px;box-sizing:border-box;font:14px monospace;display:block;';
+    textarea.style.cssText = 'width:100%;box-sizing:border-box;font:14px monospace;display:block;';
     container.appendChild(textarea);
 
     var errorMsg = document.createElement('p');
     errorMsg.style.cssText = 'color:#f66;display:none;';
     container.appendChild(errorMsg);
 
-    var continueBtn = document.createElement('button');
-    continueBtn.textContent = 'Continue';
-    continueBtn.style.marginTop = '12px';
-    continueBtn.addEventListener('click', function () {
+    // No "Back" on this screen -- import is reached directly from the
+    // choice screen, with no earlier vault-side step to return to.
+    _appendActionRow(container, 'Continue', function () {
       var mnemonic = textarea.value.trim().replace(/\s+/g, ' ');
       self.validateMnemonic(mnemonic, function (err, valid) {
         if (err || !valid) {
@@ -826,16 +861,6 @@
         onDone(null, mnemonic);
       });
     });
-    container.appendChild(continueBtn);
-
-    var cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Cancel';
-    cancelBtn.style.cssText = 'margin-top:12px;margin-left:8px;';
-    cancelBtn.addEventListener('click', function () {
-      document.body.removeChild(container);
-      onDone(new Error('Import cancelled'));
-    });
-    container.appendChild(cancelBtn);
   };
 
   // ─── signing (§3.4, §6.6) ────────────────────────────────────────────────

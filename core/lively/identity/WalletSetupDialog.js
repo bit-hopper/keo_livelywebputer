@@ -484,10 +484,22 @@ module("lively.identity.WalletSetupDialog")
         // the iframe over it, instead of inheriting whatever size the
         // previous screen left the window at -- confirmed live this was
         // cutting off the vault's own input/textarea.
-        var vaultContentHeight = 420;
-        content.setExtent(pt(content.getExtent().x, vaultContentHeight));
+        //
+        // Width is widened here too (every other screen stays a fixed
+        // 300px-wide pane -- see PANE_WIDTH's own comment), not just
+        // height, because the old fixed 300px pane was the actual ROOT
+        // CAUSE of the 24-word write-down screen needing its own internal
+        // scrollbar: at 300px wide, even WalletVault.js's 4-column word
+        // grid runs to ~830px tall. Widening to 480px shrinks that same
+        // grid to ~490px tall -- confirmed live by driving the vault's own
+        // /wallet-vault page directly at this exact width -- comfortably
+        // inside the fixed height below with no scrolling at either 12 or
+        // 24 words.
+        var vaultWidth = 480;
+        var vaultContentHeight = 520;
+        content.setExtent(pt(vaultWidth - 6, vaultContentHeight));
         var contentOffset = this.contentOffset || lively.pt(3, 22);
-        this.setExtent(pt(this.getExtent().x, vaultContentHeight + contentOffset.y + 6));
+        this.setExtent(pt(vaultWidth, vaultContentHeight + contentOffset.y + 6));
 
         // The vault iframe is positioned over this dialog's own content
         // area (never reparented — see WalletBridge.showVaultFrame's own
