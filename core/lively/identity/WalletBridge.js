@@ -92,6 +92,27 @@ Object.subclass('lively.identity.WalletBridge',
     var self = this;
     if (this._vaultFrame) return thenDo(null, this._vaultFrame);
 
+    // "Creation in progress" guard -- same shape as WalletVault.js's own
+    // withVaultLibs/_walletVaultLibsLoading. Without it, this method
+    // creates a BRAND NEW iframe on every single call made before the
+    // first one's onload actually fires, because this._vaultFrame stays
+    // falsy for the whole time it's loading -- and _startVaultFrameSync
+    // (WalletSetupDialog.js) calls showVaultFrame, and therefore this
+    // method, from a requestAnimationFrame loop, up to ~60 times a
+    // second, for as long as the vault-visible screen is showing.
+    // Confirmed live: many duplicate iframes accumulated in the DOM, each
+    // independently loading and running its own WalletVault.js instance,
+    // with whichever one's onload fired LAST silently winning the
+    // _vaultFrame reference -- so a real setup() call's postMessage could
+    // go to a DIFFERENT iframe than the one actually showing on screen,
+    // or to one that hadn't finished loading yet, making the vault UI
+    // intermittently never render at all.
+    if (this._vaultFrameWaiters) {
+      this._vaultFrameWaiters.push(thenDo);
+      return;
+    }
+    this._vaultFrameWaiters = [thenDo];
+
     var origin = this._vaultOrigin();
     var iframe = document.createElement('iframe');
     iframe.src = origin + '/wallet-vault';
@@ -101,7 +122,9 @@ Object.subclass('lively.identity.WalletBridge',
     iframe.onload = function() {
       self._vaultFrame = iframe;
       self._vaultOriginResolved = origin;
-      thenDo(null, iframe);
+      var waiters = self._vaultFrameWaiters;
+      self._vaultFrameWaiters = null;
+      waiters.forEach(function(waiterThenDo) { waiterThenDo(null, iframe); });
     };
     document.body.appendChild(iframe);
   }
@@ -169,7 +192,16 @@ Object.subclass('lively.identity.WalletBridge',
         return;
       }
       delete self._pending[msg.id];
-      pending.thenDo(msg.error ? new Error(msg.error.message) : null, msg.result);
+      var err = null;
+      if (msg.error) {
+        err = new Error(msg.error.message);
+        // Carries WalletVault.js's error.code (e.g. 'user-back') across
+        // this reconstruction -- a plain `new Error(message)` otherwise
+        // drops it, and setup()'s own caller needs it to tell "user
+        // clicked Back" apart from a genuine failure.
+        if (msg.error.code) err.code = msg.error.code;
+      }
+      pending.thenDo(err, msg.result);
     });
   },
 

@@ -476,6 +476,16 @@ module("lively.identity.WalletSetupDialog")
           { fontSize: 13 },
         );
 
+        // No Back button drawn HERE -- the vault iframe positions itself
+        // directly over this whole content pane (see below) with its own
+        // opaque background the instant its write-down/import screen
+        // renders, which is almost immediately after this screen builds.
+        // A button drawn in this pane would just sit behind that overlay,
+        // unreachable (confirmed live: exactly this happened on a first
+        // attempt at this button). The real Back affordance lives INSIDE
+        // the vault's own write-down/import screens (WalletVault.js) and
+        // signals back out through the setup() callback below instead.
+
         // The vault's own content (mnemonic word grid, confirmation quiz,
         // import textarea) needs real room -- more than the compact option
         // screens this dialog otherwise auto-fits to (_fitToContent's
@@ -495,9 +505,25 @@ module("lively.identity.WalletSetupDialog")
         // /wallet-vault page directly at this exact width -- comfortably
         // inside the fixed height below with no scrolling at either 12 or
         // 24 words.
+        //
+        // Height is set directly on the content pane (as every other
+        // screen already does -- this content pane's layout has no
+        // resizeHeight), but WIDTH must NOT also be set directly here --
+        // confirmed live this was the actual cause of the reported
+        // "window frame cut off / content box overextending" bug. The
+        // content pane's own layout (resizeWidth: true) already grows its
+        // width automatically, by the SAME delta as the window's own
+        // setExtent below, every time the window resizes (306 -> 480 here
+        // is a +174 delta, applied on top of the pane's existing 300 ->
+        // 474 -- exactly the target width). Setting the pane's width
+        // directly first, THEN also resizing the window, applied that
+        // +174 delta TWICE (once from this code, once from the layout),
+        // landing the pane at 648px -- 168px wider than the 480px window
+        // meant to contain it, which is what actually overflowed the
+        // window's own rounded frame.
         var vaultWidth = 480;
         var vaultContentHeight = 520;
-        content.setExtent(pt(vaultWidth - 6, vaultContentHeight));
+        content.setExtent(pt(content.getExtent().x, vaultContentHeight));
         var contentOffset = this.contentOffset || lively.pt(3, 22);
         this.setExtent(pt(vaultWidth, vaultContentHeight + contentOffset.y + 6));
 
@@ -521,9 +547,26 @@ module("lively.identity.WalletSetupDialog")
         lively.identity.walletBridge.setup(options, function (err, result) {
           self._stopVaultFrameSync();
           lively.identity.walletBridge.hideVaultFrame();
+          // The vault's own write-down/import screen has a "Back" button
+          // (WalletVault.js) that resolves setup() with this tagged error
+          // instead of a real failure -- rebuild the options screen
+          // rather than showing an error screen for it.
+          if (err && err.code === "user-back") return self._onVaultBack();
           if (err) return self.buildErrorScreen(err);
           self.buildSuccessScreen(result.address);
         });
+      },
+
+      _onVaultBack: function _onVaultBack() {
+        // Shrink the window's WIDTH back to every other screen's fixed
+        // 306px before rebuilding -- same delta-driven resizeWidth layout
+        // as startVaultFlow's own widening (306 -> 480 there; 480 -> 306
+        // here shrinks the content pane back down by the same -174 delta
+        // it grew by), done as a width-only step so buildOptionsScreen's
+        // own _fitToContent call (height-only, like every other screen)
+        // doesn't have to also know about the vault screen's width.
+        this.setExtent(pt(306, this.getExtent().y));
+        this.buildOptionsScreen(this._mode);
       },
 
       // Keeps the vault iframe's on-screen position matching this dialog's

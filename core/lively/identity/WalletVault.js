@@ -760,7 +760,20 @@
       ackLabel.appendChild(document.createTextNode(' I have written this phrase down and stored it safely'));
       container.appendChild(ackLabel);
 
-      var primaryBtn = _appendActionRow(container, 'Continue', renderQuizScreen);
+      // "Back" here means back to WalletSetupDialog.js's own options
+      // screen (word count / unlock method), not a vault-internal
+      // previous screen -- there isn't one before write-down. Tagged
+      // error.code:'user-back' so it survives the postMessage boundary
+      // (see the RPC responder's own comment below) distinguishably from
+      // a genuine setup failure -- WalletSetupDialog.js's setup()
+      // callback checks for it and rebuilds the options screen instead of
+      // showing an error screen.
+      var primaryBtn = _appendActionRow(container, 'Continue', renderQuizScreen, 'Back', function () {
+        document.body.removeChild(container);
+        var err = new Error('Setup cancelled — back to options');
+        err.code = 'user-back';
+        onDone(err);
+      });
       primaryBtn.disabled = true;
       primaryBtn.style.opacity = '0.5';
       ackBox.addEventListener('change', function () {
@@ -847,8 +860,9 @@
     errorMsg.style.cssText = 'color:#f66;display:none;';
     container.appendChild(errorMsg);
 
-    // No "Back" on this screen -- import is reached directly from the
-    // choice screen, with no earlier vault-side step to return to.
+    // "Back" means back to WalletSetupDialog.js's own options screen
+    // (unlock method / password) -- same code:'user-back' signal
+    // renderWriteDownScreen's own Back button uses, see its comment above.
     _appendActionRow(container, 'Continue', function () {
       var mnemonic = textarea.value.trim().replace(/\s+/g, ' ');
       self.validateMnemonic(mnemonic, function (err, valid) {
@@ -860,6 +874,11 @@
         document.body.removeChild(container);
         onDone(null, mnemonic);
       });
+    }, 'Back', function () {
+      document.body.removeChild(container);
+      var err = new Error('Import cancelled — back to options');
+      err.code = 'user-back';
+      onDone(err);
     });
   };
 
@@ -1362,8 +1381,14 @@
         event.source.postMessage({ id: msg.id, type: 'progress', phase: phase }, expectedOrigin);
       }
       handler(msg.params, function (err, result) {
+        // err.code (when present) rides along too -- setup()'s own
+        // "user clicked Back on the write-down/import screen" case tags
+        // its error with code:'user-back' so WalletSetupDialog.js's
+        // setup() callback can tell "go back to the options screen" apart
+        // from a genuine failure, across this postMessage boundary, which
+        // otherwise only carries a plain message string.
         event.source.postMessage(
-          { id: msg.id, error: err ? { message: err.message } : null, result: result === undefined ? null : result },
+          { id: msg.id, error: err ? { message: err.message, code: err.code } : null, result: result === undefined ? null : result },
           expectedOrigin
         );
       }, sendProgress);
