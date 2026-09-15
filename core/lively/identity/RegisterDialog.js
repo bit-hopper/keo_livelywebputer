@@ -158,7 +158,7 @@ module("lively.identity.RegisterDialog")
         addLabel("Display name (optional):");
         addInput("displayNameInput");
 
-        addLabel("Device label (optional, defaults to “This device”):");
+        addLabel("Device label (optional, auto-detected if left blank):");
         addInput("deviceLabelInput");
 
         y += 2;
