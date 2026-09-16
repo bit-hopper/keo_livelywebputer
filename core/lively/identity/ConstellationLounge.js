@@ -1173,7 +1173,7 @@ module("lively.identity.ConstellationLounge")
         var self = this;
         var card = noDrag(new lively.morphic.Box(lively.rect(x, y, w, 10)));
         card.setFill(Color.white);
-        card.applyStyle({ borderWidth: 4, borderColor: Color.rgb(232, 73, 126), borderRadius: 12, clipMode: "hidden" });   // COMMENT_ACCENT (#e8497e)
+        card.applyStyle({ borderWidth: 2, borderColor: Color.rgb(232, 73, 126), borderRadius: 12, clipMode: "hidden" });   // COMMENT_ACCENT (#e8497e)
         this._spacesBox.addMorph(card);
 
         var banner = noDrag(new lively.morphic.Box(lively.rect(0, 0, w, ROOM_BANNER_H)));
