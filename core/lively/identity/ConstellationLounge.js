@@ -145,6 +145,12 @@ module("lively.identity.ConstellationLounge")
     var MIN_CARD_COL_W = 60;
     var MEMBERS_W = 220;       // outer slot width
     var GUTTER = 20;           // column gutter, also the gap before the members column and the page's right edge
+    // Shared by _renderEventCard/_renderEmptyEventCard (the card's own max
+    // width) AND _renderQuickInfo (to compute the card's real left edge so
+    // the description column can widen into the gap this cap leaves unused
+    // on wide panels — see EVENT_CARD_ACTUAL_LEFT below). One constant so
+    // the two places can't drift apart.
+    var EVENT_CARD_MAX_W = 300;
     var BOTTOM_MARGIN = 20;    // space left below the comment thread before the viewport's bottom edge
     var TOP = 56;              // top margin below the menu bar
     var SEARCH_W = 490, SEARCH_H = 45;
@@ -1656,49 +1662,123 @@ module("lively.identity.ConstellationLounge")
 
         // Optional short description, set via the settings gear's dialog
         // (no panel UI existed for this before) — stacked directly below
-        // the visibility/created-by lines above, same left edge and same
+        // the visibility/created-by lines above, same left edge as
         // detailW (not included in the detailRight/EVENT_CARD_X probe above,
         // unlike those two lines: a free-text description can run much
         // longer than "Created ... by @handle", and letting it influence
         // the event card's X position would make that placement swing
         // around based on prose length rather than the compact fields it's
-        // meant to react to — it just wraps within whatever width the
-        // other two lines already established).
+        // meant to react to).
+        //
+        // Its own WIDTH is wider than detailW's, though, rather than just
+        // reusing it: EVENT_CARD_X (and therefore detailW, which stops
+        // 16px short of it) is sized to clear the card's own pre-cap
+        // region, but the card itself has been capped at EVENT_CARD_MAX_W
+        // and pulled rightward ever since — see _renderEventCard's own
+        // MAX_CARD_W comment — so on any panel wider than
+        // EVENT_CARD_MAX_W there's now a real gap between where detailW
+        // stops and where the card's actual (capped) left edge sits, sitting
+        // empty. The description is the one label in this column with no
+        // fixed-format reason to stay within the old, more conservative
+        // detailW (unlike the visibility/created-by lines, which stay put
+        // deliberately — see their own comment above), so it widens into
+        // that gap, up to the same 16px gutter detailW itself already uses
+        // before the card. Never narrower than detailW (Math.max below) —
+        // on a panel at or under EVENT_CARD_MAX_W the card isn't capped at
+        // all and this collapses back to detailW exactly.
+        var eventCardRight = visibleW - CARD_RIGHT_MARGIN;
+        var eventCardActualLeft = eventCardRight - Math.min(eventCardRight - EVENT_CARD_X, EVENT_CARD_MAX_W);
+        var descW = Math.max(detailW, eventCardActualLeft - avX - 16);
         if (qi.description) {
+          // Available room is bounded by the panel's own bottom edge
+          // rather than a flat "2 lines" assumption: the two detail lines
+          // above are normally guaranteed to fit on one line each by the
+          // detailRight/EVENT_CARD_X probe, but that probe's own high-end
+          // clamp (MIN_CARD_W) can still narrow detailW below what those
+          // lines need on a narrow viewport, forcing them to wrap and eat
+          // extra height before the description even starts. A flat
+          // 2-line cap doesn't know about that, so it could still run
+          // past the bottom of the panel — confirmed live (before this
+          // fix) with a real 2-sentence description at a narrowed
+          // detailW. (The settings gear itself no longer needs a special
+          // reservation here — it now sits at the panel's bottom-RIGHT,
+          // clear of this left-column x range entirely; see gearBtn
+          // below.)
+          var GEAR_CLEARANCE = 8;
+          var maxDetailY = h - GEAR_CLEARANCE;
+          var availableH = maxDetailY - detailY;
+
           var descT = lively.morphic.Text.makeLabel(qi.description,
             { fontSize: 12, textColor: Color.rgb(80, 80, 80), whiteSpaceHandling: "normal", fixedWidth: true, fixedHeight: true });
           descT.setPosition(lively.pt(avX, detailY));
-          descT.setExtent(lively.pt(detailW, 1));
+          descT.setExtent(lively.pt(descW, 1));
           self._quickInfoBox.addMorph(descT);
           var descInner = descT.renderContext().shapeNode.querySelector("div");
           var naturalDescH = (descInner ? descInner.offsetHeight : 14) + 4;
-          // Hard-capped to 2 wrapped lines regardless of actual length — at
-          // up to 300 chars (DESCRIPTION_MAX, IdentityServer.js) a
-          // description can wrap well past 2 lines in this panel's own
-          // detailW, especially once EVENT_CARD_X/detailW get narrowed by
-          // the event-card layout (a separate, already-known-narrow-in-some-
-          // cases issue, tracked for a later pass — not fixed here).
-          // Confirmed live: an uncapped 2-sentence description rendered a
-          // 4th wrapped line directly on top of the settings gear (fixed
-          // bottom-left of the panel), and ran under the event card too.
-          // No ellipsis — a hard clip, same "just clip, don't bother with
-          // ellipsis" choice already made for the settings dialog's own
-          // controller/domain row labels. The probe measures this panel's
-          // OWN real single-line height at this fontSize/detailW rather
-          // than a hardcoded px guess, so it stays correct if either ever
-          // changes.
-          var probe = lively.morphic.Text.makeLabel("M",
-            { fontSize: 12, whiteSpaceHandling: "normal", fixedWidth: true, fixedHeight: true });
-          probe.setPosition(lively.pt(-9999, -9999));
-          probe.setExtent(lively.pt(detailW, 1));
-          self._quickInfoBox.addMorph(probe);
-          var probeInner = probe.renderContext().shapeNode.querySelector("div");
-          var oneLineH = (probeInner ? probeInner.offsetHeight : 14) + 4;
-          probe.remove();
-          var descH = Math.min(naturalDescH, oneLineH * 2);
-          descT.setExtent(lively.pt(detailW, descH));
-          descT.applyStyle({ clipMode: "hidden" });
-          detailY += descH + 2;
+
+          // Height for exactly N wrapped lines is measured directly off the
+          // PARAGRAPH's own rendered line boxes (span.getClientRects(), one
+          // rect per wrapped line), rather than multiplying a single-
+          // character probe's line height by N. A single "M" probe was
+          // tried first and confirmed broken live: its measured per-line
+          // height didn't quite match this real multi-word paragraph's own
+          // sub-pixel line-height/leading (getClientRects() showed real
+          // consecutive-line deltas of 18.67px, not a flat 18px), and
+          // multiplying the probe's height by 2 for "2 lines" compounded
+          // that mismatch — together just enough overshoot to let the TOP
+          // sliver of a 3rd wrapped line peek out beneath clipMode:"hidden"
+          // instead of being fully hidden.
+          //
+          // Two different cases need two different padding treatments, and
+          // conflating them was the second bug (still visible as a smaller
+          // ~1px sliver after fixing the first): when N covers ALL the real
+          // wrapped lines (nothing after it to hide), naturalDescH is
+          // already the proven-correct formula (content height + 4 — the
+          // shapeNode's own top+bottom padding, needed so the LAST line's
+          // own descenders aren't clipped, per the fontSize/sizing gotchas
+          // elsewhere in this file). But when N is a TRUNCATION point
+          // (more real lines exist after it), adding a full +4 overshoots:
+          // consecutive wrapped lines here sit only ~0.67px apart, so a
+          // clip boundary computed as "line N's bottom + 4" lands ~1.3px
+          // INTO line N+1 rather than stopping before it. The fix for the
+          // truncation case is +2 (top padding only, no bottom padding) —
+          // line N's own getClientRects() bottom already includes its full
+          // descent, so nothing more needs adding to show it complete, and
+          // stopping there (rather than 2px further) keeps the clip
+          // boundary above the very next line's own top.
+          var descSpan = descT.renderContext().shapeNode.querySelector("span");
+          var lineRects = descSpan ? Array.prototype.slice.call(descSpan.getClientRects()) : [];
+          // Used to be hard-capped at 2 lines because the settings gear
+          // sat directly below this column and a taller description would
+          // run into it — that's no longer true (the gear moved to the
+          // panel's bottom-RIGHT, see gearBtn below), so this cap is now
+          // just a sane ceiling against a 300-char (DESCRIPTION_MAX,
+          // IdentityServer.js) description growing unboundedly tall — the
+          // real governor is availableH (how much room is actually left
+          // above the panel's own bottom edge) via the loop's own
+          // `hForLines > availableH` break below, same as before.
+          var MAX_DESC_LINES = 6;
+          var descH = 0, lineCount = 0;
+          for (var i = 1; i <= Math.min(MAX_DESC_LINES, lineRects.length); i++) {
+            var isFullContent = (i === lineRects.length);
+            var hForLines = isFullContent
+              ? naturalDescH
+              : Math.min(naturalDescH, (lineRects[i - 1].bottom - lineRects[0].top) + 2);
+            if (hForLines > availableH) break; // one more line would run past the panel's bottom edge — stop here
+            descH = hForLines;
+            lineCount = i;
+          }
+
+          // Skip entirely rather than render a sliver clipped down to a
+          // fraction of a line — no room left in the panel at all, not
+          // even for 1 line.
+          if (lineCount > 0) {
+            descT.setExtent(lively.pt(descW, descH));
+            descT.applyStyle({ clipMode: "hidden" });
+            detailY += descH + 2;
+          } else {
+            descT.remove();
+          }
         }
 
         // Event card — pinned to the top-right corner of the space right
@@ -1721,11 +1801,19 @@ module("lively.identity.ConstellationLounge")
           this._renderEmptyEventCard(EVENT_CARD_X, BANNER_H, visibleW, cardBottomMax);
         }
 
-        // Settings gear — bottom-left of the panel, controller-only (same
+        // Settings gear — bottom-RIGHT of the panel, controller-only (same
         // isController gate as the Rooms panel's "New Room" button above).
         // Opens ConstellationSettingsDialog to set avatar/banner/domain;
         // the server re-checks isController on every write route regardless,
         // this is purely a "don't show it" convenience for non-controllers.
+        // Anchored off visibleW (the real gap before the members column,
+        // same value the event card itself is anchored to just above),
+        // NOT the quickInfoBox's own nominal width w — w can run wider
+        // than what's actually visible before the members panel starts
+        // (see the visibleW comment earlier in this function), and a gear
+        // positioned off the full w would render partly or fully hidden
+        // underneath the members column, the exact bug already fixed once
+        // for the event card itself.
         // Single Text-morph-as-icon-button idiom (AmbientPresencePanel.js's
         // makeIconButton): a fixed-rect Text so align:'center' isn't a
         // no-op (that gotcha only bites a hug-content box), vertical
@@ -1735,7 +1823,7 @@ module("lively.identity.ConstellationLounge")
         // an real ~18px glyph inside the 26px circle.
         if (this._isController) {
           var GEAR = 26, GEAR_GLYPH_PX = 18;
-          var gearBtn = new lively.morphic.Text(lively.rect(10, h - 10 - GEAR, GEAR, GEAR));
+          var gearBtn = new lively.morphic.Text(lively.rect(visibleW - 10 - GEAR, h - 10 - GEAR, GEAR, GEAR));
           gearBtn.textString = "settings";
           gearBtn.applyStyle({
             fontFamily: "'Material Symbols Rounded'",
@@ -1819,8 +1907,16 @@ module("lively.identity.ConstellationLounge")
         // separate "shrink then position" step; the margin is just baked
         // straight into where the box starts and how big it is.
         var RIGHT_MARGIN = 28;
-        var cardW = panelW - cardX - RIGHT_MARGIN;
-        var cardH = (cardBottomMax - cardY) - RIGHT_MARGIN;
+        // Same MAX_CARD_W cap, and same right-edge-fixed/left-edge-moves-in
+        // approach, as _renderEventCard — see its comment for why.
+        var MAX_CARD_W = EVENT_CARD_MAX_W;
+        var cardRight = panelW - RIGHT_MARGIN;
+        var cardW = Math.min(cardRight - cardX, MAX_CARD_W);
+        cardX = cardRight - cardW;
+        // Same MAX_CARD_H cap, top-anchored (cardY untouched, bottom edge
+        // pulled up), as _renderEventCard — see its comment for why.
+        var MAX_CARD_H = 160;
+        var cardH = Math.min((cardBottomMax - cardY) - RIGHT_MARGIN, MAX_CARD_H);
         if (cardW < 160 || cardH < 70) return;
 
         var card = new lively.morphic.Box(lively.rect(cardX, cardY + RIGHT_MARGIN, cardW, cardH));
@@ -1969,8 +2065,25 @@ module("lively.identity.ConstellationLounge")
         // margin, so that margin has to come out of maxCardH the same way
         // RIGHT_MARGIN already comes out of maxCardW.
         var RIGHT_MARGIN = 28;
-        var maxCardW = panelW - cardX - RIGHT_MARGIN;
-        var maxCardH = (cardBottomMax - cardY) - RIGHT_MARGIN;
+        // Capped so the card doesn't stretch all the way over to the
+        // avatar/title/detail-lines column on a wide panel — same cap as
+        // _renderEmptyEventCard's MAX_CARD_W, so the populated and
+        // empty-state cards stay the same width as an event comes and goes.
+        // The card's RIGHT edge (panelW - RIGHT_MARGIN) stays fixed either
+        // way; capping pulls cardX itself rightward so the extra room is
+        // given back on the LEFT, not the right.
+        var MAX_CARD_W = EVENT_CARD_MAX_W;
+        var cardRight = panelW - RIGHT_MARGIN;
+        var maxCardW = Math.min(cardRight - cardX, MAX_CARD_W);
+        cardX = cardRight - maxCardW;
+        // Capped the same way as MAX_CARD_W above, but top-anchored rather
+        // than right-anchored: cardY (this region's own top edge) is left
+        // untouched, so the cap just pulls the card's BOTTOM edge upward
+        // instead of leaving it stretched down to cardBottomMax — same cap
+        // as _renderEmptyEventCard's MAX_CARD_H, for the same
+        // populated/empty-state consistency reason as MAX_CARD_W.
+        var MAX_CARD_H = 160;
+        var maxCardH = Math.min((cardBottomMax - cardY) - RIGHT_MARGIN, MAX_CARD_H);
         if (maxCardW < 160 || maxCardH < 70) return; // not enough room to render legibly
 
         var card = new lively.morphic.Box(lively.rect(cardX, cardY, maxCardW, maxCardH));
