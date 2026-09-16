@@ -4427,6 +4427,17 @@ module.exports = function (route, app) {
   // live "who's here right now" presence is in-memory (RoomPresence.js) and
   // does not survive a restart by design — see that module's header.
 
+  // Who may pin/rename/change the header image/archive/delete a room —
+  // the room's own creator, or any constellation controller (a stricter
+  // room-scoped check than plain canWrite/membership, mirroring
+  // POST /c/:name/rooms' own controller-only gate for creating one).
+  // Shared by the GET listing below (as a per-room "canManage" convenience
+  // flag) and by the PUT/archive/DELETE routes, which re-check it
+  // themselves regardless of what the client already showed.
+  function canManageRoom(constellation, room, did) {
+    return !!did && (constellationRegistry.isController(constellation, did) || room.createdBy === did);
+  }
+
   // Guests may list rooms (with live participant counts) but never join —
   // optionalAuth, not requireAuth. amMember/iJoined/myAccessStatus are all
   // computed for the viewer (null-safe for a signed-out visitor) so the
@@ -4454,9 +4465,11 @@ module.exports = function (route, app) {
             out.push({
               id: room.id, name: room.name, isVideo: room.isVideo, isVoice: room.isVoice,
               access: room.access, activity: room.activity, createdBy: room.createdBy, createdAt: room.createdAt,
+              headerUrl: room.headerUrl, pinned: room.pinned,
               participantCount: live.count, participants: live.seedDids,
               iJoined: viewerDid ? roomPresence.isPresent(room.id, viewerDid) : false,
-              myAccessStatus: room.access === "request" ? (status || null) : null
+              myAccessStatus: room.access === "request" ? (status || null) : null,
+              canManage: canManageRoom(constellation, room, viewerDid)
             });
             if (--remaining === 0) {
               if (firstErr) return res.status(500).json({ error: String(firstErr) });
@@ -4499,8 +4512,110 @@ module.exports = function (route, app) {
           room: {
             id: roomId, name: roomName, isVideo: !!body.isVideo, isVoice: !!body.isVoice,
             access: access, activity: activity, createdBy: req.identity.did, createdAt: new Date().toISOString(),
-            participantCount: 0, participants: [], iJoined: false, myAccessStatus: null
+            headerUrl: null, pinned: false,
+            participantCount: 0, participants: [], iJoined: false, myAccessStatus: null, canManage: true
           }
+        });
+      });
+    });
+  });
+
+  // Backs the room-settings dialog's Save button (rename, header image,
+  // access, pin) — creator-or-controller only, same canManageRoom gate as
+  // the settings gear's own visibility. Partial body: any of
+  // {name, access, headerUrl, pinned} not sent falls back to the room's
+  // current value rather than being cleared, so the dialog only needs to
+  // send fields the viewer actually touched.
+  app.put("/c/:name/rooms/:roomId", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var roomId = parseInt(req.params.roomId, 10);
+    var body = req.body || {};
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      constellationRegistry.getRoom(roomId, function (err, room) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!room || room.constellation !== name) return res.status(404).json({ error: "Room not found" });
+        if (!canManageRoom(constellation, room, req.identity.did)) {
+          return res.status(403).json({ error: "Forbidden: room creator or controllers only" });
+        }
+        var roomName = typeof body.name === "string" ? body.name.trim().slice(0, 80) : room.name;
+        if (!roomName) return res.status(400).json({ error: "Missing required field: name" });
+        var access = body.access === "request" ? "request" : (body.access === "open" ? "open" : room.access);
+        var headerUrl = body.headerUrl === null ? null : (typeof body.headerUrl === "string" ? body.headerUrl : room.headerUrl);
+        var pinned = typeof body.pinned === "boolean" ? body.pinned : room.pinned;
+        var isVideo = typeof body.isVideo === "boolean" ? body.isVideo : room.isVideo;
+        var isVoice = typeof body.isVoice === "boolean" ? body.isVoice : room.isVoice;
+        var activity;
+        if (body.activity === null) {
+          activity = null;
+        } else if (typeof body.activity === "string") {
+          activity = body.activity.trim().slice(0, 40) || null;
+        } else {
+          activity = room.activity;
+        }
+        constellationRegistry.updateRoom({
+          id: roomId, constellation: name, name: roomName, access: access, headerUrl: headerUrl, pinned: pinned,
+          isVideo: isVideo, isVoice: isVoice, activity: activity
+        }, function (err, ok) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (!ok) return res.status(404).json({ error: "Room not found" });
+          res.json({
+            room: {
+              id: roomId, name: roomName, access: access, headerUrl: headerUrl, pinned: pinned,
+              isVideo: isVideo, isVoice: isVoice, activity: activity
+            }
+          });
+        });
+      });
+    });
+  });
+
+  // Soft-delete — the settings dialog's primary destructive action. Same
+  // creator-or-controller gate as the PUT route above.
+  app.post("/c/:name/rooms/:roomId/archive", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var roomId = parseInt(req.params.roomId, 10);
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      constellationRegistry.getRoom(roomId, function (err, room) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!room || room.constellation !== name) return res.status(404).json({ error: "Room not found" });
+        if (!canManageRoom(constellation, room, req.identity.did)) {
+          return res.status(403).json({ error: "Forbidden: room creator or controllers only" });
+        }
+        constellationRegistry.archiveRoom(roomId, name, function (err, ok) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (!ok) return res.status(404).json({ error: "Room not found" });
+          res.json({ archived: true });
+        });
+      });
+    });
+  });
+
+  // Permanent delete — the settings dialog only reaches this behind a
+  // second, stronger confirmation than Archive above (Archive is the
+  // recommended, reversible action). Message history lives as postcards
+  // via objectRepo, not a rooms-owned table, so it's unaffected by this
+  // either way — only the room row and its own join_requests are removed
+  // (see deleteRoom). Same creator-or-controller gate as the routes above.
+  app.delete("/c/:name/rooms/:roomId", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var roomId = parseInt(req.params.roomId, 10);
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      constellationRegistry.getRoom(roomId, function (err, room) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!room || room.constellation !== name) return res.status(404).json({ error: "Room not found" });
+        if (!canManageRoom(constellation, room, req.identity.did)) {
+          return res.status(403).json({ error: "Forbidden: room creator or controllers only" });
+        }
+        constellationRegistry.deleteRoom(roomId, name, function (err, ok) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (!ok) return res.status(404).json({ error: "Room not found" });
+          res.json({ deleted: true });
         });
       });
     });
@@ -5012,8 +5127,12 @@ module.exports = function (route, app) {
           }
 
           var roster = roomPresence.roster(roomId);
+          // canManage backs RoomView.js's own settings gear (creator or
+          // constellation controller — see canManageRoom above); merged
+          // straight into `room` since RoomView.js stores this whole
+          // object as this._room verbatim.
           res.json({
-            room: room,
+            room: Object.assign({}, room, { canManage: canManageRoom(constellation, room, viewerDid) }),
             participants: roster,
             participantCount: roster.length,
             isController: constellationRegistry.isController(constellation, viewerDid),

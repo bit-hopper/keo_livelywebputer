@@ -468,6 +468,74 @@ module("lively.identity.RoomView")
         leaveLabel.eventsAreIgnored = true;
         leaveBtn.addMorph(leaveLabel);
         leaveBtn.onMouseDown = function () { self._leaveRoomAndReturn(); };
+
+        // Settings gear -- creator-or-controller only (this._room.canManage,
+        // computed server-side by canManageRoom, IdentityServer.js), same
+        // icon-button idiom as the room card's own gear
+        // (ConstellationLounge.js's _renderRoomCard). Sits just left of
+        // Leave Room; no capture-phase hazard here since the header box
+        // itself has no competing onMouseDown of its own.
+        if (this._room && this._room.canManage) {
+          var GEAR = 26, GEAR_GLYPH_PX = 18;
+          var gearBtn = new lively.morphic.Text(lively.rect(TOTAL_W - 16 - 110 - 10 - GEAR, 9, GEAR, GEAR));
+          gearBtn.textString = "settings";
+          gearBtn.applyStyle({
+            fontFamily: "'Material Symbols Rounded'",
+            fontSize: GEAR_GLYPH_PX * 0.75,
+            textColor: TEXT_MUTED,
+            fill: Color.rgba(255, 255, 255, 0.08),
+            borderRadius: GEAR / 2,
+            borderWidth: 1,
+            borderColor: Color.rgba(255, 255, 255, 0.16),
+            align: "center",
+            padding: lively.Rectangle.inset(0, Math.round((GEAR - GEAR_GLYPH_PX) / 2), 0, 0),
+            allowInput: false,
+            selectable: false,
+            clipMode: "hidden",
+            whiteSpaceHandling: "pre",
+            handStyle: "pointer",
+          });
+          noDrag(gearBtn);
+          gearBtn.toolTip = "Room settings";
+          gearBtn.onMouseOver = function () { gearBtn.applyStyle({ fill: Color.rgba(255, 255, 255, 0.16) }); };
+          gearBtn.onMouseOut = function () { gearBtn.applyStyle({ fill: Color.rgba(255, 255, 255, 0.08) }); };
+          gearBtn.onMouseUp = function (evt) {
+            self._openRoomSettings();
+            evt.stop();
+            return true;
+          };
+          header.addMorph(gearBtn);
+        }
+      },
+
+      // Opens the shared RoomSettingsDialog (see ConstellationLounge.js's
+      // _openRoomSettings for the same call) from this room's own header
+      // gear. onSaved re-renders the header in place -- RoomView has no
+      // room list to _fetchRooms() -- and, since a save can also archive
+      // or permanently delete this very room out from under the viewer,
+      // falls back to _leaveRoomAndReturn when the room is gone rather
+      // than rendering a header for a room that no longer exists.
+      _openRoomSettings: function () {
+        var self = this;
+        lively.require("lively.identity.RoomSettingsDialog").toRun(function () {
+          lively.identity.RoomSettingsDialog.open(self._name, self._room, function (result) {
+            if (result && (result.deleted || result.archived)) return self._leaveRoomAndReturn();
+            var base = lively.identity.did.baseUrl();
+            var xhr = new XMLHttpRequest();
+            xhr.open("GET", base + "/c/" + encodeURIComponent(self._name) + "/rooms/" + self._roomId, true);
+            xhr.withCredentials = true;
+            xhr.onload = function () {
+              if (xhr.status !== 200) return self._leaveRoomAndReturn();
+              var data = JSON.parse(xhr.responseText);
+              self._room = data.room;
+              (self._headerBox.submorphs || []).slice().forEach(function (m) { m.remove(); });
+              self._headerBox.remove();
+              self._buildHeader();
+            };
+            xhr.onerror = function () {};
+            xhr.send();
+          });
+        });
       },
 
       _updateParticipantCount: function () {

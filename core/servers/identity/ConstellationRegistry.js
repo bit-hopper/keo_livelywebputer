@@ -191,7 +191,18 @@ var DDL =
   // Quick Info panel's gear icon (ConstellationLounge.js, controller-only).
   'ALTER TABLE constellations ADD COLUMN IF NOT EXISTS avatar_url TEXT;\n' +
   'ALTER TABLE constellations ADD COLUMN IF NOT EXISTS banner_url TEXT;\n' +
-  'ALTER TABLE constellations ADD COLUMN IF NOT EXISTS description TEXT;';
+  'ALTER TABLE constellations ADD COLUMN IF NOT EXISTS description TEXT;\n' +
+  // Backs the per-room settings gear (ConstellationLounge.js's room cards,
+  // RoomView.js's header) — header_url may point at an animated GIF
+  // (uploaded raw, bypassing ImageCropper's canvas-flatten step, see
+  // RoomSettingsDialog.js), pinned is a GLOBAL flag (affects sort order
+  // for every viewer, not a personal per-user list), archived_at is a
+  // soft-delete timestamp: an archived room is filtered out of listRooms
+  // but its row (and any join_requests) are left intact, unlike
+  // deleteRoom's hard delete below.
+  'ALTER TABLE rooms ADD COLUMN IF NOT EXISTS header_url TEXT;\n' +
+  'ALTER TABLE rooms ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT false;\n' +
+  'ALTER TABLE rooms ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP DEFAULT NULL;';
 
 var _bootstrapped = false;
 
@@ -893,18 +904,27 @@ function _rowToRoom(row) {
     access: row.access,
     activity: row.activity || null,
     createdBy: row.created_by,
-    createdAt: row.created_at
+    createdAt: row.created_at,
+    headerUrl: row.header_url || null,
+    pinned: !!row.pinned,
+    archivedAt: row.archived_at || null
   };
 }
 
-// Calls thenDo(null, [room, ...]), creation order (oldest first).
+// Calls thenDo(null, [room, ...]) — pinned rooms first, then creation order.
+// Archived rooms (see archiveRoom) are excluded; their rows still exist so
+// they can be surfaced again by a future "show archived" view.
 function listRooms(constellationName, thenDo) {
   withDB(function(err, pool) {
     if (err) return thenDo(err);
-    pool.query('SELECT * FROM rooms WHERE constellation = $1 ORDER BY id ASC', [constellationName], function(err, result) {
-      if (err) return thenDo(err);
-      thenDo(null, (result.rows || []).map(_rowToRoom));
-    });
+    pool.query(
+      'SELECT * FROM rooms WHERE constellation = $1 AND archived_at IS NULL ORDER BY pinned DESC, id ASC',
+      [constellationName],
+      function(err, result) {
+        if (err) return thenDo(err);
+        thenDo(null, (result.rows || []).map(_rowToRoom));
+      }
+    );
   });
 }
 
@@ -916,6 +936,81 @@ function getRoom(roomId, thenDo) {
       if (err) return thenDo(err);
       var row = result.rows[0];
       thenDo(null, row ? _rowToRoom(row) : null);
+    });
+  });
+}
+
+// Backs the room-settings gear's Save button (RoomSettingsDialog.js) —
+// permission (creator or constellation controller) is checked by the
+// caller (IdentityServer.js's PUT /c/:name/rooms/:roomId), not here, same
+// division of responsibility as every other write in this file.
+// fields: { id, constellation, name, access, headerUrl, pinned, isVideo,
+// isVoice, activity }. Calls
+// thenDo(null, true|false) — false means no row matched (bad id/mismatched
+// constellation), same shape as updateEvent.
+function updateRoom(fields, thenDo) {
+  withDB(function(err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'UPDATE rooms SET name = $1, access = $2, header_url = $3, pinned = $4,' +
+      ' is_video = $5, is_voice = $6, activity = $7' +
+      ' WHERE id = $8 AND constellation = $9',
+      [
+        fields.name,
+        fields.access === 'request' ? 'request' : 'open',
+        fields.headerUrl || null,
+        !!fields.pinned,
+        !!fields.isVideo,
+        !!fields.isVoice,
+        fields.activity || null,
+        fields.id,
+        fields.constellation
+      ],
+      function(err, result) {
+        if (err) return thenDo(err);
+        thenDo(null, result.rowCount > 0);
+      }
+    );
+  });
+}
+
+// Soft-delete: the room stops appearing in listRooms but its row (and any
+// room_join_requests) are left intact — the reversible default offered by
+// the settings dialog's "Archive Room" action, ahead of the permanent
+// deleteRoom below. Calls thenDo(null, true|false).
+function archiveRoom(roomId, constellation, thenDo) {
+  withDB(function(err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'UPDATE rooms SET archived_at = now() WHERE id = $1 AND constellation = $2',
+      [roomId, constellation],
+      function(err, result) {
+        if (err) return thenDo(err);
+        thenDo(null, result.rowCount > 0);
+      }
+    );
+  });
+}
+
+// Permanent delete — only reached from the settings dialog's secondary,
+// extra-confirmed "Permanently delete instead" action (Archive is the
+// primary, reversible one). Only clears this room's own rows
+// (room_join_requests); message history lives as postcards via
+// objectRepo, not a rooms-owned table, so it's unaffected either way.
+// Calls thenDo(null, true|false).
+function deleteRoom(roomId, constellation, thenDo) {
+  withDB(function(err, pool) {
+    if (err) return thenDo(err);
+    pool.query('DELETE FROM room_join_requests WHERE room_id = $1', [roomId], function(err) {
+      if (err) return thenDo(err);
+      pool.query(
+        'DELETE FROM rooms WHERE id = $1 AND constellation = $2',
+        [roomId, constellation],
+        function(err, result) {
+          if (err) return thenDo(err);
+          thenDo(null, result.rowCount > 0);
+        }
+      );
     });
   });
 }
@@ -1032,6 +1127,9 @@ module.exports = {
   createRoom: createRoom,
   listRooms: listRooms,
   getRoom: getRoom,
+  updateRoom: updateRoom,
+  archiveRoom: archiveRoom,
+  deleteRoom: deleteRoom,
   requestRoomJoin: requestRoomJoin,
   getRoomJoinRequestStatus: getRoomJoinRequestStatus,
   listPendingRoomJoinRequests: listPendingRoomJoinRequests,

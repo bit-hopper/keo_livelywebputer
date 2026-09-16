@@ -1176,10 +1176,59 @@ module("lively.identity.ConstellationLounge")
         card.applyStyle({ borderWidth: 2, borderColor: Color.rgb(232, 73, 126), borderRadius: 12, clipMode: "hidden" });   // COMMENT_ACCENT (#e8497e)
         this._spacesBox.addMorph(card);
 
-        var banner = noDrag(new lively.morphic.Box(lively.rect(0, 0, w, ROOM_BANNER_H)));
-        lively.identity.quiltPatterns.applyQuiltBackground(banner, String(room.id));
+        // A creator-set header image (RoomSettingsDialog.js) replaces the
+        // generated quilt pattern when present -- lively.morphic.Image
+        // renders through a real <img> node (HTML.js's setImageURLHTML),
+        // so an animated GIF header keeps animating here, not just in the
+        // dialog's own preview.
+        var banner;
+        if (room.headerUrl) {
+          banner = noDrag(new lively.morphic.Image(lively.rect(0, 0, w, ROOM_BANNER_H)));
+          banner.setImageURL(room.headerUrl);
+          // Neutral fill shows through in any letterboxed gap left by the
+          // objectFit write below (a native-size/aspect-mismatched image
+          // won't fully cover the banner box).
+          banner.applyStyle({ clipMode: "hidden", fill: Color.rgb(243, 243, 243) });
+        } else {
+          banner = noDrag(new lively.morphic.Box(lively.rect(0, 0, w, ROOM_BANNER_H)));
+          lively.identity.quiltPatterns.applyQuiltBackground(banner, String(room.id));
+        }
         banner.eventsAreIgnored = true;
         card.addMorph(banner);
+
+        if (room.headerUrl) {
+          // lively.morphic.Image has no aspect-ratio-preserving style --
+          // setExtentHTML just sets the <img> node's raw width/height to
+          // the banner box, stretching any image whose native size/aspect
+          // doesn't match. object-fit isn't a Lively style property, so
+          // it's written directly to the real <img> node (same DOM-bypass
+          // idiom as CLAUDE.md's applyStyle-silently-not-reaching-DOM
+          // section): 'scale-down' renders the image at its native size
+          // when that already fits the box, and only scales DOWN (never
+          // up) to fit when it doesn't -- "preserve original size unless
+          // it doesn't fit," never an upscale or a non-uniform stretch.
+          // Safe to query synchronously here: card (and therefore banner)
+          // is already inside a live-rendering DOM tree, since
+          // this._spacesBox was added to the world before _renderRoomCard
+          // was ever called -- same reasoning nameM's own synchronous
+          // shapeNode measurement a few lines below already relies on.
+          var imgNode = banner.renderContext().shapeNode.querySelector("img");
+          if (imgNode) imgNode.style.objectFit = "scale-down";
+        }
+
+        if (room.pinned) {
+          var PIN = 20;
+          var pinChip = noDrag(new lively.morphic.Box(lively.rect(w - 8 - PIN, 8, PIN, PIN)));
+          pinChip.applyStyle({ fill: Color.rgba(255, 255, 255, 0.92), borderRadius: PIN / 2, borderWidth: 0 });
+          pinChip.eventsAreIgnored = true;
+          card.addMorph(pinChip);
+          var pinGlyph = lively.morphic.Text.makeLabel("push_pin", { fontSize: 11, textColor: Color.rgb(90, 90, 90) });
+          pinGlyph.applyStyle({ fontFamily: "'Material Symbols Rounded'", borderWidth: 0 });
+          pinGlyph.eventsAreIgnored = true;
+          pinGlyph.setExtent(lively.pt(16, 16));
+          pinGlyph.setPosition(lively.pt(2, 2));
+          pinChip.addMorph(pinGlyph);
+        }
 
         var PAD = ROOM_CARD_PAD;
         var nameY = ROOM_BANNER_H + 10;
@@ -1319,17 +1368,82 @@ module("lively.identity.ConstellationLounge")
         }));
         statusLbl.eventsAreIgnored = true;
         statusLbl.setPosition(lively.pt(textX, statusY));
+        // Generous throwaway width so it doesn't wrap while measuring
+        // (same hug idiom as nameM/countLbl/actLbl above) -- re-hugged to
+        // its own measured span width below (not just height) so it stays
+        // clear of the gear button that now shares this same row, rather
+        // than a box stretching the full remaining card width underneath it.
         statusLbl.setExtent(lively.pt(w - PAD - textX, 1));
         card.addMorph(statusLbl);
         var statusInner = statusLbl.renderContext().shapeNode.querySelector("div");
+        var statusSpan = statusLbl.renderContext().shapeNode.querySelector("span");
         var statusH = statusInner ? statusInner.offsetHeight + HEIGHT_PAD : 16;
-        statusLbl.setExtent(lively.pt(w - PAD - textX, statusH));
+        var statusW = statusSpan ? statusSpan.offsetWidth + 8 : (w - PAD - textX);
+        statusLbl.setExtent(lively.pt(statusW, statusH));
 
-        var cardH = statusY + statusH + PAD;
+        // Settings gear -- creator-or-controller only (room.canManage,
+        // computed server-side -- see canManageRoom in IdentityServer.js).
+        // Shares the status row (right-aligned) instead of reserving its
+        // own strip below it -- hug-fitting statusLbl's width above keeps
+        // the label clear of the gear's own space on the right, and the
+        // gear is vertically centered against the status label's line
+        // rather than pinned to the card's bottom edge.
+        var GEAR = 26, GEAR_GLYPH_PX = 18;
+        var rowH = Math.max(statusH, room.canManage ? GEAR : 0);
+        var cardH = statusY + rowH + PAD;
         card.setExtent(lively.pt(w, cardH));
 
+        if (room.canManage) {
+          var gearY = statusY + Math.round((statusH - GEAR) / 2);
+          var gearBtn = new lively.morphic.Text(lively.rect(w - PAD - GEAR, gearY, GEAR, GEAR));
+          gearBtn.textString = "settings";
+          gearBtn.applyStyle({
+            fontFamily: "'Material Symbols Rounded'",
+            fontSize: GEAR_GLYPH_PX * 0.75,
+            textColor: Color.rgb(90, 90, 90),
+            fill: Color.rgba(255, 255, 255, 0.92),
+            borderRadius: GEAR / 2,
+            borderWidth: 1,
+            borderColor: Color.rgb(224, 224, 224),
+            align: "center",
+            padding: lively.Rectangle.inset(0, Math.round((GEAR - GEAR_GLYPH_PX) / 2), 0, 0),
+            allowInput: false,
+            selectable: false,
+            clipMode: "hidden",
+            whiteSpaceHandling: "pre",
+            handStyle: "pointer",
+          });
+          noDrag(gearBtn);
+          // Marker the card's own onMouseDown hit-tests for below -- see
+          // the capture-phase comment on card.onMouseDown.
+          gearBtn._isRoomSettingsGear = true;
+          gearBtn.toolTip = "Room settings";
+          gearBtn.onMouseOver = function () { gearBtn.applyStyle({ fill: Color.rgb(238, 238, 238) }); };
+          gearBtn.onMouseOut = function () { gearBtn.applyStyle({ fill: Color.rgba(255, 255, 255, 0.92) }); };
+          gearBtn.onMouseUp = function (evt) {
+            self._openRoomSettings(room);
+            evt.stop();
+            return true;
+          };
+          card.addMorph(gearBtn);
+        }
+
         if (statusInfo.clickable) {
-          card.onMouseDown = function () { self._onRoomCardClick(room); };
+          // Mouse dispatch is capture-first (ancestor before nested
+          // child, see CLAUDE.md) -- without this hit-test, a mousedown
+          // squarely on the gear button above would still fire the
+          // card's own onMouseDown FIRST and navigate into the room
+          // before the gear's onMouseUp ever runs. Bail out (without
+          // calling evt.stop()) when the click landed on the gear, so
+          // capture keeps walking down to its own handler instead.
+          card.onMouseDown = function (evt) {
+            var localPt = card.localize(evt.getPosition());
+            var hitGear = card.submorphs.some(function (m) {
+              return m._isRoomSettingsGear && m.bounds().containsPoint(localPt);
+            });
+            if (hitGear) return;
+            self._onRoomCardClick(room);
+          };
           card.renderContext().shapeNode.style.cursor = "pointer";
         }
         return cardH;
@@ -1507,6 +1621,22 @@ module("lively.identity.ConstellationLounge")
         };
         lively.require("lively.identity.NewRoomDialog").toRun(function () {
           lively.identity.NewRoomDialog.open(opts);
+        });
+      },
+
+      // Opens the per-room settings dialog (rename/header image/access/
+      // pin/archive/delete) -- reached from the gear button rendered on a
+      // room card in _renderRoomCard (room.canManage-gated) or from
+      // RoomView.js's own header gear. Re-fetches the room list on save
+      // (and on archive/delete) rather than optimistically patching
+      // this._rooms, same "reflect the server's own view" discipline
+      // _fetchRooms' own header comment describes.
+      _openRoomSettings: function (room) {
+        var self = this;
+        lively.require("lively.identity.RoomSettingsDialog").toRun(function () {
+          lively.identity.RoomSettingsDialog.open(self._name, room, function () {
+            self._fetchRooms();
+          });
         });
       },
     },
