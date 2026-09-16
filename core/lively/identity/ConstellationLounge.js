@@ -2360,21 +2360,45 @@ module("lively.identity.ConstellationLounge")
           trackRight(lblX + lblW + 8);
         }
 
+        // Everything below the avatar row (the "N maybe" note, then the
+        // RSVP pills) used to anchor off "rowY + AV" unconditionally —
+        // reserving a full 26px-tall avatar row's worth of space even when
+        // there were zero attendees to draw there (shown.length===0 and
+        // extra===0, the common case for a brand new event). Combined with
+        // MAX_CARD_H's own 160px cap (see _renderEventCard's own comment),
+        // that reserved-but-empty gap was consistently enough to push the
+        // RSVP pills below the card's own bottom edge — confirmed live,
+        // "BIG DAY TOMORROW" (0 attendees, 1 maybe, RSVP row) rendered with
+        // its RSVP pills cut in half by the card's clipMode:"hidden" border.
+        // hasAvatarRow tracks whether that row actually drew anything, so
+        // the maybe-note/RSVP stack can skip straight past it (rather than
+        // past an empty gap) when it didn't.
+        var hasAvatarRow = shown.length > 0 || extra > 0;
+        var afterAvatarY = rowY + (hasAvatarRow ? AV + GAP : 0);
+
         // Secondary "N maybe" note — attendeeCount/attendees above only
         // ever reflect 'going' RSVPs (ConstellationRegistry.js's
         // getNextEvent), so a nonzero maybeCount would otherwise be
-        // invisible on the card entirely.
+        // invisible on the card entirely. Sits right after the avatar row
+        // (or, per hasAvatarRow above, right after the location line if
+        // there wasn't one), rather than at a fixed "rowY + AV" offset.
+        var afterMaybeY = afterAvatarY;
         if (ev.maybeCount > 0) {
-          var maybeY = rowY + AV + 6;
           var maybeLbl = lively.morphic.Text.makeLabel(ev.maybeCount + " maybe",
             { fontSize: 11, textColor: Color.rgb(150, 150, 150), fixedWidth: true, fixedHeight: true });
-          maybeLbl.setPosition(lively.pt(PAD, maybeY));
-          maybeLbl.setExtent(lively.pt(contentW, 14));
+          maybeLbl.setPosition(lively.pt(PAD, afterAvatarY));
+          maybeLbl.setExtent(lively.pt(contentW, 1));
           card.addMorph(maybeLbl);
+          // Measured rather than the old flat 14 — same HEIGHT_PAD idiom as
+          // every other label in this function, so this row's own real
+          // height (not a guess) is what the RSVP row below stacks against.
+          var maybeInner = maybeLbl.renderContext().shapeNode.querySelector("div");
           var maybeSpan = maybeLbl.renderContext().shapeNode.querySelector("span");
+          var maybeH = (maybeInner ? maybeInner.offsetHeight : 10) + HEIGHT_PAD;
           var maybeW = maybeSpan ? Math.min(maybeSpan.offsetWidth + 8, contentW) : contentW;
-          maybeLbl.setExtent(lively.pt(maybeW, 14));
+          maybeLbl.setExtent(lively.pt(maybeW, maybeH));
           trackRight(PAD + Math.min(maybeSpan ? maybeSpan.offsetWidth : 0, contentW));
+          afterMaybeY = afterAvatarY + maybeH + GAP;
         }
 
         // Member-only RSVP row (Going / Maybe / Can't go), below the
@@ -2383,9 +2407,14 @@ module("lively.identity.ConstellationLounge")
         // canWrite field and already used to gate the "+ Postcard" button
         // the same way). Fixed-width pills rather than hug-measured, same
         // simplicity tradeoff as the settings gear/edit icon's fixed
-        // 22-26px sizing elsewhere in this function.
-        var RSVP_H = 26, RSVP_GAP_ABOVE = (ev.maybeCount > 0 ? 24 : 10);
-        var rsvpY = rowY + AV + RSVP_GAP_ABOVE;
+        // 22-26px sizing elsewhere in this function. Stacked directly off
+        // afterMaybeY (itself stacked off afterAvatarY) rather than its own
+        // independent "rowY + AV + flat gap" guess, so it always sits
+        // right after whatever actually rendered above it — no dead
+        // reserved space, no overlap, regardless of which combination of
+        // attendees/maybe/neither is present.
+        var RSVP_H = 26;
+        var rsvpY = afterMaybeY;
 
         // Shrink the card down to hug its content on both axes (capped at
         // the original available maxCardW/maxCardH so it never grows back
@@ -2393,7 +2422,7 @@ module("lively.identity.ConstellationLounge")
         // keep a short title/no-attendees card from collapsing too tight.
         var finalW = Math.min(maxCardW, Math.max(220, maxRight + PAD));
         var finalH = Math.min(maxCardH, Math.max(70,
-          this._canWrite ? (rsvpY + RSVP_H + 14) : (rowY + AV + 14)));
+          this._canWrite ? (rsvpY + RSVP_H + 14) : (afterMaybeY + 14)));
         card.setExtent(lively.pt(finalW, finalH));
 
         if (this._canWrite) {
@@ -2493,19 +2522,30 @@ module("lively.identity.ConstellationLounge")
       },
 
       // Renders an ISO 8601 datetime string (e.g. "2025-12-03T14:00:00+06:00")
-      // as "Wednesday, December 3, 2025 at 2 PM +06" — always in the
-      // event's own stored UTC offset, not the viewer's local timezone
-      // (an event's wall-clock time shouldn't shift per-viewer), so this
-      // parses the string's numeric fields directly rather than going
-      // through `new Date(iso)` + toLocale*, which would silently convert
-      // to the browser's local zone instead.
+      // as "Wed, Dec 3, 2025 at 2 PM +06" — always in the event's own
+      // stored UTC offset, not the viewer's local timezone (an event's
+      // wall-clock time shouldn't shift per-viewer), so this parses the
+      // string's numeric fields directly rather than going through
+      // `new Date(iso)` + toLocale*, which would silently convert to the
+      // browser's local zone instead.
+      //
+      // Abbreviated weekday/month (full names were tried first) —
+      // confirmed live on the event card: the full "Wednesday, September
+      // 16, 2026 at 8:36 PM -07" needs ~357px on one line, well past this
+      // card's ~268px contentW, and this label has no wrap/ellipsis of its
+      // own (single-line "pre", clipMode:"visible"), so the overflow spilled
+      // out of its own box and got hard-clipped by the card's own
+      // clipMode:"hidden" border — the trailing time/offset was silently
+      // gone. Every month keeps a plain 3-letter abbreviation except
+      // September, kept 4 letters ("Sept") to read unambiguously as
+      // September rather than looking like a typo'd "Sep".
       _formatEventDateTime: function (iso) {
         var m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/.exec(iso || "");
         if (!m) return iso || "";
         var year = +m[1], month = +m[2], day = +m[3], hour = +m[4], minute = +m[5];
-        var DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-        var MONTHS = ["January", "February", "March", "April", "May", "June",
-          "July", "August", "September", "October", "November", "December"];
+        var DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+        var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+          "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
         var weekday = DAYS[new Date(Date.UTC(year, month - 1, day)).getUTCDay()];
         var ampm = hour >= 12 ? "PM" : "AM";
         var hour12 = hour % 12 || 12;
