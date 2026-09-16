@@ -337,6 +337,7 @@ module("lively.calendar.CalendarApp")
 
         _onIdentityChanged: function () {
           this._loadFriends();
+          this._loadRsvpEvents();
         },
 
         _loadFriends: function () {
@@ -359,6 +360,58 @@ module("lively.calendar.CalendarApp")
               console.warn("[Calendar] Failed to load friends:", err.message);
               self.friends = [];
               if (self._chromeBuilt) self._renderFriendsList();
+            });
+        },
+
+        // Every constellation event the signed-in user has RSVP'd
+        // going/maybe to, across any constellation they're a member of —
+        // read-only, derived entirely from event_rsvps server-side
+        // (ConstellationRegistry.js's getRsvpEventsForUser), never written
+        // back from here. Mirrors _loadFriends's identity-sync idiom
+        // exactly: called from _onIdentityChanged (so it runs both on
+        // boot, via _bindIdentity's restoreSession callback, and on any
+        // later sign-in/out), guarded the same way before re-rendering.
+        _loadRsvpEvents: function () {
+          var self = this;
+          var signedIn = typeof lively !== "undefined" && lively.identity && lively.identity.did &&
+            lively.identity.did.isLoggedIn && lively.identity.did.isLoggedIn();
+          if (!signedIn) {
+            this.events = this.events.filter(function (e) { return e.calendarId !== "constellation-rsvps"; });
+            if (this._chromeBuilt) this._relayout();
+            return;
+          }
+          var handle = lively.identity.did.currentUser().handle;
+          var base = lively.identity.did.baseUrl();
+          fetch(base + "/@" + handle + "/calendar/rsvp-events", { credentials: "include" })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+              var rsvpEvents = (data && data.events) || [];
+              if (!self._calendarById("constellation-rsvps")) {
+                self.calendars.push({
+                  id: "constellation-rsvps", name: "Constellation Events",
+                  color: PALETTE[self.calendars.length % PALETTE.length],
+                  visible: true, source: "constellation-rsvp",
+                });
+              }
+              // Replace, don't append — a re-fetch (e.g. after switching a
+              // response to "not going") must make a stale entry
+              // disappear, not just stop the list from growing.
+              self.events = self.events.filter(function (e) { return e.calendarId !== "constellation-rsvps"; });
+              rsvpEvents.forEach(function (ev) {
+                var start = new Date(ev.startsAt);
+                if (isNaN(start.getTime())) return;
+                var id = "rsvp-" + ev.id;
+                self.events.push({
+                  id: id, calendarId: "constellation-rsvps", uid: id,
+                  title: ev.title, start: start,
+                  end: new Date(start.getTime() + 3600000), // 1hr default — constellation events have no stored end time
+                  allDay: false, location: ev.location || "", description: "", attendees: [],
+                });
+              });
+              if (self._chromeBuilt) self._relayout();
+            })
+            .catch(function (err) {
+              console.warn("[Calendar] Failed to load RSVP'd events:", err.message);
             });
         },
 

@@ -82,6 +82,7 @@ module("lively.identity.ConstellationLounge")
     "lively.identity.PostCardUtils",
     "lively.identity.QuiltPatterns",
     "lively.identity.ConstellationSettingsDialog",
+    "lively.identity.EditEventDialog",
     "lively.morphic.Complete",
   )
   .toRun(function () {
@@ -1778,6 +1779,32 @@ module("lively.identity.ConstellationLounge")
         });
       },
 
+      // Member-only RSVP to the event card's Going/Maybe/Can't-go row
+      // (_renderEventCard) — server re-checks membership itself
+      // (canWrite) regardless of this._canWrite's client-side gating.
+      // Re-loads quick info on success so the card's attendee
+      // count/avatar stack and highlighted button reflect the new
+      // response immediately.
+      _respondToEvent: function (eventId, status) {
+        var self = this;
+        var base = lively.identity.did.baseUrl();
+        fetch(base + "/c/" + encodeURIComponent(this._name) + "/events/" + encodeURIComponent(eventId) + "/rsvp", {
+          method: "PUT",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: status }),
+        })
+          .then(function (res) {
+            return res.json().then(function (body) {
+              if (!res.ok) throw new Error(body.error || ("HTTP " + res.status));
+              self._refreshQuickInfo();
+            });
+          })
+          .catch(function (err) {
+            self._showError("Could not RSVP: " + err.message);
+          });
+      },
+
       // Same bordered slot as _renderEventCard, shown instead of it when
       // there's no upcoming event — a calendar glyph (Material Symbols
       // Rounded, per CLAUDE.md's icon convention) over "No events
@@ -1785,6 +1812,7 @@ module("lively.identity.ConstellationLounge")
       // like the populated card's content, since there's no date/title/
       // location to anchor a left margin against.
       _renderEmptyEventCard: function (cardX, cardY, panelW, cardBottomMax) {
+        var self = this;
         // Same RIGHT_MARGIN, applied symmetrically top and right, as
         // _renderEventCard — this card fills its whole region rather than
         // hugging content, so unlike the populated card there's no
@@ -1799,6 +1827,46 @@ module("lively.identity.ConstellationLounge")
         card.setFill(Color.white);
         card.applyStyle({ borderWidth: 2, borderColor: Color.rgb(232, 73, 126), borderRadius: 12, clipMode: "hidden" });   // COMMENT_ACCENT (#e8497e)
         this._quickInfoBox.addMorph(card);
+
+        // Controller-only "add event" icon, pinned to the card's own
+        // top-right corner — same idiom as _renderEventCard's edit icon,
+        // baked directly into its constructor rect off the already-known
+        // cardW/cardH (this card never needs a measure-then-reposition
+        // step, so there's no risk from the setPosition-after-addMorph
+        // gotcha either way).
+        if (this._isController) {
+          var ADD = 22, ADD_GLYPH_PX = 14, ADD_MARGIN = 6;
+          var addBtn = new lively.morphic.Text(
+            lively.rect(cardW - ADD_MARGIN - ADD, ADD_MARGIN, ADD, ADD), "add");
+          addBtn.applyStyle({
+            fontFamily: "'Material Symbols Rounded'",
+            fontSize: ADD_GLYPH_PX * 0.75,
+            textColor: Color.rgb(90, 90, 90),
+            fill: Color.rgba(255, 255, 255, 0.92),
+            borderRadius: ADD / 2,
+            borderWidth: 1,
+            borderColor: Color.rgb(224, 224, 224),
+            align: "center",
+            padding: lively.Rectangle.inset(0, Math.round((ADD - ADD_GLYPH_PX) / 2), 0, 0),
+            allowInput: false,
+            selectable: false,
+            clipMode: "hidden",
+            whiteSpaceHandling: "pre",
+            handStyle: "pointer",
+          });
+          noDrag(addBtn);
+          addBtn.toolTip = "Add event";
+          addBtn.onMouseOver = function () { addBtn.applyStyle({ fill: Color.rgb(238, 238, 238) }); };
+          addBtn.onMouseOut = function () { addBtn.applyStyle({ fill: Color.rgba(255, 255, 255, 0.92) }); };
+          addBtn.onMouseUp = function (evt) {
+            lively.identity.EditEventDialog.open(self._name, null, function () {
+              self._refreshQuickInfo();
+            });
+            evt.stop();
+            return true;
+          };
+          card.addMorph(addBtn);
+        }
 
         // +8/-4 padding-compensation used below for both the icon and the
         // label: the shapeNode's own small fixed internal padding
@@ -1889,6 +1957,7 @@ module("lively.identity.ConstellationLounge")
       // stretched version left a large dead gap to the right of "+N
       // Others" and zero bottom margin below the avatar row.
       _renderEventCard: function (ev, cardX, cardY, panelW, cardBottomMax) {
+        var self = this;
         // RIGHT_MARGIN (rather than the flat 20 GUTTER used elsewhere in
         // this file) so the card visibly clears the panel's right edge
         // even when it hugs all the way out to maxCardW, instead of
@@ -1922,6 +1991,19 @@ module("lively.identity.ConstellationLounge")
         // the room actually available.
         var maxRight = 0;
         function trackRight(right) { if (right > maxRight) maxRight = right; }
+
+        // Controller-only edit icon lives in the card's top-right corner
+        // (built further below, once finalW is known) — reserved here so
+        // the date/time line, which sits in that same row, caps its own
+        // width short of the icon instead of running underneath it.
+        // Confirmed live: without this reserve, a real "Thursday, December
+        // 3, 2026 at 6 PM -06:00"-length string measured wide enough to
+        // overlap the icon's box, visually clipping the trailing "6:00"
+        // under the icon (the icon renders on top, added as card's last
+        // child). Every other line (title/location/avatar row) starts
+        // below this row, so only dt needs the reserve.
+        var EDIT = 22, EDIT_GLYPH_PX = 14, EDIT_MARGIN = 6;
+        var topRightReserve = this._isController ? (EDIT + EDIT_MARGIN + 6) : 0;
 
         // Every label below that sizes itself from a *measured* content
         // height (as opposed to a hardcoded guess) has to add HEIGHT_PAD
@@ -1963,12 +2045,26 @@ module("lively.identity.ConstellationLounge")
         var dtSpan = dt.renderContext().shapeNode.querySelector("span");
         // Hug width to the real measured text (+8 shapeNode-padding
         // compensation, same idiom as the "+N Others" label below), capped
-        // at contentW so an overlong date still clips at the card's edge
-        // rather than overflow past it — same trade-off already made for
-        // trackRight just below.
-        var dtW = dtSpan ? Math.min(dtSpan.offsetWidth + 8, contentW) : contentW;
+        // at contentW minus the edit icon's reserved corner (see
+        // topRightReserve above) so an overlong date clips short of the
+        // icon instead of running underneath it.
+        var dtMaxW = contentW - topRightReserve;
+        var dtW = dtSpan ? Math.min(dtSpan.offsetWidth + 8, dtMaxW) : dtMaxW;
         dt.setExtent(lively.pt(dtW, dtH));
-        if (dtSpan) trackRight(PAD + Math.min(dtSpan.offsetWidth, contentW));
+        // trackRight's own contribution here also adds topRightReserve on
+        // top of dt's real right edge — confirmed live this matters even
+        // though dtW itself is already capped short of the icon: a
+        // medium-length date/time string comfortably under dtMaxW (so the
+        // cap above never engages) can still end up the single widest line
+        // in the card, driving finalW via plain "maxRight + PAD" below with
+        // only a flat 16px margin — less than the icon's own ~28px
+        // footprint, so the icon still overlapped dt's text even though
+        // dt's own box was never actually widened past the icon. Reserving
+        // the icon's footprint in dt's OWN contribution to maxRight (rather
+        // than just capping dt's width) guarantees finalW ends up wide
+        // enough to clear the icon in every case, not just the "text was
+        // long enough to hit dtMaxW" case.
+        if (dtSpan) trackRight(PAD + Math.min(dtSpan.offsetWidth, dtMaxW) + topRightReserve);
 
         // Title is allowed to wrap onto a second line — unlike every other
         // label in this file (all single-line "pre") — instead of clipping
@@ -2030,8 +2126,17 @@ module("lively.identity.ConstellationLounge")
         // sizing target. "Stayed one line" is titleH landing back at
         // singleLineH — allow a couple px of font-rounding slack.
         var titleIsSingleLine = titleH <= singleLineH + 2;
+        // +14, not the usual +8 shapeNode-padding compensation used
+        // elsewhere in this file — confirmed live (bumping the pad 0..20px
+        // and reading back the real rendered line count) that this bold
+        // 15px title needs at least +12 to avoid re-wrapping once its own
+        // box is shrunk to the hugged width; +8 measured 2 lines every
+        // time up to +10. +14 keeps a couple px of margin over that
+        // empirical minimum. A title that re-wraps after this hug silently
+        // loses its last word off-screen (clipped by the card's own
+        // clipMode:"hidden") with no visual sign anything went wrong.
         var titleW = (titleIsSingleLine && titleSpan)
-          ? Math.min(titleSpan.offsetWidth + 8, contentW)
+          ? Math.min(titleSpan.offsetWidth + 14, contentW)
           : contentW;
         titleM.setExtent(lively.pt(titleW, titleH + HEIGHT_PAD));
         if (titleSpan) trackRight(PAD + Math.min(titleSpan.offsetWidth, contentW));
@@ -2136,13 +2241,116 @@ module("lively.identity.ConstellationLounge")
           trackRight(lblX + lblW + 8);
         }
 
+        // Secondary "N maybe" note — attendeeCount/attendees above only
+        // ever reflect 'going' RSVPs (ConstellationRegistry.js's
+        // getNextEvent), so a nonzero maybeCount would otherwise be
+        // invisible on the card entirely.
+        if (ev.maybeCount > 0) {
+          var maybeY = rowY + AV + 6;
+          var maybeLbl = lively.morphic.Text.makeLabel(ev.maybeCount + " maybe",
+            { fontSize: 11, textColor: Color.rgb(150, 150, 150), fixedWidth: true, fixedHeight: true });
+          maybeLbl.setPosition(lively.pt(PAD, maybeY));
+          maybeLbl.setExtent(lively.pt(contentW, 14));
+          card.addMorph(maybeLbl);
+          var maybeSpan = maybeLbl.renderContext().shapeNode.querySelector("span");
+          var maybeW = maybeSpan ? Math.min(maybeSpan.offsetWidth + 8, contentW) : contentW;
+          maybeLbl.setExtent(lively.pt(maybeW, 14));
+          trackRight(PAD + Math.min(maybeSpan ? maybeSpan.offsetWidth : 0, contentW));
+        }
+
+        // Member-only RSVP row (Going / Maybe / Can't go), below the
+        // avatar/attendee row — gated on this._canWrite (this file's
+        // existing "is a member" flag, set from space-token's own
+        // canWrite field and already used to gate the "+ Postcard" button
+        // the same way). Fixed-width pills rather than hug-measured, same
+        // simplicity tradeoff as the settings gear/edit icon's fixed
+        // 22-26px sizing elsewhere in this function.
+        var RSVP_H = 26, RSVP_GAP_ABOVE = (ev.maybeCount > 0 ? 24 : 10);
+        var rsvpY = rowY + AV + RSVP_GAP_ABOVE;
+
         // Shrink the card down to hug its content on both axes (capped at
         // the original available maxCardW/maxCardH so it never grows back
         // past the visible bounds established by the caller) — MIN floors
         // keep a short title/no-attendees card from collapsing too tight.
         var finalW = Math.min(maxCardW, Math.max(220, maxRight + PAD));
-        var finalH = Math.min(maxCardH, Math.max(70, rowY + AV + 14));
+        var finalH = Math.min(maxCardH, Math.max(70,
+          this._canWrite ? (rsvpY + RSVP_H + 14) : (rowY + AV + 14)));
         card.setExtent(lively.pt(finalW, finalH));
+
+        if (this._canWrite) {
+          var RSVP_OPTIONS = [
+            { status: "going", label: "Going", width: 62 },
+            { status: "maybe", label: "Maybe", width: 62 },
+            { status: "not_going", label: "Can't go", width: 74 },
+          ];
+          var rsvpX = PAD;
+          RSVP_OPTIONS.forEach(function (opt) {
+            var isActive = ev.myRsvp === opt.status;
+            var pill = new lively.morphic.Text(lively.rect(rsvpX, rsvpY, opt.width, RSVP_H), opt.label);
+            pill.applyStyle({
+              fontSize: 11, fontWeight: "700",
+              textColor: isActive ? Color.white : Color.rgb(80, 80, 80),
+              fill: isActive ? Color.rgb(232, 73, 126) : Color.rgb(245, 245, 245),
+              borderRadius: RSVP_H / 2, borderWidth: 1,
+              borderColor: isActive ? Color.rgb(232, 73, 126) : Color.rgb(220, 220, 220),
+              align: "center", padding: lively.Rectangle.inset(0, 5, 0, 0),
+              allowInput: false, selectable: false, clipMode: "hidden",
+              whiteSpaceHandling: "pre", handStyle: "pointer",
+              fixedWidth: true, fixedHeight: true,
+            });
+            noDrag(pill);
+            pill.onMouseUp = function (evt) {
+              self._respondToEvent(ev.id, opt.status);
+              evt.stop();
+              return true;
+            };
+            card.addMorph(pill);
+            rsvpX += opt.width + 6;
+          });
+        }
+
+        // Controller-only edit icon, pinned to the card's own top-right
+        // corner. Built directly at its final rect (never constructed at a
+        // placeholder position and repositioned via setPosition afterward,
+        // per CLAUDE.md's "setPosition after addMorph can corrupt a
+        // morph's own render tree" gotcha) — finalW is already known here,
+        // so there's no measure-then-reposition step needed. Same
+        // Text-morph-as-icon-button idiom as the settings gear on the
+        // panel itself (AmbientPresencePanel.js's makeIconButton).
+        if (this._isController) {
+          // EDIT/EDIT_GLYPH_PX/EDIT_MARGIN already declared above (topRightReserve).
+          var editBtn = new lively.morphic.Text(
+            lively.rect(finalW - EDIT_MARGIN - EDIT, EDIT_MARGIN, EDIT, EDIT), "edit");
+          editBtn.applyStyle({
+            fontFamily: "'Material Symbols Rounded'",
+            fontSize: EDIT_GLYPH_PX * 0.75,
+            textColor: Color.rgb(90, 90, 90),
+            fill: Color.rgba(255, 255, 255, 0.92),
+            borderRadius: EDIT / 2,
+            borderWidth: 1,
+            borderColor: Color.rgb(224, 224, 224),
+            align: "center",
+            padding: lively.Rectangle.inset(0, Math.round((EDIT - EDIT_GLYPH_PX) / 2), 0, 0),
+            allowInput: false,
+            selectable: false,
+            clipMode: "hidden",
+            whiteSpaceHandling: "pre",
+            handStyle: "pointer",
+          });
+          noDrag(editBtn);
+          editBtn.toolTip = "Edit event";
+          editBtn.onMouseOver = function () { editBtn.applyStyle({ fill: Color.rgb(238, 238, 238) }); };
+          editBtn.onMouseOut = function () { editBtn.applyStyle({ fill: Color.rgba(255, 255, 255, 0.92) }); };
+          editBtn.onMouseUp = function (evt) {
+            lively.identity.EditEventDialog.open(self._name, ev, function () {
+              self._refreshQuickInfo();
+            });
+            evt.stop();
+            return true;
+          };
+          card.addMorph(editBtn);
+        }
+
         // Pinned to the top-right corner of the region handed to this
         // function, with equal margins on both sides: RIGHT_MARGIN from
         // the panel's right edge (finalX — since maxCardW already reserved

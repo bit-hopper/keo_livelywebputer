@@ -2723,6 +2723,20 @@ module.exports = function (route, app) {
     });
   });
 
+  // Backs CalendarApp.js's own personal-calendar sync (_loadRsvpEvents) —
+  // every constellation event the caller has RSVP'd going/maybe to, across
+  // any constellation they're a member of. Self-only, same idiom as
+  // /@:handle/settings above.
+  app.get("/@:handle/calendar/rsvp-events", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your calendar" });
+    constellationRegistry.getRsvpEventsForUser(req.identity.did, function (err, events) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json({ events: events });
+    });
+  });
+
   // ─── parts name aliasing (Roadmap.md §3) ───────────────────────────────────
   // /@:handle/parts/MyButton (human-readable) and /@:handle/parts/<objId>
   // (canonical) both resolve to the same part envelope. The part_aliases
@@ -3807,40 +3821,58 @@ module.exports = function (route, app) {
         var bots = constellation.bots || [];
         constellationRegistry.getNextEvent(name, function (err, nextEvent) {
           if (err) return res.status(500).json({ error: String(err) });
-          // Bots and event attendees aren't necessarily also constellation
-          // members, so their DIDs need folding into the handle-resolution
-          // batch too — omitting them would leave ConstellationLounge.js's
-          // BOTS section / event card unable to look up a handle for anyone
-          // who isn't also a member.
-          var eventAttendees = nextEvent ? nextEvent.attendees : [];
-          _resolveHandlesForDids(constellation.members.concat(bots, eventAttendees), function (err, memberHandles) {
-            if (err) return res.status(500).json({ error: String(err) });
-            constellationSpace.mintSpaceToken(constellation, req.identity, function (err, token) {
+
+          function afterMyRsvp() {
+            // Bots and event attendees aren't necessarily also constellation
+            // members, so their DIDs need folding into the handle-resolution
+            // batch too — omitting them would leave ConstellationLounge.js's
+            // BOTS section / event card unable to look up a handle for anyone
+            // who isn't also a member.
+            var eventAttendees = nextEvent ? nextEvent.attendees : [];
+            _resolveHandlesForDids(constellation.members.concat(bots, eventAttendees), function (err, memberHandles) {
               if (err) return res.status(500).json({ error: String(err) });
-              res.json({
-                token: token,
-                genesisObjId: constellation.genesisObjId,
-                canWrite: canWrite,
-                isController: isController,
-                joinRequestStatus: joinRequestStatus,
-                quickInfo: {
-                  createdBy: constellation.createdBy,
-                  controllers: constellation.controllers,
-                  members: constellation.members,
-                  memberCount: constellation.members.length,
-                  memberHandles: memberHandles,
-                  createdAt: constellation.createdAt,
-                  visibility: constellation.visibility,
-                  bots: bots,
-                  nextEvent: nextEvent,
-                  did: constellation.did,
-                  avatarUrl: constellation.avatarUrl,
-                  bannerUrl: constellation.bannerUrl,
-                  description: constellation.description
-                }
+              constellationSpace.mintSpaceToken(constellation, req.identity, function (err, token) {
+                if (err) return res.status(500).json({ error: String(err) });
+                res.json({
+                  token: token,
+                  genesisObjId: constellation.genesisObjId,
+                  canWrite: canWrite,
+                  isController: isController,
+                  joinRequestStatus: joinRequestStatus,
+                  quickInfo: {
+                    createdBy: constellation.createdBy,
+                    controllers: constellation.controllers,
+                    members: constellation.members,
+                    memberCount: constellation.members.length,
+                    memberHandles: memberHandles,
+                    createdAt: constellation.createdAt,
+                    visibility: constellation.visibility,
+                    bots: bots,
+                    nextEvent: nextEvent,
+                    did: constellation.did,
+                    avatarUrl: constellation.avatarUrl,
+                    bannerUrl: constellation.bannerUrl,
+                    description: constellation.description
+                  }
+                });
               });
             });
-          });
+          }
+
+          // Attaches the viewer's own RSVP response (if any) to nextEvent
+          // before it's embedded in quickInfo, so ConstellationLounge.js can
+          // highlight the right Going/Maybe/Not-going button without a
+          // second round-trip. Skipped entirely for an anonymous viewer or
+          // when there's no upcoming event.
+          if (nextEvent && viewerDid) {
+            constellationRegistry.getRsvpForUser(nextEvent.id, viewerDid, function (err, myRsvp) {
+              if (err) return res.status(500).json({ error: String(err) });
+              nextEvent.myRsvp = myRsvp;
+              afterMyRsvp();
+            });
+          } else {
+            afterMyRsvp();
+          }
         });
       }
 
@@ -4010,11 +4042,11 @@ module.exports = function (route, app) {
     });
   });
 
-  // Controller-only event creation — no client UI exists yet (same gap as
-  // bots/moderators; see ConstellationDesignSpec.md), but this gives the
-  // feature a real write path rather than only ever being seeded by hand.
-  // Body: { title, startsAt (ISO string with UTC offset), location,
-  //          attendees: [did,...], attendeeCount }
+  // Controller-only event creation and editing, opened from
+  // ConstellationLounge.js's event-card edit/add icons (EditEventDialog.js).
+  // Body: { title, startsAt (ISO string with UTC offset), location }.
+  // Attendees/attendeeCount are never accepted here — see the RSVP routes
+  // below, the only way an event's attendee list ever changes.
   app.post("/c/:name/events", auth.requireAuth, function (req, res) {
     var name = req.params.name;
     var body = req.body || {};
@@ -4035,12 +4067,96 @@ module.exports = function (route, app) {
         title: body.title,
         startsAt: body.startsAt,
         location: body.location || "",
-        attendees: Array.isArray(body.attendees) ? body.attendees : [],
-        attendeeCount: parseInt(body.attendeeCount, 10) || 0,
         createdBy: req.identity.did
       }, function (err) {
         if (err) return res.status(500).json({ error: String(err) });
         res.status(201).json({ ok: true });
+      });
+    });
+  });
+
+  // Controller-only event editing (title/startsAt/location only — the
+  // attendee list is never editable here, see the RSVP routes below).
+  // Body: { title, startsAt, location }.
+  app.put("/c/:name/events/:id", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var body = req.body || {};
+    if (!body.title || !body.startsAt) {
+      return res.status(400).json({ error: "Missing required fields: title, startsAt" });
+    }
+    if (isNaN(new Date(body.startsAt).getTime())) {
+      return res.status(400).json({ error: "startsAt is not a valid date/time string" });
+    }
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.isController(constellation, req.identity.did)) {
+        return res.status(403).json({ error: "Forbidden: controllers only" });
+      }
+      constellationRegistry.updateEvent({
+        id: req.params.id,
+        constellation: name,
+        title: body.title,
+        startsAt: body.startsAt,
+        location: body.location || ""
+      }, function (err, updated) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!updated) return res.status(404).json({ error: "Event not found: " + req.params.id });
+        res.json({ ok: true });
+      });
+    });
+  });
+
+  // Member-only RSVP to an event — canWrite (this file's established "is a
+  // member" check, despite the name) rather than isController, since any
+  // constellation member can respond going/not_going/maybe, not just
+  // controllers. getEventById's own `constellation` field is checked
+  // against :name so a member of one constellation can't RSVP to another
+  // constellation's event by guessing its numeric id. Body: { status }.
+  var RSVP_STATUSES = ["going", "not_going", "maybe"];
+  app.put("/c/:name/events/:id/rsvp", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var status = req.body && req.body.status;
+    if (RSVP_STATUSES.indexOf(status) === -1) {
+      return res.status(400).json({ error: "status must be one of: " + RSVP_STATUSES.join(", ") });
+    }
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.canWrite(constellation, req.identity.did)) {
+        return res.status(403).json({ error: "Forbidden: members only" });
+      }
+      constellationRegistry.getEventById(req.params.id, function (err, event) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!event || event.constellation !== name) {
+          return res.status(404).json({ error: "Event not found: " + req.params.id });
+        }
+        constellationRegistry.upsertRsvp(event.id, req.identity.did, status, function (err) {
+          if (err) return res.status(500).json({ error: String(err) });
+          res.json({ ok: true });
+        });
+      });
+    });
+  });
+
+  // Clears the caller's own RSVP (back to "no response").
+  app.delete("/c/:name/events/:id/rsvp", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.canWrite(constellation, req.identity.did)) {
+        return res.status(403).json({ error: "Forbidden: members only" });
+      }
+      constellationRegistry.getEventById(req.params.id, function (err, event) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!event || event.constellation !== name) {
+          return res.status(404).json({ error: "Event not found: " + req.params.id });
+        }
+        constellationRegistry.deleteRsvp(event.id, req.identity.did, function (err) {
+          if (err) return res.status(500).json({ error: String(err) });
+          res.json({ ok: true });
+        });
       });
     });
   });
