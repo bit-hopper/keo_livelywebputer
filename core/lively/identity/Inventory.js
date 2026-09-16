@@ -571,6 +571,23 @@ lively.BuildSpec('lively.identity.Inventory', {
                                 connectionRebuilder: function connectionRebuilder() {
                                     lively.bindings.connect(this, "fire", this.get("InventoryBrowser"), "openSelectedItem", {});
                                 }
+                            },{
+                                _BorderColor: Color.rgb(255,255,255),
+                                _Extent: lively.pt(100.0,28.0),
+                                _Fill: Color.rgb(204,204,204),
+                                _StyleClassNames: ["Morph","Button","disabled"],
+                                className: "lively.morphic.Button",
+                                isActive: false,
+                                isPressed: false,
+                                label: "View Source",
+                                name: "viewSourceButton",
+                                padding: lively.rect(5,0,0,0),
+                                sourceModule: "lively.morphic.Widgets",
+                                style: { borderRadius: 0 },
+                                withoutLayers: [],
+                                connectionRebuilder: function connectionRebuilder() {
+                                    lively.bindings.connect(this, "fire", this.get("InventoryBrowser"), "viewSourceOfSelectedItem", {});
+                                }
                             }],
                             withoutLayers: [],
                             activateButtons: function activateButtons(bool) {
@@ -831,6 +848,7 @@ lively.BuildSpec('lively.identity.Inventory', {
     setSelectedItem: function setSelectedItem(item) {
         this.selectedItem = item;
         this.get('openItemButton').setActive(!!item);
+        this.get('viewSourceButton').setActive(!!item);
         if (!item) {
             this.get('selectedItemName').textString = '';
             this.get('selectedItemMeta').textString = '';
@@ -964,6 +982,27 @@ lively.BuildSpec('lively.identity.Inventory', {
         this._fetchFullEnvelope(item, function(err, envelope) {
             if (err) { self.setStatus('Failed to load item: ' + (err.message || err), true); return; }
             self._openEnvelope(envelope, item.handle);
+        });
+    },
+
+    // Extracts and displays the item's embedded addScript/BuildSpec source
+    // WITHOUT deserializing/evaling it (lively.persistence.Serializer
+    // .scriptSourcesIn walks the raw parsed JSON only) -- lets a part's code
+    // be read before it's ever run. Reuses _fetchFullEnvelope, which is a
+    // no-op if the thumbnail fetch already pulled the full envelope in.
+    viewSourceOfSelectedItem: function viewSourceOfSelectedItem() {
+        var item = this.selectedItem;
+        if (!item) { $world.alert('No item selected'); return; }
+        var self = this;
+        this.setStatus('Loading source for ' + item.name + '…');
+        this._fetchFullEnvelope(item, function(err, envelope) {
+            if (err) { self.setStatus('Failed to load source: ' + (err.message || err), true); return; }
+            var payload = envelope.record && envelope.record.payload;
+            var json = typeof payload === 'string' ? payload : JSON.stringify(payload);
+            lively.require('lively.morphic.tools.ItemSourceViewer').toRun(function() {
+                lively.morphic.tools.ItemSourceViewer.open(item.name, json);
+                self.setStatus('Opened source for "' + item.name + '"');
+            });
         });
     },
 

@@ -4,6 +4,8 @@ module("lively.identity.IdentityPartsSpace")
     "lively.identity.ObjectStore",
     "lively.identity.DID",
     "lively.identity.PartSerializer",
+    "lively.identity.Crypto",
+    "lively.identity.ItemTrust",
   )
   .toRun(function () {
 
@@ -39,15 +41,24 @@ module("lively.identity.IdentityPartsSpace")
             var metaInfo = self.loadedMetaInfo;
             var cid = envelope.record.cid;
             try {
-              // setPartFromJSON(json, metaInfo, rev) requires metaInfo to have
-              // lastModifiedDate set — our createPartItemFromEnvelope ensures this.
-              self.setPartFromJSON(json, metaInfo, cid);
+              // setPartFromJSON(json, metaInfo, rev, cb) requires metaInfo to
+              // have lastModifiedDate set — our createPartItemFromEnvelope
+              // ensures this. Completion is no longer reliably synchronous
+              // (it may wait on the untrusted-part trust-gate confirm
+              // dialog), so cb has to be threaded through rather than
+              // called right after this call returns -- confirmed live: an
+              // un-threaded cb(null, self.part) here fired before self.part
+              // was actually set, for any part not from the signed-in
+              // user's own DID or an already-trusted author.
+              self.setPartFromJSON(json, metaInfo, cid, function (setErr, part) {
+                if (setErr) { if (cb) cb(setErr); return; }
+                if (cb) cb(null, part);
+              });
             } catch (e) {
               console.error("[IdentityPartItem] loadPart failed for " + self.name + ":", e);
               if (cb) cb(e);
               return;
             }
-            if (cb) cb(null, self.part);
           }
 
           if (envelope.visibility === "public") {
@@ -64,6 +75,49 @@ module("lively.identity.IdentityPartsSpace")
           }
 
           return this;
+        },
+      },
+
+      "trust",
+      {
+        // Classifies this item into one of PartsBin.js's setPartFromJSON
+        // load-gate tiers using the envelope's real DID signature -- unlike
+        // the base PartItem (classic WebDAV path), an identity part carries
+        // genuine cryptographic provenance to check. Cached on first call
+        // per item (an item's envelope doesn't change once constructed),
+        // same lazy-once idiom as fetchHtmlLogo elsewhere in this feature.
+        // json is accepted (not used) only to match the base PartItem's
+        // getTrustInfo(json, cb) call convention -- this override already
+        // has everything it needs on this.envelope.
+        getTrustInfo: function (json, cb) {
+          var self = this;
+          if (this._trustInfo) { cb(this._trustInfo); return; }
+
+          var envelope = this.envelope;
+          function done(info) { self._trustInfo = info; cb(info); }
+
+          if (!envelope || !envelope.did) { done({tier: "unsigned", did: null}); return; }
+
+          var currentUser = lively.identity.did.currentUser && lively.identity.did.currentUser();
+          if (currentUser && currentUser.did === envelope.did) {
+            done({tier: "own", did: envelope.did});
+            return;
+          }
+
+          if (!envelope.sig || !this.handle) {
+            done({tier: "unsigned", did: envelope.did});
+            return;
+          }
+
+          lively.identity.did.resolveEnvelopeSignerJwk(this.handle, function (err, signerJwk) {
+            if (err) { done({tier: "unsigned", did: envelope.did}); return; }
+            lively.identity.crypto.verifyEnvelopeIntegrity(envelope, signerJwk, function (verErr, result) {
+              var verified = !verErr && result && result.cidValid && result.sigStatus === "verified";
+              if (!verified) { done({tier: "unsigned", did: envelope.did}); return; }
+              var tier = lively.identity.ItemTrust.isTrusted(envelope.did) ? "signed-allowlisted" : "signed-unknown";
+              done({tier: tier, did: envelope.did});
+            });
+          });
         },
       },
 

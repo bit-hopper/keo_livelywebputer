@@ -46,7 +46,65 @@ Object.subclass('lively.PartsBin.PartItem',
         return lively.PartsBin.partsSpaceNamed(this.partsSpaceName);
     },
 
-    setPartFromJSON: function(json, metaInfo, rev) {
+    // Trust classification for the untrusted-code-execution gate below.
+    // Default covers the classic WebDAV path, which carries no per-part
+    // signature/authorship at all (writes are gated by session now -- see
+    // CLAUDE.md's webdav-auth-gate section -- but there's still no real
+    // provenance for an individual part, and any authenticated user can
+    // currently write to a classic PartsBin path, not just an admin -- so a
+    // path/name allowlist for "framework tools" would be trusting content
+    // that could have been silently replaced). lively.identity.IdentityPartItem
+    // overrides this with real DID-signature-based classification.
+    //
+    // json is optional -- when provided (setPartFromJSON always has it in
+    // hand), this hashes the exact content and checks it against the local
+    // content-trust list (see ItemTrust.trustContent), so a specific known
+    // part's exact bytes can be trusted without trusting the path/name it
+    // happens to live at; a later tamper changes the hash and the gate
+    // reappears automatically. When omitted (PartsBinItem>>onMouseDown's
+    // synchronous pre-warm, which doesn't have the JSON fetched yet for a
+    // classic part), resolves immediately to the base unsigned tier with no
+    // hash -- drag-to-load stays gated for classic parts regardless of
+    // content-trust status; content-trust only fast-paths the explicit
+    // Open/Load button flow, not drag.
+    // Always calls cb({tier, did, contentHash}) -- async-shaped for a
+    // uniform call convention even though the no-json path is immediate.
+    getTrustInfo: function(json, cb) {
+        var self = this;
+        if (!json) { cb({tier: 'unsigned', did: null, contentHash: null}); return; }
+        if (this._trustInfo && this._trustInfo._forJson === json) { cb(this._trustInfo); return; }
+
+        lively.require('lively.identity.Crypto', 'lively.identity.ItemTrust').toRun(function() {
+            lively.identity.crypto.sha256(json, function(err, hash) {
+                var trusted = !err && hash && lively.identity.ItemTrust.isContentTrusted(hash);
+                self._trustInfo = {
+                    tier: trusted ? 'content-trusted' : 'unsigned',
+                    did: null,
+                    contentHash: err ? null : hash,
+                    _forJson: json
+                };
+                cb(self._trustInfo);
+            });
+        });
+    },
+
+    // Synchronous peek at whatever getTrustInfo last resolved to (or null if
+    // it hasn't been called yet) -- used by PartsBinItem>>onDragStart, which
+    // has to decide synchronously whether to allow a drag-triggered load,
+    // unlike the button/confirm path which can just wait on the callback.
+    getCachedTrustInfo: function() {
+        return this._trustInfo || null;
+    },
+
+    // Optional trailing cb(err, part) -- setPartFromJSON's completion is no
+    // longer reliably synchronous-or-connection-driven now that it can wait
+    // on the trust-gate confirm dialog below, so any caller that needs to
+    // know when (or whether) the part actually landed should pass one
+    // rather than assuming this.part is set by the time the call returns.
+    // (The base PartsBinItem>>startLoadingPart caller doesn't need this --
+    // it already reacts to the 'part' property connection, which fires
+    // correctly no matter how long this takes.)
+    setPartFromJSON: function(json, metaInfo, rev, cb) {
         // Parts loaded at runtime (e.g. dragged out of PartsBin) aren't
         // covered by the module auto-loading that world-boot does via
         // Main.js's modulesBeforeDeserialization -- without this, a part
@@ -55,11 +113,38 @@ Object.subclass('lively.PartsBin.PartItem',
         // though __SourceModuleName__ correctly names the owning module.
         var self = this,
             modules = lively.persistence.Serializer.sourceModulesIn(json);
+
+        // Loading a part means eval'ing its embedded addScript/BuildSpec
+        // source directly in this page's own JS context -- full privileges,
+        // no sandbox (see CLAUDE.md's PartsBin source-inspection/trust-gate
+        // notes). Gate everything except a part the signed-in user
+        // themselves authored, one from an author already on the local
+        // trust list, or a classic part whose exact content hash is already
+        // locally content-trusted, behind an explicit confirmation.
+        this.getTrustInfo(json, function(trust) {
+            if (trust.tier === 'own' || trust.tier === 'signed-allowlisted' || trust.tier === 'content-trusted') {
+                self._doSetPartFromJSON(json, metaInfo, rev, modules, cb);
+                return;
+            }
+            lively.require('lively.identity.ItemTrust').toRun(function() {
+                lively.identity.ItemTrustGate.confirm(self, trust, json, function(proceed, alwaysTrust) {
+                    if (!proceed) { if (cb) cb(new Error('Load cancelled: untrusted part')); return; }
+                    if (alwaysTrust && trust.did) lively.identity.ItemTrust.trust(trust.did);
+                    else if (alwaysTrust && trust.contentHash) lively.identity.ItemTrust.trustContent(trust.contentHash);
+                    self._doSetPartFromJSON(json, metaInfo, rev, modules, cb);
+                });
+            });
+        });
+    },
+
+    _doSetPartFromJSON: function(json, metaInfo, rev, modules, cb) {
+        var self = this;
         lively.require(modules).toRun(function() {
             var part = self.deserializePart(json, metaInfo);
             part.partsBinMetaInfo.revisionOnLoad = rev;
             part.partsBinMetaInfo.lastModifiedDate = metaInfo.lastModifiedDate;
             self.setPart(part);
+            if (cb) cb(null, part);
         });
     },
 

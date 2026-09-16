@@ -425,9 +425,16 @@ lively.morphic.Box.subclass('lively.morphic.PartsBinItem',
 },
 'mouse events', {
     onMouseDown: function(evt) {
+        // Warms partItem's trust-info cache (see getTrustInfo/
+        // getCachedTrustInfo in PartsBin.js) well before a real drag
+        // gesture (extra mousemoves past a threshold) can begin, so
+        // onDragStart below almost always has a resolved answer by the
+        // time it needs one synchronously.
+        if (this.partItem && this.partItem.getTrustInfo) this.partItem.getTrustInfo(null, function() {});
         // FIXME: super calls will always return false. needed?
         if (UserAgent.isTouch) {
-            this.startLoadingPart('openLoadedPartCentered')
+            if (this._isTrustedForLoad()) this.startLoadingPart('openLoadedPartCentered');
+            else this.showAsSelected();
             return false;
         }
         if (evt.isLeftMouseButtonDown());
@@ -439,10 +446,36 @@ lively.morphic.Box.subclass('lively.morphic.PartsBinItem',
             alert('Cannot load Part because found no PartItem');
             return false;
         }
+        // Loading a part evals its embedded code with full page privileges
+        // (see PartsBin.js's setPartFromJSON gate) -- a modal confirm can't
+        // cleanly interrupt an in-progress native drag gesture, so an
+        // untrusted (or not-yet-resolved) tile just doesn't start a
+        // drag-load at all; onMouseDown above warms the cache so this only
+        // denies drag for a genuinely untrusted tile in practice. The
+        // explicit Open/Load button path still works and shows the real
+        // confirm dialog.
+        if (!this._isTrustedForLoad()) {
+            if (this.world()) {
+                this.world().setStatusMessage(
+                    'This part is from an unverified source -- use "View Source" or the Open/Load button to load it with a confirmation.',
+                    Color.orange, 4);
+            }
+            return false;
+        }
 // FIXME duplication with PartsBinBrowser open
         // FIXME put somewhere else
         this.startLoadingPart('openLoadedPartsBinItem')
         return true;
+    },
+    _isTrustedForLoad: function() {
+        // Deliberately excludes 'content-trusted' -- that tier requires the
+        // item's actual JSON to hash (see PartsBin.js's getTrustInfo), which
+        // isn't fetched yet for a classic part at drag time (onMouseDown's
+        // pre-warm above passes no json), so a classic part's cached trust
+        // here can never actually resolve past 'unsigned'. Content-trust
+        // only fast-paths the explicit Open/Load button flow.
+        var trust = this.partItem && this.partItem.getCachedTrustInfo && this.partItem.getCachedTrustInfo();
+        return !!trust && (trust.tier === 'own' || trust.tier === 'signed-allowlisted');
     },
     onDragEnd: function($super, evt) {
         return evt.world.dispatchDrop(evt) || $super(evt);

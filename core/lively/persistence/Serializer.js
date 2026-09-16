@@ -959,7 +959,45 @@ ObjectLinearizerPlugin.subclass('ClosurePlugin',
             currentClosures.forEach(function(name) { delete obj[name]; });
         });
     }
+},
+'searching', {
+    scriptSourcesIn: function(registryObj) {
+        // Static (no-eval) extraction of every addScript/BuildSpec method's
+        // source text from a part's raw parsed JSON, mirroring how
+        // ClassPlugin>>sourceModulesIn walks the registry before any real
+        // deserialization/eval happens (see Serialization.js's deserialize,
+        // which calls sourceModulesIn before deserializeJso). Used by
+        // ItemSourceViewer to let a part's code be read before it's ever run.
+        var closuresProp = this.serializedClosuresProperty,
+            isSimplified = !!registryObj.isSimplifiedRegistry,
+            results = [];
 
+        function resolveRef(ref) {
+            if (!ref || !ref.__isSmartRef__) return null;
+            var entry = registryObj[ref.id];
+            if (!entry) return null;
+            return isSimplified ? entry : entry.registeredObject;
+        }
+
+        ObjectGraphLinearizer.allRegisteredObjectsDo(registryObj, function(id, value) {
+            if (!value || !value[closuresProp]) return;
+            var closures = resolveRef(value[closuresProp]);
+            if (!closures) return;
+            Properties.forEachOwn(closures, function(scriptName, closureRef) {
+                var closure = resolveRef(closureRef);
+                if (!closure || typeof closure.source !== 'string') return;
+                results.push({
+                    ownerId: id,
+                    ownerName: value.name || null,
+                    ownerClass: value['__LivelyClassName__'] || null,
+                    scriptName: scriptName,
+                    source: closure.source
+                });
+            });
+        });
+
+        return results;
+    }
 });
 
 ObjectLinearizerPlugin.subclass('lively.persistence.TraitPlugin',
@@ -1517,6 +1555,10 @@ Object.extend(lively.persistence.Serializer, {
 
     sourceModulesIn: function(jso) {
         return new ClassPlugin().sourceModulesIn(jso.registry);
+    },
+
+    scriptSourcesIn: function(jso) {
+        return new ClosurePlugin().scriptSourcesIn(jso.registry);
     },
 
     parseJSON: function(json) {

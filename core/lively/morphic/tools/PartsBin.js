@@ -589,6 +589,31 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
                     },
 
                     {
+                        _Position: lively.pt(425,6.0),
+                        _Extent: lively.pt(80,15),
+                        _HandStyle: null,
+                        _InputAllowed: false,
+                        _IsSelectable: false,
+                        _FontFamily: "Arial, sans-serif",
+                        _FontSize: 9,
+                        className: "lively.morphic.Text",
+                        emphasis: [[0, 11, {
+                            doit: {code: "evt.getTargetMorph().get('PartsBinBrowser').viewSourceForSelection();",context: null},
+                            color: Color.blue
+                        }]],
+                        fixedWidth: true,
+                        grabbingEnabled: false,
+                        layout: {
+                            centeredVertical: true,
+                            moveHorizontal: true,
+                            moveVertical: false,
+                            resizeHeight: false
+                        },
+                        name: "view source label",
+                        textString: "view source"
+                    },
+
+                    {
                         _Align: "left",
                         _Extent: lively.pt(3.0,25.0),
                         _FontFamily: "Arial, sans-serif",
@@ -1587,6 +1612,29 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
             indicatorClose && indicatorClose();
           });
 
+        },
+
+        // Extracts and displays the selected part's embedded addScript/
+        // BuildSpec source WITHOUT deserializing/evaling it (see
+        // lively.persistence.Serializer.scriptSourcesIn / ItemSourceViewer)
+        // -- lets a part's code be read before it's ever run.
+        viewSourceForSelection: function viewSourceForSelection() {
+          var item = this.get('PartsBinBrowser').get('PartsBinBrowser').selectedPartItem;
+          if (!item) {
+            $world.inform("Nothing part item selected.");
+            return;
+          }
+          lively.require('lively.morphic.tools.ItemSourceViewer').toRun(function() {
+            new WebResource(item.getFileURL()).noProxy().beAsync()
+              .withJSONWhenDone(function(json, status) {
+                if (!status || !status.isSuccess()) {
+                  $world.inform('Failed to load source: ' + (status && status.code));
+                  return;
+                }
+                lively.morphic.tools.ItemSourceViewer.open(item.name, json);
+              })
+              .get();
+          });
         },
 
         onLoad: function onLoad() {
