@@ -218,6 +218,30 @@ if (!options.defined("noSubservers") && options.defined("subserver")) {
   }
 }
 
+// core/servers/PythonSubserver.js, HaskellServer.js, ClojureServer.js,
+// RServer.js, CommandLineServer.js, PtyServer.js, NodeJSEvalServer.js, and
+// SQLiteServer.js are unauthenticated remote-code-execution primitives by
+// design (arbitrary code piped into a live interpreter, arbitrary shell
+// exec, raw eval() on the server process itself) -- see
+// nodejs-subserver-auth-gate.js's own header and DeployCheckList.md's
+// "[CRITICAL/SECURITY] unauthenticated RCE via /nodejs/* language-server
+// subservers" item for the full audit trail. life_star unshifts each
+// subserver's routes to the FRONT of app.routes[method] as it loads (see
+// node_modules/life_star/lib/subservers.js), so whichever subserver is
+// started LAST wins route-matching priority -- appending this entry here,
+// after both subserver-collecting blocks above, guarantees it's always
+// last regardless of core/servers/'s directory listing order (the same
+// ordering concern IdentityServer.js's own /@:handle/* catch-all already
+// had to solve, documented in this repo's CLAUDE.md). Intentionally not
+// affected by --exclude-subserver -- that flag is for removing individual
+// subservers, not this security gate.
+if (!options.defined("noSubservers")) {
+  subservers["nodejs-subserver-auth-gate"] = path.join(
+    options.lkDir,
+    "core/servers/support/nodejs-subserver-auth-gate.js",
+  );
+}
+
 // -=-=-=-=-=-=-=-=-=-=-=-
 // Dealing with processes
 // -=-=-=-=-=-=-=-=-=-=-=-
