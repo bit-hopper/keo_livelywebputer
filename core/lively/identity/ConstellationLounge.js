@@ -655,6 +655,39 @@ module("lively.identity.ConstellationLounge")
         (morph.submorphs || []).forEach(this._disableDragging, this);
       },
 
+      // Turns an existing "@handle" Text morph into a clickable link:
+      // pink text, pointer cursor, hover shade, opens MiniProfileCard on
+      // click. did/handle are closed over directly rather than stashed on
+      // the morph — this controller is a plain Object.subclass, not a
+      // lively.BuildSpec/addScript-reconstructed method, so normal JS
+      // closures work here (see CLAUDE.md's BuildSpec-closure-loss gotcha,
+      // which does NOT apply to this class).
+      _wireHandleLink: function (t, did, handle) {
+        var PINK = Color.rgb(0xCC, 0x00, 0x57);       // ProfileCard.js's own window-frame color
+        var PINK_HOVER = Color.rgb(0xE0, 0x4A, 0x86);
+        t.applyStyle({ textColor: PINK, handStyle: "pointer" });
+        t.disableDragging();
+        t.disableGrabbing();
+        // Text.makeLabel -> beLabel() calls ignoreEvents() unconditionally
+        // (TextCore.js), which silently no-ops onMouseUp forever (Events.js's
+        // onMouseUpEntry bails out at `if (this.eventsAreIgnored...) return
+        // false` before ever calling it) — same bug already hit and fixed in
+        // MediaPickerDialog.js's tab labels. Confirmed live here too: real
+        // clicks (and CDP-driven ones) landed exactly on the rendered text
+        // but never reached onMouseUp until this was added.
+        t.unignoreEvents();
+        t.onMouseOver = function () { t.applyStyle({ textColor: PINK_HOVER }); };
+        t.onMouseOut  = function () { t.applyStyle({ textColor: PINK }); };
+        t.onMouseUp = function (evt) {
+          lively.require("lively.identity.MiniProfileCard").toRun(function () {
+            lively.identity.MiniProfileCard.open(handle, did, t);
+          });
+          evt.stop();
+          return true;
+        };
+        return t;
+      },
+
       // Comment bodies are rendered as raw HTML (reusing postCardUtils.
       // snapshotToHtml, same as PostCardView.js's own content area — see
       // the "thread" section below) inside a Box morph's shapeNode, so they
@@ -1648,16 +1681,54 @@ module("lively.identity.ConstellationLounge")
         var DETAIL_GAP = 8;
         var detailY = titleY + titleH + DETAIL_GAP;
         var detailW = Math.max(100, EVENT_CARD_X - avX - 16);
-        lines.forEach(function (str) {
+        lines.forEach(function (str, i) {
+          // The "Created ... by @handle" line gets split into two morphs
+          // (plain prefix + clickable pink handle) so just the handle can
+          // become a link — everything else about this line's layout
+          // (detailW/EVENT_CARD_X, computed above from the combined
+          // string's probed width) stays untouched, since prefix+handle's
+          // combined rendered width can't exceed what was already probed.
+          if (i === 1 && creatorHandle) {
+            var prefix = "Created " + self._formatDate(qi.createdAt) + " by ";
+            var prefixT = lively.morphic.Text.makeLabel(prefix,
+              { fontSize: 12, textColor: Color.rgb(102, 102, 102), whiteSpaceHandling: "normal", fixedWidth: true, fixedHeight: true });
+            prefixT.setPosition(lively.pt(avX, detailY));
+            prefixT.setExtent(lively.pt(detailW, 1));
+            self._quickInfoBox.addMorph(prefixT);
+            var prefixInner = prefixT.renderContext().shapeNode.querySelector("div");
+            var prefixSpan  = prefixT.renderContext().shapeNode.querySelector("span");
+            var lineH = (prefixInner ? prefixInner.offsetHeight : 14) + 4; // +4: shapeNode's own 2px-top/2px-bottom padding, see CLAUDE.md
+            var prefixW = prefixSpan ? prefixSpan.offsetWidth : Math.round(detailW * 0.6);
+            // +8, not +2: the shapeNode's own ~8px combined left/right
+            // padding (CLAUDE.md's Text-sizing gotcha, the same "+8"
+            // compensation used everywhere else in this file — e.g. the
+            // title and "+N Others" label) gets subtracted from whatever
+            // width we set here. +2 left the content box a few px
+            // narrower than the measured text, which silently wrapped
+            // "by" onto an invisible second line (the box stayed
+            // single-line-tall) instead of clipping it — same failure
+            // mode, just wrapping instead of clipping.
+            prefixT.setExtent(lively.pt(prefixW + 8, lineH));
+
+            var handleT = lively.morphic.Text.makeLabel("@" + creatorHandle,
+              { fontSize: 12, fixedWidth: true, fixedHeight: true });
+            handleT.setPosition(lively.pt(avX + prefixW + 6, detailY));
+            handleT.setExtent(lively.pt(Math.max(20, detailW - prefixW - 6), lineH));
+            self._quickInfoBox.addMorph(handleT);
+            self._wireHandleLink(handleT, qi.createdBy, creatorHandle);
+
+            detailY += lineH + 2;
+            return;
+          }
           var t = lively.morphic.Text.makeLabel(str,
             { fontSize: 12, textColor: Color.rgb(102, 102, 102), whiteSpaceHandling: "normal", fixedWidth: true, fixedHeight: true });
           t.setPosition(lively.pt(avX, detailY));
           t.setExtent(lively.pt(detailW, 1));
           self._quickInfoBox.addMorph(t);
           var inner = t.renderContext().shapeNode.querySelector("div");
-          var lineH = (inner ? inner.offsetHeight : 14) + 4; // +4: shapeNode's own 2px-top/2px-bottom padding, see CLAUDE.md
-          t.setExtent(lively.pt(detailW, lineH));
-          detailY += lineH + 2;
+          var lineH2 = (inner ? inner.offsetHeight : 14) + 4; // +4: shapeNode's own 2px-top/2px-bottom padding, see CLAUDE.md
+          t.setExtent(lively.pt(detailW, lineH2));
+          detailY += lineH2 + 2;
         });
 
         // Optional short description, set via the settings gear's dialog
@@ -3570,7 +3641,7 @@ module("lively.identity.ConstellationLounge")
 
         var y = 4;
         y = this._renderMemberSection(w, y, "CO-CREATOR", [coCreator].filter(Boolean), handles,
-          Color.rgb(46, 125, 50), Color.rgb(232, 245, 233), "co-creator");
+          Color.rgb(46, 125, 50), Color.rgb(232, 245, 233), "co-creator", true);
         y = this._renderMemberSection(w, y, "BOTS", bots, handles,
           Color.rgb(69, 90, 100), Color.rgb(236, 239, 241), "bot");
         y = this._renderMemberSection(w, y, "MODERATORS", moderators, handles,
@@ -3581,7 +3652,7 @@ module("lively.identity.ConstellationLounge")
 
       _isOnline: function (did) { return !!this._presenceByDid[did]; },
 
-      _renderMemberSection: function (w, y, label, dids, handles, badgeColor, badgeBg, badgeText) {
+      _renderMemberSection: function (w, y, label, dids, handles, badgeColor, badgeBg, badgeText, clickableHandle) {
         if (!dids.length) return y;
         var self = this;
         // The box's CSS padding (set in _buildChrome) doesn't actually
@@ -3621,6 +3692,7 @@ module("lively.identity.ConstellationLounge")
           nameT.setPosition(lively.pt(28, 4));
           nameT.setExtent(lively.pt(Math.max(30, nameW), 16));
           row.addMorph(nameT);
+          if (clickableHandle) self._wireHandleLink(nameT, did, handle);
 
           if (badgeColor) {
             var badge = new lively.morphic.Box(lively.rect(w2 - 66, 3, 62, 18));
