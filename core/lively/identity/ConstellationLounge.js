@@ -1994,14 +1994,12 @@ module("lively.identity.ConstellationLounge")
 
         // Controller-only edit icon lives in the card's top-right corner
         // (built further below, once finalW is known) — reserved here so
-        // the date/time line, which sits in that same row, caps its own
-        // width short of the icon instead of running underneath it.
-        // Confirmed live: without this reserve, a real "Thursday, December
-        // 3, 2026 at 6 PM -06:00"-length string measured wide enough to
-        // overlap the icon's box, visually clipping the trailing "6:00"
-        // under the icon (the icon renders on top, added as card's last
-        // child). Every other line (title/location/avatar row) starts
-        // below this row, so only dt needs the reserve.
+        // the title, which now sits at the very top of the card (moved
+        // above the date/time line — previously date/time was the top
+        // row), caps its own width short of the icon instead of running
+        // underneath it. Every other line (date/time, location, avatar
+        // row) now starts below the title, so only the title needs the
+        // reserve.
         var EDIT = 22, EDIT_GLYPH_PX = 14, EDIT_MARGIN = 6;
         var topRightReserve = this._isController ? (EDIT + EDIT_MARGIN + 6) : 0;
 
@@ -2023,63 +2021,26 @@ module("lively.identity.ConstellationLounge")
         // hug-content default of false for both) so nothing later
         // silently re-fits them back to a different size.
         var HEIGHT_PAD = 4;
-        var dt = lively.morphic.Text.makeLabel(this._formatEventDateTime(ev.startsAt),
-          { fontSize: 12, fontWeight: "700", textColor: Color.rgb(230, 126, 34), fixedWidth: true, fixedHeight: true });
-        dt.setPosition(lively.pt(PAD, 8));
-        // contentW is a generous throwaway width here — only so the "pre"
-        // (no-wrap) text has room to measure at its natural size, never
-        // the box's final width. Left un-hugged, this and the other two
-        // labels below stayed at the full contentW forever (their own
-        // invisible box always as wide as the card's *widest possible*
-        // content), which sat visibly wider than the card itself once the
-        // card hugged down to a narrower finalW below — confirmed live via
-        // halo-select, an empty-space overhang past the card's own right
-        // border on every line shorter than whichever line drove finalW.
-        dt.setExtent(lively.pt(contentW, 14));
-        card.addMorph(dt);
-        // Measure the real content height rather than trust the hardcoded
-        // 14 above (see HEIGHT_PAD comment) — a fixed guess is a coin flip
-        // on whether a descender like the "y" in "Thursday" clips.
-        var dtInner = dt.renderContext().shapeNode.querySelector("div");
-        var dtH = dtInner ? dtInner.offsetHeight + HEIGHT_PAD : 14;
-        var dtSpan = dt.renderContext().shapeNode.querySelector("span");
-        // Hug width to the real measured text (+8 shapeNode-padding
-        // compensation, same idiom as the "+N Others" label below), capped
-        // at contentW minus the edit icon's reserved corner (see
-        // topRightReserve above) so an overlong date clips short of the
-        // icon instead of running underneath it.
-        var dtMaxW = contentW - topRightReserve;
-        var dtW = dtSpan ? Math.min(dtSpan.offsetWidth + 8, dtMaxW) : dtMaxW;
-        dt.setExtent(lively.pt(dtW, dtH));
-        // trackRight's own contribution here also adds topRightReserve on
-        // top of dt's real right edge — confirmed live this matters even
-        // though dtW itself is already capped short of the icon: a
-        // medium-length date/time string comfortably under dtMaxW (so the
-        // cap above never engages) can still end up the single widest line
-        // in the card, driving finalW via plain "maxRight + PAD" below with
-        // only a flat 16px margin — less than the icon's own ~28px
-        // footprint, so the icon still overlapped dt's text even though
-        // dt's own box was never actually widened past the icon. Reserving
-        // the icon's footprint in dt's OWN contribution to maxRight (rather
-        // than just capping dt's width) guarantees finalW ends up wide
-        // enough to clear the icon in every case, not just the "text was
-        // long enough to hit dtMaxW" case.
-        if (dtSpan) trackRight(PAD + Math.min(dtSpan.offsetWidth, dtMaxW) + topRightReserve);
 
-        // Title is allowed to wrap onto a second line — unlike every other
-        // label in this file (all single-line "pre") — instead of clipping
-        // mid-word at the card's own edge, which is what a real ~45-char
-        // event title did before this (confirmed live: cut off after ~30
-        // characters, mid-word, with the rest of the title simply gone).
-        // The box starts at a generous throwaway height (its real wrapped
-        // height isn't knowable until after render — same measure-after-
-        // render idiom used elsewhere in this file) and is then shrunk to
-        // the actual measured height, so nothing below it in the card
-        // overlaps or leaves an oversized gap.
+        // Title now sits at the very top of the card — allowed to wrap
+        // onto a second line, unlike every other label in this file (all
+        // single-line "pre") — instead of clipping mid-word at the card's
+        // own edge, which is what a real ~45-char event title did before
+        // this (confirmed live: cut off after ~30 characters, mid-word,
+        // with the rest of the title simply gone). The box starts at a
+        // generous throwaway height (its real wrapped height isn't
+        // knowable until after render — same measure-after-render idiom
+        // used elsewhere in this file) and is then shrunk to the actual
+        // measured height, so nothing below it in the card overlaps or
+        // leaves an oversized gap. Sized against titleMaxW (contentW minus
+        // the edit icon's reserved corner, see topRightReserve above)
+        // rather than plain contentW, since this top row is the one that
+        // shares space with the icon now.
         var titleM = lively.morphic.Text.makeLabel(ev.title || "",
-          { fontSize: 15, fontWeight: "bold", textColor: Color.rgb(20, 20, 20), whiteSpaceHandling: "normal", fixedWidth: true, fixedHeight: true });
-        var titleY = 24;
+          { fontSize: 15, fontWeight: "bold", textColor: Color.rgb(4, 168, 34), whiteSpaceHandling: "normal", fixedWidth: true, fixedHeight: true });
+        var titleY = 8;
         titleM.setPosition(lively.pt(PAD, titleY));
+        var titleMaxW = contentW - topRightReserve;
         // Single-line height first (a throwaway 2000px-wide box guarantees
         // no wrap regardless of content) — this is the per-line height used
         // below to cap wrapping at 2 lines. The box's own height is set to
@@ -2096,7 +2057,7 @@ module("lively.identity.ConstellationLounge")
         card.addMorph(titleM);
         var titleInner = titleM.renderContext().shapeNode.querySelector("div");
         var singleLineH = titleInner ? titleInner.offsetHeight : 20;
-        titleM.setExtent(lively.pt(contentW, 1));
+        titleM.setExtent(lively.pt(titleMaxW, 1));
         var titleH = titleInner ? titleInner.offsetHeight : singleLineH;
         // A narrow card (this panel's available width shrinks a lot below
         // ~1600px browser width, see visibleW above) can wrap a long title
@@ -2119,7 +2080,7 @@ module("lively.identity.ConstellationLounge")
         }
         var titleSpan = titleM.renderContext().shapeNode.querySelector("span");
         // Only hug width when the title stayed on one line — a wrapped
-        // title's own width *is* contentW (that's what forced it to
+        // title's own width *is* titleMaxW (that's what forced it to
         // wrap), so there's no narrower "natural" width to hug to; the
         // span's own offsetWidth for wrapped content is just the widest
         // individual line anyway (see the trackRight cap below), not a
@@ -2136,22 +2097,67 @@ module("lively.identity.ConstellationLounge")
         // loses its last word off-screen (clipped by the card's own
         // clipMode:"hidden") with no visual sign anything went wrong.
         var titleW = (titleIsSingleLine && titleSpan)
-          ? Math.min(titleSpan.offsetWidth + 14, contentW)
-          : contentW;
+          ? Math.min(titleSpan.offsetWidth + 14, titleMaxW)
+          : titleMaxW;
         titleM.setExtent(lively.pt(titleW, titleH + HEIGHT_PAD));
-        if (titleSpan) trackRight(PAD + Math.min(titleSpan.offsetWidth, contentW));
+        // trackRight's own contribution here also adds topRightReserve on
+        // top of the title's real right edge — confirmed live (when this
+        // reserve lived on the date/time line instead, before the
+        // title/date swap) this matters even though titleW itself is
+        // already capped short of the icon: a line comfortably under
+        // titleMaxW (so the cap above never engages) can still end up the
+        // single widest line in the card, driving finalW via plain
+        // "maxRight + PAD" below with only a flat 16px margin — less than
+        // the icon's own ~28px footprint. Reserving the icon's footprint
+        // in the title's OWN contribution to maxRight (rather than just
+        // capping its width) guarantees finalW ends up wide enough to
+        // clear the icon in every case.
+        if (titleSpan) trackRight(PAD + Math.min(titleSpan.offsetWidth, titleMaxW) + topRightReserve);
         var afterTitleY = titleY + titleH + HEIGHT_PAD;
 
+        // Date/time, right below the title (previously the top line,
+        // above the title — swapped so the title reads first). Plain
+        // contentW, no icon reserve needed here since this row is now
+        // below the title's own top row, clear of the icon.
+        var dt = lively.morphic.Text.makeLabel(this._formatEventDateTime(ev.startsAt),
+          { fontSize: 12, fontWeight: "700", textColor: Color.rgb(230, 126, 34), fixedWidth: true, fixedHeight: true });
+        var dtY = afterTitleY + GAP;
+        dt.setPosition(lively.pt(PAD, dtY));
+        // contentW is a generous throwaway width here — only so the "pre"
+        // (no-wrap) text has room to measure at its natural size, never
+        // the box's final width. Left un-hugged, this and the other two
+        // labels below stayed at the full contentW forever (their own
+        // invisible box always as wide as the card's *widest possible*
+        // content), which sat visibly wider than the card itself once the
+        // card hugged down to a narrower finalW below — confirmed live via
+        // halo-select, an empty-space overhang past the card's own right
+        // border on every line shorter than whichever line drove finalW.
+        dt.setExtent(lively.pt(contentW, 14));
+        card.addMorph(dt);
+        // Measure the real content height rather than trust the hardcoded
+        // 14 above (see HEIGHT_PAD comment) — a fixed guess is a coin flip
+        // on whether a descender like the "y" in "Thursday" clips.
+        var dtInner = dt.renderContext().shapeNode.querySelector("div");
+        var dtH = dtInner ? dtInner.offsetHeight + HEIGHT_PAD : 14;
+        var dtSpan = dt.renderContext().shapeNode.querySelector("span");
+        // Hug width to the real measured text (+8 shapeNode-padding
+        // compensation, same idiom as the "+N Others" label below), capped
+        // at contentW so an overlong date still clips at the card's edge
+        // rather than overflow past it — same trade-off already made for
+        // trackRight just below.
+        var dtW = dtSpan ? Math.min(dtSpan.offsetWidth + 8, contentW) : contentW;
+        dt.setExtent(lively.pt(dtW, dtH));
+        if (dtSpan) trackRight(PAD + Math.min(dtSpan.offsetWidth, contentW));
+
         // Location's y (and, below, the avatar row's rowY) is derived from
-        // the title's *real* measured bottom rather than a fixed offset —
-        // a wrapped two-line title is taller than the original fixed
-        // offsets assumed, and without this the location line and avatar
-        // row would sit on top of the title's second line instead of below
-        // it.
-        var contentBottomY = afterTitleY;
+        // the date/time line's *real* measured bottom rather than a fixed
+        // offset — a wrapped two-line title is taller than a fixed offset
+        // would assume, and without this the location line and avatar row
+        // would sit on top of the date/time line instead of below it.
+        var contentBottomY = dtY + dtH;
         if (ev.location) {
           var locM = lively.morphic.Text.makeLabel(ev.location, { fontSize: 12, textColor: Color.rgb(110, 110, 110), fixedWidth: true, fixedHeight: true });
-          var locY = afterTitleY + GAP;
+          var locY = contentBottomY + GAP;
           locM.setPosition(lively.pt(PAD, locY));
           locM.setExtent(lively.pt(contentW, 14));
           card.addMorph(locM);
