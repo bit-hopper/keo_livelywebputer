@@ -2172,17 +2172,20 @@ module("lively.identity.ConstellationLounge")
         var singleLineH = titleInner ? titleInner.offsetHeight : 20;
         titleM.setExtent(lively.pt(titleMaxW, 1));
         var titleH = titleInner ? titleInner.offsetHeight : singleLineH;
-        // A narrow card (this panel's available width shrinks a lot below
-        // ~1600px browser width, see visibleW above) can wrap a long title
-        // onto 4-5 lines, which blows past the card's own fixed vertical
-        // budget and pushes the avatar row/"+N Others" label past the
-        // card's bottom edge to be clipped there — confirmed live at a
-        // 1280px browser width with this same 45-character title. Capped
-        // at 2 lines with a trailing "…" instead: trims one word at a time
-        // off the end (titles are short, a handful of words, so this is a
-        // handful of reflows at most) until the wrapped height fits back
-        // within 2 lines.
-        var maxTitleH = singleLineH * 2 + 4;
+        // Capped at a SINGLE line with a trailing "…" (a longer title, e.g.
+        // "Community Jam Night and Social Mixer", becomes "Community Jam
+        // Night…") rather than letting it wrap — a wrapped 2-line title was
+        // tried first, but on a narrow card (this panel's available width
+        // shrinks a lot below ~1600px browser width, see visibleW above) a
+        // long title could still wrap onto 4-5 lines, blowing past the
+        // card's own fixed vertical budget and pushing the avatar row/
+        // RSVP pills past the card's bottom edge to be clipped there —
+        // confirmed live at a 1280px browser width with a 45-character
+        // title. A flat single-line cap sidesteps that regardless of card
+        // width. Trims one word at a time off the end (titles are short, a
+        // handful of words, so this is a handful of reflows at most) until
+        // the text fits back on one line.
+        var maxTitleH = singleLineH + 4;
         if (titleH > maxTitleH) {
           var words = (ev.title || "").split(/\s+/);
           while (words.length > 1 && titleH > maxTitleH) {
