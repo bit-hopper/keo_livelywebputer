@@ -684,8 +684,7 @@ apps.Graphviz.Simple = {
     return Promise.resolve()
       .then(function() {
         if (window.Viz) return window.Viz;
-        // FIXME host ourselves? add to libs?
-        JSLoader.loadJs("https://mdaines.github.io/viz.js/bower_components/viz.js/viz.js");
+        JSLoader.loadJs(URL.codeBase.withFilename('lib/viz.js').toString());
         return lively.lang.promise.waitFor(10000, function() { return window.Viz; });
       })
       .then(function(viz) { return viz(dotSource); })

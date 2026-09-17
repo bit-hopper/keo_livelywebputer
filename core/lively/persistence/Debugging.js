@@ -66,7 +66,16 @@ Object.extend(lively.persistence.Debugging, {
       scrollSelectionIntoView: false
     }, options);
 
-    if (!module("apps.Graphviz").isLoaded()) module("apps.Graphviz").load(true);
+    // module(...).load(true) itself resolves asynchronously (it wraps a
+    // runWhenLoaded callback/Promise even when loadSync is requested), so
+    // callers cannot assume apps.Graphviz is fully defined right after this
+    // call returns -- the actual graph building below has to wait for it.
+    var moduleLoaded = (window.apps && apps.Graphviz && apps.Graphviz.Simple) ?
+      Promise.resolve() : module("apps.Graphviz").load(true);
+
+    return moduleLoaded.then(buildAndDrawGraph);
+
+    function buildAndDrawGraph() {
 
     var lines = options.labelWithReferencePaths ?
       createDotLinesForEachRefPath(graphMap, snapshot) :
@@ -115,6 +124,19 @@ Object.extend(lively.persistence.Debugging, {
       var source = "digraph G {\n" + dotLines.join("\n") + "\n}"
       return apps.Graphviz.Simple.renderDotToDisplay(source, options)
         .then(function(display) {
+          display.addScript(function morphMenuItemsFor(selectedElement) {
+            show(selectedElement.name);
+            return [];
+          });
+
+          if (!options.asWindow) {
+            // caller (e.g. an embedded tab view) is responsible for the
+            // display's extent/position and for placing it in the world;
+            // just fit the rendered graph into whatever extent it already has.
+            display.zoomOutToSeeEverything();
+            return display;
+          }
+
           display.setExtent(pt(500, 400));
           display.zoomOutToSeeEverything();
           var slider = new lively.morphic.Slider(lively.rect(0, 0, 300, 30));
@@ -134,17 +156,9 @@ Object.extend(lively.persistence.Debugging, {
               }
           });
           slider.applyStyle({moveVertical: true, moveHorizontal: false});
+          win.setTitle(options.title || "serialization graph");
 
           return win;
-      })
-      .then(function(graphWindow) {
-        graphWindow.setTitle(options.title || "serialization graph");
-        var display = graphWindow.targetMorph;
-        display.addScript(function morphMenuItemsFor(selectedElement) {
-          show(selectedElement.name);
-          return [];
-        });
-
       })
       .catch(function(err) { return $world.logError(err); })
     }
@@ -163,6 +177,8 @@ Object.extend(lively.persistence.Debugging, {
         return pathString + (typeof part === "number" ? "[" + part + "]" : "." + part);
       }, "") + '"';
     }
+
+    } // end buildAndDrawGraph
 
   },
 
