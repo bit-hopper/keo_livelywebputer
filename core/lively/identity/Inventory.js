@@ -746,13 +746,20 @@ lively.BuildSpec('lively.identity.Inventory', {
             row.draggingEnabled = false; row.droppingEnabled = false; row.grabbingEnabled = false;
             row._categoryValue = name === 'All' ? null : name;
 
-            var icon = new lively.morphic.Text(lively.rect(8, 4, 16, 16), meta.icon);
+            // Box sized 22x22, not the glyph's own ~16x16 model extent -- a
+            // Material Symbols glyph at fontSize 12 actually RENDERS at
+            // 16x18.67px (fontSize is points, not px, and the glyph's real
+            // line-height overshoots its own advance width -- CLAUDE.md's
+            // fontSize-in-points gotcha), so a same-size 16x16 box clips it
+            // under clipMode:'hidden'. Confirmed live via getBoundingClientRect
+            // on the rendered span vs. its shapeNode before this fix.
+            var icon = new lively.morphic.Text(lively.rect(8, 1, 22, 22), meta.icon);
             icon.applyStyle({ fontFamily: "'Material Symbols Rounded'", fontSize: 12, textColor: active ? Color.rgbHex('#9333ea') : Color.rgb(51,51,51),
                 fill: null, borderWidth: 0, allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
             icon.eventsAreIgnored = true; icon.draggingEnabled = false; icon.droppingEnabled = false; icon.grabbingEnabled = false;
             row.addMorph(icon);
 
-            var label = new lively.morphic.Text(lively.rect(30, 4, W - 70, 16), name);
+            var label = new lively.morphic.Text(lively.rect(34, 4, W - 74, 16), name);
             label.applyStyle({ fontFamily: 'Helvetica', fontSize: 9, textColor: active ? Color.rgbHex('#9333ea') : Color.rgb(51,51,51),
                 fontWeight: active ? 'bold' : 'normal', fill: null, borderWidth: 0, allowInput: false, selectable: false,
                 fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
@@ -817,12 +824,18 @@ lively.BuildSpec('lively.identity.Inventory', {
             checkbox.onClick = function() { self.toggleInstanceChecked(inst.baseUrl); return true; };
             row.addMorph(checkbox);
 
-            var dot = new lively.morphic.Box(lively.rect(21, 8, 7, 7));
-            dot.applyStyle({ fill: Color.rgbHex(self._instanceColor(inst.baseUrl)), borderWidth: 0, borderRadius: 4 });
-            dot.eventsAreIgnored = true; dot.draggingEnabled = false; dot.droppingEnabled = false; dot.grabbingEnabled = false;
-            row.addMorph(dot);
+            // "storage" glyph (a server/rack icon) tinted per-instance,
+            // replacing the old plain colored dot -- same _instanceColor
+            // hash so a given instance keeps its color. Box sized 22x22 for
+            // the same reason as the category-sidebar icon above (a 16x16
+            // box clips a fontSize:12 Material Symbols glyph).
+            var icon = new lively.morphic.Text(lively.rect(19, 0, 22, 22), 'storage');
+            icon.applyStyle({ fontFamily: "'Material Symbols Rounded'", fontSize: 12, textColor: Color.rgbHex(self._instanceColor(inst.baseUrl)),
+                fill: null, borderWidth: 0, allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
+            icon.eventsAreIgnored = true; icon.draggingEnabled = false; icon.droppingEnabled = false; icon.grabbingEnabled = false;
+            row.addMorph(icon);
 
-            var label = new lively.morphic.Text(lively.rect(34, 3, W - 40, 16),
+            var label = new lively.morphic.Text(lively.rect(45, 3, W - 51, 16),
                 inst.displayName || inst.baseUrl.replace(/^https?:\/\//, ''));
             label.applyStyle({ fontFamily: 'Helvetica', fontSize: 8.5, textColor: Color.rgb(51,51,51), fill: null, borderWidth: 0,
                 allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
@@ -1135,7 +1148,10 @@ lively.BuildSpec('lively.identity.Inventory', {
             btn.applyStyle({ fill: Color.white, borderWidth: 1, borderColor: disabled ? Color.rgb(238,238,238) : Color.rgb(214,214,214), borderRadius: 16 });
             btn._isPopularContent = true;
             btn.draggingEnabled = false; btn.droppingEnabled = false; btn.grabbingEnabled = false;
-            var icon = new lively.morphic.Text(lively.rect(4, 8, 24, 16), glyph);
+            // 24x24, not 24x16 -- a fontSize:13 glyph renders ~17x21px tall,
+            // taller than a 16px-tall box (same clipping gotcha as the
+            // sidebar category icons above).
+            var icon = new lively.morphic.Text(lively.rect(4, 4, 24, 24), glyph);
             icon.applyStyle({ fontFamily: "'Material Symbols Rounded'", fontSize: 13, textColor: disabled ? Color.rgb(204,204,204) : Color.rgb(51,51,51),
                 fill: null, borderWidth: 0, allowInput: false, selectable: false, align: 'center', fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
             icon.eventsAreIgnored = true; icon.draggingEnabled = false; icon.droppingEnabled = false; icon.grabbingEnabled = false;
@@ -1292,24 +1308,27 @@ lively.BuildSpec('lively.identity.Inventory', {
         noDrag(badgeLabel);
         badge.addMorph(badgeLabel);
 
-        var starBadge = new lively.morphic.Box(lively.rect(W - 6 - 44, ICON_H - 6 - 16, 44, 16));
-        starBadge.applyStyle({ fill: Color.rgba(255,255,255,0.9), borderWidth: 0, borderRadius: 8 });
+        // Badge grown from 16 to 20px tall (bottom edge held at ICON_H-6, same
+        // as before) so a fontSize:9 star glyph (renders ~12x14.67px) has
+        // room -- a 14x14 icon box was clipping it, same gotcha as the
+        // sidebar category icons.
+        var starBadge = new lively.morphic.Box(lively.rect(W - 6 - 44, ICON_H - 6 - 20, 44, 20));
+        starBadge.applyStyle({ fill: Color.rgba(255,255,255,0.9), borderWidth: 0, borderRadius: 10 });
         noDrag(starBadge);
         iconArea.addMorph(starBadge);
-        var starText = new lively.morphic.Text(lively.rect(4, 1, 36, 14), String(item.starCount || 0));
+        var starIcon = new lively.morphic.Text(lively.rect(4, 1, 17, 18), 'star');
+        starIcon.applyStyle({
+            fontFamily: "'Material Symbols Rounded'", fontSize: 9, textColor: Color.rgbHex('#d97706'),
+            fill: null, borderWidth: 0, allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden'
+        });
+        noDrag(starIcon);
+        var starText = new lively.morphic.Text(lively.rect(23, 3, 17, 14), String(item.starCount || 0));
         starText.applyStyle({
             fontFamily: "Helvetica", fontSize: 8, textColor: Color.rgb(68,68,68), fill: null, borderWidth: 0,
             allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden'
         });
         noDrag(starText);
         starBadge.addMorph(starText);
-        var starIcon = new lively.morphic.Text(lively.rect(4, 1, 14, 14), 'star');
-        starIcon.applyStyle({
-            fontFamily: "'Material Symbols Rounded'", fontSize: 9, textColor: Color.rgbHex('#d97706'),
-            fill: null, borderWidth: 0, allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden'
-        });
-        noDrag(starIcon);
-        starText.setPosition(pt(16, 1));
         starBadge.addMorph(starIcon);
 
         var title = new lively.morphic.Text(lively.rect(4, ICON_H + 4, W - 8, 16), item.name || '');
@@ -1606,11 +1625,16 @@ lively.BuildSpec('lively.identity.Inventory', {
             var badge = new lively.morphic.Box(lively.rect(0, 0, W, 30));
             badge.applyStyle({ fill: Color.rgb(250,250,250), borderWidth: 1, borderColor: Color.rgb(226,226,226), borderRadius: 8 });
             noDrag(badge);
-            badge.addMorph(textRow(lively.rect(8,7,16,16), 'history',
+            // Icon boxes grown past their glyphs' own 16x16 model extent --
+            // a fontSize:12/14 Material Symbols glyph renders taller than
+            // 16px (fontSize is points, not px) and clips under
+            // clipMode:'hidden' otherwise; same gotcha as the sidebar
+            // category icons above.
+            badge.addMorph(textRow(lively.rect(8,4,22,22), 'history',
                 { fontFamily: "'Material Symbols Rounded'", fontSize: 12, textColor: Color.rgb(136,136,136) }));
-            badge.addMorph(textRow(lively.rect(28,8,W-56,14), badgeText,
+            badge.addMorph(textRow(lively.rect(34,8,W-62,14), badgeText,
                 { fontSize: 8.5, textColor: Color.rgb(51,51,51) }));
-            badge.addMorph(textRow(lively.rect(W-24,7,16,16), this.versionsExpanded ? 'expand_less' : 'expand_more',
+            badge.addMorph(textRow(lively.rect(W-32,2,24,26), this.versionsExpanded ? 'expand_less' : 'expand_more',
                 { fontFamily: "'Material Symbols Rounded'", fontSize: 14, textColor: Color.rgb(136,136,136) }));
             if (versions) badge.onMouseUp = function() { self.toggleVersionsExpanded(); return true; };
             place(badge, 36);
@@ -1636,9 +1660,12 @@ lively.BuildSpec('lively.identity.Inventory', {
         starBtn.applyStyle({ fill: starred ? Color.rgbHex('#9333ea') : Color.white,
             borderWidth: 1, borderColor: starred ? Color.rgbHex('#9333ea') : Color.rgb(214,214,214), borderRadius: 6 });
         noDrag(starBtn);
-        starBtn.addMorph(textRow(lively.rect(8,6,16,16), starred ? 'star' : 'star_border',
+        // 22x24, not 16x16 -- a fontSize:13 glyph renders ~17x21px tall
+        // (fontSize is points, not px), clipping in a same-size box under
+        // clipMode:'hidden'; same gotcha as the sidebar category icons.
+        starBtn.addMorph(textRow(lively.rect(8,2,22,24), starred ? 'star' : 'star_border',
             { fontFamily: "'Material Symbols Rounded'", fontSize: 13, textColor: starred ? Color.white : Color.rgb(51,51,51) }));
-        starBtn.addMorph(textRow(lively.rect(28,7,42,14), String(starCount),
+        starBtn.addMorph(textRow(lively.rect(32,8,38,14), String(starCount),
             { fontSize: 9, textColor: starred ? Color.white : Color.rgb(51,51,51) }));
         starBtn.onMouseUp = function() { self.toggleStarOnSelectedItem(); return true; };
         place(starBtn, 38);

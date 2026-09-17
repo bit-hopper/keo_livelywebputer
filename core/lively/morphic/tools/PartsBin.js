@@ -2012,7 +2012,7 @@ lively.BuildSpec('lively.morphic.tools.PartsBin', {
         this.get("PartsBinURLChooser").setList(lively.PartsBin.getPartsBinURLs());
     }
     }],
-    titleBar: "Classic Inventory",
+    titleBar: "Smalltalk Zoo",
     onFromBuildSpecCreated: function onFromBuildSpecCreated() {
         $super();
         this.targetMorph.onLoad();
