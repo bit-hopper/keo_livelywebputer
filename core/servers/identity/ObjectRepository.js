@@ -730,6 +730,37 @@ function listPublicPartTags(thenDo) {
   });
 }
 
+// Per-curated-category counts across every latest-version public part, for
+// the Inventory browser's curated Categories sidebar (inventory.md §13
+// Phase D) — parallel to listPublicPartTags above, but grouping on the
+// scalar state.category field instead of exploding the state.tags array.
+// A part published before state.category existed (or a legacy classic-
+// WebDAV part) groups under a null category, surfaced as-is rather than
+// folded into a synthetic "Uncategorized" bucket, matching
+// lively.identity.PartSerializer.UNCATEGORIZED_META's own client-side
+// fallback semantics (a display-time fallback, not a stored value).
+// Calls thenDo(err, { categories: [{category, count}, ...], total }).
+function listPublicPartCategories(thenDo) {
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    var sql =
+      'SELECT (o.envelope #>> \'{state,category}\') AS category, COUNT(*) AS count FROM objects o' +
+      ' INNER JOIN (' +
+      '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
+      '   WHERE type = \'part\' AND visibility = \'public\'' +
+      '   GROUP BY obj_id' +
+      ' ) latest ON o.id = latest.max_id' +
+      ' GROUP BY category' +
+      ' ORDER BY count DESC';
+    pool.query(sql, [], function (err, result) {
+      if (err) return thenDo(err);
+      var categories = result.rows.map(function (r) { return { category: r.category, count: parseInt(r.count, 10) }; });
+      var total = categories.reduce(function (sum, c) { return sum + c.count; }, 0);
+      thenDo(null, { categories: categories, total: total });
+    });
+  });
+}
+
 // Get the latest profile envelope for a DID.
 // Profiles are type:'profile' singletons — one per user.
 // Calls thenDo(null, envelope | null).
@@ -2185,6 +2216,7 @@ module.exports = {
   listForUser:                   listForUser,
   listPublicParts:               listPublicParts,
   listPublicPartTags:            listPublicPartTags,
+  listPublicPartCategories:      listPublicPartCategories,
   getProfileForDid:              getProfileForDid,
   getRecoveryWorldForDid:        getRecoveryWorldForDid,
   getSettingsForDid:             getSettingsForDid,

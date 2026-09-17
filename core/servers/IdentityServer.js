@@ -5245,6 +5245,17 @@ module.exports = function (route, app) {
     });
   });
 
+  // Per-curated-category counts for the Inventory browser's Categories
+  // sidebar (inventory.md §13 Phase D) — mirrors /parts/public/tags' own
+  // CORS/anonymous-read posture. Backed by ObjectRepository.listPublicPartCategories.
+  app.get("/parts/public/categories", auth.optionalAuth, function (req, res) {
+    res.header("Access-Control-Allow-Origin", "*");
+    objectRepo.listPublicPartCategories(function (err, result) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json(result);
+    });
+  });
+
   app.get("/c/:constellation/feed", auth.optionalAuth, function (req, res) {
     var name = req.params.constellation;
     constellationRegistry.get(name, function (err, constellation) {

@@ -27,22 +27,25 @@ lively.BuildSpec('lively.identity.Inventory', {
     // sibling border-radius-reset gotcha. Explicit here so the window keeps
     // the classic rounded corner instead of rendering hard square ones.
     _BorderRadius: 3,
-    _Extent: lively.pt(820.0,640.0),
-    _Position: lively.pt(260.0,140.0),
+    // Widened for the 3-column Phase D layout (220px rail + 840px flexible
+    // main + 360px right panel + 2 dividers + the HorizontalLayout's own
+    // borderSize/spacing below) -- see inventory.md §13 Phase D plan.
+    _Extent: lively.pt(1460.0,760.0),
+    _Position: lively.pt(140.0,80.0),
     _StyleClassNames: ["Morph","Window"],
     cameForward: false,
     className: "lively.morphic.Window",
     contentOffset: lively.pt(4.0,22.0),
     draggingEnabled: true,
     layout: { adjustForNewBounds: true },
-    minExtent: lively.pt(560.0,420.0),
+    minExtent: lively.pt(900.0,560.0),
     name: "Inventory",
     sourceModule: "lively.identity.Inventory",
     submorphs: [{
         _BorderColor: Color.rgb(95,94,95),
         // same border-radius-reset gotcha as the outer window above.
         _BorderRadius: 3,
-        _Extent: lively.pt(812.0,614.0),
+        _Extent: lively.pt(1452.0,734.0),
         _Fill: Color.rgba(245,245,245,0),
         _Position: lively.pt(4.0,22.0),
         _StyleClassNames: ["Morph","Box"],
@@ -57,19 +60,19 @@ lively.BuildSpec('lively.identity.Inventory', {
             spacing: 3,
             type: "lively.morphic.Layout.HorizontalLayout"
         },
-        minExtent: lively.pt(460.0,300.0),
+        minExtent: lively.pt(780.0,480.0),
         name: "InventoryBrowser",
         selectedItem: null,
-        categoryName: null,
         cursor: null,
         searchQuery: "",
         // scope: which data path _loadItemsPage hits -- 'public' (fan-out
         // across checkedInstances' /parts/public), 'mine'/'shared' (self-
         // only, always same-origin/credentialed, see inventory.md §13).
         scope: "public",
-        // category: curated Inventory category filter (inventory.md §7),
-        // separate from categoryName's freeform "#tag" sidebar selection --
-        // both can be active at once, composed as separate query params.
+        // category: curated Inventory category filter (inventory.md §7) --
+        // the sidebar's freeform "#tag" list (categoryName) was replaced
+        // outright by this curated filter in Phase D, not layered alongside
+        // it (inventory.md §13.1's own framing of what Phase D replaces).
         category: null,
         sort: "recent",
         // instances: the real federation directory (GET /instances,
@@ -80,13 +83,45 @@ lively.BuildSpec('lively.identity.Inventory', {
         // pre-federation behavior) until loadInstances() populates it.
         instances: [],
         checkedInstances: {},
+        // categoryCounts/categoryTotal: GET /parts/public/categories results
+        // (inventory.md §13 Phase D), backing the curated Categories
+        // sidebar's per-row counts. Public scope only.
+        categoryCounts: {},
+        categoryTotal: 0,
+        // popularItems/popularStart: the "Popular this week" strip's own
+        // independent top-8-by-stars fetch (loadPopularStrip) -- separate
+        // from _loadItemsPage's cursor-paginated main grid. popularStart
+        // steps by 4 (the visible window size) and is clamped in
+        // popularPrev/popularNext.
+        popularItems: [],
+        popularStart: 0,
+        // versionsExpanded: right-panel version-badge disclosure state.
+        versionsExpanded: false,
+        // selectedTileMorph: tracks whichever tile (in ItemsGrid OR the
+        // Popular strip) is currently shown selected, so selectTile can
+        // deselect it regardless of which container it lives in -- see
+        // selectTile below.
+        selectedTileMorph: null,
         sourceModule: "lively.morphic.Core",
 
-        // ─── left sidebar ───────────────────────────────────────────────
+        // ─── left sidebar (inventory.md §13 Phase D) ─────────────────────
+        // Only ScopeTabsRow is static BuildSpec content -- the Categories
+        // and Instances blocks below it are entirely data-driven (curated-
+        // category counts, the federation directory) and are hand-
+        // constructed/torn down at runtime by _renderSidebarExtras, the
+        // same "build fresh each time" idiom _buildItemTile/ItemsGrid
+        // already use for the item grid. All of LeftSideContainer's direct
+        // children just hug their own natural content height (no child
+        // declares resizeHeight:true) and the container itself scrolls as
+        // one region via _ClipMode -- sidesteps the VerticalLayout fixed-
+        // vs-flex-sibling trap entirely rather than juggling it, matching
+        // this file's own MainContainer/ItemInfoPanel explicit-positioning
+        // precedent in spirit (no shared flex/fixed conflict to resolve).
 
         submorphs: [{
             _BorderWidth: 0.7,
-            _Extent: lively.pt(150.0,601.0),
+            _ClipMode: "auto",
+            _Extent: lively.pt(220.0,601.0),
             _Fill: Color.rgba(255,255,255,0),
             _Position: lively.pt(6.0,6.0),
             className: "lively.morphic.Box",
@@ -95,117 +130,70 @@ lively.BuildSpec('lively.identity.Inventory', {
                 borderSize: 0,
                 resizeHeight: true,
                 resizeWidth: false,
-                spacing: 9,
+                spacing: 14,
                 type: "lively.morphic.Layout.VerticalLayout"
             },
             name: "LeftSideContainer",
             sourceModule: "lively.morphic.Core",
             submorphs: [{
-                // instance chooser — parity with the classic browser's
-                // PartsBinURLChooser, but choosing between identity-server
-                // instances (config: lively.identity.Inventory.instanceURLs)
-                // instead of WebDAV PartsBin roots.
-                _ClipMode: "auto",
-                _Extent: lively.pt(150.0,17.0),
-                _Fill: Color.rgba(243,243,243,0),
-                _FontFamily: "Helvetica",
-                _FontSize: 10,
-                _Position: lively.pt(0.5,5.0),
-                _StyleClassNames: ["Morph","Box","OldList","DropDownList"],
-                changeTriggered: false,
-                className: "lively.morphic.DropDownList",
-                droppingEnabled: false,
-                layout: {
-                    centeredHorizontal: true,
-                    centeredVertical: true,
-                    moveHorizontal: false,
-                    resizeWidth: true
-                },
-                name: "InstanceChooser",
-                selectedLineNo: -1,
-                sourceModule: "lively.morphic.Lists",
-                submorphs: [],
-                withoutLayers: [],
-                connectionRebuilder: function connectionRebuilder() {
-                    lively.bindings.connect(this, "selection", this.get("InventoryBrowser"), "setInstanceBaseUrl", {});
-                }
-            },{
-                _BorderWidth: 0.15,
-                _Extent: lively.pt(150.0,445.0),
-                _Fill: Color.rgba(255,255,255,0),
-                _Position: lively.pt(0.0,36.0),
+                _Extent: lively.pt(220.0,26.0),
+                _Fill: Color.rgb(236,236,236),
                 className: "lively.morphic.Box",
                 droppingEnabled: false,
-                layout: {
-                    borderSize: 0,
-                    resizeHeight: true,
-                    resizeWidth: true,
-                    spacing: 0,
-                    type: "lively.morphic.Layout.VerticalLayout"
-                },
-                name: "CategoryListContainer",
+                layout: { borderSize: 2, resizeWidth: true, spacing: 2, type: "lively.morphic.Layout.HorizontalLayout" },
+                name: "ScopeTabsRow",
                 sourceModule: "lively.morphic.Core",
+                style: { borderRadius: 8 },
                 submorphs: [{
-                    // no +/- buttons here (unlike the classic browser's
-                    // categoryList row) — "#tag" categories here are
-                    // aggregated across every user's public items via
-                    // GET /parts/public/tags, not user-creatable from this
-                    // read-only cross-user view. Reload is still useful
-                    // (picks up newly-published items/tags).
-                    _BorderColor: Color.rgb(210,210,210),
-                    _Extent: lively.pt(150.0,27.0),
-                    _Fill: Color.rgba(255,255,255,0),
-                    className: "lively.morphic.Morph",
-                    droppingEnabled: false,
-                    layout: { adjustForNewBounds: true, resizeWidth: true },
-                    sourceModule: "lively.morphic.Core",
-                    submorphs: [{
-                        _BorderColor: Color.rgb(210,210,210),
-                        _Extent: lively.pt(28.0,28.0),
-                        _Fill: Color.rgb(204,204,204),
-                        _Position: lively.pt(122.0,0.0),
-                        _StyleClassNames: ["Morph","Button"],
-                        className: "lively.morphic.Button",
-                        isPressed: false,
-                        label: "⟳",
-                        name: "reloadButton",
-                        sourceModule: "lively.morphic.Widgets",
-                        style: { borderRadius: 0, padding: lively.rect(4,3,0,0) },
-                        value: false,
-                        withoutLayers: [],
-                        connectionRebuilder: function connectionRebuilder() {
-                            lively.bindings.connect(this, "fire", this.get("InventoryBrowser"), "reloadEverything", {});
-                        }
-                    }],
-                    withoutLayers: []
-                },{
-                    _BorderColor: Color.rgb(210,210,210),
-                    _ClipMode: { x: "hidden", y: "scroll" },
-                    _Extent: lively.pt(150.0,418.0),
-                    _Fill: Color.rgb(255,255,255),
-                    _Position: lively.pt(0.0,27.0),
-                    _StyleClassNames: ["Morph","Box","List"],
-                    _StyleSheet: ".List {\n\
-                	border-width: 1px;\n\
-                }",
-                    className: "lively.morphic.List",
-                    layout: {
-                        adjustForNewBounds: true,
-                        extent: lively.pt(150.0,418.0),
-                        listItemHeight: 19,
-                        maxExtent: lively.pt(150.0,418.0),
-                        maxListItems: 22,
-                        noOfCandidatesShown: 1,
-                        padding: 0,
-                        resizeHeight: true,
-                        resizeWidth: true
-                    },
-                    name: "categoryList",
-                    sourceModule: "lively.morphic.Lists",
-                    submorphs: [],
+                    _Extent: lively.pt(70.0,22.0),
+                    _Fill: Color.white,
+                    _Position: lively.pt(2.0,2.0),
+                    _StyleClassNames: ["Morph","Button"],
+                    className: "lively.morphic.Button",
+                    isPressed: false,
+                    label: "Public",
+                    layout: { resizeWidth: true },
+                    name: "scopePublicButton",
+                    sourceModule: "lively.morphic.Widgets",
+                    style: { borderRadius: 6 },
+                    value: false,
                     withoutLayers: [],
                     connectionRebuilder: function connectionRebuilder() {
-                        lively.bindings.connect(this, "selection", this.get("InventoryBrowser"), "categoryName", {});
+                        lively.bindings.connect(this, "fire", this.get("InventoryBrowser"), "setScope", { converter: function() { return "public"; } });
+                    }
+                },{
+                    _Extent: lively.pt(70.0,22.0),
+                    _Fill: Color.rgba(255,255,255,0),
+                    _Position: lively.pt(74.0,2.0),
+                    _StyleClassNames: ["Morph","Button"],
+                    className: "lively.morphic.Button",
+                    isPressed: false,
+                    label: "My Items",
+                    layout: { resizeWidth: true },
+                    name: "scopeMineButton",
+                    sourceModule: "lively.morphic.Widgets",
+                    style: { borderRadius: 6 },
+                    value: false,
+                    withoutLayers: [],
+                    connectionRebuilder: function connectionRebuilder() {
+                        lively.bindings.connect(this, "fire", this.get("InventoryBrowser"), "setScope", { converter: function() { return "mine"; } });
+                    }
+                },{
+                    _Extent: lively.pt(70.0,22.0),
+                    _Fill: Color.rgba(255,255,255,0),
+                    _Position: lively.pt(146.0,2.0),
+                    _StyleClassNames: ["Morph","Button"],
+                    className: "lively.morphic.Button",
+                    isPressed: false,
+                    label: "Shared",
+                    layout: { resizeWidth: true },
+                    name: "scopeSharedButton",
+                    sourceModule: "lively.morphic.Widgets",
+                    style: { borderRadius: 6 },
+                    value: false,
+                    withoutLayers: [],
+                    connectionRebuilder: function connectionRebuilder() {
+                        lively.bindings.connect(this, "fire", this.get("InventoryBrowser"), "setScope", { converter: function() { return "shared"; } });
                     }
                 }],
                 withoutLayers: []
@@ -215,13 +203,13 @@ lively.BuildSpec('lively.identity.Inventory', {
             _BorderColor: null,
             _Extent: lively.pt(2.0,601.0),
             _Fill: Color.rgb(204,204,204),
-            _Position: lively.pt(160.0,6.0),
+            _Position: lively.pt(230.0,6.0),
             className: "lively.morphic.VerticalDivider",
             draggingEnabled: true,
             droppingEnabled: true,
             fixed: [],
             layout: { resizeHeight: true },
-            minWidth: 92,
+            minWidth: 150,
             name: "LeftRightDivider",
             pointerConnection: null,
             sourceModule: "lively.morphic.Widgets",
@@ -229,52 +217,44 @@ lively.BuildSpec('lively.identity.Inventory', {
             withoutLayers: []
         },
 
-        // ─── main content ───────────────────────────────────────────────
+        // ─── main content (inventory.md §13 Phase D) ──────────────────────
+        // MainContainer's own children (TopBar, PopularCard, AllItemsCard)
+        // ARE under a shared VerticalLayout, unlike the old MainContentContainer/
+        // ItemInfoPanel split above this comment used to warn against --
+        // safe here because the flexible child (AllItemsCard, resizeHeight:
+        // true) is LAST, mirroring LeftSideContainer's own proven-working
+        // InstanceChooser(fixed)+CategoryListContainer(flexible-last) shape
+        // from before this rewrite. PopularCard is only added for
+        // scope==='public' (removed entirely otherwise, not just hidden),
+        // so AllItemsCard stays the last child either way.
 
         {
-            // NOTE: deliberately no `type: VerticalLayout` here for
-            // arranging MainContentContainer/ItemInfoPanel — a nested
-            // VerticalLayout's resizeHeight:true on MainContentContainer
-            // was confirmed live to greedily fill this box's ENTIRE height
-            // regardless of ItemInfoPanel's own fixed height, pushing the
-            // info panel below MainContainer's own (clipMode:hidden)
-            // bounds and off-screen entirely. The classic browser
-            // (PartsBin.js's CategorieContainer) avoids this exact trap
-            // the same way: its two children (CategoryContentContainer,
-            // MoreContainer) are explicitly positioned/sized rather than
-            // auto-flexed by a shared layout, connected only loosely by a
-            // draggable divider. Following that precedent here (minus the
-            // drag-to-collapse behavior, which this browser doesn't need
-            // since the info panel is always shown): MainContentContainer
-            // and ItemInfoPanel below both get explicit _Position/_Extent
-            // instead of relying on layout auto-fill for the split.
-            _Extent: lively.pt(640.0,601.0),
+            _Extent: lively.pt(840.0,601.0),
             _Fill: Color.rgba(255,255,255,0),
-            _Position: lively.pt(165.0,6.0),
+            _Position: lively.pt(235.0,6.0),
             _ClipMode: "hidden",
             className: "lively.morphic.Box",
             droppingEnabled: false,
-            layout: { adjustForNewBounds: true, resizeHeight: true, resizeWidth: true },
+            layout: {
+                adjustForNewBounds: true, resizeHeight: true, resizeWidth: true,
+                borderSize: 0, spacing: 14, type: "lively.morphic.Layout.VerticalLayout"
+            },
             name: "MainContainer",
             sourceModule: "lively.morphic.Core",
             submorphs: [{
-                _Extent: lively.pt(640.0,344.0),
+                // ─── search + sort bar ─────────────────────────────────
+                _Extent: lively.pt(840.0,36.0),
                 _Fill: Color.rgba(255,255,255,0),
                 className: "lively.morphic.Box",
                 droppingEnabled: false,
-                layout: {
-                    borderSize: 0,
-                    resizeWidth: true,
-                    spacing: 7,
-                    type: "lively.morphic.Layout.VerticalLayout"
-                },
-                name: "MainContentContainer",
+                layout: {},
+                name: "TopBar",
                 sourceModule: "lively.morphic.Core",
                 submorphs: [
                     lively.BuildSpec('lively.ide.tools.CommandLine').customize({
                         name: "searchText",
-                        layout: { adjustForNewBounds: true, resizeHeight: false, resizeWidth: true },
-                        _Extent: lively.pt(640,18),
+                        _Position: lively.pt(0,2),
+                        _Extent: lively.pt(520,32),
                         labelString: "  ",
                         clearOnInput: false,
                         connectionRebuilder: function connectionRebuilder() {
@@ -282,6 +262,97 @@ lively.BuildSpec('lively.identity.Inventory', {
                         }
                     }),
                     {
+                        _Position: lively.pt(530,2),
+                        _Extent: lively.pt(78,32),
+                        _Fill: Color.white,
+                        _StyleClassNames: ["Morph","Button"],
+                        className: "lively.morphic.Button",
+                        isPressed: false,
+                        label: "Popular",
+                        name: "sortPopularButton",
+                        sourceModule: "lively.morphic.Widgets",
+                        style: { borderRadius: 6 },
+                        value: false,
+                        withoutLayers: [],
+                        connectionRebuilder: function connectionRebuilder() {
+                            lively.bindings.connect(this, "fire", this.get("InventoryBrowser"), "setSort", { converter: function() { return "popular"; } });
+                        }
+                    },{
+                        _Position: lively.pt(614,2),
+                        _Extent: lively.pt(78,32),
+                        _Fill: Color.white,
+                        _StyleClassNames: ["Morph","Button"],
+                        className: "lively.morphic.Button",
+                        isPressed: false,
+                        label: "Recent",
+                        name: "sortRecentButton",
+                        sourceModule: "lively.morphic.Widgets",
+                        style: { borderRadius: 6 },
+                        value: false,
+                        withoutLayers: [],
+                        connectionRebuilder: function connectionRebuilder() {
+                            lively.bindings.connect(this, "fire", this.get("InventoryBrowser"), "setSort", { converter: function() { return "recent"; } });
+                        }
+                    },{
+                        _Position: lively.pt(700,2),
+                        _Extent: lively.pt(64,32),
+                        _Fill: Color.white,
+                        _StyleClassNames: ["Morph","Button"],
+                        className: "lively.morphic.Button",
+                        isPressed: false,
+                        // Plain text rather than a Material Symbols glyph --
+                        // a BuildSpec Button auto-generates its own internal
+                        // label Text from this string at creation time (the
+                        // safe case), whereas swapping to an icon font would
+                        // need the runtime label-recoloring workaround
+                        // CLAUDE.md documents for WindowControl buttons; not
+                        // worth it for one static "more sort options" button.
+                        label: "More ▾",
+                        name: "sortMenuButton",
+                        sourceModule: "lively.morphic.Widgets",
+                        style: { borderRadius: 6 },
+                        value: false,
+                        withoutLayers: [],
+                        connectionRebuilder: function connectionRebuilder() {
+                            lively.bindings.connect(this, "fire", this.get("InventoryBrowser"), "openSortMenu", {});
+                        }
+                    }
+                ],
+                withoutLayers: []
+            },{
+                // ─── all items card (Popular strip inserted before this,
+                // at index 1, only for scope==='public') ─────────────────
+                _Extent: lively.pt(840.0,540.0),
+                _Fill: Color.white,
+                _BorderColor: Color.rgb(230,230,230),
+                _BorderWidth: 1,
+                _ClipMode: "hidden",
+                className: "lively.morphic.Box",
+                droppingEnabled: false,
+                layout: { resizeHeight: true, resizeWidth: true },
+                style: { borderRadius: 12 },
+                name: "AllItemsCard",
+                sourceModule: "lively.morphic.Core",
+                submorphs: [{
+                    _Position: lively.pt(16,12),
+                    _Extent: lively.pt(200,14),
+                    _FontFamily: "Helvetica",
+                    _FontSize: 7.5,
+                    _InputAllowed: false,
+                    allowInput: false,
+                    className: "lively.morphic.Text",
+                    droppingEnabled: false,
+                    eventsAreIgnored: true,
+                    fixedWidth: true,
+                    fixedHeight: true,
+                    grabbingEnabled: false,
+                    name: "AllItemsHeader",
+                    sourceModule: "lively.morphic.TextCore",
+                    submorphs: [],
+                    textColor: Color.rgb(153,153,153),
+                    textString: "ALL ITEMS",
+                    withoutLayers: []
+                },{
                     // items grid — same async tile-population mechanics as
                     // the classic browser's partsBinContents box
                     // (addPartItemAsync/startAddingPartItems/adjustForNewBounds),
@@ -290,15 +361,14 @@ lively.BuildSpec('lively.identity.Inventory', {
                     // (there's no owning IdentityPartsSpace for another
                     // user's items — same approach the old
                     // PublicPartsBrowser.js's _openEnvelope already used).
-                    _BorderColor: Color.rgb(210,210,210),
+                    _Position: lively.pt(16,34),
                     _ClipMode: "auto",
-                    _Extent: lively.pt(640.0,410.0),
-                    _Fill: Color.rgb(255,255,255),
+                    _Extent: lively.pt(808.0,462.0),
+                    _Fill: Color.rgba(255,255,255,0),
                     className: "lively.morphic.Box",
                     droppingEnabled: false,
-                    layout: { resizeHeight: true, resizeWidth: true },
+                    layout: {},
                     name: "ItemsGrid",
-                    selectedItem: null,
                     sourceModule: "lively.morphic.Core",
                     submorphs: [],
                     withoutLayers: [],
@@ -330,13 +400,6 @@ lively.BuildSpec('lively.identity.Inventory', {
                             x += extent.x + delta;
                         });
                     },
-                    connectionRebuilder: function connectionRebuilder() {
-                        lively.bindings.connect(this, "selectedItem", this.get("InventoryBrowser"), "setSelectedItem", {});
-                    },
-                    selectPartItem: function selectPartItem(itemMorph) {
-                        this.selectedItem = itemMorph && itemMorph.partItem;
-                        this.submorphs.without(itemMorph).invoke('showAsNotSelected');
-                    },
                     setExtent: function setExtent(point) {
                         $super(point);
                         this.adjustForNewBounds();
@@ -358,11 +421,12 @@ lively.BuildSpec('lively.identity.Inventory', {
                     // cross-user public inventory can be large, and
                     // /parts/public already returns a cursor for exactly
                     // this purpose.
-                    _Extent: lively.pt(640.0,24.0),
+                    _Position: lively.pt(16,504),
+                    _Extent: lively.pt(808.0,24.0),
                     _Fill: Color.rgba(255,255,255,0),
                     className: "lively.morphic.Box",
                     droppingEnabled: false,
-                    layout: { adjustForNewBounds: true, resizeWidth: true },
+                    layout: {},
                     name: "LoadMoreContainer",
                     sourceModule: "lively.morphic.Core",
                     submorphs: [{
@@ -382,7 +446,7 @@ lively.BuildSpec('lively.identity.Inventory', {
                             lively.bindings.connect(this, "fire", this.get("InventoryBrowser"), "loadMoreItems", {});
                         }
                     },{
-                        _Extent: lively.pt(300.0,16.0),
+                        _Extent: lively.pt(400.0,16.0),
                         _FontFamily: "Arial, sans-serif",
                         _FontSize: 10,
                         _Position: lively.pt(108.0,4.0),
@@ -401,289 +465,64 @@ lively.BuildSpec('lively.identity.Inventory', {
                     }],
                     withoutLayers: []
                 }],
-                withoutLayers: []
-            },
-
-            // ─── collapsible info panel ───────────────────────────────
-
-            {
-                _BorderColor: Color.rgb(204,204,204),
-                _ClipMode: "hidden",
-                _Extent: lively.pt(640.0,250.0),
-                _Fill: Color.rgba(204,204,204,0),
-                _Position: lively.pt(0.0,351.0),
-                _StyleClassNames: ["Morph","Box"],
-                _StyleSheet: " {\n\
-            	border-width: 9px;\n\
-            }",
-                _Visible: true,
-                className: "lively.morphic.Box",
-                droppingEnabled: false,
-                layout: {
-                    borderSize: 0,
-                    resizeWidth: true,
-                    spacing: 7,
-                    type: "lively.morphic.Layout.VerticalLayout"
-                },
-                name: "ItemInfoPanel",
-                sourceModule: "lively.morphic.Core",
-                submorphs: [{
-                    _Extent: lively.pt(640.0,27.0),
-                    _Fill: Color.rgba(255,255,255,0),
-                    className: "lively.morphic.Box",
-                    droppingEnabled: false,
-                    layout: {
-                        adjustForNewBounds: true,
-                        borderSize: 0,
-                        resizeHeight: false,
-                        resizeWidth: true,
-                        spacing: 6,
-                        type: "lively.morphic.Layout.HorizontalLayout"
-                    },
-                    name: "ItemInfoTitleContainer",
-                    sourceModule: "lively.morphic.Core",
-                    submorphs: [{
-                        _ClipMode: "hidden",
-                        _Extent: lively.pt(320.0,27.0),
-                        _FontFamily: "Arial, sans-serif",
-                        _FontSize: 14,
-                        _InputAllowed: false,
-                        _Position: lively.pt(9.0,0.0),
-                        _TextColor: Color.rgb(64,64,64),
-                        allowInput: false,
-                        className: "lively.morphic.Text",
-                        eventsAreIgnored: true,
-                        fixedHeight: true,
-                        fixedWidth: true,
-                        layout: { centeredVertical: true, resizeHeight: true, resizeWidth: true },
-                        name: "selectedItemName",
-                        sourceModule: "lively.morphic.TextCore",
-                        submorphs: [],
-                        withoutLayers: []
-                    },{
-                        _Extent: lively.pt(70.0,15.0),
-                        _FontFamily: "Arial, sans-serif",
-                        _FontSize: 9,
-                        _Position: lively.pt(340.0,6.0),
-                        _TextColor: Color.rgb(64,64,64),
-                        className: "lively.morphic.Text",
-                        fixedWidth: true,
-                        layout: { centeredVertical: true, moveHorizontal: true, resizeHeight: false },
-                        name: "shareLink",
-                        sourceModule: "lively.morphic.TextCore",
-                        submorphs: [],
-                        textString: "",
-                        withoutLayers: []
-                    },{
-                        _Position: lively.pt(415.0,6.0),
-                        _Extent: lively.pt(50.0,15.0),
-                        _InputAllowed: false,
-                        _FontFamily: "Arial, sans-serif",
-                        _FontSize: 9,
-                        className: "lively.morphic.Text",
-                        fixedWidth: true,
-                        grabbingEnabled: false,
-                        layout: { centeredVertical: true, moveHorizontal: true, resizeHeight: false },
-                        name: "inspectLabel",
-                        textString: ""
-                    }],
-                    withoutLayers: []
-                },{
-                    _Extent: lively.pt(640.0,190.0),
-                    _Fill: Color.rgba(255,255,255,0),
-                    className: "lively.morphic.Box",
-                    droppingEnabled: false,
-                    layout: {
-                        borderSize: 0,
-                        resizeHeight: true,
-                        resizeWidth: true,
-                        spacing: 0,
-                        type: "lively.morphic.Layout.HorizontalLayout"
-                    },
-                    name: "ItemInfoContentContainer",
-                    sourceModule: "lively.morphic.Core",
-                    submorphs: [{
-                        _Extent: lively.pt(320.0,190.0),
-                        _Fill: Color.rgba(255,255,255,0),
-                        className: "lively.morphic.Box",
-                        droppingEnabled: false,
-                        layout: {
-                            borderSize: 0,
-                            resizeHeight: true,
-                            resizeWidth: true,
-                            spacing: 4,
-                            type: "lively.morphic.Layout.VerticalLayout"
-                        },
-                        name: "MetaContainer",
-                        sourceModule: "lively.morphic.Core",
-                        submorphs: [{
-                            _BorderColor: Color.rgba(255,255,255,0),
-                            _BorderWidth: 8,
-                            _ClipMode: "auto",
-                            _Extent: lively.pt(320.0,80.0),
-                            _Fill: Color.rgba(255,255,255,0),
-                            _FontFamily: "Arial, sans-serif",
-                            _FontSize: 9,
-                            _InputAllowed: false,
-                            _TextColor: Color.rgb(120,120,120),
-                            allowInput: false,
-                            className: "lively.morphic.Text",
-                            eventsAreIgnored: true,
-                            fixedHeight: true,
-                            fixedWidth: true,
-                            layout: { resizeHeight: true, resizeWidth: true },
-                            // Published by / Created / Object ID+DID / Hosting —
-                            // see InventoryBrowser.describeItemMeta below. Hosting
-                            // reflects whichever instance is currently selected
-                            // in InstanceChooser, unlike the classic browser's
-                            // always-local Hosting line.
-                            name: "selectedItemMeta",
-                            sourceModule: "lively.morphic.TextCore",
-                            submorphs: [],
-                            withoutLayers: []
-                        },{
-                            // read-only — unlike the classic browser's editable
-                            // comment field, this isn't the viewer's own item.
-                            _BorderColor: Color.rgba(255,255,255,0),
-                            _BorderWidth: 8,
-                            _ClipMode: "auto",
-                            _Extent: lively.pt(320.0,60.0),
-                            _Fill: Color.rgb(255,255,255),
-                            _FontFamily: "Arial, sans-serif",
-                            _InputAllowed: false,
-                            _TextColor: Color.rgb(64,64,64),
-                            allowInput: false,
-                            className: "lively.morphic.Text",
-                            eventsAreIgnored: true,
-                            fixedHeight: true,
-                            fixedWidth: true,
-                            layout: { resizeHeight: true, resizeWidth: true },
-                            name: "selectedItemComment",
-                            sourceModule: "lively.morphic.TextCore",
-                            submorphs: [],
-                            withoutLayers: []
-                        },{
-                            _Extent: lively.pt(320.0,28.0),
-                            _Fill: Color.rgba(255,255,255,0),
-                            className: "lively.morphic.Box",
-                            droppingEnabled: false,
-                            layout: { borderSize: 0, resizeHeight: false, resizeWidth: true, spacing: 4, type: "lively.morphic.Layout.HorizontalLayout" },
-                            name: "ButtonLineMorph",
-                            sourceModule: "lively.morphic.Core",
-                            submorphs: [{
-                                _BorderColor: Color.rgb(255,255,255),
-                                _Extent: lively.pt(90.0,28.0),
-                                _Fill: Color.rgb(204,204,204),
-                                _StyleClassNames: ["Morph","Button","disabled"],
-                                className: "lively.morphic.Button",
-                                isActive: false,
-                                isPressed: false,
-                                label: "Open Item",
-                                name: "openItemButton",
-                                padding: lively.rect(5,0,0,0),
-                                sourceModule: "lively.morphic.Widgets",
-                                style: { borderRadius: 0 },
-                                withoutLayers: [],
-                                connectionRebuilder: function connectionRebuilder() {
-                                    lively.bindings.connect(this, "fire", this.get("InventoryBrowser"), "openSelectedItem", {});
-                                }
-                            },{
-                                _BorderColor: Color.rgb(255,255,255),
-                                _Extent: lively.pt(100.0,28.0),
-                                _Fill: Color.rgb(204,204,204),
-                                _StyleClassNames: ["Morph","Button","disabled"],
-                                className: "lively.morphic.Button",
-                                isActive: false,
-                                isPressed: false,
-                                label: "View Source",
-                                name: "viewSourceButton",
-                                padding: lively.rect(5,0,0,0),
-                                sourceModule: "lively.morphic.Widgets",
-                                style: { borderRadius: 0 },
-                                withoutLayers: [],
-                                connectionRebuilder: function connectionRebuilder() {
-                                    lively.bindings.connect(this, "fire", this.get("InventoryBrowser"), "viewSourceOfSelectedItem", {});
-                                }
-                            },{
-                                _BorderColor: Color.rgb(255,255,255),
-                                _Extent: lively.pt(100.0,28.0),
-                                _Fill: Color.rgb(204,204,204),
-                                _StyleClassNames: ["Morph","Button","disabled"],
-                                className: "lively.morphic.Button",
-                                isActive: false,
-                                isPressed: false,
-                                label: "Inspect",
-                                name: "inspectButton",
-                                padding: lively.rect(5,0,0,0),
-                                sourceModule: "lively.morphic.Widgets",
-                                style: { borderRadius: 0 },
-                                withoutLayers: [],
-                                connectionRebuilder: function connectionRebuilder() {
-                                    lively.bindings.connect(this, "fire", this.get("InventoryBrowser"), "openInspectorMenu", {});
-                                }
-                            }],
-                            withoutLayers: [],
-                            activateButtons: function activateButtons(bool) {
-                                this.submorphs.invoke('setActive', !!bool)
-                            }
-                        }],
-                        withoutLayers: []
-                    },{
-                        _BorderColor: null,
-                        _Extent: lively.pt(2.0,190.0),
-                        _Fill: Color.rgb(204,204,204),
-                        className: "lively.morphic.VerticalDivider",
-                        draggingEnabled: true,
-                        droppingEnabled: true,
-                        fixed: [],
-                        layout: { resizeHeight: true },
-                        minWidth: 59,
-                        name: "VersionDivider",
-                        pointerConnection: null,
-                        sourceModule: "lively.morphic.Widgets",
-                        submorphs: [],
-                        withoutLayers: []
-                    },{
-                        _Extent: lively.pt(310.0,190.0),
-                        _Fill: Color.rgba(255,255,255,0),
-                        className: "lively.morphic.Box",
-                        droppingEnabled: false,
-                        layout: { borderSize: 0, resizeHeight: true, resizeWidth: false, spacing: 4, type: "lively.morphic.Layout.VerticalLayout" },
-                        name: "VersionsContainer",
-                        sourceModule: "lively.morphic.Core",
-                        submorphs: [{
-                            _Extent: lively.pt(300.0,20.0),
-                            _FontFamily: "Arial, sans-serif",
-                            _FontSize: 10,
-                            _InputAllowed: false,
-                            className: "lively.morphic.Text",
-                            eventsAreIgnored: true,
-                            fixedWidth: true,
-                            name: "versionsLabel",
-                            sourceModule: "lively.morphic.TextCore",
-                            submorphs: [],
-                            textColor: Color.rgb(120,120,120),
-                            textString: "Version history"
-                        },{
-                            _BorderColor: Color.rgb(203,203,203),
-                            _BorderWidth: 1,
-                            _ClipMode: { x: "hidden", y: "scroll" },
-                            _Extent: lively.pt(300.0,160.0),
-                            _Fill: Color.rgb(255,255,255),
-                            className: "lively.morphic.List",
-                            droppingEnabled: false,
-                            itemList: [],
-                            layout: { resizeWidth: true, resizeHeight: true },
-                            name: "selectedItemVersions",
-                            sourceModule: "lively.morphic.Lists",
-                            submorphs: []
-                        }],
-                        withoutLayers: []
-                    }],
-                    withoutLayers: []
-                }],
-                withoutLayers: []
+                withoutLayers: [],
+                // AllItemsCard is the flexible LAST child of MainContainer's
+                // VerticalLayout -- when the layout resizes it, reflow its
+                // own header/grid/load-more children explicitly rather than
+                // via a nested layout (same custom-setExtent-override idiom
+                // ItemsGrid itself already uses one level down).
+                setExtent: function setExtent(point) {
+                    $super(point);
+                    var headerH = 34, loadMoreH = 30, pad = 16;
+                    var grid = this.get('ItemsGrid');
+                    var loadMore = this.get('LoadMoreContainer');
+                    if (grid) {
+                        grid.setPosition(pt(pad, headerH));
+                        grid.setExtent(pt(Math.max(100, point.x - 2 * pad), Math.max(60, point.y - headerH - loadMoreH - pad)));
+                    }
+                    if (loadMore) {
+                        loadMore.setPosition(pt(pad, point.y - loadMoreH - 4));
+                        loadMore.setExtent(pt(Math.max(100, point.x - 2 * pad), loadMoreH));
+                    }
+                }
             }],
+            withoutLayers: []
+        },{
+            _BorderColor: null,
+            _Extent: lively.pt(2.0,601.0),
+            _Fill: Color.rgb(204,204,204),
+            _Position: lively.pt(1078.0,6.0),
+            className: "lively.morphic.VerticalDivider",
+            draggingEnabled: true,
+            droppingEnabled: true,
+            fixed: [],
+            layout: { resizeHeight: true },
+            minWidth: 260,
+            name: "RightDivider",
+            pointerConnection: null,
+            sourceModule: "lively.morphic.Widgets",
+            submorphs: [],
+            withoutLayers: []
+        },{
+            // ─── right panel (inventory.md §13 Phase D) ───────────────────
+            // Entirely dynamic content, rebuilt fresh on every selection/
+            // star/comment/version change by InventoryBrowser.renderRightPanel
+            // -- same "hand-construct fresh, don't patch named morphs in
+            // place" idiom as the sidebar's Categories/Instances blocks and
+            // _buildItemTile. No static submorphs here at all; the whole
+            // panel scrolls as one region via _ClipMode, sidestepping any
+            // fixed-vs-flex-sibling layout question entirely (every row
+            // just hugs its own content).
+            _Extent: lively.pt(360.0,601.0),
+            _Fill: Color.white,
+            _Position: lively.pt(1083.0,6.0),
+            _ClipMode: "auto",
+            className: "lively.morphic.Box",
+            droppingEnabled: false,
+            layout: { resizeHeight: true, resizeWidth: false },
+            name: "RightPanel",
+            sourceModule: "lively.morphic.Core",
+            submorphs: [],
             withoutLayers: []
         }],
         withoutLayers: [],
@@ -691,9 +530,8 @@ lively.BuildSpec('lively.identity.Inventory', {
         // ─── loading ────────────────────────────────────────────────────────
 
     onLoad: function onLoad() {
-        this.get('InstanceChooser').setList(this.getKnownInstanceLabels());
-        this.get('InstanceChooser').selectAt(0);
         this.get('searchText').setTextString('');
+        this.renderRightPanel();
         var self = this;
         // checkedInstances must be populated before the first real load, or
         // _activeInstanceBaseUrls() would fall back to "local origin only"
@@ -710,7 +548,18 @@ lively.BuildSpec('lively.identity.Inventory', {
         this.cursor = null;
         this.get('ItemsGrid').removeAllItems();
         this.setSelectedItem(null);
-        this.loadCategories();
+        this._renderSidebarExtras();
+        this._renderMainColumnForScope();
+        this._loadItemsPage(false);
+        if (this.scope === 'public') {
+            this.loadCategoryCounts();
+            this.loadPopularStrip();
+        } else {
+            this.categoryCounts = {};
+            this.categoryTotal = 0;
+            this.popularItems = [];
+            this.popularStart = 0;
+        }
     },
 
     // ─── scope / category / sort (inventory.md §13) ────────────────────────
@@ -728,38 +577,26 @@ lively.BuildSpec('lively.identity.Inventory', {
     setCategory: function setCategory(category) {
         this.category = category || null;
         this.cursor = null;
+        this._renderSidebarExtras();
         this._loadItemsPage(false);
     },
 
     setSort: function setSort(sort) {
         this.sort = sort || 'recent';
         this.cursor = null;
+        this._repaintSortControls();
         this._loadItemsPage(false);
     },
 
     // ─── instances / federation directory (inventory.md §3.2) ─────────────
 
-    // Legacy config-driven convenience list backing the existing single-
-    // select InstanceChooser dropdown -- kept as a quick manual switch
-    // (setInstanceBaseUrl below) independent of the real fan-out directory,
-    // since Phase D's own "Instances" checkbox panel is what actually
-    // replaces this widget; wiring it into checkedInstances here is enough
-    // to keep it functional in the meantime.
-    getKnownInstanceLabels: function getKnownInstanceLabels() {
-        var extra = (typeof lively !== 'undefined' && lively.Config &&
-            lively.Config.get('instanceURLs', true)) || [];
-        return ['This instance'].concat(extra);
-    },
-
-    // Single-instance quick switch (existing InstanceChooser behavior,
-    // preserved) -- now expressed in terms of checkedInstances (a set) so
-    // both this dropdown and real multi-select fan-out share one
-    // mechanism, rather than two parallel instance-tracking fields.
-    setInstanceBaseUrl: function setInstanceBaseUrl(label) {
-        var isLocal = !label || label === 'This instance';
-        var baseUrl = isLocal ? window.location.origin : label.replace(/\/$/, '');
-        var checked = {};
-        checked[baseUrl] = true;
+    // Flips one instance's fan-out membership (the Instances checkbox
+    // panel, inventory.md §13 Phase D) -- replaces the old single-select
+    // InstanceChooser dropdown/setInstanceBaseUrl entirely, now that real
+    // multi-select fan-out has a real checkbox-per-row UI to drive it.
+    toggleInstanceChecked: function toggleInstanceChecked(baseUrl) {
+        var checked = Object.assign({}, this.checkedInstances);
+        checked[baseUrl] = !checked[baseUrl];
         this.checkedInstances = checked;
         this.reloadEverything();
     },
@@ -835,42 +672,199 @@ lively.BuildSpec('lively.identity.Inventory', {
         return checked.length ? checked : [window.location.origin];
     },
 
-    // ─── categories (tags aggregated across every user's public items) ────
-    // Freeform "#tag" sidebar -- always against the local instance; fan-out
-    // tag aggregation across multiple instances is out of scope for this
-    // pass (curated categories, not tags, are Phase D's primary sidebar
-    // filter going forward).
+    // ─── sidebar rendering (inventory.md §13 Phase D) ──────────────────────
+    // Direct-DOM-write restyle helpers for anything recolored AFTER a morph
+    // is already rendered (scope tabs, category rows) -- applyStyle({fill/
+    // textColor:...}) is confirmed (this session's research + CLAUDE.md) to
+    // silently no-op on an already-rendered morph for exactly these two
+    // properties, so selection-driven restyling writes renderContext()
+    // .shapeNode.style directly, same idiom as WalletSetupDialog.js's
+    // _paintToggleButton. Border-related properties (width/color) DO reach
+    // the DOM via the model layer in this codebase's own confirmed case, so
+    // those still go through the normal setBorderColor/setBorderWidth calls.
 
-    loadCategories: function loadCategories() {
+    _paintScopeTab: function _paintScopeTab(btn, active) {
+        var node = btn.renderContext().shapeNode;
+        node.style.background = active ? '#fff' : 'transparent';
+        node.style.boxShadow = active ? '0 1px 2px rgba(0,0,0,0.12)' : 'none';
+        if (btn.label) {
+            var labelNode = btn.label.renderContext().shapeNode;
+            labelNode.style.color = active ? '#222' : '#666';
+            labelNode.style.fontWeight = active ? '600' : 'normal';
+        }
+    },
+
+    // Rebuilds ScopeTabsRow's active-tab styling (always present) and tears
+    // down + reconstructs the Categories/Instances blocks (only present for
+    // scope==='public') -- called on every scope change and whenever
+    // categoryCounts/instances data resolves. Categories/Instances blocks
+    // are hand-constructed fresh each call, same "build fresh, don't try to
+    // patch in place" idiom ItemsGrid/_buildItemTile already use for the
+    // item grid, tagged with _isSidebarExtra so this method can find and
+    // remove its own previous output without disturbing ScopeTabsRow.
+    _renderSidebarExtras: function _renderSidebarExtras() {
         var self = this;
-        var list = this.get('categoryList');
-        list.updateList([{ isListItem: true, string: 'Recent', value: 'recent' }]);
-        list.setSelection('recent');
-        this._fetchJson(window.location.origin + '/parts/public/tags', function(err, body) {
-            if (err || !body || !body.tags) return;
-            var items = [{ isListItem: true, string: 'Recent', value: 'recent' }].concat(
-                body.tags.map(function(t) {
-                    return { isListItem: true, string: '#' + t.tag + ' (' + t.count + ')', value: '#' + t.tag };
-                })
-            );
-            var currentSelection = self.categoryName;
-            list.updateList(items);
-            list.setSelection(currentSelection || 'recent');
+        this._paintScopeTab(this.get('scopePublicButton'), this.scope === 'public');
+        this._paintScopeTab(this.get('scopeMineButton'), this.scope === 'mine');
+        this._paintScopeTab(this.get('scopeSharedButton'), this.scope === 'shared');
+
+        var rail = this.get('LeftSideContainer');
+        rail.submorphs.filter(function(m) { return m._isSidebarExtra; }).forEach(function(m) { m.remove(); });
+        if (this.scope !== 'public') return;
+
+        var categoriesBlock = this._buildCategoriesBlock();
+        categoriesBlock._isSidebarExtra = true;
+        rail.addMorph(categoriesBlock);
+
+        var instancesBlock = this._buildInstancesBlock();
+        instancesBlock._isSidebarExtra = true;
+        rail.addMorph(instancesBlock);
+    },
+
+    _buildCategoriesBlock: function _buildCategoriesBlock() {
+        var self = this;
+        var W = 220;
+        var block = new lively.morphic.Box(lively.rect(0, 0, W, 10));
+        block.applyStyle({ fill: null, borderWidth: 0 });
+        block.draggingEnabled = false; block.droppingEnabled = false; block.grabbingEnabled = false;
+
+        var header = new lively.morphic.Text(lively.rect(0, 0, W, 14), 'CATEGORIES');
+        header.applyStyle({ fontFamily: 'Helvetica', fontSize: 7.5, textColor: Color.rgb(153,153,153), fill: null, borderWidth: 0,
+            allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
+        header.eventsAreIgnored = true; header.draggingEnabled = false; header.droppingEnabled = false; header.grabbingEnabled = false;
+        block.addMorph(header);
+
+        var names = ['All'].concat(lively.identity.PartSerializer.CATEGORY_NAMES);
+        var y = 18;
+        names.forEach(function(name) {
+            var meta = name === 'All' ? { icon: 'apps' } : lively.identity.PartSerializer.CATEGORY_META[name];
+            var count = name === 'All' ? self.categoryTotal : (self.categoryCounts[name] || 0);
+            var active = (self.category || 'All') === name;
+
+            var row = new lively.morphic.Box(lively.rect(0, y, W, 24));
+            row.applyStyle({ fill: active ? Color.rgba(147,51,234,0.12) : null, borderWidth: 0, borderRadius: 6 });
+            row.draggingEnabled = false; row.droppingEnabled = false; row.grabbingEnabled = false;
+            row._categoryValue = name === 'All' ? null : name;
+
+            var icon = new lively.morphic.Text(lively.rect(8, 4, 16, 16), meta.icon);
+            icon.applyStyle({ fontFamily: "'Material Symbols Rounded'", fontSize: 12, textColor: active ? Color.rgbHex('#9333ea') : Color.rgb(51,51,51),
+                fill: null, borderWidth: 0, allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
+            icon.eventsAreIgnored = true; icon.draggingEnabled = false; icon.droppingEnabled = false; icon.grabbingEnabled = false;
+            row.addMorph(icon);
+
+            var label = new lively.morphic.Text(lively.rect(30, 4, W - 70, 16), name);
+            label.applyStyle({ fontFamily: 'Helvetica', fontSize: 9, textColor: active ? Color.rgbHex('#9333ea') : Color.rgb(51,51,51),
+                fontWeight: active ? 'bold' : 'normal', fill: null, borderWidth: 0, allowInput: false, selectable: false,
+                fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
+            label.eventsAreIgnored = true; label.draggingEnabled = false; label.droppingEnabled = false; label.grabbingEnabled = false;
+            row.addMorph(label);
+
+            var countLabel = new lively.morphic.Text(lively.rect(W - 38, 4, 30, 16), String(count));
+            countLabel.applyStyle({ fontFamily: 'Helvetica', fontSize: 8, textColor: Color.rgb(153,153,153), fill: null, borderWidth: 0,
+                allowInput: false, selectable: false, align: 'right', fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
+            countLabel.eventsAreIgnored = true; countLabel.draggingEnabled = false; countLabel.droppingEnabled = false; countLabel.grabbingEnabled = false;
+            row.addMorph(countLabel);
+
+            row.onMouseUp = function() { self.setCategory(row._categoryValue); return true; };
+            block.addMorph(row);
+            y += 26;
+        });
+        block.setExtent(lively.pt(W, y));
+        return block;
+    },
+
+    _buildInstancesBlock: function _buildInstancesBlock() {
+        var self = this;
+        var W = 220;
+        var block = new lively.morphic.Box(lively.rect(0, 0, W, 10));
+        block.applyStyle({ fill: null, borderWidth: 0 });
+        block.draggingEnabled = false; block.droppingEnabled = false; block.grabbingEnabled = false;
+
+        var header = new lively.morphic.Text(lively.rect(0, 0, W, 14), 'INSTANCES');
+        header.applyStyle({ fontFamily: 'Helvetica', fontSize: 7.5, textColor: Color.rgb(153,153,153), fill: null, borderWidth: 0,
+            allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
+        header.eventsAreIgnored = true; header.draggingEnabled = false; header.droppingEnabled = false; header.grabbingEnabled = false;
+        block.addMorph(header);
+
+        var activeCount = this._activeInstanceBaseUrls().length;
+        var totalCount = Math.max(this.instances.length, 1);
+        var summary = new lively.morphic.Text(lively.rect(0, 16, W, 14), 'Browsing ' + activeCount + ' of ' + totalCount + ' instances');
+        summary.applyStyle({ fontFamily: 'Helvetica', fontSize: 8.5, textColor: Color.rgb(119,119,119), fill: null, borderWidth: 0,
+            allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
+        summary.eventsAreIgnored = true; summary.draggingEnabled = false; summary.droppingEnabled = false; summary.grabbingEnabled = false;
+        block.addMorph(summary);
+
+        var rows = this.instances.length ? this.instances : [{ baseUrl: window.location.origin, displayName: 'This instance' }];
+        var y = 34;
+        rows.forEach(function(inst) {
+            var checked = !!self.checkedInstances[inst.baseUrl];
+            var row = new lively.morphic.Box(lively.rect(0, y, W, 22));
+            row.applyStyle({ fill: null, borderWidth: 0 });
+            row.draggingEnabled = false; row.droppingEnabled = false; row.grabbingEnabled = false;
+
+            // CheckBox's own constructor takes an initial checked bool, not
+            // a rect (a plain Morph.subclass wrapping a native <input>) --
+            // position it before adding to the world, matching the "bake
+            // the final position in before addMorph, avoid a later
+            // setPosition call" precedent (CLAUDE.md). Its own onClick
+            // already self-toggles via setChecked; overriding it here to
+            // call toggleInstanceChecked instead is safe because that
+            // triggers a full rebuild of this whole block afterward
+            // (reloadEverything -> _renderSidebarExtras), which reconstructs
+            // this checkbox with the correct final checked state regardless.
+            var checkbox = new lively.morphic.CheckBox(checked);
+            checkbox.setPosition(pt(2, 5));
+            checkbox.onClick = function() { self.toggleInstanceChecked(inst.baseUrl); return true; };
+            row.addMorph(checkbox);
+
+            var dot = new lively.morphic.Box(lively.rect(21, 8, 7, 7));
+            dot.applyStyle({ fill: Color.rgbHex(self._instanceColor(inst.baseUrl)), borderWidth: 0, borderRadius: 4 });
+            dot.eventsAreIgnored = true; dot.draggingEnabled = false; dot.droppingEnabled = false; dot.grabbingEnabled = false;
+            row.addMorph(dot);
+
+            var label = new lively.morphic.Text(lively.rect(34, 3, W - 40, 16),
+                inst.displayName || inst.baseUrl.replace(/^https?:\/\//, ''));
+            label.applyStyle({ fontFamily: 'Helvetica', fontSize: 8.5, textColor: Color.rgb(51,51,51), fill: null, borderWidth: 0,
+                allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
+            label.eventsAreIgnored = true; label.draggingEnabled = false; label.droppingEnabled = false; label.grabbingEnabled = false;
+            row.addMorph(label);
+
+            block.addMorph(row);
+            y += 24;
+        });
+        block.setExtent(lively.pt(W, y));
+        return block;
+    },
+
+    // Deterministic color per instance baseUrl (no server-side color
+    // assignment exists) -- a small fixed palette keyed by a cheap hash, so
+    // the same instance always gets the same dot color across reloads.
+    _instanceColor: function _instanceColor(baseUrl) {
+        var palette = ['#9333ea', '#0d9488', '#ea580c', '#2563eb', '#db2777', '#16a34a'];
+        var hash = 0;
+        for (var i = 0; i < baseUrl.length; i++) hash = (hash * 31 + baseUrl.charCodeAt(i)) >>> 0;
+        return palette[hash % palette.length];
+    },
+
+    // ─── curated categories (inventory.md §7/§13 Phase D) ─────────────────
+    // Counts for the sidebar's All/Media/Games/Templates/Apps/Tools rows --
+    // always against the local instance; fan-out category-count aggregation
+    // across multiple instances is out of scope, same reasoning the old
+    // freeform-tag aggregation this replaces already had.
+
+    loadCategoryCounts: function loadCategoryCounts() {
+        var self = this;
+        this._fetchJson(window.location.origin + '/parts/public/categories', function(err, body) {
+            if (err || !body || !body.categories) return;
+            var counts = {};
+            body.categories.forEach(function(c) { if (c.category) counts[c.category] = c.count; });
+            self.categoryCounts = counts;
+            self.categoryTotal = body.total || 0;
+            self._renderSidebarExtras();
         });
     },
 
     // ─── loading items ──────────────────────────────────────────────────
-
-    connectionRebuilder: function connectionRebuilder() {
-        lively.bindings.connect(this, "categoryName", this, "loadItemsForCurrentCategory", {});
-    },
-
-    loadItemsForCurrentCategory: function loadItemsForCurrentCategory() {
-        this.cursor = null;
-        this.searchQuery = '';
-        this.get('searchText').setTextString('');
-        this._loadItemsPage(false);
-    },
 
     search: function search(text) {
         this.searchQuery = (text || '').trim();
@@ -909,9 +903,6 @@ lively.BuildSpec('lively.identity.Inventory', {
             var params = ['limit=' + limit];
             if (!fanningOut && self.cursor && append) params.push('cursor=' + encodeURIComponent(self.cursor));
             if (self.searchQuery) params.push('q=' + encodeURIComponent(self.searchQuery));
-            else if (self.categoryName && self.categoryName.charAt(0) === '#') {
-                params.push('tag=' + encodeURIComponent(self.categoryName.slice(1)));
-            }
             if (self.category) params.push('category=' + encodeURIComponent(self.category));
             if (self.sort && self.sort !== 'recent') params.push('sort=' + encodeURIComponent(self.sort));
             return baseUrl + '/parts/public?' + params.join('&');
@@ -1001,6 +992,167 @@ lively.BuildSpec('lively.identity.Inventory', {
         // htmlLogo -- see _withStarCounts' own comment in IdentityServer.js)
         // -- falls back to recency, same as 'recentlyPublished'/'recent'.
         return items.slice().sort(byCreatedDesc);
+    },
+
+    // ─── popular strip (inventory.md §13 Phase D) ──────────────────────────
+    // Independent top-8-by-stars fetch for the "Popular this week" strip --
+    // deliberately NOT reusing _loadItemsPage/_sortMergedItems (those are
+    // driven by this.sort, the main grid's own sort choice; the strip is
+    // always popular-sorted regardless). Same fan-out-but-capped trade-off
+    // as _loadPublicItemsPage: one bounded fetch per checked instance,
+    // merged and re-sorted client-side, no pagination cursor -- chevron
+    // paging below just re-slices the already-fetched top 8.
+    loadPopularStrip: function loadPopularStrip() {
+        var self = this;
+        var instances = this._activeInstanceBaseUrls();
+        var remaining = instances.length;
+        var allItems = [];
+        instances.forEach(function(baseUrl) {
+            self._fetchJson(baseUrl + '/parts/public?limit=8&sort=popular', function(err, body) {
+                if (!err && body && body.parts) {
+                    body.parts.forEach(function(row) { allItems.push(self._buildItemFromListingRow(row, baseUrl)); });
+                }
+                if (--remaining === 0) finish();
+            });
+        });
+        function finish() {
+            allItems.sort(function(a, b) { return (b.starCount || 0) - (a.starCount || 0); });
+            self.popularItems = allItems.slice(0, 8);
+            self.popularStart = 0;
+            self._renderPopularTiles();
+        }
+    },
+
+    popularPrev: function popularPrev() {
+        this.popularStart = Math.max(0, this.popularStart - 4);
+        this._renderPopularTiles();
+    },
+
+    popularNext: function popularNext() {
+        var maxStart = Math.max(0, this.popularItems.length - 4);
+        this.popularStart = Math.min(maxStart, this.popularStart + 4);
+        this._renderPopularTiles();
+    },
+
+    // Adds/removes the whole PopularCard block and shows/hides TopBar's
+    // sort controls based on scope (public-only, per plan) -- called from
+    // reloadEverything on every scope switch. PopularCard is inserted
+    // before AllItemsCard (MainContainer.addMorph's 2-arg "insert before"
+    // form) so AllItemsCard stays MainContainer's flexible LAST child
+    // either way, matching the fixed-then-flexible-last VerticalLayout
+    // shape this file already relies on elsewhere.
+    _renderMainColumnForScope: function _renderMainColumnForScope() {
+        var mainContainer = this.get('MainContainer');
+        var topBar = this.get('TopBar');
+        var showSort = this.scope === 'public';
+        ['sortPopularButton', 'sortRecentButton', 'sortMenuButton'].forEach(function(name) {
+            var m = topBar.get(name);
+            if (m) m.setVisible(showSort);
+        });
+        var existingPopular = this.get('PopularCard');
+        if (showSort && !existingPopular) {
+            mainContainer.addMorph(this._buildPopularCard(), mainContainer.get('AllItemsCard'));
+            this._renderPopularTiles();
+        } else if (!showSort && existingPopular) {
+            existingPopular.remove();
+        }
+        this._repaintSortControls();
+    },
+
+    _repaintSortControls: function _repaintSortControls() {
+        if (this.scope !== 'public') return;
+        var topBar = this.get('TopBar');
+        this._paintSortPill(topBar.get('sortPopularButton'), this.sort === 'popular');
+        this._paintSortPill(topBar.get('sortRecentButton'), this.sort === 'recent');
+        var extraActive = ['az', 'mostCommented', 'recentlyPublished'].indexOf(this.sort) !== -1;
+        this._paintSortMenuButton(topBar.get('sortMenuButton'), extraActive);
+    },
+
+    _paintSortPill: function _paintSortPill(btn, active) {
+        if (!btn) return;
+        var node = btn.renderContext().shapeNode;
+        node.style.background = active ? '#9333ea' : '#fff';
+        node.style.border = active ? 'none' : '1px solid rgb(214,214,214)';
+        if (btn.label) btn.label.renderContext().shapeNode.style.color = active ? '#fff' : '#333';
+    },
+
+    _paintSortMenuButton: function _paintSortMenuButton(btn, active) {
+        if (!btn) return;
+        var node = btn.renderContext().shapeNode;
+        node.style.background = active ? '#9333ea' : '#fff';
+        node.style.border = active ? 'none' : '1px solid rgb(214,214,214)';
+        if (btn.label) btn.label.renderContext().shapeNode.style.color = active ? '#fff' : '#333';
+    },
+
+    // Popup for the 3 extra sort keys (A-Z / Most Commented / Recently
+    // Published) -- exact same lively.morphic.Menu.openAt mechanism as
+    // openInspectorMenu below, so it doesn't need its own show/hide state.
+    openSortMenu: function openSortMenu() {
+        var btn = this.get('TopBar').get('sortMenuButton');
+        var pos = btn.worldPoint(lively.pt(0, btn.getExtent().y));
+        var self = this;
+        var items = [
+            ['Alphabetical (A–Z)' + (self.sort === 'az' ? '  ✓' : ''), function() { self.setSort('az'); }],
+            ['Most Commented' + (self.sort === 'mostCommented' ? '  ✓' : ''), function() { self.setSort('mostCommented'); }],
+            ['Recently Published' + (self.sort === 'recentlyPublished' ? '  ✓' : ''), function() { self.setSort('recentlyPublished'); }]
+        ];
+        lively.morphic.Menu.openAt(pos, 'Sort by', items);
+    },
+
+    // ─── popular strip rendering (inventory.md §13 Phase D) ────────────────
+
+    _buildPopularCard: function _buildPopularCard() {
+        var card = new lively.morphic.Box(lively.rect(0, 0, 840, 232));
+        card.applyStyle({ fill: Color.white, borderWidth: 1, borderColor: Color.rgb(230,230,230), borderRadius: 12 });
+        card.name = 'PopularCard';
+        card.draggingEnabled = false; card.droppingEnabled = false; card.grabbingEnabled = false;
+
+        var header = new lively.morphic.Text(lively.rect(16, 12, 300, 14), 'POPULAR THIS WEEK');
+        header.applyStyle({ fontFamily: 'Helvetica', fontSize: 7.5, textColor: Color.rgb(153,153,153), fill: null, borderWidth: 0,
+            allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
+        header.eventsAreIgnored = true; header.draggingEnabled = false; header.droppingEnabled = false; header.grabbingEnabled = false;
+        card.addMorph(header);
+
+        // Empty content placeholder -- _renderPopularTiles fills this in
+        // (tagged _isPopularContent so it can clear+rebuild without
+        // touching the header above).
+        return card;
+    },
+
+    _renderPopularTiles: function _renderPopularTiles() {
+        var self = this;
+        var card = this.get('PopularCard');
+        if (!card) return;
+        card.submorphs.filter(function(m) { return m._isPopularContent; }).forEach(function(m) { m.remove(); });
+
+        var TILE_W = 168, GAP = 16, VISIBLE = 4;
+        var visible = this.popularItems.slice(this.popularStart, this.popularStart + VISIBLE);
+        var leftDisabled = this.popularStart <= 0;
+        var rightDisabled = this.popularStart >= Math.max(0, this.popularItems.length - VISIBLE);
+
+        function iconButton(x, glyph, disabled, onClick) {
+            var btn = new lively.morphic.Box(lively.rect(x, 40, 32, 32));
+            btn.applyStyle({ fill: Color.white, borderWidth: 1, borderColor: disabled ? Color.rgb(238,238,238) : Color.rgb(214,214,214), borderRadius: 16 });
+            btn._isPopularContent = true;
+            btn.draggingEnabled = false; btn.droppingEnabled = false; btn.grabbingEnabled = false;
+            var icon = new lively.morphic.Text(lively.rect(4, 8, 24, 16), glyph);
+            icon.applyStyle({ fontFamily: "'Material Symbols Rounded'", fontSize: 13, textColor: disabled ? Color.rgb(204,204,204) : Color.rgb(51,51,51),
+                fill: null, borderWidth: 0, allowInput: false, selectable: false, align: 'center', fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
+            icon.eventsAreIgnored = true; icon.draggingEnabled = false; icon.droppingEnabled = false; icon.grabbingEnabled = false;
+            btn.addMorph(icon);
+            if (!disabled) btn.onMouseUp = function() { onClick(); return true; };
+            return btn;
+        }
+
+        card.addMorph(iconButton(16, 'chevron_left', leftDisabled, function() { self.popularPrev(); }));
+        card.addMorph(iconButton(792, 'chevron_right', rightDisabled, function() { self.popularNext(); }));
+
+        visible.forEach(function(item, i) {
+            var tile = self._buildItemTile(item);
+            tile._isPopularContent = true;
+            tile.setPosition(pt(56 + i * (TILE_W + GAP), 40));
+            card.addMorph(tile);
+        });
     },
 
     // POST helper (parallel to _fetchJson's GET) -- same-origin only
@@ -1185,8 +1337,8 @@ lively.BuildSpec('lively.identity.Inventory', {
             this.applyStyle({ borderColor: Color.rgb(230,230,230), borderWidth: 1 });
         };
         tile.onMouseUp = function(evt) {
-            if (this.owner && this.owner.selectPartItem) this.owner.selectPartItem(this);
-            this.showAsSelected();
+            var browser = this.get('InventoryBrowser');
+            if (browser) browser.selectTile(this);
             return true;
         };
 
@@ -1229,31 +1381,35 @@ lively.BuildSpec('lively.identity.Inventory', {
             .catch(function(err) { cb(err); });
     },
 
-    // ─── selection / info panel ─────────────────────────────────────────
+    // ─── selection / info panel (inventory.md §13 Phase D) ────────────────
+    // selectTile is the one entry point every tile's onMouseUp calls now
+    // (both the All-items grid and the Popular strip share it) -- replaces
+    // the old ItemsGrid-local selectPartItem/connectionRebuilder binding,
+    // since a tile can now live in either container and selecting one must
+    // deselect the other regardless of which one currently holds it.
+
+    selectTile: function selectTile(tileMorph) {
+        if (this.selectedTileMorph && this.selectedTileMorph !== tileMorph && this.selectedTileMorph.showAsNotSelected) {
+            this.selectedTileMorph.showAsNotSelected();
+        }
+        this.selectedTileMorph = tileMorph;
+        if (tileMorph && tileMorph.showAsSelected) tileMorph.showAsSelected();
+        this.setSelectedItem(tileMorph && tileMorph.partItem);
+    },
 
     setSelectedItem: function setSelectedItem(item) {
         this.selectedItem = item;
-        this.get('openItemButton').setActive(!!item);
-        this.get('viewSourceButton').setActive(!!item);
-        this.get('inspectButton').setActive(!!item);
         if (!item) {
-            this.get('selectedItemName').textString = '';
-            this.get('selectedItemMeta').textString = '';
-            this.get('selectedItemComment').textString = '';
-            this.get('selectedItemVersions').updateList([]);
-            this.setShareLink(null);
             this.selectedItemStarInfo = null;
             this.selectedItemComments = [];
+            this.versionsExpanded = false;
+            this.renderRightPanel();
             return;
         }
-        this.get('selectedItemName').textString = item.name;
-        this.get('selectedItemComment').textString =
-            (item.loadedMetaInfo && item.loadedMetaInfo.comment) || 'No comment';
-        this.renderItemMeta(item);
-        this.setShareLink(item);
+        this.versionsExpanded = false;
+        this.renderRightPanel();
 
         var self = this;
-        this.get('selectedItemVersions').updateList([{ isListItem: true, string: 'Loading versions…', value: null }]);
         item.loadPartVersions();
         // loadPartVersions is a plain synchronous-looking call whose XHR
         // resolves later and just assigns item.partVersions once (no
@@ -1263,18 +1419,9 @@ lively.BuildSpec('lively.identity.Inventory', {
         var waited = 0;
         (function poll() {
             if (self.selectedItem !== item) return; // selection moved on
-            if (item.partVersions) {
-                self.get('selectedItemVersions').updateList(
-                    (item.partVersions.length ? item.partVersions : [{ date: null, author: null }]).map(function(v) {
-                        if (!v.date) return { isListItem: true, string: 'No version history', value: null };
-                        var formattedDate = new Date(v.date).format('yyyy-mm-dd HH:MM');
-                        return { isListItem: true, string: formattedDate + ' ' + v.author, value: v };
-                    })
-                );
-                return;
-            }
+            if (item.partVersions) { self.renderRightPanel(); return; }
             waited += 150;
-            if (waited > 4000) { self.get('selectedItemVersions').updateList([]); return; }
+            if (waited > 4000) return;
             setTimeout(poll, 150);
         })();
 
@@ -1302,6 +1449,7 @@ lively.BuildSpec('lively.identity.Inventory', {
             if (self.selectedItem !== item) return; // selection moved on
             if (err || !info) return;
             self.selectedItemStarInfo = info;
+            self.renderRightPanel();
         });
     },
 
@@ -1328,6 +1476,7 @@ lively.BuildSpec('lively.identity.Inventory', {
             if (self.selectedItem !== item) return;
             if (err || !body || !body.comments) return;
             self.selectedItemComments = body.comments;
+            self.renderRightPanel();
         });
     },
 
@@ -1367,51 +1516,206 @@ lively.BuildSpec('lively.identity.Inventory', {
         var hostingUrl = item._instanceBaseUrl || window.location.origin;
         var hostingHost = hostingUrl.replace(/^https?:\/\//, '').replace(/\/$/, '') || 'unknown';
         var line4 = 'Hosting: ' + hostingHost;
-        var text = [line1, line2, didLine, line4].join('\n');
+        var tags = (item.loadedMetaInfo && item.loadedMetaInfo.tags) || [];
+        var line5 = 'Tags: ' + (tags.length ? tags.join(', ') : 'none');
+        var text = [line1, line2, didLine, line4, line5].join('\n');
         var iconStart = line1.length + 1 + line2.length + 1 + didLinePrefix.length;
         var iconEnd = iconStart + iconGlyph.length;
         return { text: text, did: env.did || null, iconStart: iconStart, iconEnd: iconEnd };
     },
 
-    renderItemMeta: function renderItemMeta(item) {
-        var metaMorph = this.get('selectedItemMeta');
-        var meta = this.describeItemMeta(item);
-        metaMorph.textString = meta ? meta.text : '';
-        metaMorph._copyAuthorDid = meta ? meta.did : null;
-        if (!meta) return;
-        metaMorph.emphasize({
-            color: Color.blue,
-            doit: {
-                code: "var m = evt.getTargetMorph();" +
-                    "if (!m._copyAuthorDid || !navigator.clipboard) return;" +
-                    "navigator.clipboard.writeText(m._copyAuthorDid);",
-                context: null
-            }
-        }, meta.iconStart, meta.iconEnd);
+    toggleVersionsExpanded: function toggleVersionsExpanded() {
+        this.versionsExpanded = !this.versionsExpanded;
+        this.renderRightPanel();
     },
 
-    setShareLink: function setShareLink(item) {
-        var linkText = this.get('shareLink');
-        if (!item || !item.envelope || !item.envelope.objId) {
-            linkText.setTextString('');
+    // Rebuilds the entire right panel from scratch on every selection/
+    // star/comment/version change -- same "hand-construct fresh" idiom as
+    // the sidebar's Categories/Instances blocks and _buildItemTile, chosen
+    // over patching named morphs in place because so much of this content
+    // (version rows, comment rows) varies in COUNT, not just text.
+    renderRightPanel: function renderRightPanel() {
+        var self = this;
+        var panel = this.get('RightPanel');
+        panel.submorphs.clone().invoke('remove');
+        var item = this.selectedItem;
+        var PAD = 18, W = 360 - 2 * PAD;
+
+        function noDrag(m) { m.draggingEnabled = false; m.droppingEnabled = false; m.grabbingEnabled = false; }
+        function textRow(rect, text, style) {
+            var t = new lively.morphic.Text(rect, text);
+            t.applyStyle(Object.assign({ fill: null, borderWidth: 0, allowInput: false, selectable: false,
+                fixedWidth: true, fixedHeight: true, clipMode: 'hidden', fontFamily: 'Helvetica' }, style));
+            t.eventsAreIgnored = true;
+            noDrag(t);
+            return t;
+        }
+
+        if (!item) {
+            panel.addMorph(textRow(lively.rect(PAD, 60, W, 60),
+                'Select an item to see its details.',
+                { fontSize: 10.5, textColor: Color.rgb(153,153,153), align: 'center' }));
             return;
         }
-        linkText.setTextString('Share Link');
-        var base = item._instanceBaseUrl || window.location.origin;
-        var url = base + '/@' + (item.handle || '_') + '/parts/' + item.envelope.objId;
-        linkText._shareUrl = url;
-        linkText.emphasizeAll({
-            color: Color.blue,
-            doit: {
-                code: "var m = evt.getTargetMorph();" +
-                    "if (!m._shareUrl || !navigator.clipboard) return;" +
-                    "navigator.clipboard.writeText(m._shareUrl);" +
-                    "m.setTextString('Copied!');" +
-                    "var ib = m.get('InventoryBrowser');" +
-                    "setTimeout(function() { ib ? ib.setShareLink(ib.selectedItem) : m.setTextString('Share Link'); }, 1200);",
-                context: null
+
+        var y = 18;
+        function place(m, h) { m.setPosition(pt(PAD, y)); panel.addMorph(m); y += h; }
+
+        place(textRow(lively.rect(0,0,W,20), item.name || '',
+            { fontSize: 10.5, fontWeight: 'bold', textColor: Color.rgb(34,34,34) }), 26);
+
+        // Meta block (Published by / Created / Object ID+DID / Hosting / Tags)
+        var meta = this.describeItemMeta(item);
+        var lineCount = meta ? meta.text.split('\n').length : 1;
+        // 18px/line, not the naive fontSize-derived guess -- live-measured
+        // (getComputedStyle/scrollHeight) at ~17.6px/line for this 8.5pt
+        // text, confirmed by a real clipped-last-line bug this replaced.
+        var metaH = lineCount * 18 + 8;
+        var metaMorph = textRow(lively.rect(0,0,W,metaH), meta ? meta.text : '',
+            { fontSize: 8.5, textColor: Color.rgb(85,85,85) });
+        metaMorph.eventsAreIgnored = false; // needs to receive the DID-copy click below
+        if (meta) {
+            metaMorph._copyAuthorDid = meta.did;
+            metaMorph.emphasize({
+                color: Color.blue,
+                doit: {
+                    code: "var m = evt.getTargetMorph();" +
+                        "if (!m._copyAuthorDid || !navigator.clipboard) return;" +
+                        "navigator.clipboard.writeText(m._copyAuthorDid);",
+                    context: null
+                }
+            }, meta.iconStart, meta.iconEnd);
+        }
+        place(metaMorph, metaH + 12);
+
+        // Version badge + (conditionally) expandable version list. Built
+        // from item.partVersions -- {date, author, version(shortCid)} rows,
+        // ascending -- exactly as loadPartVersions already produces; no
+        // real per-version signer exists yet (inventory.md §1.4/§9), so
+        // every row shows the owning handle, matching today's actual data.
+        if (!item.partVersions) {
+            place(textRow(lively.rect(0,0,W,18), 'Loading versions…',
+                { fontSize: 9, textColor: Color.rgb(153,153,153) }), 24);
+        } else {
+            var versions = item.partVersions.length ? item.partVersions : null;
+            var latest = versions ? versions[versions.length - 1] : null;
+            var badgeText = versions ?
+                ('v' + versions.length + ' · updated ' + new Date(latest.date).format('yyyy-mm-dd') + ' · ' + latest.author) :
+                'No version history';
+
+            var badge = new lively.morphic.Box(lively.rect(0, 0, W, 30));
+            badge.applyStyle({ fill: Color.rgb(250,250,250), borderWidth: 1, borderColor: Color.rgb(226,226,226), borderRadius: 8 });
+            noDrag(badge);
+            badge.addMorph(textRow(lively.rect(8,7,16,16), 'history',
+                { fontFamily: "'Material Symbols Rounded'", fontSize: 12, textColor: Color.rgb(136,136,136) }));
+            badge.addMorph(textRow(lively.rect(28,8,W-56,14), badgeText,
+                { fontSize: 8.5, textColor: Color.rgb(51,51,51) }));
+            badge.addMorph(textRow(lively.rect(W-24,7,16,16), this.versionsExpanded ? 'expand_less' : 'expand_more',
+                { fontFamily: "'Material Symbols Rounded'", fontSize: 14, textColor: Color.rgb(136,136,136) }));
+            if (versions) badge.onMouseUp = function() { self.toggleVersionsExpanded(); return true; };
+            place(badge, 36);
+
+            if (this.versionsExpanded && versions) {
+                var listBox = new lively.morphic.Box(lively.rect(0, 0, W, versions.length * 22));
+                listBox.applyStyle({ fill: Color.white, borderWidth: 1, borderColor: Color.rgb(238,238,238), borderRadius: 8 });
+                noDrag(listBox);
+                versions.slice().reverse().forEach(function(v, i) {
+                    listBox.addMorph(textRow(lively.rect(8, i * 22 + 3, W - 16, 16),
+                        'v' + (versions.length - i) + ' · ' + new Date(v.date).format('yyyy-mm-dd') + ' · ' + v.version + ' · ' + v.author,
+                        { fontSize: 7.5, textColor: Color.rgb(85,85,85) }));
+                });
+                place(listBox, versions.length * 22 + 10);
             }
+        }
+
+        // Star button
+        var info = this.selectedItemStarInfo;
+        var starCount = info ? info.count : (item.starCount || 0);
+        var starred = !!(info && info.mine);
+        var starBtn = new lively.morphic.Box(lively.rect(0, 0, 78, 28));
+        starBtn.applyStyle({ fill: starred ? Color.rgbHex('#9333ea') : Color.white,
+            borderWidth: 1, borderColor: starred ? Color.rgbHex('#9333ea') : Color.rgb(214,214,214), borderRadius: 6 });
+        noDrag(starBtn);
+        starBtn.addMorph(textRow(lively.rect(8,6,16,16), starred ? 'star' : 'star_border',
+            { fontFamily: "'Material Symbols Rounded'", fontSize: 13, textColor: starred ? Color.white : Color.rgb(51,51,51) }));
+        starBtn.addMorph(textRow(lively.rect(28,7,42,14), String(starCount),
+            { fontSize: 9, textColor: starred ? Color.white : Color.rgb(51,51,51) }));
+        starBtn.onMouseUp = function() { self.toggleStarOnSelectedItem(); return true; };
+        place(starBtn, 38);
+
+        // Open Item / View Source / Inspect
+        var buttonsRow = new lively.morphic.Box(lively.rect(0, 0, W, 26));
+        buttonsRow.applyStyle({ fill: null, borderWidth: 0 });
+        noDrag(buttonsRow);
+        var btnW = (W - 12) / 3;
+        [['Open Item', function() { self.openSelectedItem(); }],
+         ['View Source', function() { self.viewSourceOfSelectedItem(); }],
+         ['Inspect', function() { self.openInspectorMenu(); }]].forEach(function(pair, i) {
+            var b = new lively.morphic.Box(lively.rect(i * (btnW + 6), 0, btnW, 26));
+            b.applyStyle({ fill: Color.white, borderWidth: 1, borderColor: Color.rgb(214,214,214), borderRadius: 6 });
+            noDrag(b);
+            b.addMorph(textRow(lively.rect(0,5,btnW,16), pair[0], { fontSize: 8, textColor: Color.rgb(51,51,51), align: 'center' }));
+            b.onMouseUp = function() { pair[1](); return true; };
+            if (pair[0] === 'Inspect') self._inspectButtonMorph = b;
+            buttonsRow.addMorph(b);
         });
+        place(buttonsRow, 40);
+
+        // Comments
+        place(textRow(lively.rect(0,4,W,16), 'COMMENTS', { fontSize: 7.5, textColor: Color.rgb(153,153,153) }), 24);
+
+        var comments = (this.selectedItemComments || []).slice().reverse();
+        if (!comments.length) {
+            place(textRow(lively.rect(0,0,W,16), 'No comments yet.', { fontSize: 9, textColor: Color.rgb(153,153,153) }), 22);
+        } else {
+            comments.forEach(function(c) {
+                // Wrapped-line-count estimate, not a live measurement (see
+                // inventory.md Phase D plan's own flagged risk for this) --
+                // clipMode stays 'auto' below rather than 'hidden' so an
+                // undershoot scrolls instead of silently clipping.
+                var estLines = Math.max(1, Math.ceil((c.body || '').length * 6.2 / (W - 34)));
+                var bodyH = estLines * 18 + 4;
+                var rowH = 16 + bodyH + 8;
+                var row = new lively.morphic.Box(lively.rect(0, 0, W, rowH));
+                row.applyStyle({ fill: null, borderWidth: 0 });
+                noDrag(row);
+                var avatar = new lively.morphic.Box(lively.rect(0, 2, 20, 20));
+                avatar.applyStyle({ fill: Color.rgbHex(self._instanceColor(c.handle || c.did || '')), borderWidth: 0, borderRadius: 10 });
+                noDrag(avatar);
+                row.addMorph(avatar);
+                row.addMorph(textRow(lively.rect(28,0,W-28,14),
+                    (c.handle ? '@' + c.handle : '@?') + ' · ' + (c.created_at ? new Date(c.created_at).format('yyyy-mm-dd') : ''),
+                    { fontSize: 7.5, textColor: Color.rgb(120,120,120) }));
+                var body = textRow(lively.rect(28,16,W-28,bodyH), c.body || '', { fontSize: 9, textColor: Color.rgb(26,26,27) });
+                body.applyStyle({ clipMode: 'auto' });
+                row.addMorph(body);
+                place(row, rowH + 4);
+            });
+        }
+
+        // Comment input row -- a morphic Text#beInputLine() input (native
+        // framework mechanism, not a raw DOM <input>), matching this file's
+        // existing searchText precedent rather than a native-DOM-mount.
+        var inputRow = new lively.morphic.Box(lively.rect(0, 0, W, 32));
+        inputRow.applyStyle({ fill: null, borderWidth: 0 });
+        noDrag(inputRow);
+        var input = new lively.morphic.Text(lively.rect(0, 4, W - 66, 24), '');
+        input.applyStyle({ fixedWidth: true, fixedHeight: true, clipMode: 'hidden', allowInput: true, fontSize: 8.5,
+            borderWidth: 1, borderColor: Color.rgb(214,214,214), borderRadius: 6, fill: Color.white });
+        inputRow.addMorph(input);
+        var postBtn = new lively.morphic.Box(lively.rect(W - 58, 4, 58, 24));
+        postBtn.applyStyle({ fill: Color.rgbHex('#e8497e'), borderWidth: 0, borderRadius: 6 });
+        noDrag(postBtn);
+        postBtn.addMorph(textRow(lively.rect(0,5,58,14), 'Post', { fontSize: 8.5, textColor: Color.white, align: 'center' }));
+        postBtn.onMouseUp = function() {
+            var text = input.textString;
+            input.setTextString('');
+            self.postCommentOnSelectedItem(text);
+            return true;
+        };
+        inputRow.addMorph(postBtn);
+        place(inputRow, 40);
+        input.beInputLine({ fixedWidth: true });
     },
 
     // ─── inspect ─────────────────────────────────────────────────────────
@@ -1433,8 +1737,9 @@ lively.BuildSpec('lively.identity.Inventory', {
     // A single "Inspect" button (openInspectorMenu, below) fans out to this
     // for all three of PartInspector's non-Overview tabs -- JSON,
     // Serialization Info, Object Graph -- rather than one physical button
-    // per tab, which measured live (chrome-devtools MCP) to overflow
-    // ItemInfoPanel's fixed-width MetaContainer column.
+    // per tab, which measured live (chrome-devtools MCP) to overflow the
+    // right panel's fixed-width button row (originally ItemInfoPanel's
+    // MetaContainer column, before the Phase D right-panel rewrite).
     openPartInspectorForSelection: function openPartInspectorForSelection(tabName) {
         tabName = tabName || 'Overview';
         var item = this.selectedItem;
@@ -1473,16 +1778,16 @@ lively.BuildSpec('lively.identity.Inventory', {
         });
     },
 
-    // Popup menu behind the single "Inspect" button -- keeps ItemInfoPanel's
-    // button row at its existing 3-button width (Open Item / View Source /
-    // Inspect) instead of growing to 5 buttons, which measured live to
-    // overflow MetaContainer's fixed column width (confirmed via
-    // chrome-devtools MCP before choosing this design over more buttons).
+    // Popup menu behind the single "Inspect" button -- keeps the right
+    // panel's button row at its existing 3-button width (Open Item / View
+    // Source / Inspect) instead of growing to 5 buttons, which measured
+    // live to overflow the fixed column width (confirmed via chrome-devtools
+    // MCP before choosing this design over more buttons).
     openInspectorMenu: function openInspectorMenu() {
         var item = this.selectedItem;
         if (!item) { $world.inform('No item selected.'); return; }
-        var btn = this.get('inspectButton');
-        var pos = btn.worldPoint(lively.pt(0, btn.getExtent().y));
+        var btn = this._inspectButtonMorph;
+        var pos = btn ? btn.worldPoint(lively.pt(0, btn.getExtent().y)) : $world.visibleBounds().center();
         var self = this;
         var items = [
             ['JSON', function() { self.openPartInspectorForSelection('JSON'); }],
@@ -1622,15 +1927,16 @@ lively.BuildSpec('lively.identity.Inventory', {
 lively.identity.Inventory.open = function(optPos) {
     if ($world.inventoryBrowser) $world.inventoryBrowser.remove();
     var win = lively.BuildSpec('lively.identity.Inventory').createMorph();
-    win.openInWorld(optPos || $world.visibleBounds().center().subPt(lively.pt(410, 260)));
+    win.openInWorld(optPos || $world.visibleBounds().center().subPt(lively.pt(730, 380)));
     win.comeForward();
     $world.inventoryBrowser = win;
     var browser = win.get('InventoryBrowser');
     win.get('LeftRightDivider').scalingLeft = [win.get('LeftSideContainer')];
     win.get('LeftRightDivider').scalingRight = [win.get('MainContainer')];
     win.get('LeftRightDivider').fixed = [];
-    win.get('VersionDivider').scalingLeft = [win.get('MetaContainer')];
-    win.get('VersionDivider').scalingRight = [win.get('VersionsContainer')];
+    win.get('RightDivider').scalingLeft = [win.get('MainContainer')];
+    win.get('RightDivider').scalingRight = [win.get('RightPanel')];
+    win.get('RightDivider').fixed = [];
     browser.onLoad();
     return win;
 };
