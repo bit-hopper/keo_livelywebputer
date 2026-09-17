@@ -327,11 +327,25 @@ Object.subclass('lively.PartsBin.PartItem',
 
         // ensure that setPartFromJSON is only called when both json and
         // metaInfo are there.
+        //
+        // onceCb is called exactly once no matter which path reaches it --
+        // either setPartFromJSON's own error callback (e.g. the user
+        // declined the trust-gate confirm, which previously had no way to
+        // reach this method's cb at all: setPartFromJSON's cb param was
+        // never passed through here, so a decline silently never fired
+        // 'part' and the caller's cb (and any LoadingIndicator waiting on
+        // it) hung forever -- confirmed live via Inventory.js's Object
+        // Graph button, see project-inventory-partinspector-objectgraph
+        // memory) or the pre-existing 'part' property connection below on
+        // success.
+        var onceCb = cb ? Functions.once(cb) : Functions.Null;
         var loadTrigger = {
             item: this,
             rev: this.rev,
             triggerSetPart: function() {
-                this.item.setPartFromJSON(this.json, this.metaInfo, this.rev);
+                this.item.setPartFromJSON(this.json, this.metaInfo, this.rev, function(err) {
+                    if (err) onceCb(err);
+                });
             },
             jsonLoaded: function(json) {
                 this.json = json;
@@ -347,7 +361,7 @@ Object.subclass('lively.PartsBin.PartItem',
                     console.log('Error on setPartFromJSON: ' + e)
                 }
             },
-            triggerCallback: cb ? Functions.once(cb.curry(null)) : Functions.Null,
+            triggerCallback: function(part) { onceCb(null, part); },
         }
         lively.bindings.connect(this, 'json', loadTrigger, 'jsonLoaded', {removeAfterUpdate: true});
         lively.bindings.connect(this, 'loadedMetaInfo', loadTrigger, 'metaInfoLoaded', {removeAfterUpdate: true});

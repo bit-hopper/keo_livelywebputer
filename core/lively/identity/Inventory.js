@@ -588,6 +588,23 @@ lively.BuildSpec('lively.identity.Inventory', {
                                 connectionRebuilder: function connectionRebuilder() {
                                     lively.bindings.connect(this, "fire", this.get("InventoryBrowser"), "viewSourceOfSelectedItem", {});
                                 }
+                            },{
+                                _BorderColor: Color.rgb(255,255,255),
+                                _Extent: lively.pt(100.0,28.0),
+                                _Fill: Color.rgb(204,204,204),
+                                _StyleClassNames: ["Morph","Button","disabled"],
+                                className: "lively.morphic.Button",
+                                isActive: false,
+                                isPressed: false,
+                                label: "Object Graph",
+                                name: "objectGraphButton",
+                                padding: lively.rect(5,0,0,0),
+                                sourceModule: "lively.morphic.Widgets",
+                                style: { borderRadius: 0 },
+                                withoutLayers: [],
+                                connectionRebuilder: function connectionRebuilder() {
+                                    lively.bindings.connect(this, "fire", this.get("InventoryBrowser"), "openPartInspectorForSelection", {});
+                                }
                             }],
                             withoutLayers: [],
                             activateButtons: function activateButtons(bool) {
@@ -849,6 +866,7 @@ lively.BuildSpec('lively.identity.Inventory', {
         this.selectedItem = item;
         this.get('openItemButton').setActive(!!item);
         this.get('viewSourceButton').setActive(!!item);
+        this.get('objectGraphButton').setActive(!!item);
         if (!item) {
             this.get('selectedItemName').textString = '';
             this.get('selectedItemMeta').textString = '';
@@ -953,23 +971,54 @@ lively.BuildSpec('lively.identity.Inventory', {
 
     // ─── inspect ─────────────────────────────────────────────────────────
 
-    // Same pattern as the classic browser's openPartInspectorForSelection —
     // PartInspector is a local WebDAV debugging tool and loads fine
-    // regardless of which instance the browsed item's data came from.
+    // regardless of which instance the browsed item's data came from -- it
+    // just needs the item's raw JSON, fetched via the same _fetchFullEnvelope
+    // every other item action already shares. Unlike the classic browser's
+    // own openPartInspectorForSelection (which drives PartInspector's
+    // PartsBinCategoryChooser/PartsBinPartItemChooser dropdowns against a
+    // real WebDAV PartsSpace), an Inventory item has no such WebDAV path --
+    // its partsSpaceName is either '*public*' or another user's identity
+    // space, neither of which PartInspector's chooser can ever resolve. So
+    // this calls PartInspector's new loadFromJSON(json, label) entry point
+    // instead, which skips the chooser entirely and feeds the JSON straight
+    // to updateJSON -- see inventory.md §12 for the full writeup of why the
+    // old .loadPart(...) call here was dead-on-arrival.
     openPartInspectorForSelection: function openPartInspectorForSelection() {
-        var item = this.get('InventoryBrowser').selectedItem;
+        var item = this.selectedItem;
         if (!item) { $world.inform('No item selected.'); return; }
-        var indicatorClose, indicator;
-        lively.lang.fun.composeAsync(
-            function(n) { Global.require('lively.morphic.tools.LoadingIndicator').toRun(function() { n(); }); },
-            function(n) { indicator = lively.morphic.tools.LoadingIndicator.open('loading...', function(close) { indicatorClose = close; n(); }); },
-            function(n) { lively.PartsBin.getPart('PartInspector', 'PartsBin/Debugging/', function(err, inspector) { n(err, inspector); }); },
-            function(inspector, n) {
-                inspector.openInWorldCenter();
-                indicator.bringToFront();
-                inspector.targetMorph.loadPart(item.name, item.partsSpaceName, n);
+        var self = this;
+        this.setStatus('Loading object graph for ' + item.name + '…');
+        this._fetchFullEnvelope(item, function(err, envelope) {
+            if (err) { self.setStatus('Failed to load item: ' + (err.message || err), true); return; }
+            // record.payload is ciphertext for private/shared items -- feeding
+            // that into PartInspector's JSON.parse would just fail or produce
+            // garbage. Scoped to public items only for now (see inventory.md
+            // §12's open question); private/shared is a deliberate follow-up,
+            // not an oversight.
+            if (envelope.visibility && envelope.visibility !== 'public') {
+                self.setStatus('Object graph view only supports public items right now.', true);
+                return;
             }
-        )(function(err) { indicatorClose && indicatorClose(); });
+            var payload = envelope.record && envelope.record.payload;
+            var json = typeof payload === 'string' ? payload : JSON.stringify(payload);
+            var indicatorClose, indicator;
+            lively.lang.fun.composeAsync(
+                function(n) { Global.require('lively.morphic.tools.LoadingIndicator').toRun(function() { n(); }); },
+                function(n) { indicator = lively.morphic.tools.LoadingIndicator.open('loading...', function(close) { indicatorClose = close; n(); }); },
+                function(n) { lively.PartsBin.getPart('PartInspector', 'PartsBin/Debugging/', function(err2, inspector) { n(err2, inspector); }); },
+                function(inspector, n) {
+                    inspector.openInWorldCenter();
+                    indicator.bringToFront();
+                    inspector.targetMorph.loadFromJSON(json, item.name);
+                    n();
+                }
+            )(function(err3) {
+                indicatorClose && indicatorClose();
+                if (err3) { self.setStatus('Failed to open object graph: ' + (err3.message || err3), true); return; }
+                self.setStatus('Opened object graph for "' + item.name + '"');
+            });
+        });
     },
 
     // ─── opening an item ─────────────────────────────────────────────────
