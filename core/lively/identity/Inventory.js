@@ -27,6 +27,13 @@ lively.BuildSpec('lively.identity.Inventory', {
     // sibling border-radius-reset gotcha. Explicit here so the window keeps
     // the classic rounded corner instead of rendering hard square ones.
     _BorderRadius: 3,
+    // Teal window/frame fill -- shows through the title bar (`.Window
+    // .TitleBar` is `background: none` in base_theme.css, so it inherits
+    // whatever the window itself is filled with) and the ~4-6px margin
+    // around InventoryBrowser's own fully-transparent content box below.
+    // Scoped to this window only, not base_theme.css's global `.Window`
+    // rule, which every other window in the system still uses.
+    _Fill: Color.rgbHex('#57CFB3'),
     // Widened for the 3-column Phase D layout (220px rail + 840px flexible
     // main + 360px right panel + 2 dividers + the HorizontalLayout's own
     // borderSize/spacing below) -- see inventory.md §13 Phase D plan.
@@ -295,19 +302,30 @@ lively.BuildSpec('lively.identity.Inventory', {
                         }
                     },{
                         _Position: lively.pt(700,2),
-                        _Extent: lively.pt(64,32),
+                        _Extent: lively.pt(40,32),
                         _Fill: Color.white,
-                        _StyleClassNames: ["Morph","Button"],
+                        // InventorySortMenuBtn: a dedicated class (distinct
+                        // from the plain-text Popular/Recent pills sharing
+                        // this same Button styling) scoping the Material
+                        // Symbols font-family/font-size CSS rule in
+                        // base_theme.css -- same CSS-cascade sidestep for
+                        // the JS-fontFamily-DOM-sync bug CLAUDE.md documents
+                        // for .Button.WindowControl, and confirmed live here
+                        // to need no !important: this label's own <span>
+                        // never gets an inline font-family/font-size (only
+                        // textColor does, fixed separately via
+                        // _paintLabelColor), so the CSS class cleanly wins.
+                        _StyleClassNames: ["Morph","Button","InventorySortMenuBtn"],
                         className: "lively.morphic.Button",
                         isPressed: false,
-                        // Plain text rather than a Material Symbols glyph --
-                        // a BuildSpec Button auto-generates its own internal
-                        // label Text from this string at creation time (the
-                        // safe case), whereas swapping to an icon font would
-                        // need the runtime label-recoloring workaround
-                        // CLAUDE.md documents for WindowControl buttons; not
-                        // worth it for one static "more sort options" button.
-                        label: "More ▾",
+                        // Icon-only "filter_list" glyph, replacing the old
+                        // literal "More ▾" text -- baked in at construction
+                        // via the labelString constructor arg (not a later
+                        // .setTextString/.applyStyle call), which sidesteps
+                        // CLAUDE.md's separate "icon ligature re-widens the
+                        // label box before the icon font loads" bug -- that
+                        // one only hits a label swapped post-construction.
+                        label: "filter_list",
                         name: "sortMenuButton",
                         sourceModule: "lively.morphic.Widgets",
                         style: { borderRadius: 6 },
@@ -490,7 +508,10 @@ lively.BuildSpec('lively.identity.Inventory', {
         },{
             _BorderColor: null,
             _Extent: lively.pt(2.0,601.0),
-            _Fill: Color.rgb(204,204,204),
+            // Softened from the original 204,204,204 -- part of the same
+            // right-panel border-softening pass as renderRightPanel's own
+            // borders below.
+            _Fill: Color.rgb(224,224,224),
             _Position: lively.pt(1078.0,6.0),
             className: "lively.morphic.VerticalDivider",
             draggingEnabled: true,
@@ -601,6 +622,18 @@ lively.BuildSpec('lively.identity.Inventory', {
         this.reloadEverything();
     },
 
+    // "Select all" / "None" quick actions atop the Instances panel.
+    // Unchecking every instance is safe -- _activeInstanceBaseUrls()
+    // already falls back to the local origin whenever checkedInstances has
+    // no true entries, so "None" can't leave fan-out with zero sources.
+    setAllInstancesChecked: function setAllInstancesChecked(bool) {
+        var urls = this.instances.length ? this.instances.map(function(i) { return i.baseUrl; }) : [window.location.origin];
+        var checked = {};
+        urls.forEach(function(u) { checked[u] = bool; });
+        this.checkedInstances = checked;
+        this.reloadEverything();
+    },
+
     // GET /instances (the real directory), populating checkedInstances with
     // every known instance checked by default (matching §13's mockup
     // default: "browsing N of M instances", all pinned). One-time seeds the
@@ -683,15 +716,28 @@ lively.BuildSpec('lively.identity.Inventory', {
     // the DOM via the model layer in this codebase's own confirmed case, so
     // those still go through the normal setBorderColor/setBorderWidth calls.
 
+    // A Text morph's own leaf <span> carries its OWN inline `color`,
+    // baked in at first render from the model's textColor (Button's
+    // default label style is Color.green) -- confirmed live: writing
+    // color only to the label's outer shapeNode div (as this function
+    // used to) left every scope-tab/sort-pill label stuck rendering
+    // green, since a child's own inline color wins over an inherited one
+    // from its ancestor div regardless of what the div's color says.
+    // Every label recolor needs both nodes written.
+    _paintLabelColor: function _paintLabelColor(labelMorph, color) {
+        if (!labelMorph) return;
+        var node = labelMorph.renderContext().shapeNode;
+        node.style.color = color;
+        var span = node.querySelector('span');
+        if (span) span.style.color = color;
+    },
+
     _paintScopeTab: function _paintScopeTab(btn, active) {
         var node = btn.renderContext().shapeNode;
         node.style.background = active ? '#fff' : 'transparent';
         node.style.boxShadow = active ? '0 1px 2px rgba(0,0,0,0.12)' : 'none';
-        if (btn.label) {
-            var labelNode = btn.label.renderContext().shapeNode;
-            labelNode.style.color = active ? '#222' : '#666';
-            labelNode.style.fontWeight = active ? '600' : 'normal';
-        }
+        this._paintLabelColor(btn.label, active ? '#222' : '#666');
+        if (btn.label) btn.label.renderContext().shapeNode.style.fontWeight = active ? '600' : 'normal';
     },
 
     // Rebuilds ScopeTabsRow's active-tab styling (always present) and tears
@@ -729,7 +775,14 @@ lively.BuildSpec('lively.identity.Inventory', {
         block.draggingEnabled = false; block.droppingEnabled = false; block.grabbingEnabled = false;
 
         var header = new lively.morphic.Text(lively.rect(0, 0, W, 14), 'CATEGORIES');
-        header.applyStyle({ fontFamily: 'Helvetica', fontSize: 7.5, textColor: Color.rgb(153,153,153), fill: null, borderWidth: 0,
+        // Darkened from the original 153,153,153 -- that reads fine as a
+        // quiet label on white (used elsewhere in this file, e.g. "ALL
+        // ITEMS"/"POPULAR THIS WEEK"), but this sidebar sits directly on
+        // the window's own teal fill (LeftSideContainer's own _Fill is
+        // transparent), where light grays drop to ~1.5:1 contrast --
+        // effectively invisible. Computed against #57CFB3's luminance
+        // rather than eyeballed.
+        header.applyStyle({ fontFamily: 'Helvetica', fontSize: 7.5, textColor: Color.rgb(60,60,60), fill: null, borderWidth: 0,
             allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
         header.eventsAreIgnored = true; header.draggingEnabled = false; header.droppingEnabled = false; header.grabbingEnabled = false;
         block.addMorph(header);
@@ -742,7 +795,7 @@ lively.BuildSpec('lively.identity.Inventory', {
             var active = (self.category || 'All') === name;
 
             var row = new lively.morphic.Box(lively.rect(0, y, W, 24));
-            row.applyStyle({ fill: active ? Color.rgba(147,51,234,0.12) : null, borderWidth: 0, borderRadius: 6 });
+            row.applyStyle({ fill: active ? Color.rgba(212,84,114,0.12) : null, borderWidth: 0, borderRadius: 6 });
             row.draggingEnabled = false; row.droppingEnabled = false; row.grabbingEnabled = false;
             row._categoryValue = name === 'All' ? null : name;
 
@@ -754,20 +807,20 @@ lively.BuildSpec('lively.identity.Inventory', {
             // under clipMode:'hidden'. Confirmed live via getBoundingClientRect
             // on the rendered span vs. its shapeNode before this fix.
             var icon = new lively.morphic.Text(lively.rect(8, 1, 22, 22), meta.icon);
-            icon.applyStyle({ fontFamily: "'Material Symbols Rounded'", fontSize: 12, textColor: active ? Color.rgbHex('#9333ea') : Color.rgb(51,51,51),
+            icon.applyStyle({ fontFamily: "'Material Symbols Rounded'", fontSize: 12, textColor: active ? Color.rgbHex('#D45472') : Color.rgb(51,51,51),
                 fill: null, borderWidth: 0, allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
             icon.eventsAreIgnored = true; icon.draggingEnabled = false; icon.droppingEnabled = false; icon.grabbingEnabled = false;
             row.addMorph(icon);
 
             var label = new lively.morphic.Text(lively.rect(34, 4, W - 74, 16), name);
-            label.applyStyle({ fontFamily: 'Helvetica', fontSize: 9, textColor: active ? Color.rgbHex('#9333ea') : Color.rgb(51,51,51),
+            label.applyStyle({ fontFamily: 'Helvetica', fontSize: 9, textColor: active ? Color.rgbHex('#D45472') : Color.rgb(51,51,51),
                 fontWeight: active ? 'bold' : 'normal', fill: null, borderWidth: 0, allowInput: false, selectable: false,
                 fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
             label.eventsAreIgnored = true; label.draggingEnabled = false; label.droppingEnabled = false; label.grabbingEnabled = false;
             row.addMorph(label);
 
             var countLabel = new lively.morphic.Text(lively.rect(W - 38, 4, 30, 16), String(count));
-            countLabel.applyStyle({ fontFamily: 'Helvetica', fontSize: 8, textColor: Color.rgb(153,153,153), fill: null, borderWidth: 0,
+            countLabel.applyStyle({ fontFamily: 'Helvetica', fontSize: 8, textColor: Color.rgb(70,70,70), fill: null, borderWidth: 0,
                 allowInput: false, selectable: false, align: 'right', fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
             countLabel.eventsAreIgnored = true; countLabel.draggingEnabled = false; countLabel.droppingEnabled = false; countLabel.grabbingEnabled = false;
             row.addMorph(countLabel);
@@ -787,63 +840,109 @@ lively.BuildSpec('lively.identity.Inventory', {
         block.applyStyle({ fill: null, borderWidth: 0 });
         block.draggingEnabled = false; block.droppingEnabled = false; block.grabbingEnabled = false;
 
-        var header = new lively.morphic.Text(lively.rect(0, 0, W, 14), 'INSTANCES');
-        header.applyStyle({ fontFamily: 'Helvetica', fontSize: 7.5, textColor: Color.rgb(153,153,153), fill: null, borderWidth: 0,
+        var header = new lively.morphic.Text(lively.rect(0, 0, 140, 14), 'INSTANCES');
+        // Same teal-contrast darkening as _buildCategoriesBlock's header.
+        header.applyStyle({ fontFamily: 'Helvetica', fontSize: 7.5, textColor: Color.rgb(60,60,60), fill: null, borderWidth: 0,
             allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
         header.eventsAreIgnored = true; header.draggingEnabled = false; header.droppingEnabled = false; header.grabbingEnabled = false;
         block.addMorph(header);
 
         var activeCount = this._activeInstanceBaseUrls().length;
         var totalCount = Math.max(this.instances.length, 1);
+
+        // "Select all" / "None" quick actions, right-aligned on the header's
+        // own row -- dimmed (and non-interactive) when they'd be a no-op,
+        // same active/inactive language as every other sidebar control.
+        var allIsNoop = activeCount >= totalCount;
+        var noneIsNoop = activeCount === 0;
+        var selectAllLink = new lively.morphic.Text(lively.rect(150, 0, 30, 14), 'All');
+        selectAllLink.applyStyle({ fontFamily: 'Helvetica', fontSize: 8, fontWeight: 'bold',
+            textColor: allIsNoop ? Color.rgb(90,90,90) : Color.rgbHex('#D45472'),
+            fill: null, borderWidth: 0, allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
+        selectAllLink.draggingEnabled = false; selectAllLink.droppingEnabled = false; selectAllLink.grabbingEnabled = false;
+        if (!allIsNoop) selectAllLink.onMouseUp = function() { self.setAllInstancesChecked(true); return true; };
+        block.addMorph(selectAllLink);
+
+        var sep = new lively.morphic.Text(lively.rect(180, 0, 8, 14), '·');
+        sep.applyStyle({ fontFamily: 'Helvetica', fontSize: 8, textColor: Color.rgb(90,90,90), fill: null, borderWidth: 0,
+            allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
+        sep.eventsAreIgnored = true; sep.draggingEnabled = false; sep.droppingEnabled = false; sep.grabbingEnabled = false;
+        block.addMorph(sep);
+
+        var selectNoneLink = new lively.morphic.Text(lively.rect(188, 0, 32, 14), 'None');
+        selectNoneLink.applyStyle({ fontFamily: 'Helvetica', fontSize: 8, fontWeight: 'bold',
+            textColor: noneIsNoop ? Color.rgb(90,90,90) : Color.rgbHex('#D45472'),
+            fill: null, borderWidth: 0, allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
+        selectNoneLink.draggingEnabled = false; selectNoneLink.droppingEnabled = false; selectNoneLink.grabbingEnabled = false;
+        if (!noneIsNoop) selectNoneLink.onMouseUp = function() { self.setAllInstancesChecked(false); return true; };
+        block.addMorph(selectNoneLink);
         var summary = new lively.morphic.Text(lively.rect(0, 16, W, 14), 'Browsing ' + activeCount + ' of ' + totalCount + ' instances');
-        summary.applyStyle({ fontFamily: 'Helvetica', fontSize: 8.5, textColor: Color.rgb(119,119,119), fill: null, borderWidth: 0,
+        summary.applyStyle({ fontFamily: 'Helvetica', fontSize: 8.5, textColor: Color.rgb(70,70,70), fill: null, borderWidth: 0,
             allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
         summary.eventsAreIgnored = true; summary.draggingEnabled = false; summary.droppingEnabled = false; summary.grabbingEnabled = false;
         block.addMorph(summary);
 
         var rows = this.instances.length ? this.instances : [{ baseUrl: window.location.origin, displayName: 'This instance' }];
-        var y = 34;
+        var y = 36;
         rows.forEach(function(inst) {
             var checked = !!self.checkedInstances[inst.baseUrl];
-            var row = new lively.morphic.Box(lively.rect(0, y, W, 22));
-            row.applyStyle({ fill: null, borderWidth: 0 });
+            var accent = self._instanceColor(inst.baseUrl);
+
+            // Whole row is now the click target (replacing the old native
+            // <input type=checkbox>, whose real click target was a tiny
+            // ~13x13px box easy to miss) -- a Material Symbols check glyph
+            // conveys the toggle state instead, and the row's own background
+            // tints purple when checked, matching the category sidebar's
+            // active-tint language (Color.rgba(212,84,114,...)) so both
+            // filter controls in this rail read as one visual system rather
+            // than two different UI idioms.
+            var row = new lively.morphic.Box(lively.rect(0, y, W, 26));
+            row.applyStyle({ fill: checked ? Color.rgba(212,84,114,0.10) : null, borderWidth: 0, borderRadius: 6 });
             row.draggingEnabled = false; row.droppingEnabled = false; row.grabbingEnabled = false;
+            row.onMouseUp = function() { self.toggleInstanceChecked(inst.baseUrl); return true; };
+            // Hover feedback writes the DOM node directly rather than via
+            // applyStyle -- applyStyle({fill:...}) on an already-rendered
+            // morph is confirmed (CLAUDE.md) to silently no-op on background/
+            // color, so the model-layer call wouldn't actually repaint here.
+            row.onMouseOver = function() {
+                var node = row.renderContext().shapeNode;
+                if (node) node.style.background = checked ? 'rgba(212,84,114,0.16)' : 'rgba(0,0,0,0.05)';
+            };
+            row.onMouseOut = function() {
+                var node = row.renderContext().shapeNode;
+                if (node) node.style.background = checked ? 'rgba(212,84,114,0.10)' : 'transparent';
+            };
 
-            // CheckBox's own constructor takes an initial checked bool, not
-            // a rect (a plain Morph.subclass wrapping a native <input>) --
-            // position it before adding to the world, matching the "bake
-            // the final position in before addMorph, avoid a later
-            // setPosition call" precedent (CLAUDE.md). Its own onClick
-            // already self-toggles via setChecked; overriding it here to
-            // call toggleInstanceChecked instead is safe because that
-            // triggers a full rebuild of this whole block afterward
-            // (reloadEverything -> _renderSidebarExtras), which reconstructs
-            // this checkbox with the correct final checked state regardless.
-            var checkbox = new lively.morphic.CheckBox(checked);
-            checkbox.setPosition(pt(2, 5));
-            checkbox.onClick = function() { self.toggleInstanceChecked(inst.baseUrl); return true; };
-            row.addMorph(checkbox);
+            // Check-state glyph, boxed 22x22 rather than its own ~16x18.7px
+            // rendered size (fontSize is points not px -- CLAUDE.md) so
+            // clipMode:'hidden' doesn't chop it, same fix already applied to
+            // every other icon in this sidebar (§13.3).
+            var checkIcon = new lively.morphic.Text(lively.rect(2, 2, 22, 22), checked ? 'check_box' : 'check_box_outline_blank');
+            checkIcon.applyStyle({ fontFamily: "'Material Symbols Rounded'", fontSize: 12,
+                textColor: checked ? Color.rgbHex('#D45472') : Color.rgb(85,85,85),
+                fill: null, borderWidth: 0, allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
+            checkIcon.eventsAreIgnored = true; checkIcon.draggingEnabled = false; checkIcon.droppingEnabled = false; checkIcon.grabbingEnabled = false;
+            row.addMorph(checkIcon);
 
-            // "storage" glyph (a server/rack icon) tinted per-instance,
-            // replacing the old plain colored dot -- same _instanceColor
-            // hash so a given instance keeps its color. Box sized 22x22 for
-            // the same reason as the category-sidebar icon above (a 16x16
-            // box clips a fontSize:12 Material Symbols glyph).
-            var icon = new lively.morphic.Text(lively.rect(19, 0, 22, 22), 'storage');
-            icon.applyStyle({ fontFamily: "'Material Symbols Rounded'", fontSize: 12, textColor: Color.rgbHex(self._instanceColor(inst.baseUrl)),
+            // "storage" glyph (a server/rack icon) tinted per-instance --
+            // same _instanceColor hash as before, now a distinct identity
+            // accent alongside (not instead of) the checked-state glyph.
+            var icon = new lively.morphic.Text(lively.rect(26, 2, 22, 22), 'storage');
+            icon.applyStyle({ fontFamily: "'Material Symbols Rounded'", fontSize: 12, textColor: Color.rgbHex(accent),
                 fill: null, borderWidth: 0, allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
             icon.eventsAreIgnored = true; icon.draggingEnabled = false; icon.droppingEnabled = false; icon.grabbingEnabled = false;
             row.addMorph(icon);
 
-            var label = new lively.morphic.Text(lively.rect(45, 3, W - 51, 16),
+            var label = new lively.morphic.Text(lively.rect(50, 5, W - 56, 16),
                 inst.displayName || inst.baseUrl.replace(/^https?:\/\//, ''));
-            label.applyStyle({ fontFamily: 'Helvetica', fontSize: 8.5, textColor: Color.rgb(51,51,51), fill: null, borderWidth: 0,
-                allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
+            label.applyStyle({ fontFamily: 'Helvetica', fontSize: 8.5, textColor: checked ? Color.rgb(34,34,34) : Color.rgb(70,70,70),
+                fontWeight: checked ? 'bold' : 'normal', fill: null, borderWidth: 0, allowInput: false, selectable: false,
+                fixedWidth: true, fixedHeight: true, clipMode: 'hidden' });
             label.eventsAreIgnored = true; label.draggingEnabled = false; label.droppingEnabled = false; label.grabbingEnabled = false;
             row.addMorph(label);
 
             block.addMorph(row);
-            y += 24;
+            y += 28;
         });
         block.setExtent(lively.pt(W, y));
         return block;
@@ -853,7 +952,7 @@ lively.BuildSpec('lively.identity.Inventory', {
     // assignment exists) -- a small fixed palette keyed by a cheap hash, so
     // the same instance always gets the same dot color across reloads.
     _instanceColor: function _instanceColor(baseUrl) {
-        var palette = ['#9333ea', '#0d9488', '#ea580c', '#2563eb', '#db2777', '#16a34a'];
+        var palette = ['#D45472', '#0d9488', '#ea580c', '#2563eb', '#db2777', '#16a34a'];
         var hash = 0;
         for (var i = 0; i < baseUrl.length; i++) hash = (hash * 31 + baseUrl.charCodeAt(i)) >>> 0;
         return palette[hash % palette.length];
@@ -1084,27 +1183,31 @@ lively.BuildSpec('lively.identity.Inventory', {
     _paintSortPill: function _paintSortPill(btn, active) {
         if (!btn) return;
         var node = btn.renderContext().shapeNode;
-        node.style.background = active ? '#9333ea' : '#fff';
+        node.style.background = active ? '#D45472' : '#fff';
         node.style.border = active ? 'none' : '1px solid rgb(214,214,214)';
-        if (btn.label) btn.label.renderContext().shapeNode.style.color = active ? '#fff' : '#333';
+        this._paintLabelColor(btn.label, active ? '#fff' : '#333');
     },
 
     _paintSortMenuButton: function _paintSortMenuButton(btn, active) {
         if (!btn) return;
         var node = btn.renderContext().shapeNode;
-        node.style.background = active ? '#9333ea' : '#fff';
+        node.style.background = active ? '#D45472' : '#fff';
         node.style.border = active ? 'none' : '1px solid rgb(214,214,214)';
-        if (btn.label) btn.label.renderContext().shapeNode.style.color = active ? '#fff' : '#333';
+        this._paintLabelColor(btn.label, active ? '#fff' : '#333');
     },
 
-    // Popup for the 3 extra sort keys (A-Z / Most Commented / Recently
-    // Published) -- exact same lively.morphic.Menu.openAt mechanism as
-    // openInspectorMenu below, so it doesn't need its own show/hide state.
+    // Popup for the full sort-key list, opened from the filter_list icon
+    // button -- "Recent" is repeated here (also its own quick-access pill)
+    // so this menu reads as a complete "Sort by" list on its own, not just
+    // the 3 keys that lack a dedicated pill.
+    // Exact same lively.morphic.Menu.openAt mechanism as openInspectorMenu
+    // below, so it doesn't need its own show/hide state.
     openSortMenu: function openSortMenu() {
         var btn = this.get('TopBar').get('sortMenuButton');
         var pos = btn.worldPoint(lively.pt(0, btn.getExtent().y));
         var self = this;
         var items = [
+            ['Recent' + (self.sort === 'recent' ? '  ✓' : ''), function() { self.setSort('recent'); }],
             ['Alphabetical (A–Z)' + (self.sort === 'az' ? '  ✓' : ''), function() { self.setSort('az'); }],
             ['Most Commented' + (self.sort === 'mostCommented' ? '  ✓' : ''), function() { self.setSort('mostCommented'); }],
             ['Recently Published' + (self.sort === 'recentlyPublished' ? '  ✓' : ''), function() { self.setSort('recentlyPublished'); }]
@@ -1349,7 +1452,7 @@ lively.BuildSpec('lively.identity.Inventory', {
 
         tile.showAsSelected = function() {
             this.isSelected = true;
-            this.applyStyle({ borderColor: Color.rgbHex('#9333ea'), borderWidth: 2 });
+            this.applyStyle({ borderColor: Color.rgbHex('#D45472'), borderWidth: 2 });
         };
         tile.showAsNotSelected = function() {
             this.isSelected = false;
@@ -1637,7 +1740,9 @@ lively.BuildSpec('lively.identity.Inventory', {
             var btnX = PAD + Math.ceil(lineW) + 6;
             var btnY = metaY + lineIndex * 18;
             var btn = new lively.morphic.Text(lively.rect(btnX, btnY, btnSize, btnSize), 'content_copy');
-            btn.applyStyle({ fill: Color.rgb(240,240,240), borderColor: Color.rgb(200,200,200),
+            // Border softened from 200,200,200 -- right-panel border-
+            // softening pass, matches the other borders below.
+            btn.applyStyle({ fill: Color.rgb(240,240,240), borderColor: Color.rgb(234,234,234),
                 borderRadius: 3, borderWidth: 1, fontFamily: "'Material Symbols Rounded'", fontSize: 8.5,
                 textColor: Color.rgb(80,80,80), align: 'center',
                 allowInput: false, selectable: false, clipMode: 'hidden', whiteSpaceHandling: 'pre', handStyle: 'pointer' });
@@ -1677,7 +1782,7 @@ lively.BuildSpec('lively.identity.Inventory', {
                 'No version history';
 
             var badge = new lively.morphic.Box(lively.rect(0, 0, W, 30));
-            badge.applyStyle({ fill: Color.rgb(250,250,250), borderWidth: 1, borderColor: Color.rgb(226,226,226), borderRadius: 8 });
+            badge.applyStyle({ fill: Color.rgb(250,250,250), borderWidth: 1, borderColor: Color.rgb(234,234,234), borderRadius: 8 });
             noDrag(badge);
             // Icon boxes grown past their glyphs' own 16x16 model extent --
             // a fontSize:12/14 Material Symbols glyph renders taller than
@@ -1695,7 +1800,7 @@ lively.BuildSpec('lively.identity.Inventory', {
 
             if (this.versionsExpanded && versions) {
                 var listBox = new lively.morphic.Box(lively.rect(0, 0, W, versions.length * 22));
-                listBox.applyStyle({ fill: Color.white, borderWidth: 1, borderColor: Color.rgb(238,238,238), borderRadius: 8 });
+                listBox.applyStyle({ fill: Color.white, borderWidth: 1, borderColor: Color.rgb(240,240,240), borderRadius: 8 });
                 noDrag(listBox);
                 versions.slice().reverse().forEach(function(v, i) {
                     listBox.addMorph(textRow(lively.rect(8, i * 22 + 3, W - 16, 16),
@@ -1711,8 +1816,8 @@ lively.BuildSpec('lively.identity.Inventory', {
         var starCount = info ? info.count : (item.starCount || 0);
         var starred = !!(info && info.mine);
         var starBtn = new lively.morphic.Box(lively.rect(0, 0, 78, 28));
-        starBtn.applyStyle({ fill: starred ? Color.rgbHex('#9333ea') : Color.white,
-            borderWidth: 1, borderColor: starred ? Color.rgbHex('#9333ea') : Color.rgb(214,214,214), borderRadius: 6 });
+        starBtn.applyStyle({ fill: starred ? Color.rgbHex('#D45472') : Color.white,
+            borderWidth: 1, borderColor: starred ? Color.rgbHex('#D45472') : Color.rgb(234,234,234), borderRadius: 6 });
         noDrag(starBtn);
         // 22x24, not 16x16 -- a fontSize:13 glyph renders ~17x21px tall
         // (fontSize is points, not px), clipping in a same-size box under
@@ -1733,7 +1838,7 @@ lively.BuildSpec('lively.identity.Inventory', {
          ['View Source', function() { self.viewSourceOfSelectedItem(); }],
          ['Inspect', function() { self.openInspectorMenu(); }]].forEach(function(pair, i) {
             var b = new lively.morphic.Box(lively.rect(i * (btnW + 6), 0, btnW, 26));
-            b.applyStyle({ fill: Color.white, borderWidth: 1, borderColor: Color.rgb(214,214,214), borderRadius: 6 });
+            b.applyStyle({ fill: Color.white, borderWidth: 1, borderColor: Color.rgb(234,234,234), borderRadius: 6 });
             noDrag(b);
             b.addMorph(textRow(lively.rect(0,5,btnW,16), pair[0], { fontSize: 8, textColor: Color.rgb(51,51,51), align: 'center' }));
             b.onMouseUp = function() { pair[1](); return true; };
@@ -1782,7 +1887,7 @@ lively.BuildSpec('lively.identity.Inventory', {
         noDrag(inputRow);
         var input = new lively.morphic.Text(lively.rect(0, 4, W - 66, 24), '');
         input.applyStyle({ fixedWidth: true, fixedHeight: true, clipMode: 'hidden', allowInput: true, fontSize: 8.5,
-            borderWidth: 1, borderColor: Color.rgb(214,214,214), borderRadius: 6, fill: Color.white });
+            borderWidth: 1, borderColor: Color.rgb(234,234,234), borderRadius: 6, fill: Color.white });
         inputRow.addMorph(input);
         var postBtn = new lively.morphic.Box(lively.rect(W - 58, 4, 58, 24));
         postBtn.applyStyle({ fill: Color.rgbHex('#e8497e'), borderWidth: 0, borderRadius: 6 });

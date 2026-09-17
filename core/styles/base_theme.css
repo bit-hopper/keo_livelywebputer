@@ -172,6 +172,19 @@
 	background: rgba(255,193,7,0.9);
 }
 
+/* Inventory's sort-options button (lively.identity.Inventory) is icon-only
+   (a "filter_list" Material Symbols glyph replacing literal "More ▾" text)
+   -- same CSS-cascade sidestep as .Button.WindowControl above for the
+   JS-model-layer fontFamily-DOM-sync bug, scoped to its own class so the
+   plain-text Popular/Recent sort pills next to it are unaffected. No
+   !important needed here (confirmed live): this label's own leaf <span>
+   never gets an inline font-family/font-size baked in the way its
+   textColor does, so the class selector cleanly wins. */
+.Button.InventorySortMenuBtn .Text {
+	font-family: "Material Symbols Rounded";
+	font-size: 16px;
+}
+
 /* Lists */
 .MorphList .selected {
     outline: 3px orange solid;
