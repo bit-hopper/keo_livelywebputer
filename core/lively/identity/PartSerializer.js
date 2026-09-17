@@ -55,7 +55,10 @@ module('lively.identity.PartSerializer')
       //   json:        String  — serializePart(morph).json (required)
       //   partName:    String
       //   comment:     String  — optional
-      //   tags:        Array   — optional
+      //   tags:        Array   — optional, freeform
+      //   category:    String  — optional, one of the curated Inventory
+      //                          categories (inventory.md §7); null for
+      //                          items published before this field existed
       //   htmlLogo:    String  — optional, from serializePart(morph).htmlLogo
       //   prevEnvelope: Object — previous version envelope for chaining
       // }
@@ -76,6 +79,7 @@ module('lively.identity.PartSerializer')
               partName: params.partName,
               comment:  params.comment || '',
               tags:     params.tags || [],
+              category: params.category || null,
               htmlLogo: params.htmlLogo || null,
             };
             var envelope = {
@@ -205,6 +209,7 @@ module('lively.identity.PartSerializer')
                   partName: params.partName,
                   comment:  params.comment || '',
                   tags:     params.tags || [],
+                  category: params.category || null,
                   htmlLogo: params.htmlLogo || null,
                 };
                 var visibility = (params.recipients && params.recipients.length) ? 'shared' : 'private';
@@ -293,6 +298,28 @@ module('lively.identity.PartSerializer')
         });
       },
 
+    });
+
+    // ─── curated categories (inventory.md §7) ──────────────────────────────────
+    // Shared source of truth for the 5 curated Inventory categories — a
+    // namespace-object property (never a closure var), per this codebase's
+    // documented BuildSpec-methods-lose-their-closure gotcha, since both
+    // PublishToInventoryDialog.js's spec-level methods and Inventory.js's
+    // future item-tile morph need to resolve this by a global path at call
+    // time, not a lexical binding that gets discarded on reconstruction.
+    Object.extend(lively.identity.PartSerializer, {
+      CATEGORY_NAMES: ['Media', 'Games', 'Templates', 'Apps', 'Tools'],
+      CATEGORY_META: {
+        Media:     { icon: 'photo_camera',   tint: '#f4e9ff', accent: '#9333ea' },
+        Games:     { icon: 'sports_esports', tint: '#eafaf0', accent: '#16a34a' },
+        Templates: { icon: 'description',    tint: '#fdeaf1', accent: '#db2777' },
+        Apps:      { icon: 'widgets',        tint: '#e9f0ff', accent: '#2563eb' },
+        Tools:     { icon: 'build',          tint: '#fff7e6', accent: '#d97706' }
+      },
+      // Fallback icon/tint for an item with no category (published before
+      // this field existed, or a legacy classic-WebDAV part) — a neutral
+      // box glyph rather than reusing any one curated category's own icon.
+      UNCATEGORIZED_META: { icon: 'inventory_2', tint: '#f0f0f0', accent: '#757575' }
     });
 
     // ─── shared signing helper (mirrors PostCardSerializer._signEnvelopeIfPossible,

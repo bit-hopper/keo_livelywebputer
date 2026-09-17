@@ -1152,6 +1152,25 @@ function _canSeePostcardMeta(meta, viewerDid) {
 // listing route that doesn't, so it resolves once here rather than adding
 // handle to the shared projection for every caller). Calls thenDo(null, {
 // [did]: handle|null }).
+// Batch-enriches a listing-row array (objId-bearing, e.g. from
+// listPublicParts/listPartsForOwner/listPartsSharedWithDid) with each
+// item's starCount -- the Inventory item-tile design (inventory.md §13)
+// needs this per row for its star badge, but the listing queries
+// themselves deliberately stay metadata-only (no join to item_stars in the
+// base query) the same way they already omit htmlLogo, so this is a
+// second batch query layered on afterward, mirroring how
+// _resolveHandlesForDids enriches with `handle` below.
+// Calls thenDo(err, enrichedParts).
+function _withStarCounts(parts, thenDo) {
+  if (!parts.length) return thenDo(null, parts);
+  objectRepo.getStarCountsForObjIds(parts.map(function (p) { return p.objId; }), function (err, counts) {
+    if (err) return thenDo(err);
+    thenDo(null, parts.map(function (p) {
+      return Object.assign({}, p, { starCount: counts[p.objId] || 0 });
+    }));
+  });
+}
+
 function _resolveHandlesForDids(dids, thenDo) {
   var uniqueDids = dids.filter(function (d, i, a) { return d && a.indexOf(d) === i; });
   if (!uniqueDids.length) return thenDo(null, {});
@@ -2737,6 +2756,60 @@ module.exports = function (route, app) {
     });
   });
 
+  // ─── My Items / Shared with me (inventory.md §13, self-only) ───────────────
+  // Server-backed replacement for IdentityPartsSpace.js's local-IndexedDB-
+  // only "My Items" listing, so the Inventory browser's My Items/Shared
+  // tabs work across devices/sessions. Metadata-only, same row shape as
+  // /parts/public (objectRepo.listPartsForOwner/listPartsSharedWithDid).
+  //
+  // MUST be registered ahead of the parts-name-aliasing route just below
+  // (/@:handle/parts/:nameOrObjId) — both are 3-segment /@:handle/parts/*
+  // patterns of equal specificity, and Express matches whichever was
+  // registered first. Confirmed live: registering these two AFTER the
+  // aliasing route made it swallow both ("mine"/"shared-with-me" treated as
+  // a literal part name/objId to resolve, 404ing with "Part not found:
+  // mine") before either ever ran its own auth.requireAuth check.
+
+  app.get("/@:handle/parts/mine", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle) {
+      return res.status(403).json({ error: "Forbidden: not your items" });
+    }
+    var limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
+    var cursor = req.query.cursor || null;
+    objectRepo.listPartsForOwner(req.identity.did, { limit: limit, cursor: cursor }, function (err, result) {
+      if (err) return res.status(500).json({ error: String(err) });
+      _withStarCounts(result.parts, function (starErr, withStars) {
+        if (starErr) return res.status(500).json({ error: String(starErr) });
+        result.parts = withStars;
+        res.json(result);
+      });
+    });
+  });
+
+  app.get("/@:handle/parts/shared-with-me", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle) {
+      return res.status(403).json({ error: "Forbidden: not your items" });
+    }
+    var limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
+    var cursor = req.query.cursor || null;
+    objectRepo.listPartsSharedWithDid(req.identity.did, { limit: limit, cursor: cursor }, function (err, result) {
+      if (err) return res.status(500).json({ error: String(err) });
+      _resolveHandlesForDids(result.parts.map(function (p) { return p.did; }), function (resolveErr, didToHandle) {
+        if (resolveErr) return res.status(500).json({ error: String(resolveErr) });
+        var withHandles = result.parts.map(function (p) {
+          return Object.assign({}, p, { handle: didToHandle[p.did] || null });
+        });
+        _withStarCounts(withHandles, function (starErr, withStars) {
+          if (starErr) return res.status(500).json({ error: String(starErr) });
+          result.parts = withStars;
+          res.json(result);
+        });
+      });
+    });
+  });
+
   // ─── parts name aliasing (Roadmap.md §3) ───────────────────────────────────
   // /@:handle/parts/MyButton (human-readable) and /@:handle/parts/<objId>
   // (canonical) both resolve to the same part envelope. The part_aliases
@@ -2870,6 +2943,172 @@ module.exports = function (route, app) {
           });
           res.json({ counts: counts, byEmoji: byEmoji, mine: mine });
         });
+      });
+    });
+  });
+
+  // ─── inventory item stars (inventory.md §13) ───────────────────────────────
+  // Same sub-route-under-:objId placement/ordering rationale as /reactions
+  // above -- must stay ahead of this file's app.all("/@:handle/*", ...)
+  // catch-all further down. Simpler than reactions: a star has no value to
+  // choose, so PUT is a plain idempotent upsert with no body needed.
+
+  app.put("/@:handle/:objId/stars", auth.requireAuth, function (req, res) {
+    var objId = req.params.objId;
+    objectRepo.get(objId, function (err, envelope) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!envelope) return res.status(404).json({ error: "Object not found: " + objId });
+      if (!_canReadEnvelope(envelope, req.identity)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+      objectRepo.upsertStar(objId, req.identity.did, function (err) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({ ok: true });
+      });
+    });
+  });
+
+  app.delete("/@:handle/:objId/stars/self", auth.requireAuth, function (req, res) {
+    var objId = req.params.objId;
+    objectRepo.deleteStar(objId, req.identity.did, function (err) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json({ ok: true });
+    });
+  });
+
+  app.get("/@:handle/:objId/stars", auth.optionalAuth, function (req, res) {
+    var objId = req.params.objId;
+    objectRepo.get(objId, function (err, envelope) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!envelope) return res.status(404).json({ error: "Object not found: " + objId });
+      if (!_canReadEnvelope(envelope, req.identity)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+      objectRepo.getStarInfo(objId, req.identity && req.identity.did, function (err, info) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json(info);
+      });
+    });
+  });
+
+  // ─── inventory item comments (inventory.md §13) ────────────────────────────
+  // A dedicated lightweight table (item_comments), not the
+  // objects-table-as-signed-envelope pattern ConstellationLounge.js's
+  // postcard comments use -- no moderation/nesting/votes for v1. Self-only
+  // delete is the one moderation affordance shipped now, cheap parity with
+  // the reactions route's own self-delete above; broader moderation is a
+  // flagged follow-up, not built here.
+
+  var ITEM_COMMENT_MAX_LENGTH = 2000;
+
+  app.post("/@:handle/:objId/comments", auth.requireAuth, function (req, res) {
+    var objId = req.params.objId;
+    var body = req.body && req.body.body;
+    if (typeof body !== "string" || !body.trim()) {
+      return res.status(400).json({ error: "Comment body is required" });
+    }
+    body = body.trim();
+    if (body.length > ITEM_COMMENT_MAX_LENGTH) {
+      return res.status(400).json({ error: "Comment is too long (max " + ITEM_COMMENT_MAX_LENGTH + " characters)" });
+    }
+    objectRepo.get(objId, function (err, envelope) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!envelope) return res.status(404).json({ error: "Object not found: " + objId });
+      if (!_canReadEnvelope(envelope, req.identity)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+      objectRepo.insertComment(objId, req.identity.did, body, function (err, comment) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({
+          id: comment.id, objId: comment.objId, did: comment.did,
+          handle: req.identity.handle, body: comment.body, createdAt: comment.createdAt
+        });
+      });
+    });
+  });
+
+  app.get("/@:handle/:objId/comments", auth.optionalAuth, function (req, res) {
+    var objId = req.params.objId;
+    var limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
+    var cursor = req.query.cursor ? parseInt(req.query.cursor, 10) : null;
+    objectRepo.get(objId, function (err, envelope) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!envelope) return res.status(404).json({ error: "Object not found: " + objId });
+      if (!_canReadEnvelope(envelope, req.identity)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+      objectRepo.listCommentsForObjId(objId, { limit: limit, cursor: cursor }, function (err, result) {
+        if (err) return res.status(500).json({ error: String(err) });
+        var dids = result.comments.map(function (c) { return c.did; });
+        _resolveHandlesForDids(dids, function (resolveErr, didToHandle) {
+          if (resolveErr) return res.status(500).json({ error: String(resolveErr) });
+          res.json({
+            comments: result.comments.map(function (c) {
+              return Object.assign({}, c, { handle: didToHandle[c.did] || null });
+            }),
+            cursor: result.cursor
+          });
+        });
+      });
+    });
+  });
+
+  app.delete("/@:handle/:objId/comments/:commentId", auth.requireAuth, function (req, res) {
+    var commentId = parseInt(req.params.commentId, 10);
+    objectRepo.getComment(commentId, function (err, comment) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!comment) return res.status(404).json({ error: "Comment not found" });
+      if (comment.did !== req.identity.did) {
+        return res.status(403).json({ error: "Forbidden: not your comment" });
+      }
+      objectRepo.deleteComment(commentId, function (err) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({ ok: true });
+      });
+    });
+  });
+
+  // ─── federation directory (inventory.md §3.2) ──────────────────────────────
+  // Deliberately no trust/verification model for a listed instance (§3.2's
+  // own accepted v1 gap) -- POST accepts any http(s)-shaped baseUrl from any
+  // signed-in user. Nothing from a listed instance is ever eval'd or
+  // deserialized without going through the same trust-gate loadPart path a
+  // same-origin item already goes through (inventory.md §11); this
+  // directory only ever feeds anonymous public JSON into item tiles.
+
+  app.get("/instances", auth.optionalAuth, function (req, res) {
+    res.header("Access-Control-Allow-Origin", "*");
+    objectRepo.listInstances(function (err, instances) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json({ instances: instances });
+    });
+  });
+
+  app.post("/instances", auth.requireAuth, function (req, res) {
+    var baseUrl = typeof req.body.baseUrl === "string" ? req.body.baseUrl.trim().replace(/\/$/, "") : null;
+    var displayName = typeof req.body.displayName === "string" ? req.body.displayName.trim().slice(0, 200) : null;
+    if (!baseUrl || !/^https?:\/\/[^\s\/]+/.test(baseUrl) || baseUrl.length > 500) {
+      return res.status(400).json({ error: "Invalid baseUrl" });
+    }
+    if (!displayName) displayName = baseUrl.replace(/^https?:\/\//, "");
+    objectRepo.addInstance(baseUrl, displayName, req.identity.did, function (err, row) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json(row);
+    });
+  });
+
+  app.delete("/instances/:baseUrl", auth.requireAuth, function (req, res) {
+    var baseUrl = decodeURIComponent(req.params.baseUrl);
+    objectRepo.listInstances(function (err, instances) {
+      if (err) return res.status(500).json({ error: String(err) });
+      var row = instances.filter(function (i) { return i.baseUrl === baseUrl; })[0];
+      if (!row) return res.status(404).json({ error: "Instance not found" });
+      if (row.addedBy !== req.identity.did) {
+        return res.status(403).json({ error: "Forbidden: only the user who added this instance may remove it" });
+      }
+      objectRepo.removeInstance(baseUrl, function (err) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({ ok: true });
       });
     });
   });
@@ -4967,12 +5206,14 @@ module.exports = function (route, app) {
     // (core/lively/identity/Inventory.js) list public parts from a
     // different identity-server instance via its instance chooser.
     res.header("Access-Control-Allow-Origin", "*");
-    var limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
+    var limit = Math.min(parseInt(req.query.limit, 10) || 20, 200);
     var cursor = req.query.cursor || null;
     var q = typeof req.query.q === "string" ? req.query.q.trim().slice(0, 200) : null;
     var tag = typeof req.query.tag === "string" ? req.query.tag.trim().slice(0, 200) : null;
+    var category = typeof req.query.category === "string" ? req.query.category.trim().slice(0, 100) : null;
+    var sort = typeof req.query.sort === "string" ? req.query.sort.trim() : null;
 
-    objectRepo.listPublicParts({ limit: limit, cursor: cursor, q: q || null, tag: tag || null }, function (err, result) {
+    objectRepo.listPublicParts({ limit: limit, cursor: cursor, q: q || null, tag: tag || null, category: category || null, sort: sort || null }, function (err, result) {
       if (err) return res.status(500).json({ error: String(err) });
       // visibility:'public' is already filtered at the SQL level — this is
       // defense-in-depth matching /postcards/nearby's own pattern.
@@ -4980,10 +5221,14 @@ module.exports = function (route, app) {
       var dids = visible.map(function (p) { return p.did; });
       _resolveHandlesForDids(dids, function (resolveErr, didToHandle) {
         if (resolveErr) return res.status(500).json({ error: String(resolveErr) });
-        result.parts = visible.map(function (p) {
+        var withHandles = visible.map(function (p) {
           return Object.assign({}, p, { handle: didToHandle[p.did] || null });
         });
-        res.json(result);
+        _withStarCounts(withHandles, function (starErr, withStars) {
+          if (starErr) return res.status(500).json({ error: String(starErr) });
+          result.parts = withStars;
+          res.json(result);
+        });
       });
     });
   });

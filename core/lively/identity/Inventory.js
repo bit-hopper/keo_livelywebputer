@@ -60,10 +60,26 @@ lively.BuildSpec('lively.identity.Inventory', {
         minExtent: lively.pt(460.0,300.0),
         name: "InventoryBrowser",
         selectedItem: null,
-        instanceBaseUrl: "",
         categoryName: null,
         cursor: null,
         searchQuery: "",
+        // scope: which data path _loadItemsPage hits -- 'public' (fan-out
+        // across checkedInstances' /parts/public), 'mine'/'shared' (self-
+        // only, always same-origin/credentialed, see inventory.md §13).
+        scope: "public",
+        // category: curated Inventory category filter (inventory.md §7),
+        // separate from categoryName's freeform "#tag" sidebar selection --
+        // both can be active at once, composed as separate query params.
+        category: null,
+        sort: "recent",
+        // instances: the real federation directory (GET /instances,
+        // inventory.md §3.2), loaded once via loadInstances(). checkedInstances
+        // is the fan-out selection -- a baseUrl -> bool map, replacing the
+        // old single-string instanceBaseUrl model so more than one instance
+        // can be active at once. Defaults to "local origin only" (today's
+        // pre-federation behavior) until loadInstances() populates it.
+        instances: [],
+        checkedInstances: {},
         sourceModule: "lively.morphic.Core",
 
         // ─── left sidebar ───────────────────────────────────────────────
@@ -292,7 +308,7 @@ lively.BuildSpec('lively.identity.Inventory', {
                             return;
                         }
                         var item = this.itemsToBeAdded.shift();
-                        var morph = item.asPartsBinItem();
+                        var morph = this.get('InventoryBrowser')._buildItemTile(item);
                         this.addMorph(morph);
                         this.adjustForNewBounds();
                     },
@@ -678,7 +694,12 @@ lively.BuildSpec('lively.identity.Inventory', {
         this.get('InstanceChooser').setList(this.getKnownInstanceLabels());
         this.get('InstanceChooser').selectAt(0);
         this.get('searchText').setTextString('');
-        this.reloadEverything();
+        var self = this;
+        // checkedInstances must be populated before the first real load, or
+        // _activeInstanceBaseUrls() would fall back to "local origin only"
+        // for one extra round trip -- harmless, but loadInstances' own
+        // callback sequencing avoids that flash-of-wrong-scope entirely.
+        this.loadInstances(function() { self.reloadEverything(); });
     },
 
     onWindowGetsFocus: function onWindowGetsFocus() {
@@ -692,38 +713,141 @@ lively.BuildSpec('lively.identity.Inventory', {
         this.loadCategories();
     },
 
-    // ─── instances ──────────────────────────────────────────────────────
+    // ─── scope / category / sort (inventory.md §13) ────────────────────────
+    // Mechanical setters -- each resets pagination and reloads. Real UI for
+    // these (scope segmented control, category sidebar rows, sort pills)
+    // is Phase D's job; these are exercised directly for now (devtools /
+    // future UI wiring), same "data layer before layout" split the rest of
+    // this pass follows.
 
+    setScope: function setScope(scope) {
+        this.scope = scope;
+        this.reloadEverything();
+    },
+
+    setCategory: function setCategory(category) {
+        this.category = category || null;
+        this.cursor = null;
+        this._loadItemsPage(false);
+    },
+
+    setSort: function setSort(sort) {
+        this.sort = sort || 'recent';
+        this.cursor = null;
+        this._loadItemsPage(false);
+    },
+
+    // ─── instances / federation directory (inventory.md §3.2) ─────────────
+
+    // Legacy config-driven convenience list backing the existing single-
+    // select InstanceChooser dropdown -- kept as a quick manual switch
+    // (setInstanceBaseUrl below) independent of the real fan-out directory,
+    // since Phase D's own "Instances" checkbox panel is what actually
+    // replaces this widget; wiring it into checkedInstances here is enough
+    // to keep it functional in the meantime.
     getKnownInstanceLabels: function getKnownInstanceLabels() {
         var extra = (typeof lively !== 'undefined' && lively.Config &&
             lively.Config.get('instanceURLs', true)) || [];
         return ['This instance'].concat(extra);
     },
 
+    // Single-instance quick switch (existing InstanceChooser behavior,
+    // preserved) -- now expressed in terms of checkedInstances (a set) so
+    // both this dropdown and real multi-select fan-out share one
+    // mechanism, rather than two parallel instance-tracking fields.
     setInstanceBaseUrl: function setInstanceBaseUrl(label) {
         var isLocal = !label || label === 'This instance';
-        this.instanceBaseUrl = isLocal ? (window.location.origin) : label.replace(/\/$/, '');
+        var baseUrl = isLocal ? window.location.origin : label.replace(/\/$/, '');
+        var checked = {};
+        checked[baseUrl] = true;
+        this.checkedInstances = checked;
         this.reloadEverything();
     },
 
-    isCrossOrigin: function isCrossOrigin() {
-        return !!this.instanceBaseUrl && this.instanceBaseUrl !== window.location.origin;
+    // GET /instances (the real directory), populating checkedInstances with
+    // every known instance checked by default (matching §13's mockup
+    // default: "browsing N of M instances", all pinned). One-time seeds the
+    // directory from the legacy instanceURLs config if the directory comes
+    // back empty and config has entries -- config is a migration seed, not
+    // a permanent parallel source (inventory.md §13's own scoping decision:
+    // otherwise a config-seeded instance could never be removed via the
+    // real directory's own UI, since it would just reappear next load).
+    // Calls cb() once ready (instances/checkedInstances populated), always
+    // -- even on fetch failure, so callers aren't left waiting forever.
+    loadInstances: function loadInstances(cb) {
+        var self = this;
+        cb = cb || function() {};
+        this._fetchJson(window.location.origin + '/instances', function(err, body) {
+            if (err || !body) { self._applyLocalOnlyInstances(); cb(); return; }
+            var instances = body.instances || [];
+            if (!instances.length) {
+                var configured = (typeof lively !== 'undefined' && lively.Config &&
+                    lively.Config.get('instanceURLs', true)) || [];
+                if (configured.length) {
+                    self._seedInstancesFromConfig(configured, function() {
+                        self._fetchJson(window.location.origin + '/instances', function(err2, body2) {
+                            self._applyInstancesResult(err2 ? null : body2);
+                            cb();
+                        });
+                    });
+                    return;
+                }
+            }
+            self._applyInstancesResult(body);
+            cb();
+        });
+    },
+
+    _applyLocalOnlyInstances: function _applyLocalOnlyInstances() {
+        this.instances = [];
+        var checked = {};
+        checked[window.location.origin] = true;
+        this.checkedInstances = checked;
+    },
+
+    _applyInstancesResult: function _applyInstancesResult(body) {
+        var instances = (body && body.instances) || [];
+        var checked = {};
+        instances.forEach(function(inst) { checked[inst.baseUrl] = true; });
+        checked[window.location.origin] = true; // local instance always available
+        this.instances = instances;
+        this.checkedInstances = checked;
+    },
+
+    // Best-effort, silently ignored on failure (e.g. no signed-in session --
+    // POST /instances requires auth) since this is only a one-time
+    // convenience migration, not something the browsing UI depends on.
+    _seedInstancesFromConfig: function _seedInstancesFromConfig(baseUrls, cb) {
+        var remaining = baseUrls.length;
+        if (!remaining) { cb(); return; }
+        baseUrls.forEach(function(baseUrl) {
+            this._postJson(window.location.origin + '/instances', {
+                baseUrl: baseUrl, displayName: baseUrl.replace(/^https?:\/\//, '')
+            }, function() { if (--remaining === 0) cb(); });
+        }, this);
+    },
+
+    // The checked subset of known instances, always including local origin
+    // as a safe default before loadInstances() has ever resolved.
+    _activeInstanceBaseUrls: function _activeInstanceBaseUrls() {
+        var self = this;
+        var checked = Object.keys(this.checkedInstances || {}).filter(function(u) { return self.checkedInstances[u]; });
+        return checked.length ? checked : [window.location.origin];
     },
 
     // ─── categories (tags aggregated across every user's public items) ────
+    // Freeform "#tag" sidebar -- always against the local instance; fan-out
+    // tag aggregation across multiple instances is out of scope for this
+    // pass (curated categories, not tags, are Phase D's primary sidebar
+    // filter going forward).
 
     loadCategories: function loadCategories() {
         var self = this;
         var list = this.get('categoryList');
-        var base = this.instanceBaseUrl || window.location.origin;
         list.updateList([{ isListItem: true, string: 'Recent', value: 'recent' }]);
         list.setSelection('recent');
-        this._fetchJson(base + '/parts/public/tags', function(err, body) {
+        this._fetchJson(window.location.origin + '/parts/public/tags', function(err, body) {
             if (err || !body || !body.tags) return;
-            // Stale-instance guard: if the user switched InstanceChooser
-            // again while this was in flight, don't clobber the newer
-            // selection's categories with a late response from the old one.
-            if (self.instanceBaseUrl !== base && base !== (window.location.origin)) return;
             var items = [{ isListItem: true, string: 'Recent', value: 'recent' }].concat(
                 body.tags.map(function(t) {
                     return { isListItem: true, string: '#' + t.tag + ' (' + t.count + ')', value: '#' + t.tag };
@@ -760,25 +884,141 @@ lively.BuildSpec('lively.identity.Inventory', {
     },
 
     _loadItemsPage: function _loadItemsPage(append) {
+        if (this.scope === 'mine') return this._loadOwnedItemsPage(append, '/parts/mine');
+        if (this.scope === 'shared') return this._loadOwnedItemsPage(append, '/parts/shared-with-me');
+        this._loadPublicItemsPage(append);
+    },
+
+    // scope === 'public': fan out across every checked instance
+    // (inventory.md §3.2). True cursor pagination only makes sense against
+    // a single source -- juggling N independent opaque cursors across a
+    // merged multi-instance feed is real added complexity this pass
+    // deliberately skips (nothing in inventory.md §3.2 requires it either).
+    // Checking more than one instance switches to one larger capped fetch
+    // per instance instead, merged and re-sorted client-side, with "load
+    // more" disabled -- the same "capped, no pagination" trade-off
+    // ObjectRepository.listPublicParts already makes server-side for its
+    // non-recent sorts (see IdentityServer.js/ObjectRepository.js).
+    _loadPublicItemsPage: function _loadPublicItemsPage(append) {
         var self = this;
-        var base = this.instanceBaseUrl || window.location.origin;
+        var instances = this._activeInstanceBaseUrls();
+        var fanningOut = instances.length > 1;
+        var limit = fanningOut ? 48 : 24;
+
+        var paramsFor = function(baseUrl) {
+            var params = ['limit=' + limit];
+            if (!fanningOut && self.cursor && append) params.push('cursor=' + encodeURIComponent(self.cursor));
+            if (self.searchQuery) params.push('q=' + encodeURIComponent(self.searchQuery));
+            else if (self.categoryName && self.categoryName.charAt(0) === '#') {
+                params.push('tag=' + encodeURIComponent(self.categoryName.slice(1)));
+            }
+            if (self.category) params.push('category=' + encodeURIComponent(self.category));
+            if (self.sort && self.sort !== 'recent') params.push('sort=' + encodeURIComponent(self.sort));
+            return baseUrl + '/parts/public?' + params.join('&');
+        };
+
+        this.setStatus('Loading…');
+        var remaining = instances.length;
+        var allItems = [];
+        var lastErr = null;
+        var singleCursor = null;
+        instances.forEach(function(baseUrl) {
+            self._fetchJson(paramsFor(baseUrl), function(err, body) {
+                if (err || !body || !body.parts) {
+                    lastErr = lastErr || err || new Error('bad response from ' + baseUrl);
+                } else {
+                    body.parts.forEach(function(row) { allItems.push(self._buildItemFromListingRow(row, baseUrl)); });
+                    if (!fanningOut) singleCursor = body.cursor;
+                }
+                if (--remaining === 0) finish();
+            });
+        });
+
+        function finish() {
+            if (!allItems.length && lastErr) { self.setStatus('Load failed', true); return; }
+            if (!append) self.get('ItemsGrid').removeAllItems();
+            if (fanningOut) allItems = self._sortMergedItems(allItems);
+            self.get('ItemsGrid').startAddingItems(allItems);
+            self.cursor = fanningOut ? null : singleCursor;
+            var canLoadMore = !fanningOut && !!self.cursor;
+            self.get('loadMoreButton').setVisible(canLoadMore);
+            self.setStatus((append ? 'Loaded ' : '') + allItems.length + ' item' + (allItems.length === 1 ? '' : 's') +
+                (canLoadMore ? ' (more available)' : ''));
+        }
+    },
+
+    // scope === 'mine' | 'shared': always same-origin, always credentialed
+    // (self-only routes, auth.requireAuth) -- no fan-out, no instance
+    // concept at all. path is '/parts/mine' or '/parts/shared-with-me'.
+    _loadOwnedItemsPage: function _loadOwnedItemsPage(append, path) {
+        var self = this;
+        var user = (typeof lively !== 'undefined' && lively.identity && lively.identity.did &&
+            lively.identity.did.currentUser && lively.identity.did.currentUser());
+        if (!user) {
+            this.get('ItemsGrid').removeAllItems();
+            this.setStatus('Sign in to see this.', true);
+            this.get('loadMoreButton').setVisible(false);
+            return;
+        }
         var params = ['limit=24'];
         if (this.cursor && append) params.push('cursor=' + encodeURIComponent(this.cursor));
-        if (this.searchQuery) params.push('q=' + encodeURIComponent(this.searchQuery));
-        else if (this.categoryName && this.categoryName.charAt(0) === '#') {
-            params.push('tag=' + encodeURIComponent(this.categoryName.slice(1)));
-        }
         this.setStatus('Loading…');
-        this._fetchJson(base + '/parts/public?' + params.join('&'), function(err, body) {
+        var url = window.location.origin + '/@' + encodeURIComponent(user.handle) + path + '?' + params.join('&');
+        this._fetchJson(url, function(err, body) {
             if (err || !body || !body.parts) { self.setStatus('Load failed', true); return; }
             if (!append) self.get('ItemsGrid').removeAllItems();
-            var items = body.parts.map(function(row) { return self._buildItemFromListingRow(row, base); });
+            var items = body.parts.map(function(row) { return self._buildItemFromListingRow(row, window.location.origin); });
             self.get('ItemsGrid').startAddingItems(items);
             self.cursor = body.cursor;
             self.get('loadMoreButton').setVisible(!!self.cursor);
             self.setStatus((append ? 'Loaded ' : '') + body.parts.length + ' item' + (body.parts.length === 1 ? '' : 's') +
                 (self.cursor ? ' (more available)' : ''));
         });
+    },
+
+    // Best-effort re-sort of a fan-out-merged item list -- each source
+    // instance's own SQL ordering doesn't compose once rows from several
+    // instances are interleaved. Mirrors the same sort keys
+    // ObjectRepository.listPublicParts supports server-side for a single
+    // instance; 'recent' falls back to each item's own `created` timestamp
+    // (fan-out mode never uses the id-based cursor ordering, since ids
+    // aren't comparable across separate databases).
+    _sortMergedItems: function _sortMergedItems(items) {
+        var sort = this.sort || 'recent';
+        var byCreatedDesc = function(a, b) {
+            var ca = (a.envelope && a.envelope.created) || '';
+            var cb = (b.envelope && b.envelope.created) || '';
+            return ca < cb ? 1 : ca > cb ? -1 : 0;
+        };
+        if (sort === 'az') {
+            return items.slice().sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+        }
+        if (sort === 'popular') {
+            return items.slice().sort(function(a, b) { return (b.starCount || 0) - (a.starCount || 0); });
+        }
+        // 'mostCommented' has no per-item comment count on listing rows
+        // (deliberately not fetched for every row, same reasoning as
+        // htmlLogo -- see _withStarCounts' own comment in IdentityServer.js)
+        // -- falls back to recency, same as 'recentlyPublished'/'recent'.
+        return items.slice().sort(byCreatedDesc);
+    },
+
+    // POST helper (parallel to _fetchJson's GET) -- same-origin only
+    // (federation directory writes are always local, per inventory.md
+    // §3.2), credentialed.
+    _postJson: function _postJson(url, body, cb) {
+        fetch(url, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        })
+            .then(function(res) {
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                return res.json();
+            })
+            .then(function(json) { cb(null, json); })
+            .catch(function(err) { cb(err); });
     },
 
     setStatus: function setStatus(text, isError) {
@@ -806,6 +1046,12 @@ lively.BuildSpec('lively.identity.Inventory', {
         item.envelope = row;
         item.handle = row.handle;
         item._instanceBaseUrl = baseUrl;
+        // Enrichment fields the row already carries but IdentityPartItem
+        // itself has no slot for -- read directly by the item-tile morph
+        // (inventory.md §13 Phase D) rather than round-tripping through
+        // the envelope again.
+        item.category = state.category || null;
+        item.starCount = row.starCount || 0;
 
         var metaInfo = new lively.PartsBin.PartsBinMetaInfo();
         metaInfo.partName = partName;
@@ -822,6 +1068,129 @@ lively.BuildSpec('lively.identity.Inventory', {
             });
         };
         return item;
+    },
+
+    // ─── item tile (inventory.md §13 Phase D) ───────────────────────────
+    // Display + select only, for the grid and (later) the popular-strip —
+    // a category-tinted icon square (not a live rendered preview, matching
+    // the §13 mockup's own design) with an instance badge and star-count
+    // badge overlaid, plus title/author below. Deliberately NOT
+    // lively.morphic.PartsBinItem/PartItem: no drag-to-load here (a real,
+    // documented scope cut — see the module comment at the top of this
+    // file's "Naming convention" block and inventory.md §13). Open Item /
+    // View Source / Inspect in the right panel remain the only load path
+    // from this grid, already trust-gated (inventory.md §11) via
+    // IdentityPartItem.loadPart -> PartItem.setPartFromJSON regardless of
+    // how the tile itself looks.
+    //
+    // Every decorative child sets draggingEnabled/droppingEnabled/
+    // grabbingEnabled to false AND eventsAreIgnored:true (CLAUDE.md's
+    // "three flags, every visual child individually" gotcha) so a click
+    // anywhere on the tile reaches the tile's own onMouseUp instead of
+    // being intermittently swallowed by whichever child happens to be
+    // under the cursor. Category color/icon lookup goes through
+    // lively.identity.PartSerializer's namespace-object properties (never
+    // a closure var), matching CLAUDE.md's BuildSpec-closure-loss fix --
+    // not strictly required here (tiles are hand-constructed each reload,
+    // never serialized/reconstructed), but costs nothing and matches this
+    // codebase's established idiom for the same lookup.
+    _buildItemTile: function _buildItemTile(item) {
+        var meta = (item.category && lively.identity.PartSerializer.CATEGORY_META[item.category]) ||
+            lively.identity.PartSerializer.UNCATEGORIZED_META;
+        var instanceLabel = (item._instanceBaseUrl || window.location.origin)
+            .replace(/^https?:\/\//, '').replace(/\/$/, '');
+
+        var W = 168, H = 180, ICON_H = 140;
+        var tile = new lively.morphic.Box(lively.rect(0, 0, W, H));
+        tile.applyStyle({ fill: Color.white, borderWidth: 1, borderColor: Color.rgb(230,230,230), borderRadius: 10 });
+        tile.partItem = item;
+        tile.draggingEnabled = false;
+        tile.droppingEnabled = false;
+        tile.grabbingEnabled = false;
+        tile.isSelected = false;
+
+        function noDrag(m) {
+            m.draggingEnabled = false; m.droppingEnabled = false; m.grabbingEnabled = false;
+            m.eventsAreIgnored = true;
+        }
+
+        var iconArea = new lively.morphic.Box(lively.rect(0, 0, W, ICON_H));
+        iconArea.applyStyle({ fill: Color.rgbHex(meta.tint), borderWidth: 0, borderRadius: 9 });
+        noDrag(iconArea);
+        tile.addMorph(iconArea);
+
+        var icon = new lively.morphic.Text(lively.rect((W - 60) / 2, (ICON_H - 60) / 2, 60, 60), meta.icon);
+        icon.applyStyle({
+            fontFamily: "'Material Symbols Rounded'", fontSize: 33, textColor: Color.rgbHex(meta.accent),
+            fill: null, borderWidth: 0, allowInput: false, selectable: false, align: 'center',
+            fixedWidth: true, fixedHeight: true, clipMode: 'hidden'
+        });
+        noDrag(icon);
+        iconArea.addMorph(icon);
+
+        var badge = new lively.morphic.Box(lively.rect(6, 6, 74, 16));
+        badge.applyStyle({ fill: Color.rgba(255,255,255,0.88), borderWidth: 0, borderRadius: 8 });
+        noDrag(badge);
+        iconArea.addMorph(badge);
+        var badgeLabel = new lively.morphic.Text(lively.rect(5, 1, 64, 14), instanceLabel);
+        badgeLabel.applyStyle({
+            fontSize: 7, textColor: Color.rgb(68,68,68), fill: null, borderWidth: 0,
+            allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden'
+        });
+        noDrag(badgeLabel);
+        badge.addMorph(badgeLabel);
+
+        var starBadge = new lively.morphic.Box(lively.rect(W - 6 - 44, ICON_H - 6 - 16, 44, 16));
+        starBadge.applyStyle({ fill: Color.rgba(255,255,255,0.9), borderWidth: 0, borderRadius: 8 });
+        noDrag(starBadge);
+        iconArea.addMorph(starBadge);
+        var starText = new lively.morphic.Text(lively.rect(4, 1, 36, 14), String(item.starCount || 0));
+        starText.applyStyle({
+            fontFamily: "Helvetica", fontSize: 8, textColor: Color.rgb(68,68,68), fill: null, borderWidth: 0,
+            allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden'
+        });
+        noDrag(starText);
+        starBadge.addMorph(starText);
+        var starIcon = new lively.morphic.Text(lively.rect(4, 1, 14, 14), 'star');
+        starIcon.applyStyle({
+            fontFamily: "'Material Symbols Rounded'", fontSize: 9, textColor: Color.rgbHex('#d97706'),
+            fill: null, borderWidth: 0, allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden'
+        });
+        noDrag(starIcon);
+        starText.setPosition(pt(16, 1));
+        starBadge.addMorph(starIcon);
+
+        var title = new lively.morphic.Text(lively.rect(4, ICON_H + 4, W - 8, 16), item.name || '');
+        title.applyStyle({
+            fontFamily: "Helvetica", fontSize: 9, textColor: Color.rgb(34,34,34), fill: null, borderWidth: 0,
+            allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden'
+        });
+        noDrag(title);
+        tile.addMorph(title);
+
+        var author = new lively.morphic.Text(lively.rect(4, ICON_H + 20, W - 8, 14), item.handle ? ('@' + item.handle) : '');
+        author.applyStyle({
+            fontFamily: "Helvetica", fontSize: 7.5, textColor: Color.rgb(136,136,136), fill: null, borderWidth: 0,
+            allowInput: false, selectable: false, fixedWidth: true, fixedHeight: true, clipMode: 'hidden'
+        });
+        noDrag(author);
+        tile.addMorph(author);
+
+        tile.showAsSelected = function() {
+            this.isSelected = true;
+            this.applyStyle({ borderColor: Color.rgbHex('#9333ea'), borderWidth: 2 });
+        };
+        tile.showAsNotSelected = function() {
+            this.isSelected = false;
+            this.applyStyle({ borderColor: Color.rgb(230,230,230), borderWidth: 1 });
+        };
+        tile.onMouseUp = function(evt) {
+            if (this.owner && this.owner.selectPartItem) this.owner.selectPartItem(this);
+            this.showAsSelected();
+            return true;
+        };
+
+        return tile;
     },
 
     // Fetches the full envelope for `item` (record.payload + htmlLogo
@@ -873,6 +1242,8 @@ lively.BuildSpec('lively.identity.Inventory', {
             this.get('selectedItemComment').textString = '';
             this.get('selectedItemVersions').updateList([]);
             this.setShareLink(null);
+            this.selectedItemStarInfo = null;
+            this.selectedItemComments = [];
             return;
         }
         this.get('selectedItemName').textString = item.name;
@@ -906,6 +1277,80 @@ lively.BuildSpec('lively.identity.Inventory', {
             if (waited > 4000) { self.get('selectedItemVersions').updateList([]); return; }
             setTimeout(poll, 150);
         })();
+
+        this.loadStarInfoForSelectedItem();
+        this.loadCommentsForSelectedItem();
+    },
+
+    // ─── stars (inventory.md §13) ───────────────────────────────────────
+    // State lives on the browser (selectedItemStarInfo) rather than a
+    // dedicated widget for now -- Phase D's right-panel star button reads
+    // this the same way selectedItemVersions' poll above feeds a not-yet-
+    // built version-badge UI. _itemUrl is shared with the comment methods
+    // below.
+
+    _itemUrl: function _itemUrl(item, suffix) {
+        var base = item._instanceBaseUrl || window.location.origin;
+        return base + '/@' + encodeURIComponent(item.handle || '_') + '/' + encodeURIComponent(item.envelope.objId) + suffix;
+    },
+
+    loadStarInfoForSelectedItem: function loadStarInfoForSelectedItem() {
+        var self = this, item = this.selectedItem;
+        this.selectedItemStarInfo = null;
+        if (!item) return;
+        this._fetchJson(this._itemUrl(item, '/stars'), function(err, info) {
+            if (self.selectedItem !== item) return; // selection moved on
+            if (err || !info) return;
+            self.selectedItemStarInfo = info;
+        });
+    },
+
+    toggleStarOnSelectedItem: function toggleStarOnSelectedItem() {
+        var self = this, item = this.selectedItem;
+        if (!item) return;
+        var info = this.selectedItemStarInfo;
+        var wantStar = !(info && info.mine);
+        var base = item._instanceBaseUrl || window.location.origin;
+        var url = base + '/@' + encodeURIComponent(item.handle || '_') + '/' + encodeURIComponent(item.envelope.objId) + '/stars' + (wantStar ? '' : '/self');
+        this._postOrDeleteJson(wantStar ? 'PUT' : 'DELETE', url, function(err) {
+            if (err) { self.setStatus('Could not update star: ' + (err.message || err), true); return; }
+            self.loadStarInfoForSelectedItem();
+        });
+    },
+
+    // ─── comments (inventory.md §13) ────────────────────────────────────
+
+    loadCommentsForSelectedItem: function loadCommentsForSelectedItem() {
+        var self = this, item = this.selectedItem;
+        this.selectedItemComments = [];
+        if (!item) return;
+        this._fetchJson(this._itemUrl(item, '/comments?limit=50'), function(err, body) {
+            if (self.selectedItem !== item) return;
+            if (err || !body || !body.comments) return;
+            self.selectedItemComments = body.comments;
+        });
+    },
+
+    postCommentOnSelectedItem: function postCommentOnSelectedItem(body) {
+        var self = this, item = this.selectedItem;
+        var text = (body || '').trim();
+        if (!item || !text) return;
+        this._postJson(this._itemUrl(item, '/comments'), { body: text }, function(err) {
+            if (err) { self.setStatus('Could not post comment: ' + (err.message || err), true); return; }
+            self.loadCommentsForSelectedItem();
+        });
+    },
+
+    // PUT/DELETE helper (parallel to _fetchJson/_postJson) -- used by the
+    // star toggle, which needs both verbs against the same URL shape.
+    _postOrDeleteJson: function _postOrDeleteJson(method, url, cb) {
+        fetch(url, { method: method, credentials: 'include' })
+            .then(function(res) {
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                return res.json();
+            })
+            .then(function(json) { cb(null, json); })
+            .catch(function(err) { cb(err); });
     },
 
     describeItemMeta: function describeItemMeta(item) {

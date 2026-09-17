@@ -1,8 +1,8 @@
-module('lively.morphic.tools.PublishToInventoryDialog').requires('lively.persistence.BuildSpec', 'lively.PartsBin').toRun(function() {
+module('lively.morphic.tools.PublishToInventoryDialog').requires('lively.persistence.BuildSpec', 'lively.PartsBin', 'lively.identity.PartSerializer').toRun(function() {
 
 lively.BuildSpec("lively.morphic.tools.PublishToInventoryDialog", {
     _BorderRadius: 7,
-    _Extent: lively.pt(380.0,356.0),
+    _Extent: lively.pt(380.0,412.0),
     _Fill: Color.rgb(251,86,213),
     className: "lively.morphic.Window",
     name: "PublishToInventoryDialog",
@@ -12,11 +12,11 @@ lively.BuildSpec("lively.morphic.tools.PublishToInventoryDialog", {
     layout: {
         adjustForNewBounds: true
     },
-    minExtent: lively.pt(380.0,356.0),
+    minExtent: lively.pt(380.0,412.0),
     submorphs: [{
         _BorderColor: Color.rgb(95,94,95),
         _BorderRadius: 4,
-        _Extent: lively.pt(374.0,328.0),
+        _Extent: lively.pt(374.0,384.0),
         _Fill: Color.rgb(243,243,243),
         _Position: lively.pt(3.0,23.0),
         className: "lively.morphic.Box",
@@ -123,7 +123,49 @@ lively.BuildSpec("lively.morphic.tools.PublishToInventoryDialog", {
             name: "CategoryLabel",
             sourceModule: "lively.morphic.TextCore",
             submorphs: [],
-            textString: "Category (optional)"
+            textString: "Category"
+        },{
+            // Curated dropdown (inventory.md §7) — required at publish
+            // time, unlike the freeform Tags field below it. No default
+            // selection (selectedLineNo:-1) so onPublish can reject an
+            // unset category rather than silently publishing one.
+            _BorderColor: Color.rgb(203,203,203),
+            _BorderRadius: 3.75,
+            _BorderWidth: 1,
+            _ClipMode: "hidden",
+            _Extent: lively.pt(354.0,22.0),
+            _Fill: Color.rgb(255,255,255),
+            _FontFamily: "Helvetica",
+            _FontSize: 10,
+            _Position: lively.pt(10.0,170.0),
+            _StyleClassNames: ["Morph","Box","OldList","DropDownList"],
+            changeTriggered: false,
+            className: "lively.morphic.DropDownList",
+            droppingEnabled: false,
+            layout: {
+                resizeWidth: true
+            },
+            name: "CategoryChooser",
+            selectedLineNo: -1,
+            sourceModule: "lively.morphic.Lists",
+            submorphs: [],
+            withoutLayers: []
+        },{
+            _Extent: lively.pt(300.0,16.0),
+            _FontFamily: "Arial, sans-serif",
+            _FontSize: 11,
+            _Padding: lively.rect(4,3,0,0),
+            _Position: lively.pt(10.0,204.0),
+            _InputAllowed: false,
+            allowInput: false,
+            className: "lively.morphic.Text",
+            droppingEnabled: false,
+            fixedWidth: true,
+            grabbingEnabled: false,
+            name: "TagsLabel",
+            sourceModule: "lively.morphic.TextCore",
+            submorphs: [],
+            textString: "Tags (optional, comma-separated)"
         },{
             _BorderColor: Color.rgb(203,203,203),
             _BorderRadius: 3.75,
@@ -133,7 +175,7 @@ lively.BuildSpec("lively.morphic.tools.PublishToInventoryDialog", {
             _Fill: Color.rgb(255,255,255),
             _FontFamily: "Helvetica",
             _Padding: lively.rect(4,4,0,0),
-            _Position: lively.pt(10.0,170.0),
+            _Position: lively.pt(10.0,226.0),
             allowInput: true,
             className: "lively.morphic.Text",
             doNotSerialize: ["charsTyped"],
@@ -144,7 +186,7 @@ lively.BuildSpec("lively.morphic.tools.PublishToInventoryDialog", {
             layout: {
                 resizeWidth: true
             },
-            name: "CategoryText",
+            name: "TagsText",
             sourceModule: "lively.morphic.TextCore",
             submorphs: [],
             textString: ""
@@ -153,7 +195,7 @@ lively.BuildSpec("lively.morphic.tools.PublishToInventoryDialog", {
             _FontFamily: "Arial, sans-serif",
             _FontSize: 11,
             _Padding: lively.rect(4,3,0,0),
-            _Position: lively.pt(10.0,204.0),
+            _Position: lively.pt(10.0,260.0),
             _InputAllowed: false,
             allowInput: false,
             className: "lively.morphic.Text",
@@ -169,7 +211,7 @@ lively.BuildSpec("lively.morphic.tools.PublishToInventoryDialog", {
             _BorderRadius: 5,
             _BorderWidth: 1,
             _Extent: lively.pt(76.0,24.0),
-            _Position: lively.pt(10.0,226.0),
+            _Position: lively.pt(10.0,282.0),
             className: "lively.morphic.Button",
             doNotCopyProperties: [],
             doNotSerialize: [],
@@ -190,7 +232,7 @@ lively.BuildSpec("lively.morphic.tools.PublishToInventoryDialog", {
             _BorderRadius: 5,
             _BorderWidth: 1,
             _Extent: lively.pt(84.0,24.0),
-            _Position: lively.pt(94.0,226.0),
+            _Position: lively.pt(94.0,282.0),
             className: "lively.morphic.Button",
             doNotCopyProperties: [],
             doNotSerialize: [],
@@ -211,7 +253,7 @@ lively.BuildSpec("lively.morphic.tools.PublishToInventoryDialog", {
             _BorderRadius: 5,
             _BorderWidth: 1,
             _Extent: lively.pt(76.0,24.0),
-            _Position: lively.pt(186.0,226.0),
+            _Position: lively.pt(186.0,282.0),
             className: "lively.morphic.Button",
             doNotCopyProperties: [],
             doNotSerialize: [],
@@ -232,7 +274,7 @@ lively.BuildSpec("lively.morphic.tools.PublishToInventoryDialog", {
             _FontFamily: "Arial, sans-serif",
             _FontSize: 11,
             _Padding: lively.rect(4,3,0,0),
-            _Position: lively.pt(10.0,262.0),
+            _Position: lively.pt(10.0,318.0),
             _InputAllowed: false,
             allowInput: false,
             className: "lively.morphic.Text",
@@ -252,7 +294,7 @@ lively.BuildSpec("lively.morphic.tools.PublishToInventoryDialog", {
             _Fill: Color.rgb(255,255,255),
             _FontFamily: "Helvetica",
             _Padding: lively.rect(4,4,0,0),
-            _Position: lively.pt(10.0,284.0),
+            _Position: lively.pt(10.0,340.0),
             allowInput: true,
             className: "lively.morphic.Text",
             doNotSerialize: ["charsTyped"],
@@ -272,7 +314,7 @@ lively.BuildSpec("lively.morphic.tools.PublishToInventoryDialog", {
             _FontFamily: "Arial, sans-serif",
             _FontSize: 11,
             _Padding: lively.rect(4,3,0,0),
-            _Position: lively.pt(10.0,262.0),
+            _Position: lively.pt(10.0,318.0),
             _InputAllowed: false,
             allowInput: false,
             className: "lively.morphic.Text",
@@ -289,7 +331,7 @@ lively.BuildSpec("lively.morphic.tools.PublishToInventoryDialog", {
             _BorderRadius: 5,
             _BorderWidth: 1,
             _Extent: lively.pt(80.0,24.0),
-            _Position: lively.pt(204.0,290.0),
+            _Position: lively.pt(204.0,346.0),
             className: "lively.morphic.Button",
             doNotCopyProperties: [],
             doNotSerialize: [],
@@ -309,7 +351,7 @@ lively.BuildSpec("lively.morphic.tools.PublishToInventoryDialog", {
             _BorderWidth: 1.184,
             _Extent: lively.pt(80.0,24.0),
             _Fill: Color.rgb(239,255,239),
-            _Position: lively.pt(288.0,290.0),
+            _Position: lively.pt(288.0,346.0),
             className: "lively.morphic.Button",
             doNotCopyProperties: [],
             doNotSerialize: [],
@@ -334,12 +376,12 @@ lively.BuildSpec("lively.morphic.tools.PublishToInventoryDialog", {
         // than recomputing from sibling bounds each time, since several of
         // the fields they'd be computed from are themselves conditionally
         // hidden.
-        footerYCompact: 262,
-        footerYExpanded: 318,
-        buttonsYCompact: 290,
-        buttonsYExpanded: 346,
-        contentHeightCompact: 328,
-        contentHeightExpanded: 384,
+        footerYCompact: 318,
+        footerYExpanded: 374,
+        buttonsYCompact: 346,
+        buttonsYExpanded: 402,
+        contentHeightCompact: 384,
+        contentHeightExpanded: 440,
         onCancel: function onCancel() {
         this.owner.remove();
     },
@@ -358,7 +400,21 @@ lively.BuildSpec("lively.morphic.tools.PublishToInventoryDialog", {
         this.target = morph;
         this.get('NameText').textString = morph ? morph.name : '';
         this.get('CommentText').textString = '';
-        this.get('CategoryText').textString = '';
+        var chooser = this.get('CategoryChooser');
+        // A leading placeholder entry (value: null) so the rendered native
+        // <select> visually matches the logical "nothing chosen yet" state
+        // -- confirmed live that a plain DropDownList with no selection
+        // (selectedLineNo:-1) still visually displays its first real item
+        // as if selected, which would silently mismatch onPublish's
+        // required-category check (a user could click Publish believing
+        // the visibly-shown first category was already chosen).
+        chooser.setList([{ isListItem: true, string: '— Select a category —', value: null }].concat(
+            lively.identity.PartSerializer.CATEGORY_NAMES.map(function(name) {
+                return { isListItem: true, string: name, value: name };
+            })
+        ));
+        chooser.selectAt(0);
+        this.get('TagsText').textString = '';
         this.get('RecipientsText').textString = '';
         this.setStatus('');
         this.selectVisibility('public');
@@ -405,7 +461,10 @@ lively.BuildSpec("lively.morphic.tools.PublishToInventoryDialog", {
         if (!this.target) { this.setStatus('No target to publish', true); return; }
         var name = this.get('NameText').textString.trim();
         if (!name) { this.setStatus('Name is required', true); return; }
-        var categoryRaw = this.get('CategoryText').textString.trim();
+        var category = this.get('CategoryChooser').selection;
+        if (!category) { this.setStatus('Category is required', true); return; }
+        var tagsRaw = this.get('TagsText').textString.trim();
+        var tags = tagsRaw ? tagsRaw.split(',').map(function(t) { return t.trim().replace(/^#/, ''); }).filter(Boolean) : [];
         var recipientHandles = this.visibility === 'shared'
             ? this.get('RecipientsText').textString.split(',').map(function(h) { return h.trim().replace(/^@/, ''); }).filter(Boolean)
             : [];
@@ -424,7 +483,8 @@ lively.BuildSpec("lively.morphic.tools.PublishToInventoryDialog", {
         target._publishToInventory({
             name: name,
             comment: this.get('CommentText').textString,
-            tags: categoryRaw ? [categoryRaw.replace(/^#/, '')] : [],
+            category: category,
+            tags: tags,
             visibility: this.visibility,
             recipientHandles: recipientHandles,
             onWaiting: function() { self.setStatus('Confirm passkey…'); },

@@ -1032,6 +1032,7 @@ Trait('lively.PartsBin.PartTrait', {
             partName: opts.name,
             comment: opts.comment || '',
             tags: opts.tags || [],
+            category: opts.category || null,
         };
 
         // Local-first, same as every other identity write (UserSpace.js) —
