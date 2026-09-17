@@ -1521,26 +1521,34 @@ lively.BuildSpec('lively.identity.Inventory', {
             .catch(function(err) { cb(err); });
     },
 
+    // Object ID and Author DID each get their own line (previously crammed
+    // onto one "Object ID: X   Author DID: Y" line) -- objIdLineIndex/
+    // didLineIndex are the zero-based line numbers within `text` that
+    // renderRightPanel uses to position a copy-icon button next to each,
+    // rather than encoding a clickable character range into the text
+    // itself (the old single-line version only made the DID copiable, via
+    // an emphasize()'d icon glyph baked into the text -- replaced below by
+    // real copy buttons, one per field, following ProfileCard.js's own
+    // established copy-button idiom).
     describeItemMeta: function describeItemMeta(item) {
         if (!item || !item.envelope) return null;
         var env = item.envelope;
         var created = env.created ? new Date(env.created).format('yyyy-mm-dd HH:MM') : 'unknown';
-        var did = env.did || 'unknown';
-        var didShort = did.length > 30 ? (did.slice(0, 20) + '…' + did.slice(-6)) : did;
-        var iconGlyph = '⧉';
-        var line1 = 'Published by: @' + (item.handle || '?');
-        var line2 = 'Created: ' + created;
-        var didLinePrefix = 'Object ID: ' + (env.objId || 'unknown') + '   Author DID: ' + didShort + ' ';
-        var didLine = didLinePrefix + iconGlyph;
+        var did = env.did || null;
+        var didShort = did && did.length > 30 ? (did.slice(0, 20) + '…' + did.slice(-6)) : (did || 'unknown');
+        var objId = env.objId || null;
         var hostingUrl = item._instanceBaseUrl || window.location.origin;
         var hostingHost = hostingUrl.replace(/^https?:\/\//, '').replace(/\/$/, '') || 'unknown';
-        var line4 = 'Hosting: ' + hostingHost;
         var tags = (item.loadedMetaInfo && item.loadedMetaInfo.tags) || [];
-        var line5 = 'Tags: ' + (tags.length ? tags.join(', ') : 'none');
-        var text = [line1, line2, didLine, line4, line5].join('\n');
-        var iconStart = line1.length + 1 + line2.length + 1 + didLinePrefix.length;
-        var iconEnd = iconStart + iconGlyph.length;
-        return { text: text, did: env.did || null, iconStart: iconStart, iconEnd: iconEnd };
+        var lines = [
+            'Published by: @' + (item.handle || '?'),
+            'Created: ' + created,
+            'Object ID: ' + (objId || 'unknown'),
+            'Author DID: ' + didShort,
+            'Hosting: ' + hostingHost,
+            'Tags: ' + (tags.length ? tags.join(', ') : 'none')
+        ];
+        return { text: lines.join('\n'), objId: objId, did: did, objIdLineIndex: 2, didLineIndex: 3 };
     },
 
     toggleVersionsExpanded: function toggleVersionsExpanded() {
@@ -1583,7 +1591,8 @@ lively.BuildSpec('lively.identity.Inventory', {
         place(textRow(lively.rect(0,0,W,20), item.name || '',
             { fontSize: 10.5, fontWeight: 'bold', textColor: Color.rgb(34,34,34) }), 26);
 
-        // Meta block (Published by / Created / Object ID+DID / Hosting / Tags)
+        // Meta block (Published by / Created / Object ID / Author DID /
+        // Hosting / Tags -- Object ID and Author DID each on their own line)
         var meta = this.describeItemMeta(item);
         var lineCount = meta ? meta.text.split('\n').length : 1;
         // 18px/line, not the naive fontSize-derived guess -- live-measured
@@ -1592,20 +1601,48 @@ lively.BuildSpec('lively.identity.Inventory', {
         var metaH = lineCount * 18 + 8;
         var metaMorph = textRow(lively.rect(0,0,W,metaH), meta ? meta.text : '',
             { fontSize: 8.5, textColor: Color.rgb(85,85,85) });
-        metaMorph.eventsAreIgnored = false; // needs to receive the DID-copy click below
-        if (meta) {
-            metaMorph._copyAuthorDid = meta.did;
-            metaMorph.emphasize({
-                color: Color.blue,
-                doit: {
-                    code: "var m = evt.getTargetMorph();" +
-                        "if (!m._copyAuthorDid || !navigator.clipboard) return;" +
-                        "navigator.clipboard.writeText(m._copyAuthorDid);",
-                    context: null
-                }
-            }, meta.iconStart, meta.iconEnd);
-        }
+        var metaY = y;
         place(metaMorph, metaH + 12);
+
+        // Copy-icon buttons for Object ID / Author DID, one per field --
+        // a real Text morph rendering a Material Symbols glyph, styled and
+        // wired exactly like ProfileCard.js's own copy-DID/copy-address
+        // buttons (see that file's comment on why this is a plain Text
+        // morph, not a lively.morphic.Button: Button's internal label Text
+        // silently ignores a fontFamily change, so the icon glyph never
+        // actually swaps to the icon font). addScript's handler references
+        // only this.* (never a closure var), matching CLAUDE.md's
+        // BuildSpec/addScript-closure-loss fix.
+        function makeCopyButton(text, lineIndex, tooltip) {
+            // Height 28, not ProfileCard's own 22 -- confirmed live
+            // (getBoundingClientRect) that this button's `padding` style
+            // makes the icon render a few px taller than a same-sized icon
+            // box with no padding, clipping it at 22; 28 leaves a positive
+            // margin.
+            var btn = new lively.morphic.Text(lively.rect(PAD + W - 26, metaY + lineIndex * 18 - 4, 26, 28), 'content_copy');
+            btn.applyStyle({ fill: Color.rgb(240,240,240), borderColor: Color.rgb(200,200,200),
+                borderRadius: 4, borderWidth: 1, fontFamily: "'Material Symbols Rounded'", fontSize: 12,
+                textColor: Color.rgb(80,80,80), align: 'center', padding: lively.Rectangle.inset(0,5,0,0),
+                allowInput: false, selectable: false, clipMode: 'hidden', whiteSpaceHandling: 'pre', handStyle: 'pointer' });
+            btn._copyText = text;
+            btn.addScript(function onMouseUp(evt) {
+                var theText = this._copyText;
+                var m = this;
+                if (theText && navigator.clipboard) {
+                    navigator.clipboard.writeText(theText).then(function() {
+                        m.setTextString('check');
+                        setTimeout(function() { m.setTextString('content_copy'); }, 1500);
+                    });
+                }
+                evt.stop();
+                return true;
+            });
+            noDrag(btn);
+            panel.addMorph(btn);
+            btn.renderContext().morphNode.title = tooltip;
+        }
+        if (meta && meta.objId) makeCopyButton(meta.objId, meta.objIdLineIndex, 'Copy Object ID');
+        if (meta && meta.did) makeCopyButton(meta.did, meta.didLineIndex, 'Copy Author DID');
 
         // Version badge + (conditionally) expandable version list. Built
         // from item.partVersions -- {date, author, version(shortCid)} rows,
