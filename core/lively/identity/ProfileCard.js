@@ -991,7 +991,15 @@ module("lively.identity.ProfileCard")
         // same call so it isn't a blanket style-application failure). A
         // bare Text morph styled and clicked the same way as this file's
         // BuildSpec makeIconButton reference doesn't have that problem.
-        var copyBtn = new lively.morphic.Text(lively.rect(contentX + didW + 4, y - 2, 26, 22), 'content_copy');
+        // Box grown from the original 26x22 (with a 5px top `padding`) to
+        // 24x24 with no custom padding -- confirmed live (chrome-devtools
+        // MCP, cropped/zoomed screenshot + getBoundingClientRect) that the
+        // old box clipped the glyph's bottom by ~5px, matching the clip
+        // already flagged (but not yet fixed here) in inventory.md's
+        // write-up of this exact button. `y - 4` instead of `y - 2` keeps
+        // the taller box vertically centered on the 16px-tall value line
+        // above it.
+        var copyBtn = new lively.morphic.Text(lively.rect(contentX + didW + 4, y - 4, 24, 24), 'content_copy');
         copyBtn.draggingEnabled = false;
         copyBtn.droppingEnabled = false;
         copyBtn.grabbingEnabled = false;
@@ -999,7 +1007,6 @@ module("lively.identity.ProfileCard")
           borderColor: Color.rgb(200, 200, 200), borderRadius: 4, borderWidth: 1,
           fontFamily: "'Material Symbols Rounded'", fontSize: 12,
           textColor: Color.rgb(80, 80, 80), align: 'center',
-          padding: lively.Rectangle.inset(0, 5, 0, 0),
           allowInput: false, selectable: false, clipMode: 'hidden',
           whiteSpaceHandling: 'pre', handStyle: 'pointer' });
         copyBtn._copyDid = did;
@@ -1050,7 +1057,8 @@ module("lively.identity.ProfileCard")
           var addrW = Math.ceil(addrStr.length * 7.5) + 16;
           pane.addMorph(txt(addrStr, contentX, y, addrW, 16, 10, 50, 50, 50, false));
           // See copyBtn above for why this is a Text morph, not a Button.
-          var addrCopyBtn = new lively.morphic.Text(lively.rect(contentX + addrW + 4, y - 2, 26, 22), 'content_copy');
+          // See copyBtn above for why this is 24x24 with no custom padding.
+          var addrCopyBtn = new lively.morphic.Text(lively.rect(contentX + addrW + 4, y - 4, 24, 24), 'content_copy');
           addrCopyBtn.draggingEnabled = false;
           addrCopyBtn.droppingEnabled = false;
           addrCopyBtn.grabbingEnabled = false;
@@ -1058,7 +1066,6 @@ module("lively.identity.ProfileCard")
             borderColor: Color.rgb(200, 200, 200), borderRadius: 4, borderWidth: 1,
             fontFamily: "'Material Symbols Rounded'", fontSize: 12,
             textColor: Color.rgb(80, 80, 80), align: 'center',
-            padding: lively.Rectangle.inset(0, 5, 0, 0),
             allowInput: false, selectable: false, clipMode: 'hidden',
             whiteSpaceHandling: 'pre', handStyle: 'pointer' });
           addrCopyBtn._copyText = payload.ethAddress;

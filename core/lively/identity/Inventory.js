@@ -1548,7 +1548,7 @@ lively.BuildSpec('lively.identity.Inventory', {
             'Hosting: ' + hostingHost,
             'Tags: ' + (tags.length ? tags.join(', ') : 'none')
         ];
-        return { text: lines.join('\n'), objId: objId, did: did, objIdLineIndex: 2, didLineIndex: 3 };
+        return { text: lines.join('\n'), lines: lines, objId: objId, did: did, objIdLineIndex: 2, didLineIndex: 3 };
     },
 
     toggleVersionsExpanded: function toggleVersionsExpanded() {
@@ -1613,18 +1613,35 @@ lively.BuildSpec('lively.identity.Inventory', {
         // actually swaps to the icon font). addScript's handler references
         // only this.* (never a closure var), matching CLAUDE.md's
         // BuildSpec/addScript-closure-loss fix.
-        function makeCopyButton(text, lineIndex, tooltip) {
-            // Height 28, not ProfileCard's own 22 -- confirmed live
-            // (getBoundingClientRect) that this button's `padding` style
-            // makes the icon render a few px taller than a same-sized icon
-            // box with no padding, clipping it at 22; 28 leaves a positive
-            // margin.
-            var btn = new lively.morphic.Text(lively.rect(PAD + W - 26, metaY + lineIndex * 18 - 4, 26, 28), 'content_copy');
+        //
+        // Sizing/position note: the previous 26x28 box (copied from
+        // ProfileCard's own button, sized for a wider line spacing) was
+        // TALLER than this panel's 18px meta line spacing -- confirmed live
+        // (chrome-devtools MCP, cropped/zoomed screenshot) that two
+        // consecutive buttons on adjacent lines actually overlapped each
+        // other by ~9px, which is what read as "clipped" (each button's own
+        // border/fill visually cut into its neighbor). Fixed by shrinking
+        // the box to fit inside one 18px line slot and measuring the real
+        // line-end position (canvas measureText, same font as the meta
+        // text) instead of pinning to the panel's far-right edge -- ProfileCard.js's fixed-offset "right after the value" approach doesn't
+        // apply directly since these lines' own leading label text varies
+        // in width per field.
+        function measureTextWidth(text, font) {
+            var ctx = measureTextWidth._ctx || (measureTextWidth._ctx = document.createElement('canvas').getContext('2d'));
+            ctx.font = font;
+            return ctx.measureText(text).width;
+        }
+        function makeCopyButton(lineText, valueToCopy, lineIndex, tooltip) {
+            var lineW = measureTextWidth(lineText, "8.5pt Helvetica");
+            var btnSize = 18;
+            var btnX = PAD + Math.ceil(lineW) + 6;
+            var btnY = metaY + lineIndex * 18;
+            var btn = new lively.morphic.Text(lively.rect(btnX, btnY, btnSize, btnSize), 'content_copy');
             btn.applyStyle({ fill: Color.rgb(240,240,240), borderColor: Color.rgb(200,200,200),
-                borderRadius: 4, borderWidth: 1, fontFamily: "'Material Symbols Rounded'", fontSize: 12,
-                textColor: Color.rgb(80,80,80), align: 'center', padding: lively.Rectangle.inset(0,5,0,0),
+                borderRadius: 3, borderWidth: 1, fontFamily: "'Material Symbols Rounded'", fontSize: 8.5,
+                textColor: Color.rgb(80,80,80), align: 'center',
                 allowInput: false, selectable: false, clipMode: 'hidden', whiteSpaceHandling: 'pre', handStyle: 'pointer' });
-            btn._copyText = text;
+            btn._copyText = valueToCopy;
             btn.addScript(function onMouseUp(evt) {
                 var theText = this._copyText;
                 var m = this;
@@ -1641,8 +1658,8 @@ lively.BuildSpec('lively.identity.Inventory', {
             panel.addMorph(btn);
             btn.renderContext().morphNode.title = tooltip;
         }
-        if (meta && meta.objId) makeCopyButton(meta.objId, meta.objIdLineIndex, 'Copy Object ID');
-        if (meta && meta.did) makeCopyButton(meta.did, meta.didLineIndex, 'Copy Author DID');
+        if (meta && meta.objId) makeCopyButton(meta.lines[meta.objIdLineIndex], meta.objId, meta.objIdLineIndex, 'Copy Object ID');
+        if (meta && meta.did) makeCopyButton(meta.lines[meta.didLineIndex], meta.did, meta.didLineIndex, 'Copy Author DID');
 
         // Version badge + (conditionally) expandable version list. Built
         // from item.partVersions -- {date, author, version(shortCid)} rows,
