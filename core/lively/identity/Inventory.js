@@ -596,14 +596,14 @@ lively.BuildSpec('lively.identity.Inventory', {
                                 className: "lively.morphic.Button",
                                 isActive: false,
                                 isPressed: false,
-                                label: "Object Graph",
-                                name: "objectGraphButton",
+                                label: "Inspect",
+                                name: "inspectButton",
                                 padding: lively.rect(5,0,0,0),
                                 sourceModule: "lively.morphic.Widgets",
                                 style: { borderRadius: 0 },
                                 withoutLayers: [],
                                 connectionRebuilder: function connectionRebuilder() {
-                                    lively.bindings.connect(this, "fire", this.get("InventoryBrowser"), "openPartInspectorForSelection", {});
+                                    lively.bindings.connect(this, "fire", this.get("InventoryBrowser"), "openInspectorMenu", {});
                                 }
                             }],
                             withoutLayers: [],
@@ -866,7 +866,7 @@ lively.BuildSpec('lively.identity.Inventory', {
         this.selectedItem = item;
         this.get('openItemButton').setActive(!!item);
         this.get('viewSourceButton').setActive(!!item);
-        this.get('objectGraphButton').setActive(!!item);
+        this.get('inspectButton').setActive(!!item);
         if (!item) {
             this.get('selectedItemName').textString = '';
             this.get('selectedItemMeta').textString = '';
@@ -980,15 +980,22 @@ lively.BuildSpec('lively.identity.Inventory', {
     // real WebDAV PartsSpace), an Inventory item has no such WebDAV path --
     // its partsSpaceName is either '*public*' or another user's identity
     // space, neither of which PartInspector's chooser can ever resolve. So
-    // this calls PartInspector's new loadFromJSON(json, label) entry point
-    // instead, which skips the chooser entirely and feeds the JSON straight
-    // to updateJSON -- see inventory.md §12 for the full writeup of why the
-    // old .loadPart(...) call here was dead-on-arrival.
-    openPartInspectorForSelection: function openPartInspectorForSelection() {
+    // this calls PartInspector's loadFromJSON(json, label, tabName) entry
+    // point instead, which skips the chooser entirely and feeds the JSON
+    // straight to updateJSON -- see inventory.md §12 for the full writeup of
+    // why the old .loadPart(...) call here was dead-on-arrival.
+    //
+    // A single "Inspect" button (openInspectorMenu, below) fans out to this
+    // for all three of PartInspector's non-Overview tabs -- JSON,
+    // Serialization Info, Object Graph -- rather than one physical button
+    // per tab, which measured live (chrome-devtools MCP) to overflow
+    // ItemInfoPanel's fixed-width MetaContainer column.
+    openPartInspectorForSelection: function openPartInspectorForSelection(tabName) {
+        tabName = tabName || 'Overview';
         var item = this.selectedItem;
         if (!item) { $world.inform('No item selected.'); return; }
         var self = this;
-        this.setStatus('Loading object graph for ' + item.name + '…');
+        this.setStatus('Loading ' + tabName + ' for ' + item.name + '…');
         this._fetchFullEnvelope(item, function(err, envelope) {
             if (err) { self.setStatus('Failed to load item: ' + (err.message || err), true); return; }
             // record.payload is ciphertext for private/shared items -- feeding
@@ -997,7 +1004,7 @@ lively.BuildSpec('lively.identity.Inventory', {
             // §12's open question); private/shared is a deliberate follow-up,
             // not an oversight.
             if (envelope.visibility && envelope.visibility !== 'public') {
-                self.setStatus('Object graph view only supports public items right now.', true);
+                self.setStatus('Inspector view only supports public items right now.', true);
                 return;
             }
             var payload = envelope.record && envelope.record.payload;
@@ -1010,15 +1017,34 @@ lively.BuildSpec('lively.identity.Inventory', {
                 function(inspector, n) {
                     inspector.openInWorldCenter();
                     indicator.bringToFront();
-                    inspector.targetMorph.loadFromJSON(json, item.name);
+                    inspector.targetMorph.loadFromJSON(json, item.name, tabName);
                     n();
                 }
             )(function(err3) {
                 indicatorClose && indicatorClose();
-                if (err3) { self.setStatus('Failed to open object graph: ' + (err3.message || err3), true); return; }
-                self.setStatus('Opened object graph for "' + item.name + '"');
+                if (err3) { self.setStatus('Failed to open inspector: ' + (err3.message || err3), true); return; }
+                self.setStatus('Opened ' + tabName + ' for "' + item.name + '"');
             });
         });
+    },
+
+    // Popup menu behind the single "Inspect" button -- keeps ItemInfoPanel's
+    // button row at its existing 3-button width (Open Item / View Source /
+    // Inspect) instead of growing to 5 buttons, which measured live to
+    // overflow MetaContainer's fixed column width (confirmed via
+    // chrome-devtools MCP before choosing this design over more buttons).
+    openInspectorMenu: function openInspectorMenu() {
+        var item = this.selectedItem;
+        if (!item) { $world.inform('No item selected.'); return; }
+        var btn = this.get('inspectButton');
+        var pos = btn.worldPoint(lively.pt(0, btn.getExtent().y));
+        var self = this;
+        var items = [
+            ['JSON', function() { self.openPartInspectorForSelection('JSON'); }],
+            ['Serialization Info', function() { self.openPartInspectorForSelection('Serialization Info'); }],
+            ['Object Graph', function() { self.openPartInspectorForSelection('Object Graph'); }]
+        ];
+        lively.morphic.Menu.openAt(pos, 'Inspect "' + item.name + '"', items);
     },
 
     // ─── opening an item ─────────────────────────────────────────────────
