@@ -491,6 +491,8 @@ module("lively.identity.RoomView")
         try { this._teardownSignaling(); } catch (e) {}
         var self = this;
         Object.keys(this._remoteAudio).forEach(function (did) { self._removeRemoteAudio(did); });
+        if (this._blackTimer) { clearInterval(this._blackTimer); this._blackTimer = null; }
+        if (this._blackTrack) { try { this._blackTrack.stop(); } catch (e) {} this._blackTrack = null; }
         if (this._boundLeaveBestEffort) {
           window.removeEventListener("pagehide", this._boundLeaveBestEffort);
           window.removeEventListener("beforeunload", this._boundLeaveBestEffort);
@@ -1827,14 +1829,45 @@ module("lively.identity.RoomView")
       // Unified Plan for this gap (replaceTrack was never meant to carry
       // stream association) — feature-detected since it's newer than
       // addTransceiver/replaceTrack themselves.
+      // A software black video track, sent in place of the camera while it's
+      // off. Canvas-generated, so no capture device is involved. Redrawn on a
+      // timer because a canvas stream only emits frames when the canvas
+      // changes, and a steady stream of them keeps the receiver's picture
+      // black instead of frozen. One per session, stopped in _stopSession.
+      _getBlackVideoTrack: function () {
+        if (this._blackTrack && this._blackTrack.readyState === "live") return this._blackTrack;
+        var cv = document.createElement("canvas");
+        cv.width = 320; cv.height = 240;
+        var g = cv.getContext("2d");
+        function paint() { g.fillStyle = "#000"; g.fillRect(0, 0, cv.width, cv.height); }
+        paint();
+        this._blackTrack = cv.captureStream(10).getVideoTracks()[0];
+        if (this._blackTimer) clearInterval(this._blackTimer);
+        this._blackTimer = setInterval(paint, 100);
+        return this._blackTrack;
+      },
+
       _applyLocalTracksToPeer: function (peer) {
+        var self = this;
         var stream = lively.identity.AmbientPresencePanel.getLocalStream();
         if (!stream || !peer.pc) return false;
         peer.pc.getTransceivers().forEach(function (t) {
           var kind = t.receiver && t.receiver.track && t.receiver.track.kind;
           if (!kind) return;
           var track = kind === "audio" ? stream.getAudioTracks()[0] : stream.getVideoTracks()[0];
-          if (!track) return;
+          if (!track) {
+            // The local track of this kind was removed (camera turned off: the
+            // panel stops the video track to release the device). Video is
+            // swapped for a software-generated black track rather than
+            // detached: with no track at all the receiver's picture freezes on
+            // the last camera frame (confirmed live), which is worse than the
+            // black a merely-disabled track used to produce. Audio just
+            // detaches. The transceiver stays sendrecv either way, so turning
+            // the camera back on is another replaceTrack, no renegotiation.
+            var replacement = kind === "video" ? self._getBlackVideoTrack() : null;
+            if (t.sender.track !== replacement) t.sender.replaceTrack(replacement).catch(function () {});
+            return;
+          }
           if (t.direction !== "sendrecv") t.direction = "sendrecv";
           if (t.sender.track !== track) t.sender.replaceTrack(track);
           if (t.sender.setStreams) t.sender.setStreams(stream);
@@ -2031,8 +2064,38 @@ module("lively.identity.RoomView")
           this._remoteAudio[did] = el;
         }
         el.srcObject = stream;
+        this._applyDeafen(); // a voice that arrives while deafened must start muted
         var p = el.play && el.play();
         if (p && p.catch) p.catch(function () {}); // autoplay policy: the room was entered by a click, so this normally succeeds
+      },
+
+      // The panel added or removed a local track (camera toggled, or the mic
+      // captured late): push it to every peer connection and re-point the
+      // self-view at the (mutated) stream so it shows or clears the picture.
+      _onLocalTracksChanged: function () {
+        if (this._roomLeft) return;
+        this._applyLocalTracksToAllPeers();
+        var user = lively.identity.did.currentUser();
+        var circle = user && this._videoCircles[user.did];
+        var stream = lively.identity.AmbientPresencePanel.getLocalStream();
+        var v = circle && stream && circle.renderContext().shapeNode.querySelector("video");
+        if (v) {
+          v.srcObject = stream;
+          var p = v.play && v.play();
+          if (p && p.catch) p.catch(function () {});
+        }
+      },
+
+      // Deafen = stop hearing everyone: mutes every session-owned remote audio
+      // element to match the Ambient Presence Panel's deafened flag (the panel
+      // itself already mutes your own mic when deafening). Called when a voice
+      // starts playing and, via lively.identity.RoomView.applyDeafened, after
+      // every panel toggle. Track/stream stay live, so undeafening is instant.
+      _applyDeafen: function () {
+        var panel = lively.identity.AmbientPresencePanel._panel;
+        var deaf = !!(panel && panel.deafened);
+        var self = this;
+        Object.keys(this._remoteAudio).forEach(function (did) { self._remoteAudio[did].muted = deaf; });
       },
 
       _removeRemoteAudio: function (did) {
@@ -2090,6 +2153,18 @@ module("lively.identity.RoomView")
       // True while this world holds a live session for roomId.
       isActiveRoom: function (roomId) {
         return !!(this._active && !this._active._roomLeft && this._active._roomId === roomId);
+      },
+
+      // Panel hook: a local track was added or removed (see
+      // AmbientPresencePanel._afterLocalTracksChanged).
+      localTracksChanged: function () {
+        if (this._active && !this._active._roomLeft) this._active._onLocalTracksChanged();
+      },
+
+      // Panel toggle hook (AmbientPresencePanel._applyTrackState): re-applies
+      // the deafened flag to the active session's audio.
+      applyDeafened: function () {
+        if (this._active && !this._active._roomLeft) this._active._applyDeafen();
       },
 
       getActive: function () {

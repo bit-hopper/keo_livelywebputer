@@ -370,6 +370,10 @@ module("lively.identity.AmbientPresencePanel")
         return this._localStream;
       },
 
+      _acquiring: false,        // an initial audio+video getUserMedia is in flight
+      _reapplyAfterAcquire: false,
+      _pendingKinds: { audio: false, video: false },   // a single-kind (re)acquire is in flight
+
       _acquireLocalMedia: function _acquireLocalMedia() {
         var self = this;
         var p = this._panel;
@@ -377,14 +381,23 @@ module("lively.identity.AmbientPresencePanel")
         var wantVideo = !(p && p.cameraOff);
         if (!wantAudio && !wantVideo) return;
         if (typeof navigator === "undefined" || !navigator.mediaDevices) return;
+        // A toggle while this is still resolving used to start a second
+        // getUserMedia whose stream then replaced (and orphaned, still live)
+        // the first. Remember to re-apply the prefs once this one lands instead.
+        if (this._acquiring) { this._reapplyAfterAcquire = true; return; }
+        this._acquiring = true;
         navigator.mediaDevices.getUserMedia({ audio: wantAudio, video: wantVideo })
           .then(function (stream) {
-            // A leaveRoom() (or a second acquire) could have raced this
-            // promise — don't attach a stream for a room we're no longer in.
+            self._acquiring = false;
+            // A leaveRoom() could have raced this promise — don't attach a
+            // stream for a room we're no longer in.
             if (!self._activeRoom) { stream.getTracks().forEach(function (t) { t.stop(); }); return; }
             self._localStream = stream;
+            if (self._reapplyAfterAcquire) { self._reapplyAfterAcquire = false; self._applyTrackState(); }
           })
           .catch(function (err) {
+            self._acquiring = false;
+            self._reapplyAfterAcquire = false;
             console.warn("[AmbientPresencePanel] getUserMedia failed:", err && err.message);
           });
       },
@@ -396,16 +409,84 @@ module("lively.identity.AmbientPresencePanel")
         }
       },
 
-      // Called after every mic/deafen/camera toggle. Enables/disables
-      // existing tracks live where possible; if no stream exists yet (e.g.
-      // camera was off when the room was entered) and a room is active,
-      // tries acquiring one now that a track is actually wanted.
+      // Lets the room session push the change to its peer connections (and its
+      // own self-view). RoomView owns those, this panel only owns the stream.
+      _afterLocalTracksChanged: function _afterLocalTracksChanged() {
+        try {
+          var RV = lively.identity.RoomView;
+          if (RV && RV.localTracksChanged) RV.localTracksChanged();
+        } catch (e) { console.error("[AmbientPresencePanel] localTracksChanged failed:", e); }
+      },
+
+      // Captures one kind of track on demand and adds it to the live stream:
+      // the camera when it's turned back on (turning it off really releases
+      // the device, see _applyTrackState), or the mic when the room was
+      // entered muted (audio was never requested then, so nothing existed to
+      // un-mute). Discarded if the pref flipped again or the room was left
+      // while it was resolving.
+      _ensureTrack: function _ensureTrack(kind) {
+        var self = this;
+        if (this._pendingKinds[kind]) return;
+        if (typeof navigator === "undefined" || !navigator.mediaDevices) return;
+        this._pendingKinds[kind] = true;
+        navigator.mediaDevices.getUserMedia(kind === "audio" ? { audio: true } : { video: true })
+          .then(function (s) {
+            self._pendingKinds[kind] = false;
+            var p = self._panel;
+            var stillWanted = self._activeRoom && self._localStream &&
+              (kind === "audio" ? !(p && p.micMuted) : !(p && p.cameraOff));
+            if (!stillWanted) { s.getTracks().forEach(function (t) { t.stop(); }); return; }
+            var stream = self._localStream;
+            stream.getTracks().filter(function (t) { return t.kind === kind; })
+              .forEach(function (t) { t.stop(); stream.removeTrack(t); });
+            s.getTracks().forEach(function (t) { stream.addTrack(t); });
+            self._afterLocalTracksChanged();
+          })
+          .catch(function (err) {
+            self._pendingKinds[kind] = false;
+            console.warn("[AmbientPresencePanel] could not (re)acquire " + kind + ":", err && err.message);
+          });
+      },
+
+      // Called after every mic/deafen/camera toggle.
+      //  - Mic: just enabled/disabled (a muted mic sends silence; keeping the
+      //    device open is the normal behavior for a mic).
+      //  - Camera: OFF really stops the video track — merely disabling it
+      //    leaves the webcam captured and its light on (confirmed live: track
+      //    enabled=false but readyState 'live') — and detaches it from every
+      //    peer; ON captures a fresh track. The peer session is told via
+      //    _afterLocalTracksChanged either way.
+      //  - No stream yet (entered with both muted/off) or a wanted kind that
+      //    was never captured: acquire it now that it's actually wanted.
       _applyTrackState: function _applyTrackState() {
+        // Deafen also silences incoming voices (owned by the room session, not
+        // this panel) — tell it before anything below can return early.
+        try {
+          var RV = lively.identity.RoomView;
+          if (RV && RV.applyDeafened) RV.applyDeafened();
+        } catch (e) { console.error("[AmbientPresencePanel] applyDeafened failed:", e); }
         if (!this._activeRoom) return;
         if (!this._localStream) { this._acquireLocalMedia(); return; }
         var p = this._panel;
-        this._localStream.getAudioTracks().forEach(function (t) { t.enabled = !(p && p.micMuted); });
-        this._localStream.getVideoTracks().forEach(function (t) { t.enabled = !(p && p.cameraOff); });
+        var stream = this._localStream;
+        var wantAudio = !(p && p.micMuted);
+        var wantVideo = !(p && p.cameraOff);
+        var audio = stream.getAudioTracks().filter(function (t) { return t.readyState === "live"; });
+        var video = stream.getVideoTracks().filter(function (t) { return t.readyState === "live"; });
+
+        audio.forEach(function (t) { t.enabled = wantAudio; });
+        if (wantAudio && !audio.length) this._ensureTrack("audio");
+
+        if (!wantVideo) {
+          if (stream.getVideoTracks().length) {
+            stream.getVideoTracks().forEach(function (t) { t.stop(); stream.removeTrack(t); });
+            this._afterLocalTracksChanged();
+          }
+        } else if (!video.length) {
+          this._ensureTrack("video");
+        } else {
+          video.forEach(function (t) { t.enabled = true; });
+        }
       },
 
       init: function init() {
