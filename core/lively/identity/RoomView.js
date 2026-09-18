@@ -101,6 +101,7 @@ module("lively.identity.RoomView")
     // room card).
     var ROOM_ROW_AV = 16, ROOM_ROW_OVERLAP = 6, ROOM_ROW_RING = 2, ROOM_ROW_MAX_SHOWN = 3;
     var MESSAGE_POLL_MS = 4000;
+    var RAIL_POLL_MS = 8000;   // how often the rooms rail re-reads other rooms' headcounts
     var ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
 
     // Plain Box/Text/Image morphs default to draggable/droppable/grabbable —
@@ -153,6 +154,8 @@ module("lively.identity.RoomView")
         this._win = null;
         this._viewRoot = null;
         this._remoteAudio = {};     // did -> <audio> element, session-owned so audio survives the window closing
+        this._rosterRefreshTimers = [];  // pending signaling-triggered roster refreshes (see _scheduleRosterRefresh)
+        this._railTimer = null;          // polls the rooms rail while the view exists
         this._originX = 0;        // view-relative: the view root is its own coordinate space, always (0,0)
         this._originY = 0;
 
@@ -362,6 +365,13 @@ module("lively.identity.RoomView")
         this._renderMembers();
         this._renderVideoCircles();
         this._renderMessages();
+
+        // The rail's counts for OTHER rooms only change on the server, and this
+        // window would otherwise only re-read them on the roster refresh.
+        if (this._railTimer) clearInterval(this._railTimer);
+        this._railTimer = setInterval(function () {
+          if (!self._roomLeft && self._roomsPanelBox && !document.hidden) self._fetchRoomsList();
+        }, RAIL_POLL_MS);
       },
 
       // Brings the window forward (expanding it if minimized), or rebuilds it
@@ -385,6 +395,7 @@ module("lively.identity.RoomView")
       // its rendering. Video circles are removed explicitly: one dragged out of
       // the window onto the world would otherwise outlive it.
       _detachViewRefs: function () {
+        if (this._railTimer) { clearInterval(this._railTimer); this._railTimer = null; }
         var circles = this._videoCircles || {};
         Object.keys(circles).forEach(function (did) { try { circles[did].remove(); } catch (e) {} });
         this._videoCircles = {};
@@ -455,6 +466,20 @@ module("lively.identity.RoomView")
         xhr.send();
       },
 
+      // Someone joined or left the call (signaling peer-joined / peer-left):
+      // re-read the roster now instead of waiting for the 25s heartbeat, which
+      // is what made the member list, header count and rooms rail lag by up to
+      // 25s (measured live). Fires twice: a peer's signaling socket can close a
+      // moment before its presence DELETE lands, so the early read may still
+      // list them and the second one settles it.
+      _scheduleRosterRefresh: function () {
+        var self = this;
+        this._rosterRefreshTimers.forEach(clearTimeout);
+        this._rosterRefreshTimers = [300, 1800].map(function (ms) {
+          return setTimeout(function () { if (!self._roomLeft) self._refreshRoster(); }, ms);
+        });
+      },
+
       // Re-fetches the room detail JSON to pick up roster/participant-count
       // changes (other people joining/leaving) — reuses the same GET this
       // page's own boot already made, rather than a second bespoke route.
@@ -470,11 +495,15 @@ module("lively.identity.RoomView")
           var data;
           try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
           if (self._roomLeft) return;
+          var before = self._participants.map(function (p) { return p.did; }).sort().join(",");
           self._participants = data.participants || [];
+          var changed = before !== self._participants.map(function (p) { return p.did; }).sort().join(",");
           self._renderMembers();
           self._renderVideoCircles();
           self._updateParticipantCount();
           self._fetchRoomsList(); // keeps the left rail's "N here" counts fresh too
+          // Tell an open lounge in this world (its Spaces cards) the headcount moved.
+          if (changed) lively.identity.RoomView._notify(self);
         };
         xhr.send();
       },
@@ -491,6 +520,8 @@ module("lively.identity.RoomView")
         try { this._teardownSignaling(); } catch (e) {}
         var self = this;
         Object.keys(this._remoteAudio).forEach(function (did) { self._removeRemoteAudio(did); });
+        this._rosterRefreshTimers.forEach(clearTimeout);
+        this._rosterRefreshTimers = [];
         if (this._blackTimer) { clearInterval(this._blackTimer); this._blackTimer = null; }
         if (this._blackTrack) { try { this._blackTrack.stop(); } catch (e) {} this._blackTrack = null; }
         if (this._boundLeaveBestEffort) {
@@ -506,7 +537,6 @@ module("lively.identity.RoomView")
       leave: function (done) {
         if (this._roomLeft) { if (done) done(); return; }
         var self = this;
-        this._stopSession();
         var finished = false;
         function finish() {
           if (finished) return;
@@ -521,6 +551,10 @@ module("lively.identity.RoomView")
         xhr.onload = finish;
         xhr.onerror = finish;
         xhr.send();
+        // After the DELETE is on the wire, not before: closing signaling makes
+        // every other member get a peer-left and re-read the roster, and that
+        // read should find this presence already gone.
+        this._stopSession();
         try { lively.identity.AmbientPresencePanel.leaveRoom(); } catch (e) {}
         this._destroyView();
       },
@@ -1695,11 +1729,13 @@ module("lively.identity.RoomView")
       _onSignalingPeerJoined: function (data) {
         this._peerMeta[data.peerId] = { did: data.did, handle: data.handle };
         this._didToPeerId[data.did] = data.peerId;
+        this._scheduleRosterRefresh();
         this._maybeInitiateTo(data.peerId);
       },
 
       _onSignalingPeerLeft: function (data) {
         this._teardownPeerConnection(data.peerId);
+        this._scheduleRosterRefresh();
       },
 
       // Deterministic offerer choice — see this category's own header

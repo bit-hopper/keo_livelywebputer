@@ -202,6 +202,8 @@ module("lively.identity.ConstellationLounge")
     // feature rather than reusing the postcard-compose color.
     var ROOM_ACCENT = Color.rgb(79, 11, 67);
     var ROOM_GREEN = Color.rgb(46, 160, 90);
+    // How often an open lounge re-asks for room presence (see _startRoomsPoll).
+    var ROOMS_POLL_MS = 8000;
     var NEW_ROOM_BTN_H = 28;
     var ROOM_CARD_PAD = 14;
     // Fixed tile size (not "stretch to fill the panel") — cards wrap into a
@@ -349,6 +351,7 @@ module("lively.identity.ConstellationLounge")
         this._lastRenderedCardW = this._geom.cardW;
         this._fetchFeed(null);
         this._fetchRooms();
+        this._startRoomsPoll();
         this._connectPresence();
         this._installMenuBarEntry();
         window.addEventListener("resize", this._onWindowResize.bind(this));
@@ -1513,13 +1516,41 @@ module("lively.identity.ConstellationLounge")
           if (xhr.status !== 200) return self._showError("Failed to load rooms (" + xhr.status + ")");
           var data;
           try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
+          // Polled (see _startRoomsPoll), so an unchanged answer must not
+          // rebuild the panel: _renderSpaces wipes and re-adds every card,
+          // which would reset the panel's scroll position and drop a hover or
+          // in-progress click every few seconds for nothing.
+          var sig = JSON.stringify([data.rooms || [], !!data.amMember, !!data.signedIn]);
+          if (sig === self._roomsSig) return;
+          self._roomsSig = sig;
           self._rooms = data.rooms || [];
           self._amMember = !!data.amMember;
           self._signedIn = !!data.signedIn;
+          // A real change still rebuilds, so keep the scroll position across it.
+          var node = self._spacesBox && self._spacesBox.renderContext().shapeNode;
+          var savedScrollTop = node ? node.scrollTop : 0;
           self._renderSpaces();
+          if (node) node.scrollTop = savedScrollTop;
         };
         xhr.onerror = function () { self._showError("Network error loading rooms"); };
         xhr.send();
+      },
+
+      // Who's in each room changes on the server with no notice to a client
+      // that isn't in the call (measured live: an idle lounge made no request
+      // for over a minute while people joined and left, so its counts only
+      // moved on a reload or the viewer's own action). Poll the same
+      // GET /c/:name/rooms instead, only while the tab is visible, and only
+      // re-render when the answer actually changed (see _fetchRooms). A server
+      // push over the sync socket would make this instant; this is the
+      // client-only stand-in.
+      _startRoomsPoll: function () {
+        var self = this;
+        if (this._roomsPollTimer) return;
+        this._roomsPollTimer = setInterval(function () {
+          if (typeof document !== "undefined" && document.hidden) return;
+          self._fetchRooms();
+        }, ROOMS_POLL_MS);
       },
 
       // Card-click router — dispatches to the one applicable action for
