@@ -987,13 +987,16 @@ function listPostcardsForUser(did, opts, thenDo) {
 }
 
 // List the latest postcard envelopes for a constellation, newest first.
-// opts: { limit, cursor, q } — same pagination/search shape as
-// listPostcardsForUser (q filters on state.title, ILIKE-style).
+// opts: { limit, cursor, q, hasLocation } — same pagination/search shape as
+// listPostcardsForUser (q filters on state.title, ILIKE-style; hasLocation
+// keeps only cards carrying a state.location Plus Code, for the
+// constellation map).
 // Calls thenDo(null, { postcards: [envelopeMetadata...], cursor: String|null }).
 function listPostcardsForConstellation(constellation, opts, thenDo) {
   var limit = (opts && opts.limit) || 20;
   var cursor = (opts && opts.cursor) || null;
   var q = (opts && opts.q) || null;
+  var hasLocation = !!(opts && opts.hasLocation);
   var qLike = q ? '%' + _escapeLikePrefix(q) + '%' : null;
 
   withDB(function (err, pool) {
@@ -1033,7 +1036,8 @@ function listPostcardsForConstellation(constellation, opts, thenDo) {
       // listRepliesForPostcard below is the only listing that should ever
       // surface them.
       '        AND (o.envelope #>> \'{replyTo,objId}\') IS NULL' +
-      (qLike ? ' AND (o.envelope #>> \'{state,title}\') ILIKE $2 ESCAPE \'\\\'' : '');
+      (qLike ? ' AND (o.envelope #>> \'{state,title}\') ILIKE $2 ESCAPE \'\\\'' : '') +
+      (hasLocation ? ' AND (o.envelope #>> \'{state,location}\') IS NOT NULL' : '');
 
     var params, sql;
     if (cursor) {

@@ -83,6 +83,7 @@ module("lively.identity.ConstellationLounge")
     "lively.identity.QuiltPatterns",
     "lively.identity.ConstellationSettingsDialog",
     "lively.identity.EditEventDialog",
+    "lively.identity.ConstellationMap",
     "lively.morphic.Complete",
   )
   .toRun(function () {
@@ -168,6 +169,13 @@ module("lively.identity.ConstellationLounge")
     // edge aligned with the search box's top edge, but shorter than the
     // search box itself — height hugs the label the same way width does.
     var CREATE_BTN_W = 150, CREATE_BTN_H = 34;
+
+    // "Map ↗" pill in the quick-info panel — same pill shape as "+ Postcard"
+    // (but green), fixed size (label + arrow_outward glyph) rather than measured, since
+    // the icon font's async load makes a same-tick width read unreliable
+    // (CLAUDE.md, Material Symbols section).
+    var MAP_BTN_H = 34, MAP_BTN_W = 82;
+    var MAP_BTN_ICON_BOX = 26, MAP_BTN_ICON_PX = 18;
 
     // Spaces/rooms panel -- "New Room" pill (top-right of the panel header,
     // same "+ X" single-Text-morph pill idiom as CREATE_BTN above, sized to
@@ -1646,6 +1654,19 @@ module("lively.identity.ConstellationLounge")
     "quick info", {
       _renderQuickInfo: function () {
         var self = this;
+        // Map mode: the panel is filled by the constellation map instead of
+        // the normal contents. A re-render while it's already showing (a
+        // window resize) just re-fits the live map — rebuilding it would
+        // refetch every pin.
+        if (this._mapMode) {
+          var liveMap = this._quickInfoMap;
+          var mapH = this._quickInfoBox.getExtent().y;
+          if (liveMap && liveMap.owner === this._quickInfoBox) {
+            liveMap.fitTo(this._quickInfoVisibleW(), mapH);
+            return;
+          }
+          return this._renderQuickInfoMap(mapH);
+        }
         (this._quickInfoBox.submorphs || []).slice().forEach(function (m) { m.remove(); });
         var qi = this._quickInfo || {};
         var w = this._quickInfoBox.getExtent().x;
@@ -1994,6 +2015,17 @@ module("lively.identity.ConstellationLounge")
         // _renderEventCard and _renderEmptyEventCard apply their own
         // top margin internally now, so it lines up with the margin they
         // leave on the right instead of a separately-guessed constant.
+        // "Map ↗" pill — in the open band right of the title/detail column,
+        // vertically centered on the title's own row. Hidden (same "degrade
+        // by disappearing" precedent as the event card) once it would run
+        // into the event card's real left edge on a narrow panel.
+        var mapBtnX = Math.max(titleRight, detailRight) + 20;
+        // Sits just under the banner, in the band above the title's row.
+        var mapBtnY = BANNER_H + 8;
+        if (mapBtnX + MAP_BTN_W + 16 <= eventCardActualLeft) {
+          this._quickInfoBox.addMorph(this._buildMapButton(mapBtnX, mapBtnY));
+        }
+
         var PANEL_BOTTOM_PAD = 14;
         var cardBottomMax = h - PANEL_BOTTOM_PAD;
         if (qi.nextEvent) {
@@ -2053,6 +2085,161 @@ module("lively.identity.ConstellationLounge")
           };
           this._quickInfoBox.addMorph(gearBtn);
         }
+
+        this._disableDragging(this._quickInfoBox);
+      },
+
+      // Real gap before the members column (see the visibleW comment in
+      // _renderQuickInfo) — the box itself can run wider than what's
+      // actually visible, so the map is sized to this, not the box's own w.
+      _quickInfoVisibleW: function () {
+        var w = this._quickInfoBox.getExtent().x;
+        return (this._geom && typeof this._geom.membersX === "number")
+          ? Math.max(200, this._geom.membersX - GUTTER - this._geom.quickInfoX)
+          : w;
+      },
+
+      // Green pill (ROOM_GREEN), same shape as "+ Postcard": a "Map" label plus a Material
+      // Symbols arrow_outward glyph, as two morphs (an icon-font glyph can't
+      // share a Text morph with regular-font text). Position is baked into
+      // the constructor rect (CLAUDE.md: setPosition right after addMorph
+      // can desync a morph's render tree); decorative children ignore
+      // events so a click resolves to the pill itself.
+      _buildMapButton: function (x, y) {
+        var self = this;
+        var ACCENT = ROOM_GREEN, ACCENT_HOVER = Color.rgb(36, 132, 72);
+        var pill = new lively.morphic.Box(lively.rect(x, y, MAP_BTN_W, MAP_BTN_H));
+        pill.setFill(ACCENT);
+        pill.applyStyle({ borderWidth: 0, borderRadius: MAP_BTN_H / 2, handStyle: "pointer" });
+        noDrag(pill);
+        pill.toolTip = "Show postcards on a map";
+
+        // Slot layout, from live measurement (rendered span boxes inside the
+        // 82x34 pill): "Map" is ~37.3px wide and the glyph 18px, so with a 5px
+        // gap the pair is ~60px and each side gets ~10.85px of padding. Each
+        // is centered *within its own fixed-width slot* (align:'center'), so
+        // the text stays centered in its label even if the fallback font's
+        // width differs slightly. Slot width must stay >= text + the
+        // shapeNode's 8px padding or the label wraps.
+        // LABEL_H is the box's *total* height: rendered content is ~21.3px
+        // and the shapeNode subtracts 4px of its own vertical padding, so
+        // anything under ~25 clips the descender of the "p" (confirmed live:
+        // a 20px box cut ~2.8px off it — CLAUDE.md's Text-sizing gotcha).
+        // LABEL_TOP keeps the value the centering above was measured with
+        // (a 20px-tall box), so the glyph itself doesn't move.
+        var LINE_H = 20, LABEL_H = 25, LABEL_SLOT_W = 46;
+        var TEXT_CENTER_X = 29.5, GLYPH_CENTER_X = 62.15;
+        var label = lively.morphic.Text.makeLabel("Map", {
+          fontSize: 14, fontWeight: "700", textColor: Color.rgb(255, 255, 255),
+          align: "center", fixedWidth: true, fixedHeight: true,
+        });
+        label.setExtent(lively.pt(LABEL_SLOT_W, LABEL_H));
+        // -2.35: the label's span box measured 9px from the pill's top and
+        // 4.3px from its bottom when centered by (H - LINE_H) / 2, i.e.
+        // riding ~2.35px low (the shapeNode's own vertical padding).
+        label.setPosition(lively.pt(TEXT_CENTER_X - LABEL_SLOT_W / 2, (MAP_BTN_H - LINE_H) / 2 - 2.35));
+        label.applyStyle({ borderWidth: 0 });
+        noDrag(label);
+        label.eventsAreIgnored = true;
+        pill.addMorph(label);
+
+        // Icon idiom from the settings gear below: fixed-rect Text (so
+        // align:'center' isn't a no-op), vertical centering via top padding,
+        // fontSize in pt (px * 0.75).
+        var iconX = GLYPH_CENTER_X - MAP_BTN_ICON_BOX / 2;
+        var icon = new lively.morphic.Text(lively.rect(iconX, (MAP_BTN_H - MAP_BTN_ICON_BOX) / 2, MAP_BTN_ICON_BOX, MAP_BTN_ICON_BOX));
+        icon.textString = "arrow_outward";
+        icon.applyStyle({
+          fontFamily: "'Material Symbols Rounded'",
+          fontSize: MAP_BTN_ICON_PX * 0.75,
+          textColor: Color.rgb(255, 255, 255),
+          fill: null,
+          borderWidth: 0,
+          align: "center",
+          // -2: the glyph's span box measured 8px from the pill's top and
+          // 4px from its bottom with the gear's centering padding, i.e.
+          // riding 2px low.
+          padding: lively.Rectangle.inset(0, Math.round((MAP_BTN_ICON_BOX - MAP_BTN_ICON_PX) / 2) - 2, 0, 0),
+          allowInput: false,
+          selectable: false,
+          clipMode: "hidden",
+          whiteSpaceHandling: "pre",
+        });
+        noDrag(icon);
+        icon.eventsAreIgnored = true;
+        pill.addMorph(icon);
+
+        pill.onMouseOver = function () { pill.setFill(ACCENT_HOVER); };
+        pill.onMouseOut = function () { pill.setFill(ACCENT); };
+        pill.onMouseUp = function (evt) {
+          self._openQuickInfoMap();
+          evt.stop();
+          return true;
+        };
+        return pill;
+      },
+
+      // ─── map mode ────────────────────────────────────────────────────────
+
+      _openQuickInfoMap: function () {
+        this._mapMode = true;
+        this._renderQuickInfo();
+      },
+
+      _closeQuickInfoMap: function () {
+        this._mapMode = false;
+        this._quickInfoMap = null;
+        // The normal render clears every submorph, which also removes (and
+        // so tears down the Leaflet instance of) the map.
+        this._renderQuickInfo();
+      },
+
+      _renderQuickInfoMap: function (h) {
+        var self = this;
+        (this._quickInfoBox.submorphs || []).slice().forEach(function (m) { m.remove(); });
+        var mapW = this._quickInfoVisibleW();
+
+        var map = new lively.identity.ConstellationMap(lively.rect(0, 0, mapW, h), {
+          constellation: this._name,
+          resolveHandles: function (dids, thenDo) { self._resolveHandlesBatch(dids, thenDo); },
+          // A pin click shows that postcard in the reel (left column), with
+          // the map staying open, rather than opening a floating window.
+          onOpen: function (handle, objId) { self._showCardInReel(objId); },
+        });
+        this._quickInfoBox.addMorph(map);
+        this._quickInfoMap = map;
+
+        // Back button over the map's top-left corner, same Text-morph-as-
+        // icon-button idiom as the settings gear.
+        var BACK = 32, BACK_GLYPH_PX = 20;
+        var back = new lively.morphic.Text(lively.rect(12, 12, BACK, BACK));
+        back.textString = "arrow_back";
+        back.applyStyle({
+          fontFamily: "'Material Symbols Rounded'",
+          fontSize: BACK_GLYPH_PX * 0.75,
+          textColor: Color.rgb(90, 90, 90),
+          fill: Color.rgba(255, 255, 255, 0.95),
+          borderRadius: BACK / 2,
+          borderWidth: 1,
+          borderColor: Color.rgb(224, 224, 224),
+          align: "center",
+          padding: lively.Rectangle.inset(0, Math.round((BACK - BACK_GLYPH_PX) / 2), 0, 0),
+          allowInput: false,
+          selectable: false,
+          clipMode: "hidden",
+          whiteSpaceHandling: "pre",
+          handStyle: "pointer",
+        });
+        noDrag(back);
+        back.toolTip = "Back to constellation info";
+        back.onMouseOver = function () { back.applyStyle({ fill: Color.rgb(238, 238, 238) }); };
+        back.onMouseOut = function () { back.applyStyle({ fill: Color.rgba(255, 255, 255, 0.95) }); };
+        back.onMouseUp = function (evt) {
+          self._closeQuickInfoMap();
+          evt.stop();
+          return true;
+        };
+        this._quickInfoBox.addMorph(back);
 
         this._disableDragging(this._quickInfoBox);
       },
@@ -2860,6 +3047,44 @@ module("lively.identity.ConstellationLounge")
         this._loadThread(card.objId);
       },
 
+      // Shows a specific postcard in the reel — used by the map's pin click.
+      // If it's already in the loaded feed, just jump to its index. The map
+      // lists every located card while the reel has only paged in the newest
+      // 20+, so otherwise keep paging until it appears (bounded), which
+      // keeps "N / M" and prev/next order consistent with the feed. If it
+      // never shows up (e.g. an active search filtered it out), render it
+      // directly and leave the nav position alone. A newer call supersedes
+      // an in-flight paging loop via _reelJumpToken.
+      _showCardInReel: function (objId) {
+        var self = this;
+        var MAX_CARDS = 500;   // same ceiling as ConstellationMap's MAX_PINS
+        var jump = this._reelJumpToken = (this._reelJumpToken || 0) + 1;
+
+        function indexOfCard() {
+          for (var i = 0; i < self._feedCards.length; i++) {
+            if (self._feedCards[i].objId === objId) return i;
+          }
+          return -1;
+        }
+        function showDirectly() {
+          self._renderCardInto(self._frontCardBox, objId);
+          self._loadThread(objId);
+        }
+        (function step() {
+          if (self._reelJumpToken !== jump) return;
+          var idx = indexOfCard();
+          if (idx >= 0) {
+            self._activeIndex = idx;
+            return self._showActiveCard();
+          }
+          if (!self._feedCursor || self._feedCards.length >= MAX_CARDS) return showDirectly();
+          self._maybeLoadMore(function (loaded) {
+            if (self._reelJumpToken !== jump) return;
+            if (loaded) step(); else showDirectly();
+          });
+        })();
+      },
+
       _renderNavPosition: function () {
         this._navLabel.textString = (this._activeIndex + 1) + " / " + this._feedCards.length + (this._feedCursor ? "+" : "");
       },
@@ -2871,12 +3096,20 @@ module("lively.identity.ConstellationLounge")
       // approve/decline join-request URLs are built from it — so passing
       // null would silently break more than just the "@" label), and
       // embeds it, clearing any previous occupant first.
+      //
+      // Each call takes a per-box token; a fetch/handle callback that comes
+      // back after a newer call has started for the same box drops its
+      // result. Without it, two quick renders (e.g. two map-pin clicks) each
+      // clear the box up front and then both embed once their async fetches
+      // return, stacking two cards.
       _renderCardInto: function (box, objId) {
         var self = this;
+        var token = box._cardRenderToken = (box._cardRenderToken || 0) + 1;
         (box.submorphs || []).slice().forEach(function (m) { m.remove(); });
         this._fetchEnvelope(objId, function (err, envelope) {
-          if (err || !envelope) return;
+          if (err || !envelope || box._cardRenderToken !== token) return;
           self._resolveHandle(envelope.did, function (handle) {
+            if (box._cardRenderToken !== token) return;
             var opts = { target: box, envelope: envelope, bounds: lively.rect(0, 0, box.getExtent().x, box.getExtent().y) };
             if (envelope.type === "wikipage") lively.identity.WikiView.open(handle, objId, opts);
             else lively.identity.PostCardView.open(handle, objId, opts);

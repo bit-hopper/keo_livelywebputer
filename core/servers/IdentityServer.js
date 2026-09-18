@@ -5268,7 +5268,10 @@ module.exports = function (route, app) {
       var limit  = Math.min(parseInt(req.query.limit,  10) || 20, 100);
       var cursor = req.query.cursor || null;
       var q      = typeof req.query.q === "string" ? req.query.q : null;
-      objectRepo.listPostcardsForConstellation(name, { limit: limit, cursor: cursor, q: q }, function (err, result) {
+      // hasLocation=1: only cards carrying a state.location Plus Code — the
+      // constellation map's feed (ConstellationLounge.js's Map button).
+      var hasLocation = req.query.hasLocation === "1";
+      objectRepo.listPostcardsForConstellation(name, { limit: limit, cursor: cursor, q: q, hasLocation: hasLocation }, function (err, result) {
         if (err) return res.status(500).json({ error: String(err) });
         var viewerDid = req.identity ? req.identity.did : null;
         result.postcards = result.postcards
