@@ -656,56 +656,10 @@ function buildPostCardPage(envelope, handle) {
   );
 }
 
-// Serve a single room's Discord-like live view (chat/members/voice-video,
-// lively.identity.RoomView) as a standalone HTML page. Same boot shape as
-// buildConstellationLoungePage: manuallyCreateWorld so bootstrap.js builds a
-// blank world instead of trying (and failing) to load a per-user home-world
-// config, then onStartWorld hands off to the live RoomView controller. No
-// static layout snapshot to pre-render here (unlike a stored post card) — chat/
-// members/presence all need the live controller's own queries anyway, so
-// the page ships a plain loading placeholder.
-function buildRoomViewPage(constellation, room) {
-  var title = escapeHtml(constellation.name) + " — " + escapeHtml(room.name);
-
-  return (
-    '<!DOCTYPE html><html lang="en"><head>' +
-    '<meta charset="utf-8">' +
-    '<meta name="viewport" content="width=device-width, initial-scale=1">' +
-    '<meta name="apple-mobile-web-app-capable" content="yes">' +
-    '<link rel="shortcut icon" href="/core/media/lively.ico">' +
-    '<title>' + title + '</title>' +
-    '<style>' +
-    'body{margin:0;font-family:system-ui,sans-serif;background:#313338}' +
-    '.room-loader{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);' +
-    'font-size:13px;color:#949ba4}' +
-    '</style>' +
-    '</head><body>' +
-    '<div class="room-loader" id="room-loader">Loading ' + escapeHtml(room.name) + '…</div>' +
-    '<script src="/core/lib/postcard/postcard-runtime.js"></script>' +
-    '<script>window.Config={' +
-    'codeBase:location.protocol+"//"+location.host+"/core/",' +
-    'rootPath:location.protocol+"//"+location.host+"/",' +
-    'manuallyCreateWorld:true,' +
-    'onStartWorld:function(){' +
-    // Not a live-editing surface (chat/presence writes go straight to the
-    // server, nothing buffered locally to lose) -- the classic Lively
-    // "data may be lost" exit warning doesn't apply here and would just
-    // block bfcache and nag on every navigation away for no reason.
-    'if(lively.Config)lively.Config.askBeforeQuit=false;' +
-    'lively.require("lively.identity.RoomView").toRun(function(){' +
-    'lively.identity.RoomView.open(' + JSON.stringify(constellation.name) + ',' + JSON.stringify(room.id) + ');' +
-    '});' +
-    '}' +
-    '}</script>' +
-    '<script src="/core/lively/bootstrap.js"></script>' +
-    '</body></html>'
-  );
-}
-
 // Serve a constellation's lounge — the fixed-layout landing page at
 // /c/:name (search, postcard turnover reel + reply thread, quick-info
 // panel, embedded wiki, member list) — as a standalone HTML page. Same
-// boot shape as buildRoomViewPage above: manuallyCreateWorld so
+// boot shape as the other constellation pages: manuallyCreateWorld so
 // bootstrap.js builds a blank world instead of trying (and failing) to
 // load a per-user home-world config, then onStartWorld hands off to the
 // live lively.identity.ConstellationLounge controller.
@@ -779,7 +733,7 @@ function buildConstellationLoungePage(constellation, quickInfo) {
     // The lounge is a place the user inhabits, so the normal menu bar
     // stays available (unlike WarpDrop's kiosk-style stripped-down panel).
     'onStartWorld:function(){' +
-    // Same reasoning as buildRoomViewPage: a room/member list, not a
+    // Not a live-editing surface: a room/member list, not a
     // live-editing surface -- no unsaved local state the exit warning
     // would actually be protecting, just an unconditional bfcache-blocker.
     'if(lively.Config)lively.Config.askBeforeQuit=false;' +
@@ -860,7 +814,7 @@ function buildWikiIndexPage(constellation, pages) {
     // user navigates within the constellation, so the normal menu bar
     // (identity, "my postcards", etc.) stays available.
     'onStartWorld:function(){' +
-    // Same reasoning as buildRoomViewPage: a page listing, not a
+    // Not a live-editing surface: a page listing, not a
     // live-editing surface -- no unsaved local state the exit warning
     // would actually be protecting, just an unconditional bfcache-blocker.
     'if(lively.Config)lively.Config.askBeforeQuit=false;' +
@@ -925,7 +879,7 @@ function buildPersonalWikiIndexPage(handle, pages) {
     'rootPath:location.protocol+"//"+location.host+"/",' +
     'manuallyCreateWorld:true,' +
     'onStartWorld:function(){' +
-    // Same reasoning as buildRoomViewPage: a page listing, not a
+    // Not a live-editing surface: a page listing, not a
     // live-editing surface -- no unsaved local state the exit warning
     // would actually be protecting, just an unconditional bfcache-blocker.
     'if(lively.Config)lively.Config.askBeforeQuit=false;' +
@@ -4663,8 +4617,8 @@ module.exports = function (route, app) {
 
   // ─── rooms — Spaces panel ────────────────────────────────────────────────
   // Room config/access-grants are SQLite-backed (ConstellationRegistry.js);
-  // live "who's here right now" presence is in-memory (RoomPresence.js) and
-  // does not survive a restart by design — see that module's header.
+  // live "who's here right now" presence (RoomPresence.js, Redis-backed when REDIS_URL is set) and
+  // is short-lived by design (75s heartbeat window) — see that module's header.
 
   // Who may pin/rename/change the header image/archive/delete a room —
   // the room's own creator, or any constellation controller (a stricter
@@ -4699,27 +4653,35 @@ module.exports = function (route, app) {
         var firstErr = null;
         var out = [];
         rooms.forEach(function (room) {
-          var live = roomPresence.summary(room.id, 4);
-          function withStatus(status) {
-            out.push({
-              id: room.id, name: room.name, isVideo: room.isVideo, isVoice: room.isVoice,
-              access: room.access, activity: room.activity, createdBy: room.createdBy, createdAt: room.createdAt,
-              headerUrl: room.headerUrl, pinned: room.pinned,
-              participantCount: live.count, participants: live.seedDids,
-              iJoined: viewerDid ? roomPresence.isPresent(room.id, viewerDid) : false,
-              myAccessStatus: room.access === "request" ? (status || null) : null,
-              canManage: canManageRoom(constellation, room, viewerDid)
-            });
-            if (--remaining === 0) {
-              if (firstErr) return res.status(500).json({ error: String(firstErr) });
-              out.sort(function (a, b) { return a.id - b.id; });
-              res.json({ rooms: out, amMember: amMember, signedIn: !!viewerDid });
+          // Presence is async (Redis-backed when REDIS_URL is set). A presence
+          // failure must not take down the whole room listing, so it degrades
+          // to "nobody here" for that room and is logged.
+          roomPresence.roster(room.id).catch(function (e) {
+            console.error("[IdentityServer] room presence read failed for room " + room.id + ":", e && e.message);
+            return [];
+          }).then(function (roster) {
+            var live = { count: roster.length, seedDids: roster.slice(0, 4).map(function (p) { return p.did; }) };
+            function withStatus(status) {
+              out.push({
+                id: room.id, name: room.name, isVideo: room.isVideo, isVoice: room.isVoice,
+                access: room.access, activity: room.activity, createdBy: room.createdBy, createdAt: room.createdAt,
+                headerUrl: room.headerUrl, pinned: room.pinned,
+                participantCount: live.count, participants: live.seedDids,
+                iJoined: viewerDid ? roster.some(function (p) { return p.did === viewerDid; }) : false,
+                myAccessStatus: room.access === "request" ? (status || null) : null,
+                canManage: canManageRoom(constellation, room, viewerDid)
+              });
+              if (--remaining === 0) {
+                if (firstErr) return res.status(500).json({ error: String(firstErr) });
+                out.sort(function (a, b) { return a.id - b.id; });
+                res.json({ rooms: out, amMember: amMember, signedIn: !!viewerDid });
+              }
             }
-          }
-          if (!viewerDid || room.access !== "request") return withStatus(null);
-          constellationRegistry.getRoomJoinRequestStatus(room.id, viewerDid, function (err, status) {
-            if (err) firstErr = firstErr || err;
-            withStatus(status);
+            if (!viewerDid || room.access !== "request") return withStatus(null);
+            constellationRegistry.getRoomJoinRequestStatus(room.id, viewerDid, function (err, status) {
+              if (err) firstErr = firstErr || err;
+              withStatus(status);
+            });
           });
         });
       });
@@ -5015,8 +4977,17 @@ module.exports = function (route, app) {
         constellationRegistry.canJoinRoom(constellation, room, req.identity.did, function (err, allowed) {
           if (err) return res.status(500).json({ error: String(err) });
           if (!allowed) return res.status(403).json({ error: "Forbidden: join not permitted for this room" });
-          roomPresence.touch(roomId, req.identity.did, req.identity.handle);
-          res.json({ ok: true, participantCount: roomPresence.summary(roomId).count });
+          // Responds only after the write is visible to every worker (touch
+          // resolves once Redis has it), so a roster read the client issues
+          // right after this response sees the join.
+          roomPresence.touch(roomId, req.identity.did, req.identity.handle).then(function () {
+            return roomPresence.roster(roomId);
+          }).then(function (roster) {
+            res.json({ ok: true, participantCount: roster.length });
+          }).catch(function (e) {
+            console.error("[IdentityServer] room presence join failed for room " + roomId + ":", e && e.message);
+            res.status(503).json({ error: "Presence temporarily unavailable" });
+          });
         });
       });
     });
@@ -5027,8 +4998,12 @@ module.exports = function (route, app) {
   // (leaving a room you're not in is a no-op), so no existence checks
   // needed beyond auth.
   app.delete("/c/:name/rooms/:roomId/presence", auth.requireAuth, function (req, res) {
-    roomPresence.leave(parseInt(req.params.roomId, 10), req.identity.did);
-    res.json({ ok: true });
+    roomPresence.leave(parseInt(req.params.roomId, 10), req.identity.did).then(function () {
+      res.json({ ok: true });
+    }).catch(function (e) {
+      console.error("[IdentityServer] room presence leave failed:", e && e.message);
+      res.status(503).json({ error: "Presence temporarily unavailable" });
+    });
   });
 
   // ─── rooms — chat (RoomView.js) ─────────────────────────────────────────
@@ -5355,13 +5330,14 @@ module.exports = function (route, app) {
     });
   });
 
-  // A single room's Discord-like live view (lively.identity.RoomView) —
-  // registered before the /:objId wildcard below, same ordering discipline
+  // A single room's detail JSON (room, live roster, canManage) — what
+  // lively.identity.RoomView fetches when entering and refreshing a room.
+  // Registered before the /:objId wildcard below, same ordering discipline
   // as every other named sub-route under /c/:constellation. Gated by
   // canJoinRoom exactly like the presence join route (POST .../presence
   // above): a non-member, or a non-approved visitor to a 'request'-access
-  // room, gets a plain 404 here and never even boots the world — matching
-  // every other room route's "can't tell a private room exists" posture.
+  // room, gets a plain 404 here — matching every other room route's
+  // "can't tell a private room exists" posture.
   app.get("/c/:constellation/rooms/:roomId", auth.optionalAuth, function (req, res) {
     var name = req.params.constellation;
     var roomId = parseInt(req.params.roomId, 10);
@@ -5381,21 +5357,32 @@ module.exports = function (route, app) {
           if (err) return res.status(500).json({ error: String(err) });
           if (!allowed) return res.status(404).json({ error: "Room not found: " + roomId });
 
+          // A room is no longer a page — it opens as a window inside the
+          // lounge world (RoomView.open). A browser landing here (an old
+          // bookmark/link) is sent to the lounge instead of a raw JSON dump;
+          // only the canJoinRoom-gated JSON below remains.
           if (req.accepts(["html", "json"]) === "html") {
-            return res.send(buildRoomViewPage(constellation, room));
+            return res.redirect(302, "/c/" + encodeURIComponent(name));
           }
 
-          var roster = roomPresence.roster(roomId);
-          // canManage backs RoomView.js's own settings gear (creator or
-          // constellation controller — see canManageRoom above); merged
-          // straight into `room` since RoomView.js stores this whole
-          // object as this._room verbatim.
-          res.json({
-            room: Object.assign({}, room, { canManage: canManageRoom(constellation, room, viewerDid) }),
-            participants: roster,
-            participantCount: roster.length,
-            isController: constellationRegistry.isController(constellation, viewerDid),
-            iJoined: viewerDid ? roomPresence.isPresent(roomId, viewerDid) : false
+          roomPresence.roster(roomId).then(function (roster) {
+            // canManage backs RoomView.js's own settings gear (creator or
+            // constellation controller — see canManageRoom above); merged
+            // straight into `room` since RoomView.js stores this whole
+            // object as this._room verbatim.
+            res.json({
+              room: Object.assign({}, room, { canManage: canManageRoom(constellation, room, viewerDid) }),
+              participants: roster,
+              participantCount: roster.length,
+              isController: constellationRegistry.isController(constellation, viewerDid),
+              iJoined: viewerDid ? roster.some(function (p) { return p.did === viewerDid; }) : false
+            });
+          }).catch(function (e) {
+            // Unlike the rooms listing this can't meaningfully degrade to an
+            // empty roster: a wrong "nobody here" is exactly the bug this
+            // store exists to prevent.
+            console.error("[IdentityServer] room presence read failed for room " + roomId + ":", e && e.message);
+            res.status(503).json({ error: "Presence temporarily unavailable" });
           });
         });
       });
