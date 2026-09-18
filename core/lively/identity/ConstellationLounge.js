@@ -170,12 +170,29 @@ module("lively.identity.ConstellationLounge")
     // search box itself — height hugs the label the same way width does.
     var CREATE_BTN_W = 150, CREATE_BTN_H = 34;
 
-    // "Map ↗" pill in the quick-info panel — same pill shape as "+ Postcard"
-    // (but green), fixed size (label + arrow_outward glyph) rather than measured, since
-    // the icon font's async load makes a same-tick width read unreliable
-    // (CLAUDE.md, Material Symbols section).
-    var MAP_BTN_H = 34, MAP_BTN_W = 82;
-    var MAP_BTN_ICON_BOX = 26, MAP_BTN_ICON_PX = 18;
+    // "Map ↗" / "Canvas ↗" pills in the quick-info panel — same pill shape as
+    // "+ Postcard" (but green), label + arrow_outward glyph. Sized from a
+    // hardcoded label width (measured once, live) rather than measured at
+    // build time, since the icon font's async load makes a same-tick width
+    // read unreliable (CLAUDE.md, Material Symbols section). Widths are the
+    // rendered width of each label in bold 14pt (18.67px) Helvetica.
+    var QI_PILL_H = 34;
+    var QI_PILL_ICON_BOX = 26, QI_PILL_ICON_PX = 18;
+    var QI_PILL_PAD = 10.85, QI_PILL_GAP = 5;   // side padding, label-to-glyph gap (px)
+    var QI_PILL_TEXT_W = { Map: 37.3, Canvas: 66.4 };
+    // Fill + hover fill per pill. Map is the Rooms panel's green (same value
+    // as ROOM_GREEN, written out because that var is assigned further down,
+    // after this line runs); Canvas uses the purple accent the wallet
+    // dialogs' pills already use.
+    var QI_PILL_COLORS = {
+      Map:    { fill: Color.rgb(46, 160, 90),  hover: Color.rgb(36, 132, 72) },
+      Canvas: { fill: Color.rgb(147, 51, 234), hover: Color.rgb(126, 34, 206) },
+    };
+    // Total pill width for a label of the given rendered width: padding on
+    // each side around label + gap + glyph.
+    function qiPillWidth(textW) {
+      return Math.round(textW + QI_PILL_GAP + QI_PILL_ICON_PX + QI_PILL_PAD * 2);
+    }
 
     // Spaces/rooms panel -- "New Room" pill (top-right of the panel header,
     // same "+ X" single-Text-morph pill idiom as CREATE_BTN above, sized to
@@ -2015,16 +2032,36 @@ module("lively.identity.ConstellationLounge")
         // _renderEventCard and _renderEmptyEventCard apply their own
         // top margin internally now, so it lines up with the margin they
         // leave on the right instead of a separately-guessed constant.
-        // "Map ↗" pill — in the open band right of the title/detail column,
-        // vertically centered on the title's own row. Hidden (same "degrade
-        // by disappearing" precedent as the event card) once it would run
-        // into the event card's real left edge on a narrow panel.
-        var mapBtnX = Math.max(titleRight, detailRight) + 20;
-        // Sits just under the banner, in the band above the title's row.
-        var mapBtnY = BANNER_H + 8;
-        if (mapBtnX + MAP_BTN_W + 16 <= eventCardActualLeft) {
-          this._quickInfoBox.addMorph(this._buildMapButton(mapBtnX, mapBtnY));
-        }
+        // "Map ↗" and "Canvas ↗" pills — in the open band right of the
+        // title/detail column, just under the banner and above the title's
+        // row. Each is hidden (same "degrade by disappearing" precedent as
+        // the event card) once it would run into the event card's real left
+        // edge on a narrow panel. Canvas is a placeholder: no action yet.
+        var pillY = BANNER_H + 8;
+        var PILL_SPACING = 10;
+        var pillSpecs = [
+          { label: "Map", tooltip: "Show postcards on a map",
+            onClick: function () { self._openQuickInfoMap(); } },
+          { label: "Canvas", tooltip: "Canvas (coming soon)",
+            onClick: function () {} },
+        ];
+        // Preferred start is just right of the title/detail column. The
+        // pills sit above the title row (y < detailY), so that column's
+        // width doesn't really constrain them — when the whole group would
+        // run into the event card, slide it left (down to just clear the
+        // avatar ring) rather than dropping a pill.
+        var pillGroupW = PILL_SPACING * (pillSpecs.length - 1);
+        pillSpecs.forEach(function (spec) { pillGroupW += qiPillWidth(QI_PILL_TEXT_W[spec.label]); });
+        var pillMinX = avX + AVATAR + RING + 16;
+        var pillX = Math.max(pillMinX,
+          Math.min(Math.max(titleRight, detailRight) + 20, eventCardActualLeft - 16 - pillGroupW));
+        pillSpecs.forEach(function (spec) {
+          var pillW = qiPillWidth(QI_PILL_TEXT_W[spec.label]);
+          if (pillX + pillW + 16 <= eventCardActualLeft) {
+            self._quickInfoBox.addMorph(self._buildPillButton(pillX, pillY, spec.label, pillW, spec.tooltip, spec.onClick));
+          }
+          pillX += pillW + PILL_SPACING;
+        });
 
         var PANEL_BOTTOM_PAD = 14;
         var cardBottomMax = h - PANEL_BOTTOM_PAD;
@@ -2099,37 +2136,40 @@ module("lively.identity.ConstellationLounge")
           : w;
       },
 
-      // Green pill (ROOM_GREEN), same shape as "+ Postcard": a "Map" label plus a Material
-      // Symbols arrow_outward glyph, as two morphs (an icon-font glyph can't
-      // share a Text morph with regular-font text). Position is baked into
+      // Colored pill (QI_PILL_COLORS[labelText]), same shape as "+ Postcard":
+      // a text label plus a Material Symbols arrow_outward glyph, as two
+      // morphs (an icon-font glyph can't share a Text morph with regular-font
+      // text). width comes from qiPillWidth(the label's rendered width).
+      // Position is baked into
       // the constructor rect (CLAUDE.md: setPosition right after addMorph
       // can desync a morph's render tree); decorative children ignore
       // events so a click resolves to the pill itself.
-      _buildMapButton: function (x, y) {
-        var self = this;
-        var ACCENT = ROOM_GREEN, ACCENT_HOVER = Color.rgb(36, 132, 72);
-        var pill = new lively.morphic.Box(lively.rect(x, y, MAP_BTN_W, MAP_BTN_H));
+      _buildPillButton: function (x, y, labelText, pillW, tooltip, onClick) {
+        var ACCENT = QI_PILL_COLORS[labelText].fill, ACCENT_HOVER = QI_PILL_COLORS[labelText].hover;
+        var textW = QI_PILL_TEXT_W[labelText];
+        var pill = new lively.morphic.Box(lively.rect(x, y, pillW, QI_PILL_H));
         pill.setFill(ACCENT);
-        pill.applyStyle({ borderWidth: 0, borderRadius: MAP_BTN_H / 2, handStyle: "pointer" });
+        pill.applyStyle({ borderWidth: 0, borderRadius: QI_PILL_H / 2, handStyle: "pointer" });
         noDrag(pill);
-        pill.toolTip = "Show postcards on a map";
+        pill.toolTip = tooltip;
 
         // Slot layout, from live measurement (rendered span boxes inside the
-        // 82x34 pill): "Map" is ~37.3px wide and the glyph 18px, so with a 5px
-        // gap the pair is ~60px and each side gets ~10.85px of padding. Each
-        // is centered *within its own fixed-width slot* (align:'center'), so
-        // the text stays centered in its label even if the fallback font's
-        // width differs slightly. Slot width must stay >= text + the
-        // shapeNode's 8px padding or the label wraps.
+        // "Map" pill, 82x34): the label is centered *within its own fixed-
+        // width slot* (align:'center'), so it stays centered even if the
+        // fallback font's width differs slightly. The label + gap + glyph
+        // group is centered in the pill by QI_PILL_PAD on each side. Slot
+        // width must stay >= text + the shapeNode's 8px padding or the label
+        // wraps.
         // LABEL_H is the box's *total* height: rendered content is ~21.3px
         // and the shapeNode subtracts 4px of its own vertical padding, so
         // anything under ~25 clips the descender of the "p" (confirmed live:
         // a 20px box cut ~2.8px off it — CLAUDE.md's Text-sizing gotcha).
         // LABEL_TOP keeps the value the centering above was measured with
         // (a 20px-tall box), so the glyph itself doesn't move.
-        var LINE_H = 20, LABEL_H = 25, LABEL_SLOT_W = 46;
-        var TEXT_CENTER_X = 29.5, GLYPH_CENTER_X = 62.15;
-        var label = lively.morphic.Text.makeLabel("Map", {
+        var LINE_H = 20, LABEL_H = 25, LABEL_SLOT_W = Math.ceil(textW + 8.5);
+        var TEXT_CENTER_X = QI_PILL_PAD + textW / 2;
+        var GLYPH_CENTER_X = pillW - QI_PILL_PAD - QI_PILL_ICON_PX / 2;
+        var label = lively.morphic.Text.makeLabel(labelText, {
           fontSize: 14, fontWeight: "700", textColor: Color.rgb(255, 255, 255),
           align: "center", fixedWidth: true, fixedHeight: true,
         });
@@ -2137,7 +2177,7 @@ module("lively.identity.ConstellationLounge")
         // -2.35: the label's span box measured 9px from the pill's top and
         // 4.3px from its bottom when centered by (H - LINE_H) / 2, i.e.
         // riding ~2.35px low (the shapeNode's own vertical padding).
-        label.setPosition(lively.pt(TEXT_CENTER_X - LABEL_SLOT_W / 2, (MAP_BTN_H - LINE_H) / 2 - 2.35));
+        label.setPosition(lively.pt(TEXT_CENTER_X - LABEL_SLOT_W / 2, (QI_PILL_H - LINE_H) / 2 - 2.35));
         label.applyStyle({ borderWidth: 0 });
         noDrag(label);
         label.eventsAreIgnored = true;
@@ -2146,12 +2186,12 @@ module("lively.identity.ConstellationLounge")
         // Icon idiom from the settings gear below: fixed-rect Text (so
         // align:'center' isn't a no-op), vertical centering via top padding,
         // fontSize in pt (px * 0.75).
-        var iconX = GLYPH_CENTER_X - MAP_BTN_ICON_BOX / 2;
-        var icon = new lively.morphic.Text(lively.rect(iconX, (MAP_BTN_H - MAP_BTN_ICON_BOX) / 2, MAP_BTN_ICON_BOX, MAP_BTN_ICON_BOX));
+        var iconX = GLYPH_CENTER_X - QI_PILL_ICON_BOX / 2;
+        var icon = new lively.morphic.Text(lively.rect(iconX, (QI_PILL_H - QI_PILL_ICON_BOX) / 2, QI_PILL_ICON_BOX, QI_PILL_ICON_BOX));
         icon.textString = "arrow_outward";
         icon.applyStyle({
           fontFamily: "'Material Symbols Rounded'",
-          fontSize: MAP_BTN_ICON_PX * 0.75,
+          fontSize: QI_PILL_ICON_PX * 0.75,
           textColor: Color.rgb(255, 255, 255),
           fill: null,
           borderWidth: 0,
@@ -2159,7 +2199,7 @@ module("lively.identity.ConstellationLounge")
           // -2: the glyph's span box measured 8px from the pill's top and
           // 4px from its bottom with the gear's centering padding, i.e.
           // riding 2px low.
-          padding: lively.Rectangle.inset(0, Math.round((MAP_BTN_ICON_BOX - MAP_BTN_ICON_PX) / 2) - 2, 0, 0),
+          padding: lively.Rectangle.inset(0, Math.round((QI_PILL_ICON_BOX - QI_PILL_ICON_PX) / 2) - 2, 0, 0),
           allowInput: false,
           selectable: false,
           clipMode: "hidden",
@@ -2172,7 +2212,7 @@ module("lively.identity.ConstellationLounge")
         pill.onMouseOver = function () { pill.setFill(ACCENT_HOVER); };
         pill.onMouseOut = function () { pill.setFill(ACCENT); };
         pill.onMouseUp = function (evt) {
-          self._openQuickInfoMap();
+          onClick();
           evt.stop();
           return true;
         };
