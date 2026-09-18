@@ -39,10 +39,22 @@ module("lively.identity.WikiIndex")
 
     var TOP = 64;              // top margin below the menu bar
     var SIDE_MARGIN = 40;
-    var HEADER_H = 52;         // bumped along with the breadcrumb/title font sizes below
+    var BACK_BTN_LIFT = 20;    // how far the back pill sits above the header row's TOP
+    // Header block height: the back pill (34px, top-aligned with the search
+    // row) plus the title beneath it. 52 -> 62 along with the title's y
+    // moving 28 -> 38 below, so the grid keeps its gap when the back link
+    // became a 34px pill instead of a ~25px text label.
+    var HEADER_H = 62;
     var GRID_TOP_GAP = 24;     // gap between the header row and the card grid
     var SEARCH_W = 280, SEARCH_H = 34;
+    // NEW_BTN_W is only the pre-measurement fallback: the "+ New wiki page"
+    // pill's real width is measured from its label (_buildPill) and stored
+    // in this._newBtnW, which _layout reads.
     var NEW_BTN_W = 150, NEW_BTN_H = 34;
+    // Pill fills (same values as ConstellationLounge.js's "+ Postcard" pink
+    // and its blue "Wiki" pill) and their hover shades.
+    var PILL_PINK = Color.rgb(232, 73, 126), PILL_PINK_HOVER = Color.rgb(212, 56, 108);
+    var PILL_BLUE = Color.rgb(37, 99, 235),  PILL_BLUE_HOVER = Color.rgb(29, 78, 216);
     var SORT_W = 150, SORT_H = SEARCH_H;   // same row/height as the search box, sits to its left
     var SORT_GAP = 10;          // gap between the sort-by button and the search box
     var SORT_ITEM_H = 30;
@@ -222,10 +234,13 @@ module("lively.identity.WikiIndex")
         this._searchBox = this._buildSearchField();
         $world.addMorph(this._searchBox);
 
-        this._newBtn = new lively.morphic.Button(lively.rect(0, 0, NEW_BTN_W, NEW_BTN_H));
-        this._newBtn.setLabel("+ New wiki page");
         var self = this;
-        this._newBtn.onMouseDown = function () { self._promptNewWikiPage(); };
+        // Blue counterpart of ConstellationLounge.js's pink "+ Postcard".
+        this._newBtn = this._buildPill("+ New wiki page", {
+          fill: PILL_BLUE, hover: PILL_BLUE_HOVER,
+          onClick: function () { self._promptNewWikiPage(); },
+        });
+        this._newBtnW = this._newBtn.getExtent().x;
         $world.addMorph(this._newBtn);
         this._newBtn.setVisible(this._canWrite);
 
@@ -251,12 +266,10 @@ module("lively.identity.WikiIndex")
         this._layout();
       },
 
-      // makeLabel hugs its own content (no fixedWidth/fixedHeight), unlike a
-      // plain `new lively.morphic.Text(rect)` with a hardcoded width — a
-      // fixed-width box here wrapped onto a second line for constellation
-      // names anywhere near that width, overlapping whatever sits below it
-      // (confirmed live with "wikitest": "← c/wikitest" wrapped and its
-      // second line overlapped the grid's empty-filter-result message).
+      // A hardcoded-width label here once wrapped onto a second line for
+      // constellation names anywhere near that width, overlapping whatever
+      // sits below it (confirmed live with "wikitest") — hence the width
+      // below is measured from the actual label text.
       _buildBackButton: function () {
         var self = this;
         var isPersonal = this._scope.kind === "personal";
@@ -264,10 +277,73 @@ module("lively.identity.WikiIndex")
         var href = isPersonal
           ? "/@" + encodeURIComponent(this._scope.handle)
           : "/c/" + encodeURIComponent(this._scope.name);
-        var btn = lively.morphic.Text.makeLabel(label, {
-          fontSize: 14, fontWeight: "500", textColor: Color.rgb(70, 70, 70),
+        // Pink pill, same look as ConstellationLounge.js's "+ Postcard". It
+        // replaces a bare makeLabel link whose click never fired — makeLabel
+        // -> beLabel() calls ignoreEvents() unconditionally, and Events.js
+        // drops every mouse event on an ignored morph before its handler
+        // runs (eventsAreIgnored was true, cursor "default").
+        return this._buildPill(label, {
+          fill: PILL_PINK, hover: PILL_PINK_HOVER, padX: 14,
+          tooltip: isPersonal ? "Back to your home world" : "Back to c/" + this._scope.name,
+          onClick: function () { window.location.href = href; },
         });
-        btn.onMouseDown = function () { window.location.href = href; };
+      },
+
+      // A "+ Postcard"-style pill (ConstellationLounge.js's
+      // _buildCreatePostcardButton): a plain Box with a fully rounded end
+      // holding a white bold 14pt label. opts: { fill, hover, padX, tooltip,
+      // onClick }. The Box takes the clicks — its label child stays
+      // eventsAreIgnored on purpose so a click resolves to the pill, not the
+      // text. Returns the Box; read its width with getExtent().x.
+      _buildPill: function (labelText, opts) {
+        var H = 34, LINE_H = 20, LABEL_H = 25;
+        var padX = opts.padX !== undefined ? opts.padX : 12;
+        // Width comes from a canvas text measurement in the label's own font
+        // (bold 14pt = 18.67px Helvetica), not from a rendered span — the
+        // label isn't in the DOM yet, and same-tick DOM reads race layout
+        // (CLAUDE.md). Label text varies (constellation name), so this
+        // can't be a hardcoded width.
+        var ctx = document.createElement("canvas").getContext("2d");
+        ctx.font = "700 18.6667px Helvetica";
+        var textW = ctx.measureText(labelText).width;
+        var pillW = Math.ceil(textW + padX * 2);
+        // Label slot >= text + the shapeNode's 8px padding or it wraps; the
+        // label is centered within it (align:'center'). LABEL_H is the box's
+        // *total* height — under ~25 it clips descenders (the "p" in a name);
+        // -2.35 cancels the shapeNode's own vertical padding so the text
+        // sits centered in the pill (both measured live on the
+        // constellation quick-info pills, same font/size).
+        var slotW = Math.ceil(textW + 8.5);
+
+        var btn = new lively.morphic.Box(lively.rect(0, 0, pillW, H));
+        btn.setFill(opts.fill);
+        btn.applyStyle({ borderWidth: 0, borderRadius: H / 2, handStyle: "pointer" });
+        btn.disableDragging();
+        btn.disableGrabbing();
+        btn.droppingEnabled = false;
+        if (opts.tooltip) btn.toolTip = opts.tooltip;
+
+        var text = lively.morphic.Text.makeLabel(labelText, {
+          fontSize: 14, fontWeight: "700", textColor: Color.rgb(255, 255, 255),
+          align: "center", fixedWidth: true, fixedHeight: true,
+        });
+        text.setExtent(lively.pt(slotW, LABEL_H));
+        text.setPosition(lively.pt((pillW - slotW) / 2, (H - LINE_H) / 2 - 2.35));
+        text.applyStyle({ borderWidth: 0 });
+        text.disableDragging();
+        text.disableGrabbing();
+        text.eventsAreIgnored = true;
+        btn.addMorph(text);
+
+        btn.onMouseOver = function () { btn.setFill(opts.hover); };
+        btn.onMouseOut  = function () { btn.setFill(opts.fill); };
+        // Acts on mouse-up (not down) so a press that slides off the button
+        // can be abandoned.
+        btn.onMouseUp = function (evt) {
+          opts.onClick();
+          evt.stop();
+          return true;
+        };
         return btn;
       },
 
@@ -490,12 +566,15 @@ module("lively.identity.WikiIndex")
       _layout: function () {
         var W = window.innerWidth;
 
-        this._backBtn.setPosition(lively.pt(SIDE_MARGIN, TOP));
-        this._titleLabel.setPosition(lively.pt(SIDE_MARGIN, TOP + 28));
+        // Sits BACK_BTN_LIFT px above the header row (the search row and
+        // title stay at TOP) — leaves ~20px clear under the menu bar.
+        this._backBtn.setPosition(lively.pt(SIDE_MARGIN, TOP - BACK_BTN_LIFT));
+        this._titleLabel.setPosition(lively.pt(SIDE_MARGIN, TOP + 38));
 
-        var searchX = W - SIDE_MARGIN - NEW_BTN_W - 12 - SEARCH_W;
+        var newBtnW = this._newBtnW || NEW_BTN_W;
+        var searchX = W - SIDE_MARGIN - newBtnW - 12 - SEARCH_W;
         this._searchBox.setPosition(lively.pt(searchX, TOP));
-        this._newBtn.setPosition(lively.pt(W - SIDE_MARGIN - NEW_BTN_W, TOP + (SEARCH_H - NEW_BTN_H) / 2));
+        this._newBtn.setPosition(lively.pt(W - SIDE_MARGIN - newBtnW, TOP + (SEARCH_H - NEW_BTN_H) / 2));
 
         var sortX = searchX - SORT_GAP - SORT_W;
         this._sortByBox.setPosition(lively.pt(sortX, TOP));
