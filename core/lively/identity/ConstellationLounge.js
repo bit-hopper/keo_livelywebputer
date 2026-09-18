@@ -1487,6 +1487,7 @@ module("lively.identity.ConstellationLounge")
             ? { text: "Membership required", color: GREY, clickable: false }
             : { text: "Sign in required", color: GREY, clickable: false };
         }
+        if (this._isActiveRoom(room)) return { text: "Open", color: ROOM_GREEN, clickable: true };
         if (room.iJoined) return { text: "Leave", color: ROOM_ACCENT, clickable: true };
         if (room.access !== "request") return { text: "Enter", color: ROOM_GREEN, clickable: true };
         if (room.myAccessStatus === "approved") return { text: "Enter", color: ROOM_GREEN, clickable: true, icon: "check_circle" };
@@ -1524,22 +1525,41 @@ module("lively.identity.ConstellationLounge")
       // Card-click router — dispatches to the one applicable action for
       // this viewer/room combination. A "pending" gated request has no
       // clickable status (see _roomStatusInfo), so it never reaches here.
-      // "Entering" a room (open access, or an approved gated request) now
-      // navigates into the real Discord-like room view (RoomView.js) rather
-      // than joining presence inline and staying on the lounge — that view
-      // does its own presence-join on boot. Leaving stays inline (no reason
-      // to enter a room just to immediately leave it).
+      // "Entering" a room (open access, or an approved gated request) opens
+      // the real Discord-like room view (RoomView.js) as a standalone window
+      // in this same world — the call keeps running if that window is
+      // minimized or closed, and the Ambient Presence Panel controls it.
+      // The session does its own presence-join. If this world already holds
+      // the session for the clicked room, the click just brings its window
+      // forward; leaving happens from the room itself or the panel. A card
+      // marked joined by some OTHER session (another tab/device) still leaves
+      // inline, since there's no window here to go back to.
       _onRoomCardClick: function (room) {
         if (!this._amMember) return;
+        if (this._isActiveRoom(room)) return this._enterRoom(room);
         if (room.iJoined) return this._leaveRoom(room);
         if (room.access === "open") return this._enterRoom(room);
         if (room.myAccessStatus === "approved") return this._enterRoom(room);
         return this._requestRoomAccess(room);
       },
 
+      _isActiveRoom: function (room) {
+        var RV = lively.identity.RoomView;
+        return !!(RV && RV.isActiveRoom && RV.isActiveRoom(room.id));
+      },
+
       _enterRoom: function (room) {
-        var base = lively.identity.did.baseUrl();
-        location.href = base + "/c/" + encodeURIComponent(this._name) + "/rooms/" + room.id;
+        var self = this;
+        lively.require("lively.identity.RoomView").toRun(function () {
+          // One-time: keep the Spaces panel's headcounts / Enter-vs-Open state
+          // fresh as the session joins and leaves (it can also end from the
+          // room window or the Ambient Presence Panel, not just from here).
+          if (!self._roomSessionListener) {
+            self._roomSessionListener = function () { self._fetchRooms(); };
+            lively.identity.RoomView.addListener(self._roomSessionListener);
+          }
+          lively.identity.RoomView.open(self._name, room.id);
+        });
       },
 
       _leaveRoom: function (room) {

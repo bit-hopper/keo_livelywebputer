@@ -207,10 +207,10 @@ module("lively.identity.AmbientPresencePanel")
       },
 
       // Grows the panel with a second strip showing which room you're in
-      // plus a "leave" glyph — onLeaveRequested is supplied by the caller
-      // (RoomView.js's enterRoom call) so the actual leave-presence/
-      // navigate-away semantics stay owned by that page, not duplicated
-      // here; this panel only shows status and relays the click.
+      // plus a "leave" glyph — onLeaveRequested / onShowRequested are supplied
+      // by the caller (RoomView.js's enterRoom call) so the actual
+      // leave-presence and window semantics stay owned by the room session,
+      // not duplicated here; this panel only shows status and relays clicks.
       _showInRoomRow: function _showInRoomRow(room) {
         var NS = lively.identity.AmbientPresencePanel;
         this._hideInRoomRow();
@@ -227,8 +227,17 @@ module("lively.identity.AmbientPresencePanel")
         label.applyStyle({
           fontSize: 9, fontWeight: "600", textColor: NS.TEXT_SECONDARY,
           fill: null, borderWidth: 0, allowInput: false, selectable: false,
-          clipMode: "hidden", whiteSpaceHandling: "pre",
+          clipMode: "hidden", whiteSpaceHandling: "pre", handStyle: "pointer",
         });
+        // Clicking the room name brings the room window forward (expanding it if
+        // minimized, rebuilding it if it was closed) — the window is only a view
+        // over the call, which keeps running either way.
+        label.toolTip = "Show room window";
+        label.onMouseDown = function (evt) {
+          if (typeof room.onShowRequested === "function") room.onShowRequested();
+          evt.stop();
+          return true;
+        };
         row.addMorph(label);
 
         var leaveBtn = new lively.morphic.Text(lively.rect(NS.PANEL_W - 40, 2, 28, 22));
@@ -238,7 +247,12 @@ module("lively.identity.AmbientPresencePanel")
           fill: null, borderWidth: 0, align: "center", allowInput: false, selectable: false,
           clipMode: "hidden", handStyle: "pointer",
         });
-        leaveBtn.onMouseDown = function (evt) {
+        // onMouseUp, not onMouseDown: leaving hides this very row, and the panel
+        // is bottom-anchored, so it re-aligns downward — on mouse-down that slid
+        // the settings gear under the still-held pointer, whose mouse-up then
+        // opened the Settings window (confirmed live). Finishing the click first
+        // means nothing moves until the gesture is over.
+        leaveBtn.onMouseUp = function (evt) {
           if (typeof room.onLeaveRequested === "function") room.onLeaveRequested();
           evt.stop();
           return true;
@@ -324,14 +338,15 @@ module("lively.identity.AmbientPresencePanel")
     Object.extend(lively.identity.AmbientPresencePanel, {
       _panel: null,
       _localStream: null,
-      _activeRoom: null,   // {constellation, roomId, roomName, onLeaveRequested} | null
+      _activeRoom: null,   // {constellation, roomId, roomName, onLeaveRequested, onShowRequested} | null
 
       // Called by RoomView.js once it's actually joined a room's presence.
       // Grows the panel with an "in room" row and (re)acquires local media
       // matching the current mic/cam prefs — real getUserMedia, since a
-      // room is now genuinely active, but only ever called from the room's
-      // own page (each page load is its own independent world/stream; see
-      // this file's own header on the general BuildSpec/closure caveats,
+      // room is now genuinely active. The room lives in this world for as
+      // long as the session does (window open, minimized or closed), so this
+      // stream is the one call-wide mic/camera source, not tied to any window
+      // (see this file's own header on the general BuildSpec/closure caveats,
       // which don't apply to this plain-extension block).
       enterRoom: function enterRoom(room) {
         this._activeRoom = room;

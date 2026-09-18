@@ -7,11 +7,20 @@
  * to send you (joining there only ever touched an in-memory heartbeat/
  * headcount and left you on the lounge page).
  *
- * Boots at /c/:name/rooms/:roomId (IdentityServer.js's buildRoomViewPage +
- * GET /c/:constellation/rooms/:roomId route), same manuallyCreateWorld/
- * onStartWorld boot shape as ConstellationCanvas.js/ConstellationLounge.js —
- * see those files' own header comments for why (no per-user home-world
- * config to fall back on for a bare boot page).
+ * Not a page anymore: entering a room (ConstellationLounge.js's "Enter", or a
+ * row in this view's own rooms rail) opens it as a standalone, minimizable
+ * lively.morphic.Window in the CURRENT world, so the user can keep working
+ * in Lively while staying on the call — the "ambient presence" model. The
+ * old /c/:name/rooms/:roomId boot page is gone; that URL now only serves the
+ * JSON room detail this file fetches.
+ *
+ * Two halves, one class: RoomViewController is the persistent SESSION
+ * (presence, heartbeat, chat polling, signaling, peer connections, remote
+ * audio) held by lively.identity.RoomView._active; the window/morphs are a
+ * detachable VIEW over it (see the "view" category). Closing or collapsing
+ * the window leaves the call running; only leave() (the header's Leave Room
+ * button, or the Ambient Presence Panel's end-call) or a real page load ends
+ * it. Mic/camera/deafen live on lively.identity.AmbientPresencePanel.
  *
  * Chat and video are both real as of the 2026-08-25 session: chat messages
  * ride the same objects-envelope/postal rail every other postcard uses
@@ -34,8 +43,8 @@
  * ConstellationLounge.js's own header comment documents and justifies
  * (halo-selectable, Object-Editor inspectable, correct focus/z-order).
  *
- * Open: lively.identity.RoomView.open(constellationName, roomId) — called
- * from buildRoomViewPage's onStartWorld hook once $world exists.
+ * Open: lively.identity.RoomView.open(constellationName, roomId) — from any
+ * world that already exists (ConstellationLounge.js's _enterRoom).
  */
 
 module("lively.identity.RoomView")
@@ -136,7 +145,15 @@ module("lively.identity.RoomView")
         this._heartbeatTimer = null;
         this._videoCircles = {};  // did -> morph
         this._boundLeaveBestEffort = null;
-        this._originX = 0;        // set for real by _computeOrigin before anything renders
+        // The view (window + every morph below) is detachable: the controller
+        // itself is the persistent room session (presence, polling, signaling,
+        // WebRTC, remote audio), kept alive by lively.identity.RoomView._active
+        // regardless of whether the window is open, collapsed or closed. Every
+        // morph-touching method tolerates _viewRoot being null.
+        this._win = null;
+        this._viewRoot = null;
+        this._remoteAudio = {};     // did -> <audio> element, session-owned so audio survives the window closing
+        this._originX = 0;        // view-relative: the view root is its own coordinate space, always (0,0)
         this._originY = 0;
 
         // WebRTC mesh state (see "webrtc" category)
@@ -189,6 +206,7 @@ module("lively.identity.RoomView")
           var data;
           try { data = JSON.parse(xhr.responseText); }
           catch (e) { return self._showFatalError("Bad room response"); }
+          if (self._roomLeft) return; // left (or switched rooms) while this was in flight
           self._room = data.room;
           self._isController = !!data.isController;
           self._participants = data.participants || [];
@@ -204,36 +222,34 @@ module("lively.identity.RoomView")
       // from a literal (0,0), which renders pinned to the browser's actual
       // top-left corner rather than centered in the visible world, exactly
       // the "renders at the top left of the page" bug reported live.
+      // (Superseded: the view now lives in its own Window with its own
+      // coordinate space, see "view" category — origin is always 0,0.)
       _computeOrigin: function () {
-        var bounds = $world.visibleBounds();
-        this._originX = Math.max(0, Math.round((bounds.width - TOTAL_W) / 2));
-        this._originY = Math.max(0, Math.round((bounds.height - TOTAL_H) / 2));
+        this._originX = 0;
+        this._originY = 0;
       },
 
       _start: function () {
-        this._computeOrigin();
-        this._buildHeader();
-        this._buildRoomsPanel();
-        this._buildChatPanel();
-        this._buildMembersPanel();
-        this._buildVideoLayer();
-        this._renderMembers();
-        this._renderVideoCircles();
+        this._buildView();
         this._joinPresence();
         this._startHeartbeat();
         this._loadMessages();
         this._startMessagePolling();
         this._connectSignaling();
 
+        // A real page load still ends the call (see RoomView.open's header
+        // note) — this only covers that case now, not window close/minimize.
         this._boundLeaveBestEffort = this._leaveBestEffort.bind(this);
         window.addEventListener("pagehide", this._boundLeaveBestEffort);
         window.addEventListener("beforeunload", this._boundLeaveBestEffort);
 
         var self = this;
         lively.require("lively.identity.AmbientPresencePanel").toRun(function () {
+          if (self._roomLeft) return; // left again before the panel module finished loading
           lively.identity.AmbientPresencePanel.enterRoom({
             constellation: self._name, roomId: self._roomId, roomName: self._room.name,
-            onLeaveRequested: function () { self._leaveRoomAndReturn(); },
+            onLeaveRequested: function () { self.leave(); },
+            onShowRequested: function () { self.showView(); },
           });
           // getUserMedia resolves asynchronously (real permission prompt) —
           // the self video circle already exists (blank) from
@@ -267,14 +283,17 @@ module("lively.identity.RoomView")
         var user = lively.identity.did.currentUser();
         var myDid = user ? user.did : null;
         var circle = myDid && this._videoCircles[myDid];
-        var filledOwnCircle = circle && !circle._hasLocalVideo && this._fillWithLocalStream(circle);
+        var filledOwnCircle = circle && (circle._hasLocalVideo || this._fillWithLocalStream(circle));
         // Any peer connection already established (webrtc category, below)
         // before getUserMedia resolved was created with recvonly-capable
         // transceivers and no local tracks yet — push them in now that the
         // stream is ready, same one-time "fill in once ready" idea as the
         // self circle above.
         var pushedToPeers = this._applyLocalTracksToAllPeers();
-        if (filledOwnCircle && pushedToPeers) return;
+        // No view attached (window closed): there's no own circle to fill, so
+        // pushing tracks to peers is all that's left to do — a later
+        // showView() fills the circle itself via _renderVideoCircles.
+        if (pushedToPeers && (filledOwnCircle || !this._viewRoot)) return;
         var self = this;
         var remaining = attemptsLeft > 0 ? attemptsLeft - 1 : 0;
         var delay = attemptsLeft > 0 ? 300 : 3000;
@@ -283,13 +302,112 @@ module("lively.identity.RoomView")
 
       _showFatalError: function (msg) {
         console.error("[RoomView]", msg);
+        // Never became a session: free the singleton slot so the next Enter starts clean.
+        this._roomLeft = true;
+        lively.identity.RoomView._sessionEnded(this);
         var label = noDrag(lively.morphic.Text.makeLabel(msg, {
-          fontSize: 14, textColor: Color.rgb(220, 220, 220), fixedWidth: true, fixedHeight: true,
+          fontSize: 14, textColor: Color.rgb(220, 220, 220), fill: Color.rgba(30, 30, 30, 0.92),
+          fixedWidth: true, fixedHeight: true,
         }));
         label.setExtent(lively.pt(420, 80));
         label.setPosition($world.visibleBounds().center().subPt(lively.pt(210, 40)));
         label.applyStyle({ align: "center" });
         $world.addMorph(label);
+        // This now shows inside a live world the user is working in, not a
+        // dead boot page, so it can't linger.
+        setTimeout(function () { try { label.remove(); } catch (e) {} }, 5000);
+      },
+
+    },
+
+    // ─── view — the detachable window ──────────────────────────────────────────
+    // The room UI is one Box (the "view root") in a classic lively.morphic.Window,
+    // opened in whatever world the room was entered from. Closing or collapsing
+    // the window never touches the session: presence, chat polling, signaling,
+    // peer connections and remote audio all keep running on the controller;
+    // only leave() (or a real page load) ends them. showView() rebuilds the UI
+    // from the session's current state, so a closed window can be reopened at
+    // any time (the Ambient Presence Panel's "In room" row does exactly that).
+
+    "view", {
+
+      _buildView: function () {
+        if (this._viewRoot) return;
+        var self = this;
+        var root = new lively.morphic.Box(lively.rect(0, 0, TOTAL_W, TOTAL_H));
+        root.applyStyle({ fill: BG_MAIN, borderWidth: 0, clipMode: "hidden" });
+        // Keeps a dragged video circle inside this window instead of the drop
+        // falling through onto the world (all other chrome is noDrag'd, which
+        // also disables dropping, so the root is what catches it).
+        root.droppingEnabled = true;
+        // Window#signalShutdown calls this on close (X button). Only detaches the
+        // view refs — the window removes itself right after — and never the session.
+        root.onShutdown = function () { self._onWindowClosed(); };
+        this._viewRoot = root;
+
+        var vb = $world.visibleBounds();
+        var pos = lively.pt(
+          Math.max(0, Math.round((vb.width - TOTAL_W) / 2)),
+          Math.max(0, Math.round((vb.height - TOTAL_H) / 2)));
+        // Window first, children after: several builders below measure their
+        // own rendered DOM, which only exists once the morph is in the world.
+        this._win = root.openInWindow({ title: (this._room && this._room.name) || "Room", pos: pos });
+
+        this._computeOrigin();
+        this._buildHeader();
+        this._buildRoomsPanel();
+        this._buildChatPanel();
+        this._buildMembersPanel();
+        this._buildVideoLayer();
+        this._renderMembers();
+        this._renderVideoCircles();
+        this._renderMessages();
+      },
+
+      // Brings the window forward (expanding it if minimized), or rebuilds it
+      // from session state if it was closed.
+      showView: function () {
+        if (this._roomLeft || !this._room) return; // no room detail yet (still loading) — nothing to show
+        if (!this._viewRoot) return this._buildView();
+        var win = this._win;
+        if (!win) return;
+        if (win.isCollapsed && win.isCollapsed()) win.expand();
+        if (win.comeForward) win.comeForward();
+      },
+
+      // Window's own X button. The window removes itself after this returns.
+      _onWindowClosed: function () {
+        this._detachViewRefs();
+      },
+
+      // Drops every reference into the (going or gone) view so background
+      // session work (roster refresh, polling, ontrack) sees "no view" and skips
+      // its rendering. Video circles are removed explicitly: one dragged out of
+      // the window onto the world would otherwise outlive it.
+      _detachViewRefs: function () {
+        var circles = this._videoCircles || {};
+        Object.keys(circles).forEach(function (did) { try { circles[did].remove(); } catch (e) {} });
+        this._videoCircles = {};
+        try { if (this._mediaPicker && this._mediaPicker.isOpen()) this._mediaPicker.close(); } catch (e) {}
+        this._headerBox = null;
+        this._roomsPanelBox = null;
+        this._chatBox = null;
+        this._msgListBox = null;
+        this._inputRowM = null;
+        this._inputM = null;
+        this._placeholderM = null;
+        this._membersBox = null;
+        this._membersHeading = null;
+        this._countM = null;
+        this._viewRoot = null;
+        this._win = null;
+      },
+
+      // Programmatic close (leaving the room): detach, then remove the window.
+      _destroyView: function () {
+        var win = this._win;
+        this._detachViewRefs();
+        if (win && win.owner) win.remove();
       },
 
     },
@@ -312,7 +430,11 @@ module("lively.identity.RoomView")
         // this join, so it never included yourself — refresh right away
         // rather than leaving the member list/your own video circle missing
         // until the next 25s heartbeat tick.
-        xhr.onload = function () { if (xhr.status === 200) self._refreshRoster(); };
+        xhr.onload = function () {
+          if (xhr.status !== 200 || self._roomLeft) return;
+          self._refreshRoster();
+          lively.identity.RoomView._notify(self); // lets an open lounge refresh its headcounts / "Enter" state
+        };
         xhr.onerror = function () { console.error("[RoomView] Network error joining room presence"); };
         xhr.send();
       },
@@ -347,6 +469,7 @@ module("lively.identity.RoomView")
           if (xhr.status !== 200) return;
           var data;
           try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
+          if (self._roomLeft) return;
           self._participants = data.participants || [];
           self._renderMembers();
           self._renderVideoCircles();
@@ -356,23 +479,48 @@ module("lively.identity.RoomView")
         xhr.send();
       },
 
-      _leaveRoomAndReturn: function () {
-        var self = this;
+      // Stops every piece of session machinery (timers, signaling, peer
+      // connections, remote audio, page-lifecycle hooks). Shared by leave()
+      // and _leaveBestEffort. Both timers matter now that leaving no longer
+      // navigates away: nothing else kills them, and a surviving heartbeat
+      // would silently re-join presence right after the DELETE.
+      _stopSession: function () {
         this._roomLeft = true;
         if (this._messagePollTimer) { clearInterval(this._messagePollTimer); this._messagePollTimer = null; }
-        this._teardownSignaling();
+        if (this._heartbeatTimer) { clearInterval(this._heartbeatTimer); this._heartbeatTimer = null; }
+        try { this._teardownSignaling(); } catch (e) {}
+        var self = this;
+        Object.keys(this._remoteAudio).forEach(function (did) { self._removeRemoteAudio(did); });
+        if (this._boundLeaveBestEffort) {
+          window.removeEventListener("pagehide", this._boundLeaveBestEffort);
+          window.removeEventListener("beforeunload", this._boundLeaveBestEffort);
+          this._boundLeaveBestEffort = null;
+        }
+      },
+
+      // Ends the call for real: presence DELETE, media released, window closed,
+      // panel row hidden. `done` (optional) runs once the DELETE has settled,
+      // so a caller switching rooms can start the next join strictly after it.
+      leave: function (done) {
+        if (this._roomLeft) { if (done) done(); return; }
+        var self = this;
+        this._stopSession();
+        var finished = false;
+        function finish() {
+          if (finished) return;
+          finished = true;
+          lively.identity.RoomView._sessionEnded(self);
+          if (done) done();
+        }
         var base = lively.identity.did.baseUrl();
         var xhr = new XMLHttpRequest();
         xhr.open("DELETE", base + "/c/" + encodeURIComponent(this._name) + "/rooms/" + this._roomId + "/presence", true);
         xhr.withCredentials = true;
-        xhr.onload = function () { self._returnToLounge(); };
-        xhr.onerror = function () { self._returnToLounge(); };
+        xhr.onload = finish;
+        xhr.onerror = finish;
         xhr.send();
-        lively.identity.AmbientPresencePanel.leaveRoom();
-      },
-
-      _returnToLounge: function () {
-        location.href = lively.identity.did.baseUrl() + "/c/" + encodeURIComponent(this._name);
+        try { lively.identity.AmbientPresencePanel.leaveRoom(); } catch (e) {}
+        this._destroyView();
       },
 
       // Was a synchronous XHR here (pagehide/beforeunload need something
@@ -388,9 +536,7 @@ module("lively.identity.RoomView")
       // attached (sendBeacon can only do POST, which is why the original
       // comment ruled it out).
       _leaveBestEffort: function () {
-        this._roomLeft = true;
-        if (this._messagePollTimer) { clearInterval(this._messagePollTimer); this._messagePollTimer = null; }
-        try { this._teardownSignaling(); } catch (e) {}
+        this._stopSession();
         var base = lively.identity.did.baseUrl();
         try {
           fetch(base + "/c/" + encodeURIComponent(this._name) + "/rooms/" + this._roomId + "/presence", {
@@ -410,7 +556,7 @@ module("lively.identity.RoomView")
         var self = this;
         var header = noDrag(new lively.morphic.Box(lively.rect(this._originX, this._originY, TOTAL_W, HEADER_H)));
         header.applyStyle({ fill: BG_SIDEBAR, borderWidth: 0 });
-        $world.addMorph(header);
+        this._viewRoot.addMorph(header);
         this._headerBox = header;
 
         var nameM = noDrag(lively.morphic.Text.makeLabel(this._room.name || "", {
@@ -467,7 +613,7 @@ module("lively.identity.RoomView")
         leaveLabel.applyStyle({ align: "center", borderWidth: 0 });
         leaveLabel.eventsAreIgnored = true;
         leaveBtn.addMorph(leaveLabel);
-        leaveBtn.onMouseDown = function () { self._leaveRoomAndReturn(); };
+        leaveBtn.onMouseDown = function () { self.leave(); };
 
         // Settings gear -- creator-or-controller only (this._room.canManage,
         // computed server-side by canManageRoom, IdentityServer.js), same
@@ -513,24 +659,26 @@ module("lively.identity.RoomView")
       // gear. onSaved re-renders the header in place -- RoomView has no
       // room list to _fetchRooms() -- and, since a save can also archive
       // or permanently delete this very room out from under the viewer,
-      // falls back to _leaveRoomAndReturn when the room is gone rather
+      // falls back to leave() when the room is gone rather
       // than rendering a header for a room that no longer exists.
       _openRoomSettings: function () {
         var self = this;
         lively.require("lively.identity.RoomSettingsDialog").toRun(function () {
           lively.identity.RoomSettingsDialog.open(self._name, self._room, function (result) {
-            if (result && (result.deleted || result.archived)) return self._leaveRoomAndReturn();
+            if (result && (result.deleted || result.archived)) return self.leave();
             var base = lively.identity.did.baseUrl();
             var xhr = new XMLHttpRequest();
             xhr.open("GET", base + "/c/" + encodeURIComponent(self._name) + "/rooms/" + self._roomId, true);
             xhr.withCredentials = true;
             xhr.onload = function () {
-              if (xhr.status !== 200) return self._leaveRoomAndReturn();
+              if (xhr.status !== 200) return self.leave();
               var data = JSON.parse(xhr.responseText);
               self._room = data.room;
+              if (!self._headerBox) return; // window was closed while the dialog was open
               (self._headerBox.submorphs || []).slice().forEach(function (m) { m.remove(); });
               self._headerBox.remove();
               self._buildHeader();
+              if (self._win) self._win.setTitle(self._room.name || "Room");
             };
             xhr.onerror = function () {};
             xhr.send();
@@ -561,7 +709,7 @@ module("lively.identity.RoomView")
         var panel = noDrag(new lively.morphic.Box(lively.rect(
           this._originX, this._originY + HEADER_H, ROOMS_PANEL_W, BODY_H)));
         panel.applyStyle({ fill: BG_SIDEBAR, borderWidth: 0, clipMode: "auto" });
-        $world.addMorph(panel);
+        this._viewRoot.addMorph(panel);
         this._roomsPanelBox = panel;
 
         var heading = noDrag(lively.morphic.Text.makeLabel("ROOMS", {
@@ -668,8 +816,11 @@ module("lively.identity.RoomView")
             row.renderContext().shapeNode.style.cursor = "pointer";
             row.onMouseOver = function () { row.applyStyle({ fill: BG_ROW_HOVER }); };
             row.onMouseOut = function () { row.applyStyle({ fill: null }); };
+            // Switching rooms: RoomView.open leaves this session first (waiting
+            // for its presence DELETE to settle), then joins the clicked room in
+            // a fresh window — same one-active-room rule as entering from the lounge.
             row.onMouseDown = function () {
-              location.href = lively.identity.did.baseUrl() + "/c/" + encodeURIComponent(self._name) + "/rooms/" + room.id;
+              lively.identity.RoomView.open(self._name, room.id);
             };
           }
 
@@ -735,7 +886,7 @@ module("lively.identity.RoomView")
         var self = this;
         var chat = noDrag(new lively.morphic.Box(lively.rect(this._originX + CHAT_X_OFFSET, this._originY + HEADER_H, CHAT_W, BODY_H)));
         chat.applyStyle({ fill: BG_MAIN, borderWidth: 0 });
-        $world.addMorph(chat);
+        this._viewRoot.addMorph(chat);
         this._chatBox = chat;
 
         var listH = BODY_H - INPUT_H;
@@ -955,6 +1106,7 @@ module("lively.identity.RoomView")
       _onSendMessageFailed: function (text, err) {
         console.error("[RoomView] Failed to send message:", err);
         this._sendingMessage = false;
+        if (!this._inputM) return; // window closed mid-send; the text is not restored
         this._inputM.textString = text;
         this._placeholderM.setVisible(!text);
       },
@@ -1028,6 +1180,7 @@ module("lively.identity.RoomView")
       },
 
       _renderMessages: function () {
+        if (!this._msgListBox) return; // window closed — showView re-renders from this._messages
         var self = this;
         (this._msgListBox.submorphs || []).slice().forEach(function (m) { m.remove(); });
 
@@ -1125,7 +1278,7 @@ module("lively.identity.RoomView")
         var panel = noDrag(new lively.morphic.Box(lively.rect(
           this._originX + CHAT_X_OFFSET + CHAT_W + PANEL_GAP, this._originY + HEADER_H, MEMBERS_W, BODY_H)));
         panel.applyStyle({ fill: BG_SIDEBAR, borderWidth: 0, clipMode: "auto" });
-        $world.addMorph(panel);
+        this._viewRoot.addMorph(panel);
         this._membersBox = panel;
 
         var heading = noDrag(lively.morphic.Text.makeLabel("MEMBERS", {
@@ -1139,6 +1292,7 @@ module("lively.identity.RoomView")
       },
 
       _renderMembers: function () {
+        if (!this._membersBox) return; // window closed — session keeps the roster, showView re-renders
         var self = this;
         (this._membersBox.submorphs || []).slice().forEach(function (m) {
           if (m !== self._membersHeading) m.remove();
@@ -1217,6 +1371,7 @@ module("lively.identity.RoomView")
       },
 
       _renderVideoCircles: function () {
+        if (!this._viewRoot) return; // window closed — circles are rebuilt by showView
         var self = this;
         var user = lively.identity.did.currentUser();
         var myDid = user ? user.did : null;
@@ -1254,7 +1409,7 @@ module("lively.identity.RoomView")
           // disabled, so nothing else in this UI can get dropped into one.
           circle.draggingEnabled = true;
           circle.droppingEnabled = false;
-          $world.addMorph(circle);
+          self._viewRoot.addMorph(circle);
           self._videoCircles[p.did] = circle;
 
           if (p.did === myDid) {
@@ -1360,6 +1515,10 @@ module("lively.identity.RoomView")
         var videoEl = document.createElement("video");
         videoEl.autoplay = true;
         videoEl.playsInline = true;
+        // Picture only: the sound is played by the session-owned <audio> sink
+        // (_playRemoteAudio) so it keeps going while this window is closed or
+        // collapsed — leaving this unmuted would double every voice.
+        videoEl.muted = true;
         videoEl.style.cssText = "width:100%;height:100%;object-fit:cover;";
         videoEl.srcObject = stream;
         // insertBefore (not appendChild) — this can run well after the
@@ -1561,18 +1720,22 @@ module("lively.identity.RoomView")
         };
         pc.ontrack = function (e) {
           if (!peer.did) return;
-          // e.streams[0] should always be populated now that
-          // _applyLocalTracksToPeer calls sender.setStreams() on the
-          // sending side (see that method's own comment for why this
-          // wasn't previously true) — this fallback is a safety net, not
-          // the primary path: build/reuse a synthetic stream from the raw
-          // track rather than ever storing undefined again.
-          var stream = e.streams[0];
-          if (!stream) {
-            stream = self._remoteStreams[peer.did] instanceof MediaStream ? self._remoteStreams[peer.did] : new MediaStream();
-            if (!stream.getTracks().some(function (t) { return t.id === e.track.id; })) stream.addTrack(e.track);
-          }
-          self._remoteStreams[peer.did] = stream;
+          // One session-owned MediaStream per remote participant, built from
+          // the raw tracks — deliberately NOT e.streams[0]. The stream the
+          // sender names can change under us: when their mic/camera resolves
+          // after the first negotiation (a slow permission prompt), their
+          // sender.setStreams() changes the msid, the receiver's tracks move
+          // to a new stream object, and the one this handler first saw is
+          // left EMPTY — with no further ontrack to say so (confirmed live
+          // 2026-09-18, two accounts: media arrived at the peer connection —
+          // thousands of packets, frames decoding — while the stored stream
+          // had 0 tracks, so nothing played and the circle stayed blank on
+          // that side only). The receiver's track objects survive that; a
+          // stream we build from them stays valid.
+          var stream = self._remoteStreams[peer.did];
+          if (!(stream instanceof MediaStream)) stream = self._remoteStreams[peer.did] = new MediaStream();
+          if (!stream.getTracks().some(function (t) { return t.id === e.track.id; })) stream.addTrack(e.track);
+          self._playRemoteAudio(peer.did, stream);
           var circle = self._videoCircles[peer.did];
           if (circle) self._attachRemoteStream(circle, stream);
         };
@@ -1832,6 +1995,7 @@ module("lively.identity.RoomView")
 
         if (peer.did) {
           delete this._remoteStreams[peer.did];
+          this._removeRemoteAudio(peer.did);
           if (this._didToPeerId[peer.did] === peerId) delete this._didToPeerId[peer.did];
           var circle = this._videoCircles[peer.did];
           if (circle && circle._remoteStream) {
@@ -1851,6 +2015,33 @@ module("lively.identity.RoomView")
         }
       },
 
+      // Session-owned playback for a remote participant's audio — a hidden
+      // <audio> on document.body, deliberately outside any morph so the voices
+      // keep playing when the room window is collapsed, closed or reopened.
+      // Idempotent per stream (ontrack fires again on renegotiation).
+      _playRemoteAudio: function (did, stream) {
+        if (this._roomLeft) return;
+        var el = this._remoteAudio[did];
+        if (el && el.srcObject === stream) return;
+        if (!el) {
+          el = document.createElement("audio");
+          el.autoplay = true;
+          el.style.display = "none";
+          document.body.appendChild(el);
+          this._remoteAudio[did] = el;
+        }
+        el.srcObject = stream;
+        var p = el.play && el.play();
+        if (p && p.catch) p.catch(function () {}); // autoplay policy: the room was entered by a click, so this normally succeeds
+      },
+
+      _removeRemoteAudio: function (did) {
+        var el = this._remoteAudio[did];
+        if (!el) return;
+        delete this._remoteAudio[did];
+        try { el.pause(); el.srcObject = null; el.remove(); } catch (e) {}
+      },
+
       _teardownSignaling: function () {
         var self = this;
         this._signalingIntentionallyClosed = true; // stop _onSignalingClosed from reconnecting
@@ -1863,14 +2054,59 @@ module("lively.identity.RoomView")
 
     });
 
-    // Static open helper — constructs a fresh controller bound to $world.
-    // Callers (buildRoomViewPage's onStartWorld hook) are expected to only
-    // call this once $world already exists.
+    // World-level entry point and the one place the active room session is
+    // held. A user is in at most one room at a time: entering the room you're
+    // already in just brings its window forward (or rebuilds it if closed);
+    // entering a different one leaves the current room first, waiting for its
+    // presence DELETE to settle so it can't land after the next room's join.
+    //
+    // Scope: the session lives in this world's JS, so it survives everything
+    // except a real page load (which still ends the call via the controller's
+    // pagehide hook). Surviving a page load would need a host that outlives
+    // the document (a persistent shell page or a companion window) — the
+    // controller/view split is what makes that addable later.
     lively.identity.RoomView = {
+      _active: null,      // the current RoomViewController, or null
+      _listeners: [],     // fn(controllerOrNull) — presence joined/left, for the lounge's headcounts
+
       open: function (name, roomId) {
+        var self = this;
+        var current = this._active;
+        if (current && !current._roomLeft) {
+          if (current._name === name && current._roomId === roomId) { current.showView(); return current; }
+          current.leave(function () { self._startSession(name, roomId); });
+          return null;
+        }
+        return this._startSession(name, roomId);
+      },
+
+      _startSession: function (name, roomId) {
         var controller = new lively.identity.RoomViewController();
+        this._active = controller;
         controller.open(name, roomId);
         return controller;
+      },
+
+      // True while this world holds a live session for roomId.
+      isActiveRoom: function (roomId) {
+        return !!(this._active && !this._active._roomLeft && this._active._roomId === roomId);
+      },
+
+      getActive: function () {
+        return this._active && !this._active._roomLeft ? this._active : null;
+      },
+
+      addListener: function (fn) {
+        if (this._listeners.indexOf(fn) < 0) this._listeners.push(fn);
+      },
+
+      _notify: function (controller) {
+        this._listeners.slice().forEach(function (fn) { try { fn(controller); } catch (e) { console.error("[RoomView] listener failed", e); } });
+      },
+
+      _sessionEnded: function (controller) {
+        if (this._active === controller) this._active = null;
+        this._notify(null);
       },
     };
 
