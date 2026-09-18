@@ -143,3 +143,9 @@ build/
 tmp/
 temp/
 *.rdb
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
