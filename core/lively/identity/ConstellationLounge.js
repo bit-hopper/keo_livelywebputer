@@ -179,13 +179,14 @@ module("lively.identity.ConstellationLounge")
     var QI_PILL_H = 34;
     var QI_PILL_ICON_BOX = 26, QI_PILL_ICON_PX = 18;
     var QI_PILL_PAD = 10.85, QI_PILL_GAP = 5;   // side padding, label-to-glyph gap (px)
-    var QI_PILL_TEXT_W = { Map: 37.3, Canvas: 66.4 };
+    var QI_PILL_TEXT_W = { Map: 37.3, Wiki: 38.2, Canvas: 66.4 };
     // Fill + hover fill per pill. Map is the Rooms panel's green (same value
     // as ROOM_GREEN, written out because that var is assigned further down,
     // after this line runs); Canvas uses the purple accent the wallet
-    // dialogs' pills already use.
+    // dialogs' pills already use; Wiki is blue.
     var QI_PILL_COLORS = {
       Map:    { fill: Color.rgb(46, 160, 90),  hover: Color.rgb(36, 132, 72) },
+      Wiki:   { fill: Color.rgb(37, 99, 235),  hover: Color.rgb(29, 78, 216) },
       Canvas: { fill: Color.rgb(147, 51, 234), hover: Color.rgb(126, 34, 206) },
     };
     // Total pill width for a label of the given rendered width: padding on
@@ -2032,16 +2033,22 @@ module("lively.identity.ConstellationLounge")
         // _renderEventCard and _renderEmptyEventCard apply their own
         // top margin internally now, so it lines up with the margin they
         // leave on the right instead of a separately-guessed constant.
-        // "Map ↗" and "Canvas ↗" pills — in the open band right of the
-        // title/detail column, just under the banner and above the title's
-        // row. Each is hidden (same "degrade by disappearing" precedent as
-        // the event card) once it would run into the event card's real left
-        // edge on a narrow panel. Canvas is a placeholder: no action yet.
+        // "Map ↗", "Wiki ↗" and "Canvas ↗" pills — in the open band right of
+        // the title/detail column, just under the banner and above the
+        // title's row. Each is hidden (same "degrade by disappearing"
+        // precedent as the event card) once it would run into the event
+        // card's real left edge on a narrow panel. Canvas is a placeholder:
+        // no action yet.
         var pillY = BANNER_H + 8;
         var PILL_SPACING = 10;
         var pillSpecs = [
           { label: "Map", tooltip: "Show postcards on a map",
             onClick: function () { self._openQuickInfoMap(); } },
+          // Same destination as the membership menu's "Open wiki" entry.
+          { label: "Wiki", tooltip: "Open this constellation's wiki",
+            onClick: function () {
+              window.location.href = "/c/" + encodeURIComponent(self._name) + "/wiki";
+            } },
           { label: "Canvas", tooltip: "Canvas (coming soon)",
             onClick: function () {} },
         ];
