@@ -95,6 +95,35 @@ module("lively.identity.RoomView")
     // image, never grow one into the next message.
     var MEDIA_ROW_H = 190;
     var VIDEO_CIRCLE = 96;
+    // Name tag under each video circle: a soft pastel pill, colored per person
+    // (stable hash of their did) so circles are tellable apart at a glance.
+    var NAME_TAG_H = 24, NAME_TAG_GAP = 6, NAME_TAG_TEXT_Y = 3;
+    var NAME_TAG_PAD_X = 10, NAME_TAG_MAX_CHARS = 8, NAME_TAG_FONT_PX = 11;   // 8.25pt renders at 11px
+    var nameTagCanvas = null;
+    // Text width via a canvas 2D context, not the rendered span: reading a fresh Text
+    // morph's span the same tick it's added can return 0 (see CLAUDE.md), whereas this
+    // is synchronous and needs no DOM. Same font as the label so it matches what renders.
+    function measureNameTag(text, fontFamily) {
+      if (!nameTagCanvas) nameTagCanvas = document.createElement("canvas");
+      var ctx = nameTagCanvas.getContext("2d");
+      ctx.font = "700 " + NAME_TAG_FONT_PX + "px " + (fontFamily || "Helvetica");
+      return Math.ceil(ctx.measureText(text).width);
+    }
+    // "@" + the handle, cut to NAME_TAG_MAX_CHARS with an ellipsis.
+    function nameTagText(handle) {
+      var h = String(handle || "?");
+      return "@" + (h.length > NAME_TAG_MAX_CHARS ? h.slice(0, NAME_TAG_MAX_CHARS) + "…" : h);
+    }
+    var NAME_TAG_TEXT = Color.rgb(45, 32, 70);
+    var NAME_TAG_FILLS = [
+      Color.rgb(221, 214, 254), Color.rgb(187, 247, 208), Color.rgb(254, 240, 138),
+      Color.rgb(251, 207, 232), Color.rgb(186, 230, 253), Color.rgb(254, 215, 170),
+    ];
+    function nameTagFill(key) {
+      var h = 0, s = String(key || "");
+      for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+      return NAME_TAG_FILLS[h % NAME_TAG_FILLS.length];
+    }
     // Rooms-rail stacked-participant-avatars row — same overlapping-ring
     // technique as ConstellationLounge.js's _renderRoomCard/_renderEventCard,
     // sized down for this panel's much narrower width (220px vs a full
@@ -1443,7 +1472,7 @@ module("lively.identity.RoomView")
         var stillPresent = {};
 
         var x = this._originX + CHAT_X_OFFSET + 24, y = this._originY + HEADER_H + 24;
-        this._participants.forEach(function (p, i) {
+        this._participants.forEach(function (p) {
           stillPresent[p.did] = true;
           var existingCircle = self._videoCircles[p.did];
           if (existingCircle) {
@@ -1465,16 +1494,33 @@ module("lively.identity.RoomView")
             return;
           }
 
-          var circle = new lively.morphic.Box(lively.rect(x + i * (VIDEO_CIRCLE + 16), y, VIDEO_CIRCLE, VIDEO_CIRCLE));
+          // First slot not already holding a circle — NOT the roster index: the roster
+          // order can differ between refreshes (someone joins earlier in the list than
+          // an existing circle), which put two circles on the same spot.
+          var taken = {};
+          Object.keys(self._videoCircles).forEach(function (d) {
+            var c = self._videoCircles[d];
+            if (c.getPosition().y === y) taken[Math.round((c.getPosition().x - x) / (VIDEO_CIRCLE + 16))] = true;
+          });
+          var slot = 0;
+          while (taken[slot]) slot++;
+          var circle = new lively.morphic.Box(lively.rect(x + slot * (VIDEO_CIRCLE + 16), y, VIDEO_CIRCLE, VIDEO_CIRCLE));
           circle.applyStyle({
             fill: Color.rgb(30, 31, 34), borderWidth: 3, borderColor: ACCENT,
-            borderRadius: VIDEO_CIRCLE / 2, clipMode: "hidden",
+            // "visible", not "hidden": the name tag hangs below the disc, outside
+            // the circle's own bounds. The video/avatar inside round themselves.
+            borderRadius: VIDEO_CIRCLE / 2, clipMode: "visible",
           });
           // Draggable by design (loom-style circles) — only dropping is
           // disabled, so nothing else in this UI can get dropped into one.
           circle.draggingEnabled = true;
           circle.droppingEnabled = false;
           self._viewRoot.addMorph(circle);
+          // draggingEnabled alone isn't enough here: every morph is "locked" by default
+          // (EventExperiments.js), and a locked morph's onDragStart returns without
+          // grabbing anything — and everything inside a Window counts as locked. unlock()
+          // is the framework's switch that makes it actually pick up under the pointer.
+          circle.unlock();
           self._videoCircles[p.did] = circle;
 
           if (p.did === myDid) {
@@ -1488,14 +1534,30 @@ module("lively.identity.RoomView")
             if (self._remoteStreams[p.did]) self._attachRemoteStream(circle, self._remoteStreams[p.did]);
           }
 
-          var label = lively.morphic.Text.makeLabel(p.did === myDid ? "you" : ("@" + (p.handle || "?")), {
-            fontSize: 10, fontWeight: "700", textColor: Color.white,
+          // Pill = a plain fill+radius Box (centered under the disc, position baked into
+          // the constructor rect) holding a one-line Text positioned to center in it. Width
+          // hugs the text: measured via canvas (see measureNameTag), plus padding. Height is
+          // fixed, with the text's y taken from a live gap measurement — the Text's own
+          // vertical alignment can't center a single line in a taller box. fontSize is in
+          // pt (8.25pt = 11px). The Text spans the whole pill, so its own 4px side padding
+          // still leaves the measured text width plus 12px to spare.
+          var tagText = p.did === myDid ? "you" : nameTagText(p.handle);
+          var pillW = measureNameTag(tagText) + 2 * NAME_TAG_PAD_X;
+          var pill = noDrag(new lively.morphic.Box(lively.rect(
+            Math.round((VIDEO_CIRCLE - pillW) / 2), VIDEO_CIRCLE + NAME_TAG_GAP, pillW, NAME_TAG_H)));
+          pill.applyStyle({ fill: nameTagFill(p.did), borderWidth: 0, borderRadius: NAME_TAG_H / 2, clipMode: "hidden" });
+          pill.eventsAreIgnored = true;    // a grab on the tag still drags the whole circle
+          var label = new lively.morphic.Text(
+            lively.rect(0, NAME_TAG_TEXT_Y, pillW, NAME_TAG_H - NAME_TAG_TEXT_Y), tagText);
+          label.applyStyle({
+            fontSize: 8.25, fontWeight: "700", textColor: NAME_TAG_TEXT, fill: null,
+            borderWidth: 0, borderColor: null, align: "center", fixedWidth: true, fixedHeight: true,
+            clipMode: "hidden", allowInput: false, selectable: false, whiteSpaceHandling: "pre",
           });
-          label.applyStyle({ fill: Color.rgba(0, 0, 0, 0.55), borderWidth: 0 });
-          label.setExtent(lively.pt(VIDEO_CIRCLE, 14));
-          label.setPosition(lively.pt(0, VIDEO_CIRCLE - 14));
+          noDrag(label);
           label.eventsAreIgnored = true;
-          circle.addMorph(label);
+          pill.addMorph(label);
+          circle.addMorph(pill);
         });
 
         // Anyone no longer present loses their circle.
@@ -1522,7 +1584,7 @@ module("lively.identity.RoomView")
         videoEl.autoplay = true;
         videoEl.playsInline = true;
         videoEl.muted = true; // never hear yourself
-        videoEl.style.cssText = "width:100%;height:100%;object-fit:cover;transform:scaleX(-1);";
+        videoEl.style.cssText = "width:100%;height:100%;object-fit:cover;transform:scaleX(-1);border-radius:50%;";
         videoEl.srcObject = stream;
         circle.renderContext().shapeNode.appendChild(videoEl);
         circle._hasLocalVideo = true;
@@ -1538,7 +1600,7 @@ module("lively.identity.RoomView")
       _showAvatarPlaceholder: function (circle, handleOrDid) {
         if (circle._avatarMorph) return;
         var av = new lively.morphic.Image(lively.rect(0, 0, VIDEO_CIRCLE, VIDEO_CIRCLE));
-        av.applyStyle({ borderWidth: 0 });
+        av.applyStyle({ borderWidth: 0, borderRadius: VIDEO_CIRCLE / 2 });
         av.setImageURL(lively.identity.postCardUtils.identiconDataUrl(handleOrDid, VIDEO_CIRCLE));
         // eventsAreIgnored (not just noDrag) — a mousedown here must bubble
         // up to the circle itself so the whole circle drags as one piece,
@@ -1547,7 +1609,14 @@ module("lively.identity.RoomView")
         circle.addMorph(av);
         circle._avatarMorph = av;
         var shapeNode = circle.renderContext().shapeNode;
-        shapeNode.insertBefore(av.renderContext().shapeNode, shapeNode.firstChild);
+        // The circle no longer clips (its name tag hangs outside it), so the identicon
+        // has to round itself: the model-level borderRadius doesn't reach the <img>.
+        var avNode = av.renderContext().shapeNode;
+        avNode.style.borderRadius = "50%";
+        avNode.style.overflow = "hidden";
+        var avImg = avNode.querySelector("img");
+        if (avImg) avImg.style.borderRadius = "50%";
+        shapeNode.insertBefore(avNode, shapeNode.firstChild);
       },
 
       // Attaches a remote participant's real MediaStream (from the webrtc
@@ -1584,7 +1653,7 @@ module("lively.identity.RoomView")
         // (_playRemoteAudio) so it keeps going while this window is closed or
         // collapsed — leaving this unmuted would double every voice.
         videoEl.muted = true;
-        videoEl.style.cssText = "width:100%;height:100%;object-fit:cover;";
+        videoEl.style.cssText = "width:100%;height:100%;object-fit:cover;border-radius:50%;";
         videoEl.srcObject = stream;
         // insertBefore (not appendChild) — this can run well after the
         // circle's label submorph DOM node already exists (a late-arriving
