@@ -676,6 +676,7 @@ module("lively.identity.RoomView")
         var icons = [];
         if (this._room.isVideo) icons.push("videocam");
         if (this._room.isVoice) icons.push("headset");
+        if (!this._room.isVideo && !this._room.isVoice) icons.push("chat");
         var ix = 16;
         var textW = nameM.renderContext().shapeNode.querySelector("span");
         ix += (textW ? textW.offsetWidth : 100) + 12;
@@ -865,13 +866,35 @@ module("lively.identity.RoomView")
           }));
           nameM.eventsAreIgnored = true;
           nameM.setPosition(lively.pt(10, 6));
+          // Room type icons (same set as the Lounge's room cards),
+          // right-aligned on the name row; the name label shrinks to
+          // leave room for them.
+          var TYPE_ICON = 18, TYPE_ICON_GAP = 4;
+          var typeIcons = [];
+          if (room.isVideo) typeIcons.push("videocam");
+          if (room.isVoice) typeIcons.push("headset");
+          if (!room.isVideo && !room.isVoice) typeIcons.push("chat");
+          var rowW = ROOMS_PANEL_W - 16;
+          var typeIconsW = typeIcons.length * TYPE_ICON + (typeIcons.length - 1) * TYPE_ICON_GAP;
           // 16 clipped the bottom of any descender (g/y/p in a room name)
           // — confirmed live via the shapeNode's own scrollHeight (~21px
           // for 13px bold text, same shapeNode-padding story as
           // ConstellationLounge.js's own label-height gotchas); 22 covers
           // it with a little headroom rather than the exact measured min.
-          nameM.setExtent(lively.pt(ROOMS_PANEL_W - 16 - 20, 22));
+          nameM.setExtent(lively.pt(rowW - 20 - typeIconsW - 6, 22));
           row.addMorph(nameM);
+          var tix = rowW - 10 - typeIconsW;
+          typeIcons.forEach(function (glyph) {
+            var g = noDrag(lively.morphic.Text.makeLabel(glyph, {
+              fontSize: 11, textColor: isCurrent ? Color.white : TEXT_MUTED,
+            }));
+            g.applyStyle({ fontFamily: "'Material Symbols Rounded'", borderWidth: 0 });
+            g.eventsAreIgnored = true;
+            g.setExtent(lively.pt(TYPE_ICON, TYPE_ICON));
+            g.setPosition(lively.pt(tix, 8));
+            row.addMorph(g);
+            tix += TYPE_ICON + TYPE_ICON_GAP;
+          });
 
           // Stacked participant avatars — same overlapping white-ring-
           // cutout technique as ConstellationLounge.js's _renderRoomCard,

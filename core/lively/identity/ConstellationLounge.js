@@ -1285,13 +1285,14 @@ module("lively.identity.ConstellationLounge")
         var nameW = nameSpan ? nameSpan.offsetWidth + 8 : 100;
         nameM.setExtent(lively.pt(nameW, nameH + 4));
 
-        // Camera/headset type icons — static indicators on the card
+        // Camera/headset/chat type icons — static indicators on the card
         // itself (the creator toggles these in the New Room dialog, not
         // here), right-aligned on the name's own row.
         var ICON = 22, ICON_GAP = 6;
         var icons = [];
         if (room.isVideo) icons.push("videocam");
         if (room.isVoice) icons.push("headset");
+        if (!room.isVideo && !room.isVoice) icons.push("chat");
         var totalIconsW = icons.length ? icons.length * ICON + (icons.length - 1) * ICON_GAP : 0;
         var ix = w - PAD - totalIconsW;
         icons.forEach(function (glyph) {

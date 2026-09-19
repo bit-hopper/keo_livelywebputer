@@ -17,7 +17,7 @@
  * The video/voice toggles are two independent chips (not a radio group,
  * unlike PublishToInventoryDialog's visibility buttons) — a room can be
  * marked as a camera room, a headset room, both, or neither (plain
- * text-only room). Each chip pairs a Material Symbols glyph with a plain
+ * text-only room, which the Chat chip shows as lit). Each chip pairs a Material Symbols glyph with a plain
  * text label as two separate Text morphs rather than one — CLAUDE.md's
  * icon-font-and-body-font-don't-share-a-baseline gotcha, accepted here
  * since there's enough visual separation (icon vs. label) that a slight
@@ -219,6 +219,55 @@ module('lively.identity.NewRoomDialog')
             return true;
           },
         }, {
+          // Chat/text chip -- not an independent flag: it's lit exactly when
+          // neither video nor voice is on (a text-only room), and clicking
+          // it clears both.
+          _BorderColor: Color.rgb(180, 180, 180),
+          _BorderRadius: 16,
+          _BorderWidth: 1,
+          _Extent: lively.pt(84.0, 32.0),
+          _Fill: Color.rgb(243, 243, 243),
+          _Position: lively.pt(198.0, 86.0),
+          className: 'lively.morphic.Box',
+          doNotCopyProperties: [],
+          doNotSerialize: [],
+          name: 'ChatToggleChip',
+          sourceModule: 'lively.morphic.Core',
+          submorphs: [{
+            _Extent: lively.pt(18.0, 18.0),
+            _Position: lively.pt(10.0, 7.0),
+            _FontFamily: "'Material Symbols Rounded'",
+            _FontSize: 13.5,
+            className: 'lively.morphic.Text',
+            eventsAreIgnored: true,
+            fixedWidth: true,
+            fixedHeight: true,
+            name: 'ChatIcon',
+            sourceModule: 'lively.morphic.TextCore',
+            submorphs: [],
+            textColor: Color.rgb(120, 120, 120),
+            textString: 'chat',
+          }, {
+            _Extent: lively.pt(48.0, 16.0),
+            _Position: lively.pt(30.0, 8.0),
+            _FontFamily: 'Helvetica',
+            _FontSize: 12,
+            className: 'lively.morphic.Text',
+            eventsAreIgnored: true,
+            fixedWidth: true,
+            fixedHeight: true,
+            name: 'ChatLabel',
+            sourceModule: 'lively.morphic.TextCore',
+            submorphs: [],
+            textColor: Color.rgb(120, 120, 120),
+            textString: 'Chat',
+          }],
+          onMouseDown: function onMouseDown(evt) {
+            this.owner.selectChatOnly();
+            evt.stop();
+            return true;
+          },
+        }, {
           _Extent: lively.pt(300.0, 16.0),
           _FontFamily: 'Arial, sans-serif',
           _FontSize: 11,
@@ -392,7 +441,7 @@ module('lively.identity.NewRoomDialog')
           this.get('NameText').textString = '';
           this.get('ActivityText').textString = '';
           this.paintToggle('VideoToggleChip', 'VideoIcon', 'VideoLabel', false);
-          this.paintToggle('VoiceToggleChip', 'VoiceIcon', 'VoiceLabel', false);
+          this.paintTypeToggles();
           this.selectAccess('open');
           this.setStatus('');
         },
@@ -412,9 +461,9 @@ module('lively.identity.NewRoomDialog')
         },
 
         // ─── toggles ────────────────────────────────────────────────────────────
-        // Two independent on/off chips, not a radio group -- each just
-        // flips its own boolean and repaints itself, no interaction with
-        // the other chip's state.
+        // Video and Voice are on/off chips, not a radio group (video implies
+        // voice, see toggleVideo/toggleVoice); the Chat chip is derived from
+        // them. paintTypeToggles repaints all three.
 
         paintToggle: function paintToggle(chipName, iconName, labelName, isOn) {
           var selectedFill = Color.rgb(224, 227, 254), selectedBorder = Color.rgb(88, 101, 242);
@@ -431,16 +480,28 @@ module('lively.identity.NewRoomDialog')
           this._isVideo = !this._isVideo;
           // A video room always carries audio, so turning video on turns voice on.
           if (this._isVideo) this._isVoice = true;
-          this.paintToggle('VideoToggleChip', 'VideoIcon', 'VideoLabel', this._isVideo);
-          this.paintToggle('VoiceToggleChip', 'VoiceIcon', 'VoiceLabel', this._isVoice);
+          this.paintTypeToggles();
         },
 
         toggleVoice: function toggleVoice() {
           this._isVoice = !this._isVoice;
           // ...and turning voice off can't leave video on without audio.
           if (!this._isVoice) this._isVideo = false;
+          this.paintTypeToggles();
+        },
+
+        // A text-only room is the absence of both flags, so this just
+        // clears them; the chip itself is derived (see paintTypeToggles).
+        selectChatOnly: function selectChatOnly() {
+          this._isVideo = false;
+          this._isVoice = false;
+          this.paintTypeToggles();
+        },
+
+        paintTypeToggles: function paintTypeToggles() {
           this.paintToggle('VideoToggleChip', 'VideoIcon', 'VideoLabel', this._isVideo);
           this.paintToggle('VoiceToggleChip', 'VoiceIcon', 'VoiceLabel', this._isVoice);
+          this.paintToggle('ChatToggleChip', 'ChatIcon', 'ChatLabel', !this._isVideo && !this._isVoice);
         },
 
         // ─── access ─────────────────────────────────────────────────────────────
