@@ -1435,6 +1435,37 @@ module.exports = function (route, app) {
     app[method](/^\/@([^\/?#]+\.[^\/?#]+)(\/.*)?$/, domainHandleAlias);
   });
 
+  // ─── constellation domain → /c/<name> ──────────────────────────────────────
+  // Same idea as domainHandleAlias above, for a constellation's verified
+  // domain (/c/example.com/... ↔ /c/<name>/...): verified → rewrite req.url so
+  // every /c/:name route runs unchanged; lapsed → GET redirects to /c/<name>.
+  // The constellation is found from the DID the domain is registered to
+  // ("did:web:<host>:c:<name>") and confirmed against the registry. Must stay
+  // ahead of every /c/ route in this file, for the same ordering reason.
+  function constellationDomainAlias(req, res, next) {
+    var domain;
+    try { domain = decodeURIComponent(req.params[0]).toLowerCase(); }
+    catch (e) { return next(); }
+    var rest = req.params[1] || "";
+    var qi = req.url.indexOf("?");
+    var query = qi === -1 ? "" : req.url.slice(qi);
+    handleRegistry.resolveDomainRow(domain, function (err, row) {
+      if (err || !row) return next();
+      var m = /:c:([a-z0-9-]+)$/.exec(row.did);
+      if (!m) return next();
+      constellationRegistry.get(m[1], function (err2, constellation) {
+        if (err2 || !constellation || constellation.did !== row.did) return next();
+        var target = "/c/" + m[1] + rest + query;
+        if (row.status !== "verified" && req.method === "GET") return res.redirect(302, target);
+        req.url = target;
+        next();
+      });
+    });
+  }
+  ["get", "post", "put", "delete"].forEach(function (method) {
+    app[method](/^\/c\/([^\/?#]+\.[^\/?#]+)(\/.*)?$/, constellationDomainAlias);
+  });
+
   // ─── home manifest ─────────────────────────────────────────────────────────
   // Route is app-level (not under /nodejs/IdentityServer/) so clients reach it
   // at the canonical /@handle URL.
