@@ -98,6 +98,10 @@ module("lively.identity.ProfileCard")
             return res.json().then(function (env) {
               self._envelope = env;
               var payload    = (env.record && env.record.payload) || {};
+              // The card may be opened by domain handle (/@example.com), which
+              // never equals the session's registered handle — the DID is the
+              // identity that always matches.
+              if (user && env.did && user.did === env.did) self._isOwner = true;
               var dp = (self._isOwner && user.document)
                 ? Promise.resolve(user.document)
                 : fetch("/@" + target + "/did-document", { credentials: "include" })

@@ -73,6 +73,7 @@ var DDL =
   '  status          TEXT NOT NULL DEFAULT \'verified\',' +
   '  last_checked_at TEXT DEFAULT NULL' +
   ');\n' +
+  'ALTER TABLE domains ADD COLUMN IF NOT EXISTS fail_count INTEGER NOT NULL DEFAULT 0;\n' +
   'CREATE TABLE IF NOT EXISTS credentials (' +
   '  credential_id TEXT PRIMARY KEY,' +
   '  did           TEXT NOT NULL,' +
@@ -162,13 +163,45 @@ function resolve(handle, thenDo) {
 // §3.2 rules out. The one existing caller (IdentityServer.js's reactions
 // byEmoji handle resolution) needs this guarantee.
 // Calls thenDo(null, handle) or thenDo(null, null) if not found.
-function resolveHandleForDid(did, thenDo) {
+function resolveBaseHandleForDid(did, thenDo) {
   withDB(function(err, pool) {
     if (err) return thenDo(err);
     pool.query(
       'SELECT handle FROM handles WHERE did = $1 AND is_alias = false',
       [did],
       function(err, result) { thenDo(err || null, result.rows[0] ? result.rows[0].handle : null); }
+    );
+  });
+}
+
+// The handle to DISPLAY for a DID: its currently-verified domain if it has
+// one (e.g. "tinylil.world"), otherwise its registered handle. Display-only:
+// anything that needs the account's own handle (ownership checks, storage
+// keys) must use resolveBaseHandleForDid. Routes given a domain in the URL
+// are mapped back to the base handle before they run (IdentityServer.js).
+function resolveHandleForDid(did, thenDo) {
+  withDB(function(err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      "SELECT domain FROM domains WHERE did = $1 AND status = 'verified' ORDER BY verified_at DESC LIMIT 1",
+      [did],
+      function(err, result) {
+        if (err) return thenDo(err);
+        if (result.rows[0]) return thenDo(null, result.rows[0].domain);
+        resolveBaseHandleForDid(did, thenDo);
+      }
+    );
+  });
+}
+
+// { did, status } for a registered domain, or null.
+function resolveDomainRow(domain, thenDo) {
+  withDB(function(err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'SELECT did, status FROM domains WHERE domain = $1',
+      [domain],
+      function(err, result) { thenDo(err || null, result && result.rows[0] ? result.rows[0] : null); }
     );
   });
 }
@@ -316,9 +349,9 @@ function registerDomain(domain, did, thenDo) {
     if (err) return thenDo(err);
     var now = new Date().toISOString();
     pool.query(
-      'INSERT INTO domains (domain, did, verified_at, status, last_checked_at) VALUES ($1, $2, $3, \'verified\', $4)' +
+      'INSERT INTO domains (domain, did, verified_at, status, last_checked_at, fail_count) VALUES ($1, $2, $3, \'verified\', $4, 0)' +
       ' ON CONFLICT (domain) DO UPDATE SET did = EXCLUDED.did, verified_at = EXCLUDED.verified_at,' +
-      "   status = 'verified', last_checked_at = EXCLUDED.last_checked_at",
+      "   status = 'verified', last_checked_at = EXCLUDED.last_checked_at, fail_count = 0",
       [domain, did, now, now],
       function(err) { thenDo(err || null); }
     );
@@ -385,14 +418,29 @@ function removeDomain(domain, did, thenDo) {
 
 // Update a domain's verification status after a recheck (DomainVerifier).
 // status: 'verified' | 'invalid'. Calls thenDo(err).
+// A domain that was verified is only demoted to 'invalid' after
+// DOMAIN_DEMOTE_AFTER consecutive failed rechecks, so one transient DNS or
+// network failure can't flip someone's primary handle back and forth. Any
+// successful check resets the counter. A domain that is already 'invalid'
+// stays invalid until a check succeeds.
+// Calls thenDo(err).
+var DOMAIN_DEMOTE_AFTER = 3;
+
 function updateDomainStatus(domain, status, thenDo) {
   withDB(function(err, pool) {
     if (err) return thenDo(err);
-    pool.query(
-      'UPDATE domains SET status = $1, last_checked_at = $2 WHERE domain = $3',
-      [status, new Date().toISOString(), domain],
-      function(err) { thenDo(err || null); }
-    );
+    var now = new Date().toISOString();
+    var sql, params;
+    if (status === 'verified') {
+      sql = "UPDATE domains SET status = 'verified', fail_count = 0, last_checked_at = $2 WHERE domain = $1";
+      params = [domain, now];
+    } else {
+      sql = "UPDATE domains SET fail_count = fail_count + 1," +
+            " status = CASE WHEN fail_count + 1 >= $3 THEN 'invalid' ELSE status END," +
+            " last_checked_at = $2 WHERE domain = $1";
+      params = [domain, now, DOMAIN_DEMOTE_AFTER];
+    }
+    pool.query(sql, params, function(err) { thenDo(err || null); });
   });
 }
 
@@ -500,6 +548,9 @@ module.exports = {
   remove:           remove,
   registerDomain:   registerDomain,
   resolveDomain:    resolveDomain,
+  resolveDomainRow: resolveDomainRow,
+  resolveBaseHandleForDid: resolveBaseHandleForDid,
+  DOMAIN_DEMOTE_AFTER: DOMAIN_DEMOTE_AFTER,
   listDomainsForDid: listDomainsForDid,
   listAllDomains:   listAllDomains,
   removeDomain:     removeDomain,

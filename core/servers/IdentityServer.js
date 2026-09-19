@@ -1400,6 +1400,41 @@ module.exports = function (route, app) {
     res.send(buildWalletVaultPage());
   });
 
+  // ─── domain handle → owner's registered handle ─────────────────────────────
+  // A verified domain handle is the account's main public name (/@tinylil.world),
+  // but every ownership check and storage key in this file uses the registered
+  // handle. Rather than teach ~50 routes about both, map the domain back to the
+  // registered handle here, before any other /@ route runs (this must stay the
+  // FIRST /@ registration in this file — same ordering rule as the /@:handle/*
+  // catch-all further down, since registration order is what sets priority).
+  //   - verified domain:  rewrite req.url in place; the rest of the routing
+  //     (and the session's own handle comparison) sees /@<registered handle>/...
+  //   - lapsed (invalid) domain: the registered handle takes precedence again —
+  //     GET navigations redirect to it, so already-shared links keep working.
+  //   - unknown domain, or a constellation's domain (no registered handle for
+  //     its DID): untouched, falls through to the existing routes.
+  function domainHandleAlias(req, res, next) {
+    var domain;
+    try { domain = decodeURIComponent(req.params[0]).toLowerCase(); }
+    catch (e) { return next(); }
+    var rest = req.params[1] || "";
+    var qi = req.url.indexOf("?");
+    var query = qi === -1 ? "" : req.url.slice(qi);
+    handleRegistry.resolveDomainRow(domain, function (err, row) {
+      if (err || !row) return next();
+      handleRegistry.resolveBaseHandleForDid(row.did, function (err2, base) {
+        if (err2 || !base) return next();
+        var target = "/@" + encodeURIComponent(base) + rest + query;
+        if (row.status !== "verified" && req.method === "GET") return res.redirect(302, target);
+        req.url = target;
+        next();
+      });
+    });
+  }
+  ["get", "post", "put", "delete"].forEach(function (method) {
+    app[method](/^\/@([^\/?#]+\.[^\/?#]+)(\/.*)?$/, domainHandleAlias);
+  });
+
   // ─── home manifest ─────────────────────────────────────────────────────────
   // Route is app-level (not under /nodejs/IdentityServer/) so clients reach it
   // at the canonical /@handle URL.
