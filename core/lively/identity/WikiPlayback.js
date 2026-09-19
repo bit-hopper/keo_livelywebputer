@@ -390,7 +390,7 @@ module('lively.identity.WikiPlayback')
         // WikiView.open callers make elsewhere) — only the owner should
         // land back in the editor; anyone else returns to the read-only view.
         var user = lively.identity.did.currentUser();
-        var isOwner = !!(user && user.handle === this._handle);
+        var isOwner = !!(user && lively.identity.did.isOwnHandle(this._handle));
 
         lively.require(isOwner ? editorModule : viewModule).toRun(function () {
           var Editor = lively.Class.forName(editorModule);

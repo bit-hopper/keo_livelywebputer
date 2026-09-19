@@ -85,6 +85,13 @@ function consumeChallenge(req) {
 // Calls thenDo(err, { verified, credentialId, publicKeyJwk, handle, did }).
 // On success, registers handle → DID in HandleRegistry.
 function verifyRegistration(req, body, thenDo) {
+  // Registered handles never contain a dot: a dotted name is a domain handle
+  // (/@tinylil.world), and handleRegistry.resolve() checks the handles table
+  // before domains, so allowing one here would let anyone squat a domain's
+  // name before its owner verifies it. Same format the register dialog enforces.
+  if (!/^[a-z0-9_]{1,32}$/.test(String(body && body.handle || ''))) {
+    return thenDo(new Error('Invalid handle: use 1-32 lowercase letters, digits or underscores'));
+  }
   var expectedChallenge = consumeChallenge(req);
   if (!expectedChallenge) {
     return thenDo(new Error('No pending challenge for this session'));
@@ -268,14 +275,20 @@ function verifyAuthentication(req, body, thenDo) {
         handleRegistry.updateCounter(body.credentialId, result.authenticationInfo.newCounter, function(counterErr) {
           if (counterErr) console.warn('[AuthMiddleware] Failed to update counter:', counterErr);
 
-          req.session['identity-did']    = registeredDid;
-          req.session['identity-handle'] = body.handle;
+          // body.handle may be a verified domain handle ("tinylil.world");
+          // the session (and every owner-check that compares against it) is
+          // keyed on the account's registered handle.
+          handleRegistry.resolveBaseHandleForDid(registeredDid, function(hErr, baseHandle) {
+            var handle = (!hErr && baseHandle) || body.handle;
+            req.session['identity-did']    = registeredDid;
+            req.session['identity-handle'] = handle;
 
-          thenDo(null, {
-            verified:     true,
-            did:          registeredDid,
-            handle:       body.handle,
-            credentialId: body.credentialId
+            thenDo(null, {
+              verified:     true,
+              did:          registeredDid,
+              handle:       handle,
+              credentialId: body.credentialId
+            });
           });
         });
 

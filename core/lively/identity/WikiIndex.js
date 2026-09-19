@@ -169,7 +169,7 @@ module("lively.identity.WikiIndex")
       // the session did directly).
       _startPersonal: function () {
         var user = lively.identity.did.currentUser();
-        this._canWrite = !!(user && user.handle === this._scope.handle);
+        this._canWrite = !!(user && lively.identity.did.isOwnHandle(this._scope.handle));
         this._quickInfo = {};
         this._fetchWikiIndex();
       },

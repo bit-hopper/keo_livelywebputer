@@ -1493,7 +1493,11 @@ module.exports = function (route, app) {
           );
         }
 
-        res.json({ handle: handle, did: did, objects: visible });
+        // `handle` is the name to display (verified domain if it has one);
+        // `registeredHandle` is the account's own handle.
+        handleRegistry.resolveHandleForDid(did, function (hErr, displayHandle) {
+          res.json({ handle: displayHandle || handle, registeredHandle: handle, did: did, objects: visible });
+        });
       });
     });
   });

@@ -217,6 +217,26 @@ module("lively.identity.LoginDialog")
         if (!typedHandle) {
           return this.setStatus("Handle is required.", true);
         }
+        // A verified domain handle (contains a dot) signs in as its account:
+        // map it to the registered handle first, since this device's saved
+        // credentials are keyed on that. Second pass re-enters with the result.
+        if (this._resolvedFor === typedHandle) {
+          typedHandle = this._resolvedHandle;
+          this._resolvedFor = null;
+        } else if (typedHandle.indexOf(".") !== -1) {
+          this.setStatus("Looking up " + typedHandle + "…");
+          var domainTyped = typedHandle;
+          var again = function (registered) {
+            self._resolvedFor    = domainTyped;
+            self._resolvedHandle = registered || domainTyped;
+            self.signIn();
+          };
+          fetch("/@" + encodeURIComponent(domainTyped), { credentials: "include", headers: { "Accept": "application/json" } })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (j) { again(j && j.registeredHandle); })
+            .catch(function () { again(null); });
+          return;
+        }
         var btn = this.get("signInBtn");
         if (btn) btn.setActive(false);
         this.setStatus("Requesting challenge…");

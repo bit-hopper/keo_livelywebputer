@@ -341,6 +341,7 @@ module("lively.identity.DID")
         establishSession: function (params, thenDo) {
           var self = this;
           self._currentUser = params;
+          self._loadDomainHandle();
 
           // 1. Slot into the existing username system so L2L, Wiki, PartsBin
           //    all see the handle as the current user without any changes to them.
@@ -409,6 +410,34 @@ module("lively.identity.DID")
           return this._currentUser;
         },
 
+        // True if `handle` names the signed-in account: its registered handle
+        // or its verified domain handle (loaded by _loadDomainHandle after
+        // sign-in). Use this instead of comparing against user.handle
+        // wherever the handle may have come from a URL, since a verified
+        // domain can be used in place of the registered handle there.
+        isOwnHandle: function (handle) {
+          var u = this._currentUser;
+          if (!u || !handle) return false;
+          var h = String(handle).toLowerCase();
+          return h === String(u.handle).toLowerCase() ||
+            (!!u.domainHandle && h === u.domainHandle);
+        },
+
+        // Fetch the account's verified domain handle (if any) into
+        // _currentUser.domainHandle. Best-effort: on failure the registered
+        // handle simply remains the only own-handle.
+        _loadDomainHandle: function () {
+          var u = this._currentUser;
+          if (!u || !u.handle) return;
+          fetch("/@" + encodeURIComponent(u.handle) + "/domains", { credentials: "include" })
+            .then(function (r) { return r.ok ? r.json() : { domains: [] }; })
+            .then(function (b) {
+              var v = (b.domains || []).filter(function (d) { return d.status === "verified"; })[0];
+              if (u === lively.identity.did._currentUser) u.domainHandle = v ? String(v.domain).toLowerCase() : null;
+            })
+            .catch(function () {});
+        },
+
         // Base URL for identity server API calls (scheme + host, no trailing slash).
         // Uses window.location.origin when available, otherwise empty string so
         // relative paths still resolve correctly in the same origin.
@@ -455,6 +484,7 @@ module("lively.identity.DID")
                 // (the L2L connection will register itself when it connects)
                 lively.Config.set("UserName", meta.handle);
                 self._currentUser = params;
+                self._loadDomainHandle();
                 thenDo(null, params);
               }
               fetch("/nodejs/IdentityServer/session", { credentials: "include" })
