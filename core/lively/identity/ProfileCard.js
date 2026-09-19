@@ -451,7 +451,8 @@ module("lively.identity.ProfileCard")
             var valM = new lively.morphic.Text(lively.rect(80, ry + 2, BW - 88, ROW - 2), signStr);
             valM.applyStyle({ allowInput: false, fontSize: 11,
               fontWeight: item.val ? 'bold' : 'normal',
-              textColor: item.val ? Color.rgb(35, 35, 35) : Color.rgb(180, 180, 180),
+              textColor: si >= 0 ? Color.rgb.apply(null, lively.identity.ProfileCard.signRgb(si))
+                                 : (item.val ? Color.rgb(35, 35, 35) : Color.rgb(180, 180, 180)),
               fill: Color.rgba(0,0,0,0), borderWidth: 0 });
             astroBox.addMorph(valM);
           });
@@ -1720,7 +1721,7 @@ module("lively.identity.ProfileCard")
           disp._signIdx = idx;
           ui.noDrag(disp);
           disp.applyStyle({ allowInput: false, fontSize: 12, fontWeight: 'bold',
-            textColor: idx < 0 ? Color.rgb(150, 150, 158) : Color.rgb(35, 35, 35),
+            textColor: Color.rgb.apply(null, PC.signRgb(idx)),
             fill: Color.rgb(248, 248, 251), borderColor: Color.rgb(225, 225, 231),
             borderWidth: 1, borderRadius: 13, align: 'center' });
           pane.addMorph(disp);
@@ -1736,7 +1737,7 @@ module("lively.identity.ProfileCard")
             // -1..11 → 13 states
             d._signIdx = ((d._signIdx + 1 + this._step + 13) % 13) - 1;
             d.textString = P.signLabel(d._signIdx);
-            var c = d._signIdx < 0 ? 'rgb(150,150,158)' : 'rgb(35,35,35)';
+            var c = P.signCss(d._signIdx);
             var n = d.renderContext().shapeNode;
             n.style.color = c;
             var kids = n.querySelectorAll('*');
@@ -2086,6 +2087,19 @@ module("lively.identity.ProfileCard")
         var Z = lively.identity.ProfileCard.ZODIAC;
         return idx < 0 ? 'Not set' : Z.GLYPHS[idx] + '  ' + Z.SIGNS[idx];
       },
+      // Sign color by element (fire/earth/air/water), shared by the read view
+      // and the edit pickers. Each is >= 4.8:1 against the card's light fills.
+      // Signs cycle fire, earth, air, water in zodiac order, so idx % 4 picks it.
+      ELEMENT_RGB: [[196, 56, 24], [38, 120, 66], [0, 118, 148], [95, 74, 196]],
+      UNSET_RGB:   [150, 150, 158],
+      // [r, g, b] for a sign index; the muted gray for -1 / not set.
+      signRgb: function (idx) {
+        var P = lively.identity.ProfileCard;
+        return idx < 0 ? P.UNSET_RGB : P.ELEMENT_RGB[idx % 4];
+      },
+      signCss: function (idx) {
+        return 'rgb(' + lively.identity.ProfileCard.signRgb(idx).join(',') + ')';
+      },
 
       // Birth-chart calculator panel (edit → Profile tab, beside the sign
       // pickers). Birth date/time/place live only in these inputs: they're
@@ -2151,7 +2165,7 @@ module("lively.identity.ProfileCard")
           if (!d) return;
           d._signIdx = idx;
           d.textString = PC.signLabel(idx);
-          var c = idx < 0 ? 'rgb(150,150,158)' : 'rgb(35,35,35)';
+          var c = PC.signCss(idx);
           var n = d.renderContext().shapeNode;
           n.style.color = c;
           var kids = n.querySelectorAll('*');
