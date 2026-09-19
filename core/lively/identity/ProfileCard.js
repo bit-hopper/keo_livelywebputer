@@ -529,10 +529,10 @@ module("lively.identity.ProfileCard")
           // right edge lines up with the divider and astro card
           // (pw - contentX); content is inset by PAD, so the icon row's
           // GAP is tighter than it used to be to keep the card width sane.
-          // ICON_PAD insets each icon inside its circle, since a full-bleed
-          // icon gets its corners cut by the circular clip mask.
-          var CIRC = 38, GAP = 16, ICON_PAD = 6, PAD = 16;
-          var ICON_BOX = CIRC - ICON_PAD * 2;
+          // Filled social accounts render as the bare logo (no enclosing
+          // circle); CIRC is the slot each one (and each empty "add"
+          // placeholder circle) occupies, ICON the logo's own size within it.
+          var CIRC = 38, GAP = 16, ICON = 34, PAD = 16;
           var rowEndX = pw - contentX - PAD;
           var rowStartX = rowEndX - (5 * CIRC + 4 * GAP);
           var accounts = (payload.socialAccounts || []).slice(0, 5);
@@ -586,51 +586,47 @@ module("lively.identity.ProfileCard")
             pane.addMorph(cardDiv);
           }
 
+          // A transparent slot Box holds the click/tooltip, with the logo as
+          // a child Image: setImageURL's useNativeExtent callback repositions
+          // whatever morph it's called on to re-center it, so that morph can't
+          // also be the one carrying the slot's own fixed position.
           function addFilledCircle(cx, acc) {
-            var btn = new lively.morphic.Button(lively.rect(cx, ry, CIRC, CIRC), '');
-            btn.applyStyle({ fill: Color.rgb(255, 255, 255), borderRadius: CIRC / 2,
-              borderColor: Color.rgb(225, 225, 231), borderWidth: 1 });
-            btn.setAppearanceStylingMode(false);
-            btn.setBorderStylingMode(false);
-            var icon = new lively.morphic.Image(lively.rect(ICON_PAD, ICON_PAD, ICON_BOX, ICON_BOX));
+            var slot = new lively.morphic.Box(lively.rect(cx, ry, CIRC, CIRC));
+            slot.applyStyle({ fill: Color.rgba(0, 0, 0, 0), borderWidth: 0, handStyle: 'pointer' });
+            slot.draggingEnabled = false; slot.droppingEnabled = false; slot.grabbingEnabled = false;
+            var icon = new lively.morphic.Image(
+              lively.rect(Math.round((CIRC - ICON) / 2), Math.round((CIRC - ICON) / 2), ICON, ICON));
             icon.applyStyle({ borderWidth: 0 });
-            icon.ignoreEvents();
-            btn.addMorph(icon);
-            // useNativeExtent + max{Width,Height} scales the icon down to
-            // fit within its padded box while preserving aspect ratio
-            // (plain setImageURL stretches to exactly fill ICON_BOX x
-            // ICON_BOX, distorting any non-square icon) — then re-center
-            // it, since the resulting extent may be narrower/shorter than
-            // ICON_BOX once aspect ratio is preserved.
+            icon.draggingEnabled = false; icon.droppingEnabled = false; icon.grabbingEnabled = false;
+            icon.eventsAreIgnored = true;
+            slot.addMorph(icon);
+            // useNativeExtent + max{Width,Height} scales the logo down to fit
+            // ICON x ICON while preserving aspect ratio (plain setImageURL
+            // stretches to exactly fill it, distorting any non-square logo) —
+            // then re-center it, since the resulting extent may be narrower or
+            // shorter than ICON.
             icon.setImageURL(socialIconUrl(acc.platform),
-              { useNativeExtent: true, maxWidth: ICON_BOX, maxHeight: ICON_BOX },
+              { useNativeExtent: true, maxWidth: ICON, maxHeight: ICON },
               function (err, loadedIcon) {
                 if (err) return;
                 var ext = loadedIcon.getExtent();
                 loadedIcon.setPosition(lively.pt(
                   Math.round((CIRC - ext.x) / 2),
                   Math.round((CIRC - ext.y) / 2)));
-                // lively.morphic.Shapes.Image's <img> DOM node is created
-                // with `position: absolute` but no explicit left/top
-                // (Rendering.js's htmlImg() leaves them commented out) — as
-                // a child of this circle's Button, it inherits the
-                // Button's own `text-align: center` styling (meant for
-                // centering the button's label), which shifts an <img>
-                // with left:auto right by roughly half its own width.
-                // Pin left/top explicitly so the morph's own (already
-                // correct) position isn't overridden by that inherited
-                // centering.
+                // Rendering.js's htmlImg() leaves the <img> node's left/top
+                // unset; pin them so the morph's own (correct) position is
+                // what shows.
                 var imgNode = loadedIcon.renderContext && loadedIcon.renderContext().imgNode;
                 if (imgNode) { imgNode.style.left = '0px'; imgNode.style.top = '0px'; }
               });
-            btn._openUrl = acc.url;
-            btn.addScript(function doAction() {
+            slot._openUrl = acc.url;
+            slot.addScript(function onMouseUp(evt) {
               if (this._openUrl) window.open(this._openUrl, '_blank', 'noopener');
+              evt.stop(); return true;
             });
-            lively.bindings.connect(btn, 'fire', btn, 'doAction');
-            pane.addMorph(btn);
+            pane.addMorph(slot);
             var info = socialPlatformInfo(acc.platform);
-            btn.renderContext().morphNode.title = info ? info.label : acc.platform;
+            slot.renderContext().morphNode.title = info ? info.label : acc.platform;
           }
 
           function addEmptyCircle(cx) {
