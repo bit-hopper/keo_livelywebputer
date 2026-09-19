@@ -1302,48 +1302,6 @@ module("lively.identity.ProfileCard")
         self._editPayload = payload; // authoritative merged state across tab switches
         tab = tab || 'profile';
 
-        // Local copy — see _renderView's identical block for why this can't
-        // be shared from outer module scope (evalJS closure loss).
-        var SOCIAL_PLATFORMS = [
-          { key: 'discord',     label: 'Discord' },
-          { key: 'spotify',     label: 'Spotify' },
-          { key: 'instagram',   label: 'Instagram' },
-          { key: 'github',      label: 'GitHub' },
-          { key: 'youtube',     label: 'YouTube' },
-          { key: 'tiktok',      label: 'TikTok' },
-          { key: 'twitch',      label: 'Twitch' },
-          { key: 'bluesky',     label: 'Bluesky' },
-          { key: 'blacksky',    label: 'Blacksky' },
-          { key: 'behance',     label: 'Behance' },
-          { key: 'steam',       label: 'Steam' },
-          { key: 'cashapp',     label: 'Cash App' },
-          { key: 'pinterest',   label: 'Pinterest' },
-          { key: 'arena',       label: 'Are.na' },
-          { key: 'goodreads',   label: 'Goodreads' },
-          { key: 'applemusic',  label: 'Apple Music' },
-          { key: 'ytmusic',     label: 'YT Music' },
-          { key: 'storygraph',  label: 'StoryGraph' },
-          { key: 'itch',        label: 'itch.io' },
-          { key: 'psn',         label: 'PlayStation Network' },
-          { key: 'mynintendo',  label: 'My Nintendo' },
-          { key: 'xbox',        label: 'Xbox' },
-          { key: 'epic',        label: 'Epic Games' },
-          { key: 'tumblr',      label: 'Tumblr' },
-          { key: 'threads',     label: 'Threads' },
-        ];
-        function socialPlatformInfo(key) {
-          for (var i = 0; i < SOCIAL_PLATFORMS.length; i++) {
-            if (SOCIAL_PLATFORMS[i].key === key) return SOCIAL_PLATFORMS[i];
-          }
-          return null;
-        }
-        function socialIconUrl(platformKey) {
-          // Absolute path (leading slash) — this card is normally viewed at
-          // a nested URL like /@handle/objId, where a relative path would
-          // resolve against that path instead of site root and 404.
-          return '/core/media/social-icons/' + platformKey + '.svg';
-        }
-
         // Store context on pane for button handlers (_win excluded from serialization)
         pane._win = self;
         if (pane.doNotSerialize && pane.doNotSerialize.indexOf('_win') === -1)
@@ -1366,7 +1324,7 @@ module("lively.identity.ProfileCard")
           inp.name = inputName;
           inp.applyStyle({ allowInput: true, fontSize: 12,
             fill: Color.rgb(252, 252, 252),
-            borderColor: Color.rgb(200, 200, 200), borderWidth: 1, borderRadius: 3 });
+            borderColor: Color.rgb(200, 200, 200), borderWidth: 1, borderRadius: 6 });
           inp.beInputLine();
           pane.addMorph(inp);
           y += (h || 24) + 8;
@@ -1451,175 +1409,7 @@ module("lively.identity.ProfileCard")
         pane.addMorph(bioCounter);
         lively.bindings.connect(pane.get("pcBio"), 'textString', bioCounter, 'onBioChanged');
 
-        // Avatar URL — label + narrow input + Upload button on same row
-        var avUrlLbl = new lively.morphic.Text(lively.rect(12, y, ew, 16), "Avatar URL");
-        avUrlLbl.applyStyle({ allowInput: false, fontSize: 10,
-          textColor: Color.rgb(120, 120, 120),
-          fill: Color.rgb(255, 255, 255), borderWidth: 0 });
-        pane.addMorph(avUrlLbl);
-        y += 17;
-        var avUrlInp = new lively.morphic.Text(lively.rect(12, y, ew - 84, 24), payload.avatarUrl || "");
-        avUrlInp.name = "pcAvatarUrl";
-        avUrlInp.applyStyle({ allowInput: true, fontSize: 12,
-          fill: Color.rgb(252, 252, 252),
-          borderColor: Color.rgb(200, 200, 200), borderWidth: 1, borderRadius: 3 });
-        avUrlInp.beInputLine();
-        pane.addMorph(avUrlInp);
-        var avUploadBtn = new lively.morphic.Button(lively.rect(12 + ew - 76, y, 76, 26), "Upload...");
-        avUploadBtn.applyStyle({ fill: Color.rgb(240, 240, 240),
-          borderColor: Color.rgb(200, 200, 200), borderRadius: 4,
-          fontSize: 11, textColor: Color.rgb(50, 50, 50), borderWidth: 1 });
-        avUploadBtn.setAppearanceStylingMode(false);
-        avUploadBtn.setBorderStylingMode(false);
-        avUploadBtn.addScript(function doAction() {
-          var win = this.owner && this.owner.owner;
-          if (!win) return;
-          var input = document.createElement('input');
-          input.type = 'file';
-          input.accept = 'image/*';
-          input.style.display = 'none';
-          document.body.appendChild(input);
-          input.addEventListener('change', function () {
-            var file = input.files && input.files[0];
-            document.body.removeChild(input);
-            if (!file) return;
-            lively.identity.imageCropper.open(file, function (url) {
-              var pane2 = win.targetMorph;
-              var inp2  = pane2 && pane2.get('pcAvatarUrl');
-              if (inp2) inp2.textString = url;
-            });
-          });
-          input.click();
-        });
-        lively.bindings.connect(avUploadBtn, 'fire', avUploadBtn, 'doAction');
-        pane.addMorph(avUploadBtn);
-        tint(avUploadBtn, 50, 50, 50);
-        y += 32;
-
-        // Banner URL row — manual layout for Upload button
-        var bnLbl = new lively.morphic.Text(lively.rect(12, y, ew, 16), "Banner URL");
-        bnLbl.applyStyle({ allowInput: false, fontSize: 10,
-          textColor: Color.rgb(120, 120, 120),
-          fill: Color.rgb(255, 255, 255), borderWidth: 0 });
-        pane.addMorph(bnLbl);
-        y += 17;
-        var bnInp = new lively.morphic.Text(lively.rect(12, y, ew - 84, 24), payload.bannerUrl || "");
-        bnInp.name = "pcBannerUrl";
-        bnInp.applyStyle({ allowInput: true, fontSize: 12,
-          fill: Color.rgb(252, 252, 252),
-          borderColor: Color.rgb(200, 200, 200), borderWidth: 1, borderRadius: 3 });
-        bnInp.beInputLine();
-        pane.addMorph(bnInp);
-        var bnUploadBtn = new lively.morphic.Button(lively.rect(12 + ew - 76, y, 76, 26), "Upload...");
-        bnUploadBtn.applyStyle({ fill: Color.rgb(240, 240, 240),
-          borderColor: Color.rgb(200, 200, 200), borderRadius: 4,
-          fontSize: 11, textColor: Color.rgb(50, 50, 50), borderWidth: 1 });
-        bnUploadBtn.setAppearanceStylingMode(false);
-        bnUploadBtn.setBorderStylingMode(false);
-        bnUploadBtn.addScript(function doAction() {
-          var win = this.owner && this.owner.owner;
-          if (!win) return;
-          var input = document.createElement('input');
-          input.type = 'file';
-          input.accept = 'image/*';
-          input.style.display = 'none';
-          document.body.appendChild(input);
-          input.addEventListener('change', function () {
-            var file = input.files && input.files[0];
-            document.body.removeChild(input);
-            if (!file) return;
-            lively.identity.imageCropper.open(file, function (url) {
-              var pane2 = win.targetMorph;
-              var inp2  = pane2 && pane2.get('pcBannerUrl');
-              if (inp2) inp2.textString = url;
-            }, { width: 834, height: 160, shape: 'rect',
-                 title: 'Crop Banner', basename: 'banner' });
-          });
-          input.click();
-        });
-        lively.bindings.connect(bnUploadBtn, 'fire', bnUploadBtn, 'doAction');
-        pane.addMorph(bnUploadBtn);
-        tint(bnUploadBtn, 50, 50, 50);
-        y += 32;
-
-        // astrological signs steppers
-        var SIGNS  = ['Aries','Taurus','Gemini','Cancer','Leo','Virgo',
-                      'Libra','Scorpio','Sagittarius','Capricorn','Aquarius','Pisces'];
-        var GLYPHS = ['♈︎','♉︎','♊︎','♋︎','♌︎','♍︎','♎︎','♏︎','♐︎','♑︎','♒︎','♓︎'];
-
-        y += 6;
-        var astroLbl = new lively.morphic.Text(lively.rect(12, y, ew, 16), "Astrological signs");
-        astroLbl.applyStyle({ allowInput: false, fontSize: 10,
-          textColor: Color.rgb(120, 120, 120),
-          fill: Color.rgb(255, 255, 255), borderWidth: 0 });
-        pane.addMorph(astroLbl);
-        y += 20;
-
-        function addSignPicker(symbol, fieldName, currentSign) {
-          var idx = Math.max(0, SIGNS.indexOf(currentSign));
-          var symLbl = new lively.morphic.Text(lively.rect(12, y, 30, 26), symbol);
-          symLbl.applyStyle({ allowInput: false, fontSize: 15,
-            textColor: Color.rgb(70, 70, 70),
-            fill: Color.rgb(255, 255, 255), borderWidth: 0 });
-          pane.addMorph(symLbl);
-          var prevBtn = new lively.morphic.Button(lively.rect(46, y, 30, 26), '◀');
-          prevBtn.applyStyle({ fill: Color.rgb(245, 245, 245),
-            borderColor: Color.rgb(200, 200, 200), borderRadius: 4,
-            fontSize: 11, textColor: Color.rgb(60, 60, 60), borderWidth: 1 });
-          prevBtn.setAppearanceStylingMode(false);
-          prevBtn.setBorderStylingMode(false);
-          prevBtn._targetField = fieldName;
-          prevBtn.addScript(function doAction() {
-            var pane = this.owner;
-            var disp = pane && pane.get(this._targetField);
-            if (!disp) return;
-            var S = ['Aries','Taurus','Gemini','Cancer','Leo','Virgo',
-                     'Libra','Scorpio','Sagittarius','Capricorn','Aquarius','Pisces'];
-            var G = ['♈︎','♉︎','♊︎','♋︎','♌︎','♍︎','♎︎','♏︎','♐︎','♑︎','♒︎','♓︎'];
-            disp._signIdx = (((disp._signIdx || 0) - 1) + 12) % 12;
-            disp.textString = G[disp._signIdx] + '  ' + S[disp._signIdx];
-          });
-          lively.bindings.connect(prevBtn, 'fire', prevBtn, 'doAction');
-          pane.addMorph(prevBtn);
-          tint(prevBtn, 60, 60, 60);
-          var disp = new lively.morphic.Text(lively.rect(80, y, 200, 26),
-            GLYPHS[idx] + '  ' + SIGNS[idx]);
-          disp.name = fieldName;
-          disp._signIdx = idx;
-          disp.applyStyle({ allowInput: false, fontSize: 13, fontWeight: 'bold',
-            textColor: Color.rgb(35, 35, 35),
-            fill: Color.rgb(248, 248, 251),
-            borderColor: Color.rgb(218, 218, 224), borderWidth: 1, borderRadius: 4,
-            align: 'center' });
-          pane.addMorph(disp);
-          var nextBtn = new lively.morphic.Button(lively.rect(284, y, 30, 26), '▶');
-          nextBtn.applyStyle({ fill: Color.rgb(245, 245, 245),
-            borderColor: Color.rgb(200, 200, 200), borderRadius: 4,
-            fontSize: 11, textColor: Color.rgb(60, 60, 60), borderWidth: 1 });
-          nextBtn.setAppearanceStylingMode(false);
-          nextBtn.setBorderStylingMode(false);
-          nextBtn._targetField = fieldName;
-          nextBtn.addScript(function doAction() {
-            var pane = this.owner;
-            var disp = pane && pane.get(this._targetField);
-            if (!disp) return;
-            var S = ['Aries','Taurus','Gemini','Cancer','Leo','Virgo',
-                     'Libra','Scorpio','Sagittarius','Capricorn','Aquarius','Pisces'];
-            var G = ['♈︎','♉︎','♊︎','♋︎','♌︎','♍︎','♎︎','♏︎','♐︎','♑︎','♒︎','♓︎'];
-            disp._signIdx = ((disp._signIdx || 0) + 1) % 12;
-            disp.textString = G[disp._signIdx] + '  ' + S[disp._signIdx];
-          });
-          lively.bindings.connect(nextBtn, 'fire', nextBtn, 'doAction');
-          pane.addMorph(nextBtn);
-          tint(nextBtn, 60, 60, 60);
-          y += 32;
-        }
-
-        addSignPicker('☉', 'pcSunSign',    payload.sunSign    || '');
-        addSignPicker('☽', 'pcMoonSign',   payload.moonSign   || '');
-        addSignPicker('↑', 'pcRisingSign', payload.risingSign || '');
-
-        y += 6;
+        y = self._buildProfileExtras(pane, payload, y, ew);
 
         } else if (tab === 'accounts') {
 
@@ -1627,220 +1417,7 @@ module("lively.identity.ProfileCard")
 
         addField("ETH wallet address", "pcEthAddress", payload.ethAddress || "");
 
-        // ── social accounts (up to 5 — rendered as circles on the read
-        // view, right column under the divider) ──────────────────────────
-        y += 8;
-        var saLbl = new lively.morphic.Text(lively.rect(12, y, ew, 16), "Social accounts (up to 5)");
-        saLbl.applyStyle({ allowInput: false, fontSize: 10,
-          textColor: Color.rgb(120, 120, 120),
-          fill: Color.rgb(255, 255, 255), borderWidth: 0 });
-        pane.addMorph(saLbl);
-        y += 20;
-
-        var socialAccounts = payload.socialAccounts || [];
-        if (socialAccounts.length === 0) {
-          var noneSA = new lively.morphic.Text(lively.rect(12, y, ew, 16), "No social accounts yet.");
-          noneSA.applyStyle({ allowInput: false, fontSize: 11,
-            textColor: Color.rgb(160, 160, 160),
-            fill: Color.rgb(255, 255, 255), borderWidth: 0 });
-          pane.addMorph(noneSA);
-          y += 22;
-        } else {
-          socialAccounts.forEach(function (acc, idx) {
-            var info = socialPlatformInfo(acc.platform);
-            var rowIcon = new lively.morphic.Image(lively.rect(12, y - 1, 20, 20));
-            rowIcon.setImageURL(socialIconUrl(acc.platform));
-            rowIcon.applyStyle({ borderWidth: 0, clipMode: 'hidden' });
-            pane.addMorph(rowIcon);
-            var rowM = new lively.morphic.Text(lively.rect(38, y, ew - 116, 18),
-              (info ? info.label : acc.platform) + "  —  " + acc.url);
-            rowM.applyStyle({ allowInput: false, fontSize: 12,
-              textColor: Color.rgb(60, 60, 60),
-              fill: Color.rgb(255, 255, 255), borderWidth: 0 });
-            pane.addMorph(rowM);
-            var rmSaBtn = new lively.morphic.Button(lively.rect(12 + ew - 80, y - 2, 80, 22), "Remove");
-            rmSaBtn.applyStyle({ fill: Color.rgb(245, 245, 245),
-              borderColor: Color.rgb(200, 200, 200), borderRadius: 4,
-              fontSize: 10, textColor: Color.rgb(150, 30, 30), borderWidth: 1 });
-            rmSaBtn.setAppearanceStylingMode(false);
-            rmSaBtn.setBorderStylingMode(false);
-            rmSaBtn._idx = idx;
-            rmSaBtn.addScript(function doAction() {
-              var pane = this.owner;
-              var win  = pane && pane.owner;
-              if (!win) return;
-              var current = ((win._editPayload && win._editPayload.socialAccounts) || []).slice();
-              current.splice(this._idx, 1);
-              win._editPayload = Object.assign({}, win._editPayload, win._snapshotEditFields(pane), { socialAccounts: current });
-              win._renderEdit(win._handle, win._editPayload, win._currentDid, 'accounts');
-            });
-            lively.bindings.connect(rmSaBtn, 'fire', rmSaBtn, 'doAction');
-            pane.addMorph(rmSaBtn);
-            tint(rmSaBtn, 150, 30, 30);
-            y += 22;
-          });
-        }
-
-        y += 8;
-        if (socialAccounts.length < 5) {
-          var platLbl = new lively.morphic.Text(lively.rect(12, y, 200, 14), "Platform");
-          platLbl.applyStyle({ allowInput: false, fontSize: 9,
-            textColor: Color.rgb(140, 140, 140),
-            fill: Color.rgb(255, 255, 255), borderWidth: 0 });
-          pane.addMorph(platLbl);
-          y += 15;
-
-          // Icon preview swatch — a fixed-position container Box with a
-          // child Image (same two-morph structure as the read-view's
-          // circles, for the same reason: setImageURL's useNativeExtent
-          // callback repositions whatever morph it's called on to
-          // re-center it, so that morph can't also be the one carrying the
-          // container's own fixed (12, y) position — it would fight itself
-          // on every icon change). Kept in sync with the dropdown's
-          // selection via a 'selection' binding below, same connect+
-          // addScript pattern as every button's fire->doAction in this
-          // file. updateIcon is self-contained (no outer-scope refs) since
-          // addScript-attached methods lose their enclosing closure.
-          var platIconPreview = new lively.morphic.Box(lively.rect(12, y, 24, 24));
-          platIconPreview.name = 'pcNewSocialPlatformIcon';
-          platIconPreview.applyStyle({ fill: Color.rgb(255, 255, 255), borderWidth: 1,
-            borderColor: Color.rgb(225, 225, 231), borderRadius: 4 });
-          pane.addMorph(platIconPreview);
-          var platIconImg = new lively.morphic.Image(lively.rect(3, 3, 18, 18));
-          platIconImg.applyStyle({ borderWidth: 0 });
-          platIconPreview.addMorph(platIconImg);
-          platIconPreview.addScript(function updateIcon(platformKey) {
-            if (!platformKey) return;
-            var BOX = 24, ICON_BOX = 18;
-            var img = this.submorphs && this.submorphs[0];
-            if (!img) return;
-            img.setImageURL('/core/media/social-icons/' + platformKey + '.svg',
-              { useNativeExtent: true, maxWidth: ICON_BOX, maxHeight: ICON_BOX },
-              function (err, loadedIcon) {
-                if (err) return;
-                var ext = loadedIcon.getExtent();
-                loadedIcon.setPosition(lively.pt(
-                  Math.round((BOX - ext.x) / 2), Math.round((BOX - ext.y) / 2)));
-                var imgNode = loadedIcon.renderContext && loadedIcon.renderContext().imgNode;
-                if (imgNode) { imgNode.style.left = '0px'; imgNode.style.top = '0px'; }
-              });
-          });
-
-          // Custom combo box: a trigger button showing the current
-          // selection, which opens a genuine in-page scrollable list
-          // (lively.morphic.List) anchored below it. A native <select>
-          // (lively.morphic.DropDownList) can't be used here — its open
-          // popup is entirely OS/browser-controlled and always shows every
-          // option with no way to cap it at a handful of visible rows.
-          // This list is sized to show ~5-6 rows at once (its own default
-          // listItemHeight is 19px — matches VersionViewer.js's List
-          // usage elsewhere in this app) with a scrollbar for the rest of
-          // the 25 platforms, so the owner can browse without either
-          // guessing (the old ◀/▶ stepper) or facing an unstyleable wall
-          // of 25 native options at once.
-          var platTrigger = new lively.morphic.Button(
-            lively.rect(44, y, ew - 44, 24), SOCIAL_PLATFORMS[0].label + '  ▾');
-          platTrigger.name = 'pcNewSocialPlatform';
-          platTrigger.applyStyle({ fill: Color.rgb(252, 252, 252),
-            borderColor: Color.rgb(200, 200, 200), borderWidth: 1, borderRadius: 3,
-            fontSize: 12, textColor: Color.rgb(35, 35, 35) });
-          platTrigger.setAppearanceStylingMode(false);
-          platTrigger.setBorderStylingMode(false);
-          platTrigger._selectedKey = SOCIAL_PLATFORMS[0].key;
-          platTrigger.addScript(function getSelection() { return this._selectedKey; });
-          platTrigger.addScript(function doAction() {
-            var pane = this.owner;
-            if (!pane) return;
-            // Toggle closed if already open.
-            var existingPopup = pane.get('pcNewSocialPlatformPopup');
-            if (existingPopup) { existingPopup.remove(); return; }
-
-            var P = [
-              { key: 'discord', label: 'Discord' }, { key: 'spotify', label: 'Spotify' },
-              { key: 'instagram', label: 'Instagram' }, { key: 'github', label: 'GitHub' },
-              { key: 'youtube', label: 'YouTube' }, { key: 'tiktok', label: 'TikTok' },
-              { key: 'twitch', label: 'Twitch' }, { key: 'bluesky', label: 'Bluesky' },
-              { key: 'blacksky', label: 'Blacksky' },
-              { key: 'behance', label: 'Behance' }, { key: 'steam', label: 'Steam' },
-              { key: 'cashapp', label: 'Cash App' }, { key: 'pinterest', label: 'Pinterest' },
-              { key: 'arena', label: 'Are.na' }, { key: 'goodreads', label: 'Goodreads' },
-              { key: 'applemusic', label: 'Apple Music' }, { key: 'ytmusic', label: 'YT Music' },
-              { key: 'storygraph', label: 'StoryGraph' }, { key: 'itch', label: 'itch.io' },
-              { key: 'psn', label: 'PlayStation Network' }, { key: 'mynintendo', label: 'My Nintendo' },
-              { key: 'xbox', label: 'Xbox' }, { key: 'epic', label: 'Epic Games' },
-              { key: 'tumblr', label: 'Tumblr' }, { key: 'threads', label: 'Threads' },
-            ];
-            var items = P.map(function (p) { return { string: p.label, value: p.key }; });
-
-            var pos = this.getPosition();
-            var ext = this.getExtent();
-            var ROW_H = 19; // lively.morphic.List's own default row height
-            var ROWS_VISIBLE = 5.5; // .5 hints there's more to scroll to
-            var popup = new lively.morphic.List(
-              lively.rect(pos.x, pos.y + ext.y + 2, ext.x, Math.round(ROWS_VISIBLE * ROW_H)),
-              items);
-            popup.name = 'pcNewSocialPlatformPopup';
-            popup._platforms = P; // so onPlatformPicked below doesn't need its own copy
-            popup.applyStyle({ fontSize: 12, borderColor: Color.rgb(180, 180, 190), borderWidth: 1 });
-            pane.addMorph(popup);
-
-            popup.addScript(function onPlatformPicked(newVal) {
-              var pane = this.owner;
-              if (!newVal || !pane) return;
-              var trig    = pane.get('pcNewSocialPlatform');
-              var iconBox = pane.get('pcNewSocialPlatformIcon');
-              var picked  = (this._platforms || []).filter(function (p) { return p.key === newVal; })[0];
-              if (trig) {
-                trig._selectedKey = newVal;
-                trig.setLabel((picked ? picked.label : newVal) + '  ▾');
-              }
-              if (iconBox) iconBox.updateIcon(newVal);
-              this.remove();
-            });
-            lively.bindings.connect(popup, 'selection', popup, 'onPlatformPicked');
-          });
-          lively.bindings.connect(platTrigger, 'fire', platTrigger, 'doAction');
-          pane.addMorph(platTrigger);
-          tint(platTrigger, 35, 35, 35);
-          platIconPreview.updateIcon(SOCIAL_PLATFORMS[0].key);
-          y += 32;
-
-          addField("Profile URL", "pcNewSocialUrl", "");
-
-          var addSaBtn = new lively.morphic.Button(lively.rect(12, y, 130, 28), "Add account");
-          addSaBtn.applyStyle({ fill: Color.rgb(240, 240, 240),
-            borderColor: Color.rgb(200, 200, 200), borderRadius: 4,
-            fontSize: 11, textColor: Color.rgb(50, 50, 50), borderWidth: 1 });
-          addSaBtn.setAppearanceStylingMode(false);
-          addSaBtn.setBorderStylingMode(false);
-          addSaBtn.addScript(function doAction() {
-            var pane = this.owner;
-            var win  = pane && pane.owner;
-            if (!win) return;
-            var platTrigger = pane.get('pcNewSocialPlatform');
-            var urlInp   = pane.get('pcNewSocialUrl');
-            var platKey  = (platTrigger && platTrigger.getSelection()) || 'discord';
-            var url = urlInp && urlInp.textString && urlInp.textString.trim();
-            if (!url) { alert('Enter a profile URL first.'); return; }
-            if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
-            var current = ((win._editPayload && win._editPayload.socialAccounts) || []).slice();
-            if (current.length >= 5) { alert('Maximum 5 social accounts.'); return; }
-            current.push({ platform: platKey, url: url });
-            win._editPayload = Object.assign({}, win._editPayload, win._snapshotEditFields(pane), { socialAccounts: current });
-            win._renderEdit(win._handle, win._editPayload, win._currentDid, 'accounts');
-          });
-          lively.bindings.connect(addSaBtn, 'fire', addSaBtn, 'doAction');
-          pane.addMorph(addSaBtn);
-          tint(addSaBtn, 50, 50, 50);
-          y += 36;
-        } else {
-          var maxSA = new lively.morphic.Text(lively.rect(12, y, ew, 16), "Maximum of 5 social accounts reached.");
-          maxSA.applyStyle({ allowInput: false, fontSize: 11,
-            textColor: Color.rgb(160, 160, 160),
-            fill: Color.rgb(255, 255, 255), borderWidth: 0 });
-          pane.addMorph(maxSA);
-          y += 22;
-        }
+        y = self._buildSocials(pane, payload, y, ew);
 
         // ── websites (up to 3 — listed under the social circles on the
         // read view). Saved as payload.links = [{label, url}]. ────────────
@@ -1866,102 +1443,7 @@ module("lively.identity.ProfileCard")
 
         } else {
 
-        // ── Domain Handle tab ───────────────────────────────────────────────
-
-        var dhLbl = new lively.morphic.Text(lively.rect(12, y, ew, 16), "Domain handle");
-        dhLbl.applyStyle({ allowInput: false, fontSize: 10,
-          textColor: Color.rgb(120, 120, 120),
-          fill: Color.rgb(255, 255, 255), borderWidth: 0 });
-        pane.addMorph(dhLbl);
-        y += 20;
-
-        var domainRows = self._domains || [];
-        if (domainRows.length === 0) {
-          var noneM = new lively.morphic.Text(lively.rect(12, y, ew, 16), "No domain handle yet.");
-          noneM.applyStyle({ allowInput: false, fontSize: 11,
-            textColor: Color.rgb(160, 160, 160),
-            fill: Color.rgb(255, 255, 255), borderWidth: 0 });
-          pane.addMorph(noneM);
-          y += 22;
-        } else {
-          domainRows.forEach(function (d) {
-            var isVerified = d.status === 'verified';
-            var rowM = new lively.morphic.Text(lively.rect(12, y, ew - 90, 18),
-              d.domain + "  —  " + (isVerified ? "Verified" : "Invalid"));
-            rowM.applyStyle({ allowInput: false, fontSize: 12,
-              textColor: isVerified ? Color.rgb(34, 139, 34) : Color.rgb(190, 140, 20),
-              fill: Color.rgb(255, 255, 255), borderWidth: 0 });
-            pane.addMorph(rowM);
-            var rmBtn = new lively.morphic.Button(lively.rect(12 + ew - 80, y - 2, 80, 22), "Remove");
-            rmBtn.applyStyle({ fill: Color.rgb(245, 245, 245),
-              borderColor: Color.rgb(200, 200, 200), borderRadius: 4,
-              fontSize: 10, textColor: Color.rgb(150, 30, 30), borderWidth: 1 });
-            rmBtn.setAppearanceStylingMode(false);
-            rmBtn.setBorderStylingMode(false);
-            rmBtn._domain = d.domain;
-            rmBtn.addScript(function doAction() {
-              var pane = this.owner;
-              var win  = pane && pane.owner;
-              if (!win) return;
-              var domainName = this._domain;
-              var btn = this;
-              btn.setLabel('…');
-              btn.setActive(false);
-              win._editPayload = Object.assign({}, win._editPayload, win._snapshotEditFields(pane));
-              lively.identity.userSpace.removeDomain(domainName, function (err) {
-                if (err) {
-                  alert('Could not remove domain: ' + err.message);
-                  btn.setLabel('Remove');
-                  btn.setActive(true);
-                  return;
-                }
-                lively.identity.userSpace.listDomains(win._handle, function (err2, rows2) {
-                  win._domains = rows2 || [];
-                  win._renderEdit(win._handle, win._editPayload, win._currentDid, 'domains');
-                });
-              });
-            });
-            lively.bindings.connect(rmBtn, 'fire', rmBtn, 'doAction');
-            pane.addMorph(rmBtn);
-            tint(rmBtn, 150, 30, 30);
-            y += 22;
-          });
-        }
-
-        y += 8;
-        if (domainRows.length >= 1) {
-          // One domain handle at a time (also enforced server-side).
-          var oneNote = new lively.morphic.Text(lively.rect(12, y, ew, 32),
-            "Only one domain handle at a time. Remove this one to add a different domain.");
-          oneNote.applyStyle({ allowInput: false, fontSize: 10,
-            textColor: Color.rgb(140, 140, 148),
-            fill: Color.rgb(255, 255, 255), borderWidth: 0 });
-          pane.addMorph(oneNote);
-          y += 36;
-        } else {
-        addField("Add a domain (e.g. alice.com)", "pcNewDomain", "");
-
-        var addDomainBtn = new lively.morphic.Button(lively.rect(12, y, 130, 28), "Add domain");
-        addDomainBtn.applyStyle({ fill: Color.rgb(240, 240, 240),
-          borderColor: Color.rgb(200, 200, 200), borderRadius: 4,
-          fontSize: 11, textColor: Color.rgb(50, 50, 50), borderWidth: 1 });
-        addDomainBtn.setAppearanceStylingMode(false);
-        addDomainBtn.setBorderStylingMode(false);
-        addDomainBtn.addScript(function doAction() {
-          var pane = this.owner;
-          var win  = pane && pane.owner;
-          if (!win) return;
-          var domainInp = pane.get('pcNewDomain');
-          var domain = domainInp && domainInp.textString &&
-            domainInp.textString.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-          if (!domain) { alert('Enter a domain first.'); return; }
-          win._showDomainVerifyPanel(this, domain, win);
-        });
-        lively.bindings.connect(addDomainBtn, 'fire', addDomainBtn, 'doAction');
-        pane.addMorph(addDomainBtn);
-        tint(addDomainBtn, 50, 50, 50);
-        y += 36;
-        }
+        y = self._buildDomainTab(pane, y, ew);
 
         }
 
@@ -2064,9 +1546,9 @@ module("lively.identity.ProfileCard")
           }
           partial.links = links;
         }
-        if (sunInp)    partial.sunSign    = SV[sunInp._signIdx    || 0];
-        if (moonInp)   partial.moonSign   = SV[moonInp._signIdx   || 0];
-        if (risingInp) partial.risingSign = SV[risingInp._signIdx || 0];
+        if (sunInp)    partial.sunSign = sunInp._signIdx >= 0 ? SV[sunInp._signIdx] : '';
+        if (moonInp)   partial.moonSign = moonInp._signIdx >= 0 ? SV[moonInp._signIdx] : '';
+        if (risingInp) partial.risingSign = risingInp._signIdx >= 0 ? SV[risingInp._signIdx] : '';
         if (ethInp)    partial.ethAddress = (ethInp.textString || "").trim();
         return partial;
       },
@@ -2110,298 +1592,381 @@ module("lively.identity.ProfileCard")
         });
       },
 
-      // Shows two ways to prove ownership of a domain the owner is trying
-      // to add, plus a "Verify now" button that asks the server to
-      // independently check whichever one was actually done:
-      //   1. A DNS TXT record — no signing, DNS control is the proof.
-      //   2. A signed .well-known/lively-did file — generated on demand
-      //      (the passkey ceremony only runs if this option is opened).
-      // Attached as a submorph of `pane` (in pane-local coordinates) so it
-      // stays anchored to the card — moves/scrolls with the window instead
-      // of floating at a fixed $world position like the old version did
-      // (same fix applied to the "Friends" panel in _renderView). Button
-      // handlers read data from `_prop` fields (never outer-scope closures)
-      // per this file's addScript convention.
-      _showDomainVerifyPanel: function _showDomainVerifyPanel(anchorMorph, domain, win) {
-        var pane = anchorMorph.owner;
+      // ── edit-tab builders (Accounts / Domain Handle) ─────────────────────────
+      // Each returns the new y cursor. Everything they (or the handlers they
+      // install) need from outside the method body goes through
+      // lively.identity.ProfileCard.* — see the namespace helpers at the end
+      // of this file — never module-scope vars (evalJS closure loss).
 
-        // Anchored below the "Add domain" button, like a normal dropdown.
-        // This button sits fairly far down the Account tab, leaving little
-        // room before the pane's bottom edge — that used to be a problem
-        // (content spilling past the card's own bottom edge), but the DID/
-        // JSON boxes below are now fixed-height and internally scrollable
-        // (clipMode: 'auto', precedented in lively.morphic.Panel#newTextPane),
-        // and the panel itself falls back to the same scrolling if it's
-        // still taller than the room available, so however little space is
-        // left here, content stays contained rather than spilling out.
-        var paneW = pane ? pane.getExtent().x : 834;
-        var paneH = pane ? pane.getExtent().y : 595;
-        var FW = 420;
-        var anchorPos = anchorMorph.getPosition();
-        var panelX = pane ? Math.min(anchorPos.x, Math.max(0, paneW - FW - 8)) : anchorPos.x;
-        var panelY = anchorPos.y + anchorMorph.getExtent().y + 4;
-        // Leave room above the bottom-pinned Save/Cancel row (btnY = paneH - 36).
-        var maxPanelH = Math.max(120, (paneH - 36 - 10) - panelY);
+      _buildProfileExtras: function _buildProfileExtras(pane, payload, y, ew) {
+        var PC = lively.identity.ProfileCard;
+        var ui = PC.ui;
 
-        var panel = new lively.morphic.Box(lively.rect(panelX, panelY, FW, 100));
-        panel.applyStyle({ fill: Color.white, borderRadius: 8,
-          borderColor: Color.rgb(218, 218, 224), borderWidth: 1 });
-        panel._win = win;
-        panel._domain = domain;
-        if (panel.doNotSerialize && panel.doNotSerialize.indexOf('_win') === -1)
-          panel.doNotSerialize.push('_win');
-
-        // Attached to `pane` (already in the world) before any content is
-        // added, not after — getTextExtent() below only reports genuine
-        // wrapped-line heights once a Text morph is actually rendered in
-        // the world (confirmed live, same requirement WalletSetupDialog.js's
-        // _fitTextHeight documents).
-        if (pane) pane.addMorph(panel);
-
-        // Resizes a just-added Text LABEL (short, plain-prose lines only)
-        // to its real wrapped height, so a label that happens to wrap to 2
-        // lines at this panel's modest width doesn't overlap what's next.
-        function fitTextHeight(t, w, minHeight) {
-          var textHeight = t.getTextExtent().y;
-          var h = Math.max(minHeight, textHeight || minHeight);
-          t.setExtent(lively.pt(w, h));
-          return h;
-        }
-
-        // Fixed-size, internally-scrollable box for a copyable value of
-        // unpredictable length (a DID, a signed-JSON blob) — clipMode
-        // 'auto' gives it a real scrollbar instead of growing the box (and
-        // therefore the panel) to fit, which is what let content spill
-        // past the panel/card in the first place. wordBreak: 'break-all'
-        // still matters even with scrolling on: these values are one
-        // unbroken token with no spaces, so without it the browser never
-        // finds a place to wrap and the text overflows sideways instead of
-        // filling the box vertically (same fix WalletSetupDialog.js's
-        // _addText uses for 0x... addresses).
-        function addScrollBox(x, boxY, w, h, text) {
-          var t = new lively.morphic.Text(lively.rect(x, boxY, w, h), text);
-          t.applyStyle({ allowInput: false, fixedWidth: true, fixedHeight: true,
-            wordBreak: 'break-all', clipMode: 'auto',
-            fontSize: 10, textColor: Color.rgb(40, 40, 40),
-            fill: Color.rgb(248, 248, 251), borderColor: Color.rgb(218, 218, 224),
-            borderWidth: 1, borderRadius: 3 });
-          panel.addMorph(t);
-          return t;
-        }
-
-        function addCopyButton(x, btnY, copyValue, w) {
-          var cpBtn = new lively.morphic.Button(lively.rect(x, btnY, w || 60, 22), 'Copy');
-          cpBtn.applyStyle({ fill: Color.rgb(245, 245, 245), borderColor: Color.rgb(200, 200, 200),
-            borderRadius: 4, fontSize: 10, textColor: Color.rgb(50, 50, 50), borderWidth: 1 });
-          cpBtn.setAppearanceStylingMode(false);
-          cpBtn.setBorderStylingMode(false);
-          cpBtn._copyText = copyValue;
-          cpBtn.addScript(function doAction() {
-            var btn = this;
-            if (navigator.clipboard) {
-              navigator.clipboard.writeText(this._copyText).then(function () {
-                btn.setLabel('✓');
-                setTimeout(function () { btn.setLabel('Copy'); }, 1200);
-              });
-            }
-          });
-          lively.bindings.connect(cpBtn, 'fire', cpBtn, 'doAction');
-          panel.addMorph(cpBtn);
-          return cpBtn;
-        }
-
-        var y = 10;
-
-        var titleM = new lively.morphic.Text(lively.rect(12, y, FW - 44, 18), 'Verify ' + domain);
-        titleM.applyStyle({ allowInput: false, fontSize: 13, fontWeight: 'bold',
-          fill: Color.rgba(0, 0, 0, 0), borderWidth: 0, textColor: Color.rgb(30, 30, 30) });
-        panel.addMorph(titleM);
-        y += fitTextHeight(titleM, FW - 44, 18) + 8;
-
-        var opt1Lbl = new lively.morphic.Text(lively.rect(12, y, FW - 24, 16),
-          'Option 1 — DNS TXT record (no extra steps)');
-        opt1Lbl.applyStyle({ allowInput: false, fontSize: 11, fontWeight: 'bold',
-          textColor: Color.rgb(90, 90, 90), fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
-        panel.addMorph(opt1Lbl);
-        y += fitTextHeight(opt1Lbl, FW - 24, 16) + 6;
-
-        var hostLbl = new lively.morphic.Text(lively.rect(12, y, FW - 24, 14), 'Host:');
-        hostLbl.applyStyle({ allowInput: false, fontSize: 10, textColor: Color.rgb(120, 120, 120),
-          fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
-        panel.addMorph(hostLbl);
-        y += 16;
-        var hostValue = '_lively-did.' + domain;
-        addScrollBox(12, y, FW - 24, 32, hostValue);
-        y += 32 + 6;
-        addCopyButton(12, y, hostValue);
-        y += 22 + 14;
-
-        var valueLbl = new lively.morphic.Text(lively.rect(12, y, FW - 24, 14), 'Value:');
-        valueLbl.applyStyle({ allowInput: false, fontSize: 10, textColor: Color.rgb(120, 120, 120),
-          fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
-        panel.addMorph(valueLbl);
-        y += 16;
-        var didValue = 'did=' + win._currentDid;
-        addScrollBox(12, y, FW - 24, 56, didValue);
-        y += 56 + 6;
-        addCopyButton(12, y, didValue);
-        y += 22 + 14;
-
-        var divider = new lively.morphic.Box(lively.rect(12, y, FW - 24, 1));
-        divider.applyStyle({ fill: Color.rgb(225, 225, 225), borderWidth: 0 });
-        panel.addMorph(divider);
-        y += 12;
-
-        var opt2Lbl = new lively.morphic.Text(lively.rect(12, y, FW - 24, 16),
-          'Option 2 — signed file (needs your passkey)');
-        opt2Lbl.applyStyle({ allowInput: false, fontSize: 11, fontWeight: 'bold',
-          textColor: Color.rgb(90, 90, 90), fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
-        panel.addMorph(opt2Lbl);
-        y += fitTextHeight(opt2Lbl, FW - 24, 16) + 6;
-
-        var instrM = new lively.morphic.Text(lively.rect(12, y, FW - 24, 16),
-          'Host the generated JSON at https://' + domain + '/.well-known/lively-did.');
-        instrM.applyStyle({ allowInput: false, fontSize: 10, textColor: Color.rgb(120, 120, 120),
-          fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
-        panel.addMorph(instrM);
-        y += fitTextHeight(instrM, FW - 24, 16) + 8;
-
-        // Reserved up-front, fixed-size scroll area for the signed JSON —
-        // "Generate signed file" occupies this space until clicked, then
-        // gets removed and the box (same position/size, so nothing below
-        // has to move) takes its place. No panel resize needed at generate
-        // time, unlike the previous version — the height was already
-        // budgeted into the panel's total from the start, which is what
-        // keeps the whole thing bounded regardless of how long the JSON
-        // (specifically the sig field) turns out to be.
-        var jsonAreaY = y;
-        var jsonAreaH = 130;
-        var genBtn = new lively.morphic.Button(lively.rect(12, jsonAreaY, 170, 26), 'Generate signed file');
-        genBtn.applyStyle({ fill: Color.rgb(245, 245, 245), borderColor: Color.rgb(200, 200, 200),
-          borderRadius: 4, fontSize: 11, textColor: Color.rgb(50, 50, 50), borderWidth: 1 });
-        genBtn.setAppearanceStylingMode(false);
-        genBtn.setBorderStylingMode(false);
-        genBtn.addScript(function doAction() {
-          var panel = this.owner;
-          var win2  = panel && panel._win;
-          var dom   = panel && panel._domain;
-          if (!win2 || !dom) return;
-          var btn = this;
-          btn.setLabel('Signing…');
-          btn.setActive(false);
-          win2._getSoftSigningKey(function (err, softPrivKey) {
-            if (err) {
-              alert('Could not sign — ' + err.message);
-              btn.setLabel('Generate signed file');
-              btn.setActive(true);
-              return;
-            }
-            var wellKnownPayload = lively.identity.webKey.buildWellKnownPayload({
-              did: win2._currentDid, handle: win2._handle, domain: dom,
+        // Image URL row: label, input, Upload pill. `cropOpts` (optional)
+        // is passed through to the cropper (banner is a wide rect).
+        function imageRow(label, inputName, value, cropOpts) {
+          ui.text(pane, label, 12, y, ew, 16, 10, 120, 120, 128, false);
+          y += 18;
+          ui.input(pane, inputName, 12, y, ew - 92, value || '');
+          var up = ui.pill(pane, 'Upload', 12 + ew - 84, y, 84, 26, false, function () {
+            var p   = lively.identity.ProfileCard.ui.paneOf(this);
+            var win = p && p._win;
+            if (!win) return;
+            var target = this._targetInput, opts = this._cropOpts;
+            var input = document.createElement('input');
+            input.type = 'file';
+            input.accept = 'image/*';
+            input.style.display = 'none';
+            document.body.appendChild(input);
+            input.addEventListener('change', function () {
+              var file = input.files && input.files[0];
+              document.body.removeChild(input);
+              if (!file) return;
+              lively.identity.imageCropper.open(file, function (url) {
+                var inp2 = win.targetMorph && win.targetMorph.get(target);
+                if (inp2) inp2.textString = url;
+              }, opts);
             });
-            lively.identity.webKey.signWellKnown(wellKnownPayload, softPrivKey, function (err2, signedDoc) {
-              if (err2) {
-                alert('Signing failed: ' + err2.message);
-                btn.setLabel('Generate signed file');
-                btn.setActive(true);
-                return;
-              }
-              var jy = btn.getPosition().y;
-              var jw = panel.getExtent().x - 24;
-              var jh = panel._jsonAreaH || 130;
-              var jsonStr = JSON.stringify(signedDoc, null, 2);
-              var jsonM = new lively.morphic.Text(lively.rect(12, jy, jw, jh), jsonStr);
-              jsonM.applyStyle({ allowInput: false, fixedWidth: true, fixedHeight: true,
-                wordBreak: 'break-all', clipMode: 'auto',
-                fontSize: 9, textColor: Color.rgb(40, 40, 40), fill: Color.rgb(248, 248, 251),
-                borderColor: Color.rgb(218, 218, 224), borderWidth: 1, borderRadius: 4 });
-              panel.addMorph(jsonM);
-              btn.remove();
-
-              var copyJsonBtn = panel.get('pcCopyJsonBtn');
-              if (copyJsonBtn) {
-                copyJsonBtn._copyText = jsonStr;
-                copyJsonBtn.setVisible(true);
-              }
-            });
+            input.click();
           });
+          up._targetInput = inputName;
+          up._cropOpts = cropOpts;
+          y += 36;
+        }
+        imageRow('Avatar URL', 'pcAvatarUrl', payload.avatarUrl);
+        imageRow('Banner URL', 'pcBannerUrl', payload.bannerUrl,
+          { width: 834, height: 160, shape: 'rect', title: 'Crop Banner', basename: 'banner' });
+
+        y += 4;
+        ui.text(pane, 'Astrological signs', 12, y, ew, 16, 10, 120, 120, 128, false);
+        y += 22;
+
+        // Each row steps through "Not set" (-1) and the 12 signs, so a
+        // blank sign stays blank instead of silently saving as Aries.
+        [['Sun', 'pcSunSign', payload.sunSign], ['Moon', 'pcMoonSign', payload.moonSign],
+         ['Rising', 'pcRisingSign', payload.risingSign]].forEach(function (row) {
+          var idx = PC.ZODIAC.SIGNS.indexOf(row[2]);
+          ui.text(pane, row[0], 12, y + 4, 56, 18, 11, 90, 90, 98, false);
+          var prev = ui.iconBtn(pane, 'chevron_left', 72, y + 2, 90, 90, 98, 'Previous');
+          var disp = new lively.morphic.Text(lively.rect(100, y, 200, 26), PC.signLabel(idx));
+          disp.name = row[1];
+          disp._signIdx = idx;
+          ui.noDrag(disp);
+          disp.applyStyle({ allowInput: false, fontSize: 12, fontWeight: 'bold',
+            textColor: idx < 0 ? Color.rgb(150, 150, 158) : Color.rgb(35, 35, 35),
+            fill: Color.rgb(248, 248, 251), borderColor: Color.rgb(225, 225, 231),
+            borderWidth: 1, borderRadius: 13, align: 'center' });
+          pane.addMorph(disp);
+          var next = ui.iconBtn(pane, 'chevron_right', 304, y + 2, 90, 90, 98, 'Next');
+          prev._field = next._field = row[1];
+          prev._step = -1; next._step = 1;
+          prev.onMouseUp = next.onMouseUp = function (evt) {
+            evt.stop();
+            var P = lively.identity.ProfileCard;
+            var p = P.ui.paneOf(this);
+            var d = p && p.get(this._field);
+            if (!d) return true;
+            // -1..11 → 13 states
+            d._signIdx = ((d._signIdx + 1 + this._step + 13) % 13) - 1;
+            d.textString = P.signLabel(d._signIdx);
+            var c = d._signIdx < 0 ? 'rgb(150,150,158)' : 'rgb(35,35,35)';
+            var n = d.renderContext().shapeNode;
+            n.style.color = c;
+            var kids = n.querySelectorAll('*');
+            for (var i = 0; i < kids.length; i++) kids[i].style.color = c;
+            return true;
+          };
+          y += 34;
         });
-        lively.bindings.connect(genBtn, 'fire', genBtn, 'doAction');
-        panel.addMorph(genBtn);
-        panel._jsonAreaH = jsonAreaH;
-        y += jsonAreaH + 8;
+        return y + 6;
+      },
 
-        // Present but hidden until "Generate signed file" succeeds — kept
-        // at a fixed position/name from the start (rather than being
-        // created inline after generating, which is what previously forced
-        // everything below it to shift down) so Verify now's position
-        // never has to move.
-        var copyJsonBtn = new lively.morphic.Button(lively.rect(12, y, 90, 24), 'Copy JSON');
-        copyJsonBtn.name = 'pcCopyJsonBtn';
-        copyJsonBtn.applyStyle({ fill: Color.rgb(245, 245, 245), borderColor: Color.rgb(200, 200, 200),
-          borderRadius: 4, fontSize: 10, textColor: Color.rgb(50, 50, 50), borderWidth: 1 });
-        copyJsonBtn.setAppearanceStylingMode(false);
-        copyJsonBtn.setBorderStylingMode(false);
-        copyJsonBtn.addScript(function doAction() {
-          var b = this;
-          if (navigator.clipboard && this._copyText) {
-            navigator.clipboard.writeText(this._copyText).then(function () {
-              b.setLabel('Copied!');
-              setTimeout(function () { b.setLabel('Copy JSON'); }, 1200);
-            });
+      _buildSocials: function _buildSocials(pane, payload, y, ew) {
+        var PC  = lively.identity.ProfileCard;
+        var ui  = PC.ui;
+        var MAX = 5;
+        var accounts = payload.socialAccounts || [];
+        pane._selPlatform = null; // tiles are rebuilt unhighlighted
+
+        y += 8;
+        ui.text(pane, 'Social accounts', 12, y, ew - 80, 18, 11, 60, 60, 68, true);
+        var counter = ui.text(pane, accounts.length + ' / ' + MAX, 12 + ew - 80, y, 80, 18, 10, 140, 140, 148, false);
+        counter.applyStyle({ align: 'right' });
+        y += 26;
+
+        if (!accounts.length) {
+          ui.text(pane, 'Nothing here yet. Pick a platform below and paste your profile link.',
+            12, y, ew, 18, 11, 150, 150, 158, false);
+          y += 26;
+        }
+
+        accounts.forEach(function (acc, idx) {
+          var info = PC.platformInfo(acc.platform);
+          var chip = ui.chip(pane, 12, y, 30);
+          ui.chipIcon(chip, acc.platform, 30);
+          ui.text(pane, info ? info.label : acc.platform, 50, y - 2, ew - 100, 18, 11, 40, 40, 48, true);
+          ui.text(pane, String(acc.url || '').replace(/^https?:\/\/(www\.)?/i, ''),
+            50, y + 14, ew - 100, 18, 10, 120, 120, 128, false);
+          var rm = ui.iconBtn(pane, 'close', 12 + ew - 28, y + 3, 150, 30, 30, 'Remove');
+          rm._idx = idx;
+          rm.onMouseUp = function (evt) {
+            evt.stop();
+            var p   = lively.identity.ProfileCard.ui.paneOf(this);
+            var win = p && p._win;
+            if (!win) return true;
+            var current = ((win._editPayload && win._editPayload.socialAccounts) || []).slice();
+            current.splice(this._idx, 1);
+            win._editPayload = Object.assign({}, win._editPayload, win._snapshotEditFields(p), { socialAccounts: current });
+            win._renderEdit(win._handle, win._editPayload, win._currentDid, 'accounts');
+            return true;
+          };
+          y += 36;
+        });
+
+        if (accounts.length >= MAX) {
+          ui.text(pane, 'Maximum of ' + MAX + ' social accounts reached. Remove one to add another.',
+            12, y, ew, 18, 10, 140, 140, 148, false);
+          return y + 24;
+        }
+
+        y += 6;
+        ui.text(pane, 'Add an account', 12, y, ew, 16, 10, 120, 120, 128, false);
+        y += 20;
+
+        var STEP = 38;
+        var cols = Math.max(1, Math.floor((ew + 6) / STEP));
+        PC.SOCIAL_PLATFORMS.forEach(function (p, i) {
+          var chip = ui.chip(pane, 12 + (i % cols) * STEP, y + Math.floor(i / cols) * STEP, 32);
+          chip.name = 'pcPlat_' + p.key;
+          chip._platformKey = p.key;
+          ui.chipIcon(chip, p.key, 32);
+          chip.renderContext().morphNode.title = p.label;
+          chip.onMouseUp = function (evt) {
+            evt.stop();
+            lively.identity.ProfileCard.ui.selectPlatform(this.owner, this._platformKey);
+            return true;
+          };
+        });
+        y += Math.ceil(PC.SOCIAL_PLATFORMS.length / cols) * STEP + 2;
+
+        var sel = ui.text(pane, 'Choose a platform', 12, y, ew, 18, 11, 120, 120, 128, true);
+        sel.name = 'pcSelPlatLbl';
+        // Pasting a recognisable link picks the platform automatically
+        // (same textString-signal + addScript idiom as the bio counter).
+        sel.addScript(function onUrlChanged(s) {
+          var P = lively.identity.ProfileCard;
+          var key = P.platformForUrl(s);
+          if (key && this.owner) P.ui.selectPlatform(this.owner, key);
+        });
+        y += 24;
+
+        var urlInp = ui.input(pane, 'pcNewSocialUrl', 12, y, ew - 84, '');
+        lively.bindings.connect(urlInp, 'textString', sel, 'onUrlChanged');
+        ui.pill(pane, 'Add', 12 + ew - 76, y, 76, 26, true, function () {
+          var P   = lively.identity.ProfileCard;
+          var p   = P.ui.paneOf(this);
+          var win = p && p._win;
+          if (!win) return;
+          function fail(t) { P.ui.setMsg(p, 'pcSocialMsg', t, true); }
+          var inp = p.get('pcNewSocialUrl');
+          var url = ((inp && inp.textString) || '').trim();
+          var key = p._selPlatform || P.platformForUrl(url);
+          if (!key) return fail('Pick a platform first.');
+          if (!url) return fail('Paste your ' + P.platformInfo(key).label + ' profile link.');
+          if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+          var current = ((win._editPayload && win._editPayload.socialAccounts) || []).slice();
+          if (current.length >= 5) return fail('Maximum 5 social accounts.');
+          current.push({ platform: key, url: url });
+          win._editPayload = Object.assign({}, win._editPayload, win._snapshotEditFields(p), { socialAccounts: current });
+          win._renderEdit(win._handle, win._editPayload, win._currentDid, 'accounts');
+        });
+        y += 32;
+
+        var msg = ui.text(pane, '', 12, y, ew, 18, 10, 200, 40, 40, false);
+        msg.name = 'pcSocialMsg';
+        return y + 22;
+      },
+
+      _buildDomainTab: function _buildDomainTab(pane, y, ew) {
+        var self = this;
+        var PC   = lively.identity.ProfileCard;
+        var ui   = PC.ui;
+        var rows = self._domains || [];
+
+        // ── A domain is already set: show it as a status card ─────────────
+        if (rows.length) {
+          self._pendingDomain = null;
+          self._domainMethod  = null;
+          var d  = rows[0];
+          var ok = d.status === 'verified';
+          ui.text(pane, 'Domain handle', 12, y, ew, 18, 11, 60, 60, 68, true);
+          y += 26;
+          var card = ui.card(pane, 12, y, ew, 58);
+          ui.icon(card, 'language', 14, 17, 22, 90, 90, 98);
+          ui.text(card, d.domain, 48, 8, ew - 110, 20, 13, 30, 30, 38, true);
+          if (ok) {
+            ui.icon(card, 'check_circle', 48, 32, 14, 34, 139, 34);
+            ui.text(card, 'Verified', 66, 30, 200, 18, 10, 34, 139, 34, false);
+          } else {
+            ui.icon(card, 'error', 48, 32, 14, 200, 140, 20);
+            ui.text(card, "Couldn't verify right now", 66, 30, 240, 18, 10, 170, 115, 10, false);
           }
-        });
-        lively.bindings.connect(copyJsonBtn, 'fire', copyJsonBtn, 'doAction');
-        panel.addMorph(copyJsonBtn);
-        copyJsonBtn.setVisible(false);
-        y += 24 + 14;
+          var rm = ui.iconBtn(card, 'delete', ew - 36, 18, 150, 30, 30, 'Remove domain');
+          rm._domain = d.domain;
+          rm.onMouseUp = function (evt) {
+            evt.stop();
+            var p   = lively.identity.ProfileCard.ui.paneOf(this);
+            var win = p && p._win;
+            if (!win) return true;
+            win._editPayload = Object.assign({}, win._editPayload, win._snapshotEditFields(p));
+            lively.identity.userSpace.removeDomain(this._domain, function (err) {
+              if (err) { alert('Could not remove domain: ' + err.message); return; }
+              lively.identity.userSpace.listDomains(win._handle, function (err2, rows2) {
+                win._domains = rows2 || [];
+                win._renderEdit(win._handle, win._editPayload, win._currentDid, 'domains');
+              });
+            });
+            return true;
+          };
+          y += 70;
+          if (!ok) {
+            var re = ui.pill(pane, 'Re-check now', 12, y, 120, 26, false, function () {
+              lively.identity.ProfileCard.ui.runVerify(this);
+            });
+            re._domain = d.domain;
+            var reMsg = ui.text(pane, '', 144, y, ew - 132, 30, 10, 200, 40, 40, false);
+            reMsg.name = 'pcDomainMsg';
+            y += 38;
+          }
+          ui.text(pane, 'One domain handle per identity. Remove it to use a different domain.',
+            12, y, ew, 30, 10, 140, 140, 148, false);
+          return y + 34;
+        }
 
-        var verifyNowBtn = new lively.morphic.Button(lively.rect(12, y, 110, 28), 'Verify now');
-        verifyNowBtn.applyStyle({ fill: Color.rgb(240, 26, 105), borderColor: Color.rgb(240, 26, 105),
-          borderRadius: 4, fontSize: 11, textColor: Color.white, borderWidth: 1 });
-        verifyNowBtn.setAppearanceStylingMode(false);
-        verifyNowBtn.setBorderStylingMode(false);
-        verifyNowBtn.addScript(function doAction() {
-          var btn   = this;
-          var panel = this.owner;
-          var win2  = panel && panel._win;
-          var dom   = panel && panel._domain;
-          btn.setLabel('Verifying…');
-          btn.setActive(false);
-          lively.identity.userSpace.verifyDomain(dom, function (err) {
-            if (err) {
-              alert('Verification failed: ' + err.message);
-              btn.setLabel('Verify now');
-              btn.setActive(true);
-              return;
-            }
-            if (panel) panel.remove();
-            if (!win2) return;
-            lively.identity.userSpace.listDomains(win2._handle, function (err2, rows2) {
-              win2._domains = rows2 || [];
-              win2._renderEdit(win2._handle, win2._editPayload, win2._currentDid, 'domains');
+        // ── Step 1: enter a domain ────────────────────────────────────────
+        if (!self._pendingDomain) {
+          ui.text(pane, 'Use your own domain as your handle', 12, y, ew, 20, 12, 40, 40, 48, true);
+          y += 24;
+          ui.text(pane, "Own a domain like alice.com? Add it and it shows on your profile with a verified check. "
+            + "You'll prove ownership with a single DNS record.", 12, y, ew, 44, 10, 120, 120, 128, false);
+          y += 50;
+          ui.text(pane, 'Your domain', 12, y, ew, 16, 10, 120, 120, 128, false);
+          y += 18;
+          ui.input(pane, 'pcNewDomain', 12, y, ew - 108, '');
+          ui.pill(pane, 'Continue', 12 + ew - 100, y, 100, 26, true, function () {
+            var P   = lively.identity.ProfileCard;
+            var p   = P.ui.paneOf(this);
+            var win = p && p._win;
+            if (!win) return;
+            var inp = p.get('pcNewDomain');
+            var dom = P.normalizeDomain(inp && inp.textString);
+            if (!dom) return P.ui.setMsg(p, 'pcDomainMsg', 'Enter a valid domain, like alice.com.', true);
+            win._editPayload   = Object.assign({}, win._editPayload, win._snapshotEditFields(p));
+            win._pendingDomain = dom;
+            win._domainMethod  = 'dns';
+            win._renderEdit(win._handle, win._editPayload, win._currentDid, 'domains');
+          });
+          y += 34;
+          var m1 = ui.text(pane, '', 12, y, ew, 18, 10, 200, 40, 40, false);
+          m1.name = 'pcDomainMsg';
+          return y + 22;
+        }
+
+        // ── Step 2: prove ownership ───────────────────────────────────────
+        var dom    = self._pendingDomain;
+        var method = self._domainMethod || 'dns';
+
+        var back = ui.iconBtn(pane, 'arrow_back', 12, y - 1, 90, 90, 98, 'Use a different domain');
+        back.onMouseUp = function (evt) {
+          evt.stop();
+          var p   = lively.identity.ProfileCard.ui.paneOf(this);
+          var win = p && p._win;
+          if (!win) return true;
+          win._pendingDomain = null;
+          win._renderEdit(win._handle, win._editPayload, win._currentDid, 'domains');
+          return true;
+        };
+        ui.text(pane, 'Verify ' + dom, 44, y, ew - 44, 20, 13, 30, 30, 38, true);
+        y += 34;
+
+        if (method === 'dns') {
+          ui.text(pane, "Add this TXT record in your domain's DNS settings:", 12, y, ew, 18, 11, 80, 80, 88, false);
+          y += 26;
+          var rec = ui.card(pane, 12, y, ew, 128);
+          ui.recordRow(rec, 'Type',  'TXT',                       12, 30, null,                  ew);
+          ui.recordRow(rec, 'Name',  '_lively-did',               44, 30, '_lively-did',         ew);
+          ui.recordRow(rec, 'Value', 'did=' + self._currentDid,   76, 46, 'did=' + self._currentDid, ew);
+          y += 138;
+          ui.text(pane, 'If your DNS provider wants the full name, use _lively-did.' + dom + ' instead.',
+            12, y, ew, 30, 10, 140, 140, 148, false);
+          y += 34;
+        } else {
+          ui.text(pane, 'Publish a signed file at this address on your site:', 12, y, ew, 18, 11, 80, 80, 88, false);
+          y += 26;
+          var url = 'https://' + dom + '/.well-known/lively-did';
+          var fcard = ui.card(pane, 12, y, ew, 44);
+          ui.recordRow(fcard, 'URL', url, 12, 30, url, ew);
+          y += 54;
+          var gen = ui.pill(pane, 'Generate signed file', 12, y, 170, 26, false, function () {
+            var P   = lively.identity.ProfileCard;
+            var btn = this;
+            var p   = P.ui.paneOf(btn);
+            var win = p && p._win;
+            if (!win) return;
+            btn.setLabel('Signing…');
+            btn.setActive(false);
+            function reset() { btn.setLabel('Generate signed file'); btn.setActive(true); }
+            win._getSoftSigningKey(function (err, key) {
+              if (err) { reset(); return P.ui.setMsg(p, 'pcDomainMsg', 'Could not sign: ' + err.message, true); }
+              var doc = lively.identity.webKey.buildWellKnownPayload({
+                did: win._currentDid, handle: win._handle, domain: win._pendingDomain });
+              lively.identity.webKey.signWellKnown(doc, key, function (err2, signed) {
+                if (err2) { reset(); return P.ui.setMsg(p, 'pcDomainMsg', 'Signing failed: ' + err2.message, true); }
+                var json = JSON.stringify(signed, null, 2);
+                var box  = p.get('pcSignedJson');
+                if (box) { box.setTextString(json); box._json = json; }
+                var cp = p.get('pcCopyJson');
+                if (cp) cp._copyText = json;
+                btn.setLabel('Regenerate');
+                btn.setActive(true);
+                P.ui.setMsg(p, 'pcDomainMsg', 'Save this as the file above, then click Verify.', false);
+              });
             });
           });
+          y += 34;
+          var jbox = new lively.morphic.Text(lively.rect(12, y, ew - 30, 84),
+            'The signed file will appear here.');
+          jbox.name = 'pcSignedJson';
+          jbox.applyStyle({ allowInput: false, fixedWidth: true, fixedHeight: true,
+            wordBreak: 'break-all', clipMode: 'auto', fontSize: 9, textColor: Color.rgb(60, 60, 68),
+            fill: Color.rgb(248, 248, 251), borderColor: Color.rgb(225, 225, 231),
+            borderWidth: 1, borderRadius: 8 });
+          pane.addMorph(jbox);
+          var cpj = ui.copyBtn(pane, 12 + ew - 24, y + 2, '');
+          cpj.name = 'pcCopyJson';
+          y += 94;
+        }
+
+        var vb = ui.pill(pane, 'Verify', 12, y, 96, 28, true, function () {
+          lively.identity.ProfileCard.ui.runVerify(this);
         });
-        lively.bindings.connect(verifyNowBtn, 'fire', verifyNowBtn, 'doAction');
-        panel.addMorph(verifyNowBtn);
-        y += 28 + 12;
+        vb._domain = dom;
+        var vm = ui.text(pane, (method === 'dns' ? 'DNS changes can take a few minutes to show up.' : 'Verify once the file is live on your site.'), 120, y + 2, ew - 108, 30, 10, 140, 140, 148, false);
+        vm.name = 'pcDomainMsg';
+        y += 42;
 
-        var closeBtn = new lively.morphic.Button(lively.rect(FW - 28, 6, 22, 22), '✕');
-        closeBtn.applyStyle({ borderRadius: 11, fontSize: 11, borderWidth: 0,
-          fill: Color.rgba(0, 0, 0, 0), textColor: Color.rgb(100, 100, 100) });
-        closeBtn.addScript(function doAction() { this.owner.remove(); });
-        lively.bindings.connect(closeBtn, 'fire', closeBtn, 'doAction');
-        panel.addMorph(closeBtn);
-
-        // The panel's own content is now fully bounded/deterministic (no
-        // runtime growth from JSON/DID length), so clamp its final height
-        // to the space actually available above Save/Cancel as a hard
-        // backstop — with fixed scrollable value boxes this shouldn't ever
-        // bite, but it means a future content addition fails safe (an
-        // internal scrollbar) instead of spilling past the card again.
-        panel.setExtent(lively.pt(FW, Math.min(y, maxPanelH)));
-        if (y > maxPanelH) panel.applyStyle({ clipMode: 'auto' });
+        var alt = ui.link(pane, method === 'dns' ? "Can't edit DNS? Use a signed file instead"
+                                                 : 'Use a DNS record instead', 12, y, ew);
+        alt.onMouseUp = function (evt) {
+          evt.stop();
+          var p   = lively.identity.ProfileCard.ui.paneOf(this);
+          var win = p && p._win;
+          if (!win) return true;
+          win._domainMethod = win._domainMethod === 'file' ? 'dns' : 'file';
+          win._renderEdit(win._handle, win._editPayload, win._currentDid, 'domains');
+          return true;
+        };
+        return y + 26;
       },
     });
 
@@ -2419,5 +1984,314 @@ module("lively.identity.ProfileCard")
         return win;
       },
     };
+
+    // Shared data + widget helpers for the edit tabs (_buildSocials /
+    // _buildDomainTab). They live on the namespace, not as module-scope
+    // vars, because BuildSpec methods and addScript'd handlers are rebuilt
+    // from source text and lose their enclosing closure — a dotted global
+    // path is the only thing that survives (see CLAUDE.md).
+    Object.extend(lively.identity.ProfileCard, {
+      PINK: Color.rgb(204, 0, 87),
+      ZODIAC: {
+        SIGNS:  ['Aries','Taurus','Gemini','Cancer','Leo','Virgo',
+                 'Libra','Scorpio','Sagittarius','Capricorn','Aquarius','Pisces'],
+        GLYPHS: ['♈︎','♉︎','♊︎','♋︎','♌︎','♍︎','♎︎','♏︎','♐︎','♑︎','♒︎','♓︎'],
+      },
+      signLabel: function (idx) {
+        var Z = lively.identity.ProfileCard.ZODIAC;
+        return idx < 0 ? 'Not set' : Z.GLYPHS[idx] + '  ' + Z.SIGNS[idx];
+      },
+
+      // hosts: hostnames (and their subdomains) used to auto-detect the
+      // platform from a pasted profile link; the longest match wins, so
+      // music.youtube.com resolves to ytmusic rather than youtube.
+      SOCIAL_PLATFORMS: [
+        { key: 'discord',    label: 'Discord',             hosts: ['discord.com', 'discord.gg'] },
+        { key: 'spotify',    label: 'Spotify',             hosts: ['spotify.com'] },
+        { key: 'instagram',  label: 'Instagram',           hosts: ['instagram.com'] },
+        { key: 'github',     label: 'GitHub',              hosts: ['github.com'] },
+        { key: 'youtube',    label: 'YouTube',             hosts: ['youtube.com', 'youtu.be'] },
+        { key: 'tiktok',     label: 'TikTok',              hosts: ['tiktok.com'] },
+        { key: 'twitch',     label: 'Twitch',              hosts: ['twitch.tv'] },
+        { key: 'bluesky',    label: 'Bluesky',             hosts: ['bsky.app'] },
+        { key: 'blacksky',   label: 'Blacksky',            hosts: ['blacksky.community'] },
+        { key: 'behance',    label: 'Behance',             hosts: ['behance.net'] },
+        { key: 'steam',      label: 'Steam',               hosts: ['steamcommunity.com'] },
+        { key: 'cashapp',    label: 'Cash App',            hosts: ['cash.app'] },
+        { key: 'pinterest',  label: 'Pinterest',           hosts: ['pinterest.com'] },
+        { key: 'arena',      label: 'Are.na',              hosts: ['are.na'] },
+        { key: 'goodreads',  label: 'Goodreads',           hosts: ['goodreads.com'] },
+        { key: 'applemusic', label: 'Apple Music',         hosts: ['music.apple.com'] },
+        { key: 'ytmusic',    label: 'YT Music',            hosts: ['music.youtube.com'] },
+        { key: 'storygraph', label: 'StoryGraph',          hosts: ['thestorygraph.com'] },
+        { key: 'itch',       label: 'itch.io',             hosts: ['itch.io'] },
+        { key: 'psn',        label: 'PlayStation Network', hosts: ['psnprofiles.com', 'playstation.com'] },
+        { key: 'mynintendo', label: 'My Nintendo',         hosts: ['nintendo.com'] },
+        { key: 'xbox',       label: 'Xbox',                hosts: ['xbox.com'] },
+        { key: 'epic',       label: 'Epic Games',          hosts: ['epicgames.com'] },
+        { key: 'tumblr',     label: 'Tumblr',              hosts: ['tumblr.com'] },
+        { key: 'threads',    label: 'Threads',             hosts: ['threads.net', 'threads.com'] },
+      ],
+
+      platformInfo: function (key) {
+        var L = lively.identity.ProfileCard.SOCIAL_PLATFORMS;
+        for (var i = 0; i < L.length; i++) if (L[i].key === key) return L[i];
+        return null;
+      },
+
+      // Absolute path — the card is viewed at nested URLs like /@handle/obj.
+      iconUrl: function (key) { return '/core/media/social-icons/' + key + '.svg'; },
+
+      platformForUrl: function (url) {
+        var m = /^(?:[a-z]+:\/\/)?([^\/?#\s]+)/i.exec(String(url || '').trim());
+        if (!m) return null;
+        var host = m[1].toLowerCase().replace(/^www\./, '');
+        var L = lively.identity.ProfileCard.SOCIAL_PLATFORMS;
+        var best = null, bestLen = 0;
+        L.forEach(function (p) {
+          p.hosts.forEach(function (h) {
+            if ((host === h || host.slice(-(h.length + 1)) === '.' + h) && h.length > bestLen) {
+              best = p.key; bestLen = h.length;
+            }
+          });
+        });
+        return best;
+      },
+
+      // "https://Alice.com/foo" -> "alice.com"; null when it isn't a plausible domain.
+      normalizeDomain: function (str) {
+        var d = String(str || '').trim().toLowerCase()
+          .replace(/^[a-z]+:\/\//, '').replace(/[\/?#].*$/, '').replace(/^www\./, '');
+        return /^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(d) ? d : null;
+      },
+
+      ui: {
+        noDrag: function (m) {
+          m.draggingEnabled = false; m.droppingEnabled = false; m.grabbingEnabled = false;
+          return m;
+        },
+
+        // Owning edit pane (the morph carrying _win), whatever the nesting depth.
+        paneOf: function (m) {
+          while (m && !m._win) m = m.owner;
+          return m || null;
+        },
+
+        // Button label colour: applyStyle({textColor}) doesn't reach a
+        // Button's label DOM (CLAUDE.md), so write it directly.
+        tint: function (btn, r, g, b) {
+          var c = 'rgb(' + r + ',' + g + ',' + b + ')';
+          var n = btn.label && btn.label.renderContext().shapeNode;
+          if (!n) return;
+          n.style.color = c;
+          var kids = n.querySelectorAll('*');
+          for (var i = 0; i < kids.length; i++) kids[i].style.color = c;
+        },
+
+        // Plain label. Default Text border is 1px black, so zero it.
+        text: function (parent, str, x, y, w, h, size, r, g, b, bold) {
+          var t = new lively.morphic.Text(lively.rect(x, y, w, h), str);
+          lively.identity.ProfileCard.ui.noDrag(t);
+          t.applyStyle({ allowInput: false, fontSize: size, fontWeight: bold ? 'bold' : 'normal',
+            textColor: Color.rgb(r, g, b), fill: Color.rgba(0, 0, 0, 0),
+            borderWidth: 0, borderColor: null });
+          parent.addMorph(t);
+          return t;
+        },
+
+        input: function (parent, name, x, y, w, value) {
+          var inp = new lively.morphic.Text(lively.rect(x, y, w, 26), value || '');
+          inp.name = name;
+          inp.applyStyle({ allowInput: true, fontSize: 12, fill: Color.rgb(252, 252, 252),
+            borderColor: Color.rgb(200, 200, 200), borderWidth: 1, borderRadius: 6 });
+          inp.beInputLine();
+          parent.addMorph(inp);
+          return inp;
+        },
+
+        // Rounded surface for grouped content; children use card-local coords.
+        card: function (parent, x, y, w, h) {
+          var b = new lively.morphic.Box(lively.rect(x, y, w, h));
+          lively.identity.ProfileCard.ui.noDrag(b);
+          b.applyStyle({ fill: Color.rgb(248, 248, 251), borderColor: Color.rgb(225, 225, 231),
+            borderWidth: 1, borderRadius: 10 });
+          parent.addMorph(b);
+          return b;
+        },
+
+        // Square clickable tile (platform picker / account row icon).
+        chip: function (parent, x, y, size) {
+          var b = new lively.morphic.Box(lively.rect(x, y, size, size));
+          lively.identity.ProfileCard.ui.noDrag(b);
+          b.applyStyle({ fill: Color.white, borderColor: Color.rgb(225, 225, 231),
+            borderWidth: 1, borderRadius: 8, handStyle: 'pointer' });
+          parent.addMorph(b);
+          return b;
+        },
+
+        chipIcon: function (chip, platformKey, size) {
+          var s   = size - 14;
+          var img = new lively.morphic.Image(lively.rect(7, 7, s, s));
+          img.setImageURL(lively.identity.ProfileCard.iconUrl(platformKey));
+          img.applyStyle({ borderWidth: 0, clipMode: 'hidden' });
+          lively.identity.ProfileCard.ui.noDrag(img);
+          img.eventsAreIgnored = true;
+          chip.addMorph(img);
+          return img;
+        },
+
+        // Highlight one platform tile, update the caption.
+        selectPlatform: function (pane, key) {
+          var PC = lively.identity.ProfileCard;
+          pane._selPlatform = key;
+          pane.submorphs.forEach(function (m) {
+            if (!m._platformKey) return;
+            var on = m._platformKey === key;
+            var border = on ? PC.PINK : Color.rgb(225, 225, 231);
+            var fill   = on ? Color.rgb(255, 240, 246) : Color.white;
+            m.applyStyle({ borderColor: border, fill: fill });
+            // Model updates on an already-rendered morph don't always reach
+            // the DOM (CLAUDE.md) — write it directly too.
+            var n = m.renderContext().shapeNode;
+            n.style.borderColor = border.toString();
+            n.style.background  = fill.toString();
+          });
+          var lbl  = pane.get('pcSelPlatLbl');
+          var info = PC.platformInfo(key);
+          if (lbl && info) {
+            lbl.setTextString(info.label);
+            var n2 = lbl.renderContext().shapeNode;
+            n2.style.color = 'rgb(204,0,87)';
+            var kids = n2.querySelectorAll('*');
+            for (var i = 0; i < kids.length; i++) kids[i].style.color = 'rgb(204,0,87)';
+          }
+        },
+
+        // Material Symbols glyph as a non-interactive Text morph; see
+        // _renderView's ico() for the box/padding/offset reasoning.
+        icon: function (parent, name, x, y, px, r, g, b) {
+          var box = px + 8;
+          var m = new lively.morphic.Text(lively.rect(x - 4, y + 2, box, box), name);
+          lively.identity.ProfileCard.ui.noDrag(m);
+          m.applyStyle({ allowInput: false, selectable: false, clipMode: 'hidden',
+            fontFamily: "'Material Symbols Rounded'", fontSize: px * 0.75, align: 'center',
+            whiteSpaceHandling: 'pre', padding: lively.Rectangle.inset(0, 0, 0, 0),
+            textColor: Color.rgb(r, g, b), fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
+          m.eventsAreIgnored = true;
+          parent.addMorph(m);
+          return m;
+        },
+
+        // Clickable icon: same recipe as the profile card's own close button.
+        // Caller assigns .onMouseUp on the returned morph.
+        iconBtn: function (parent, name, x, y, r, g, b, tip) {
+          var m = new lively.morphic.Text(lively.rect(x, y, 22, 22), name);
+          lively.identity.ProfileCard.ui.noDrag(m);
+          m.applyStyle({ borderRadius: 11, borderWidth: 0, fill: Color.rgba(0, 0, 0, 0),
+            fontFamily: "'Material Symbols Rounded'", fontSize: 12,
+            textColor: Color.rgb(r, g, b), align: 'center',
+            padding: lively.Rectangle.inset(0, 5, 0, 0),
+            allowInput: false, selectable: false, clipMode: 'hidden',
+            whiteSpaceHandling: 'pre', handStyle: 'pointer' });
+          parent.addMorph(m);
+          if (tip) m.renderContext().morphNode.title = tip;
+          return m;
+        },
+
+        copyBtn: function (parent, x, y, text) {
+          var m = lively.identity.ProfileCard.ui.iconBtn(parent, 'content_copy', x, y, 120, 120, 128, 'Copy');
+          m._copyText = text;
+          m.onMouseUp = function (evt) {
+            evt.stop();
+            var self = this;
+            var txt  = this._copyText;
+            if (!txt || !navigator.clipboard) return true;
+            navigator.clipboard.writeText(txt).then(function () {
+              self.setTextString('check');
+              setTimeout(function () { self.setTextString('content_copy'); }, 1200);
+            });
+            return true;
+          };
+          return m;
+        },
+
+        // One "Label   value  [copy]" row inside a card. copyValue null = no copy button.
+        recordRow: function (card, label, value, y, h, copyValue, cardW) {
+          var ui = lively.identity.ProfileCard.ui;
+          ui.text(card, label, 12, y + 2, 44, 18, 10, 140, 140, 148, false);
+          var v = ui.text(card, value, 60, y + 1, cardW - 60 - 40, h - 2, 11, 30, 30, 38, false);
+          v.applyStyle({ wordBreak: 'break-all', fixedWidth: true });
+          if (copyValue) ui.copyBtn(card, cardW - 32, y - 1, copyValue);
+        },
+
+        // Text link (pink, pointer). Caller assigns .onMouseUp.
+        link: function (parent, str, x, y, w) {
+          var t = lively.identity.ProfileCard.ui.text(parent, str, x, y, w, 18, 10, 204, 0, 87, false);
+          t.applyStyle({ handStyle: 'pointer' });
+          return t;
+        },
+
+        // Inline status line under a control; replaces alert().
+        setMsg: function (pane, name, str, isError) {
+          var m = pane.get(name);
+          if (!m) return;
+          m.setTextString(str);
+          var c = isError ? 'rgb(200,40,40)' : 'rgb(140,140,148)';
+          var n = m.renderContext().shapeNode;
+          n.style.color = c;
+          var kids = n.querySelectorAll('*');
+          for (var i = 0; i < kids.length; i++) kids[i].style.color = c;
+        },
+
+        // Pill button; fn is stored as _onClick and must be self-contained.
+        pill: function (parent, label, x, y, w, h, primary, fn) {
+          var PC = lively.identity.ProfileCard;
+          var b  = new lively.morphic.Button(lively.rect(x, y, w, h), label);
+          b.applyStyle({
+            fill:        primary ? PC.PINK : Color.white,
+            borderColor: primary ? PC.PINK : Color.rgb(222, 222, 228),
+            borderRadius: h / 2, fontSize: 11, borderWidth: 1,
+            textColor:   primary ? Color.white : Color.rgb(90, 90, 98),
+          });
+          b.setAppearanceStylingMode(false);
+          b.setBorderStylingMode(false);
+          b._idleLabel = label;
+          b._onClick = fn;
+          b.addScript(function doAction() { this._onClick(); });
+          lively.bindings.connect(b, 'fire', b, 'doAction');
+          parent.addMorph(b);
+          if (primary) PC.ui.tint(b, 255, 255, 255); else PC.ui.tint(b, 90, 90, 98);
+          return b;
+        },
+
+        // Ask the server to verify btn._domain (or the pending one); shows
+        // progress/errors on the pane's 'pcDomainMsg' line, and on success
+        // reloads the Domain Handle tab.
+        runVerify: function (btn) {
+          var PC   = lively.identity.ProfileCard;
+          var pane = PC.ui.paneOf(btn);
+          var win  = pane && pane._win;
+          var dom  = btn._domain || (win && win._pendingDomain);
+          if (!win || !dom) return;
+          var tint = btn._idleLabel === 'Verify' ? [255, 255, 255] : [90, 90, 98];
+          btn.setLabel('Checking…');
+          btn.setActive(false);
+          PC.ui.setMsg(pane, 'pcDomainMsg', 'Checking ' + dom + '…', false);
+          lively.identity.userSpace.verifyDomain(dom, function (err) {
+            if (err) {
+              btn.setLabel(btn._idleLabel);
+              btn.setActive(true);
+              PC.ui.tint(btn, tint[0], tint[1], tint[2]);
+              return PC.ui.setMsg(pane, 'pcDomainMsg', err.message, true);
+            }
+            lively.identity.userSpace.listDomains(win._handle, function (err2, rows) {
+              win._domains       = rows || [];
+              win._pendingDomain = null;
+              win._renderEdit(win._handle, win._editPayload, win._currentDid, 'domains');
+            });
+          });
+        },
+      },
+    });
 
   }); // end module('lively.identity.ProfileCard')
