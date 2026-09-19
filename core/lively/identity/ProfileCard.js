@@ -1847,8 +1847,8 @@ module("lively.identity.ProfileCard")
         if (!self._pendingDomain) {
           ui.text(pane, 'Use your own domain as your handle', 12, y, ew, 20, 12, 40, 40, 48, true);
           y += 24;
-          ui.text(pane, "Own a domain like alice.com? Add it and it shows on your profile with a verified check. "
-            + "You'll prove ownership with a single DNS record.", 12, y, ew, 44, 10, 120, 120, 128, false);
+          ui.text(pane, "Add a domain to your profile e.g example.com and verify ownership with a single DNS record check.",
+            12, y, ew, 44, 10, 120, 120, 128, false);
           y += 50;
           ui.text(pane, 'Your domain', 12, y, ew, 16, 10, 120, 120, 128, false);
           y += 18;
@@ -1860,7 +1860,7 @@ module("lively.identity.ProfileCard")
             if (!win) return;
             var inp = p.get('pcNewDomain');
             var dom = P.normalizeDomain(inp && inp.textString);
-            if (!dom) return P.ui.setMsg(p, 'pcDomainMsg', 'Enter a valid domain, like alice.com.', true);
+            if (!dom) return P.ui.setMsg(p, 'pcDomainMsg', 'Enter a valid domain, like example.com.', true);
             win._editPayload   = Object.assign({}, win._editPayload, win._snapshotEditFields(p));
             win._pendingDomain = dom;
             win._domainMethod  = 'dns';
@@ -1892,11 +1892,18 @@ module("lively.identity.ProfileCard")
         if (method === 'dns') {
           ui.text(pane, "Add this TXT record in your domain's DNS settings:", 12, y, ew, 18, 11, 80, 80, 88, false);
           y += 26;
-          var rec = ui.card(pane, 12, y, ew, 128);
-          ui.recordRow(rec, 'Type',  'TXT',                       12, 30, null,                  ew);
-          ui.recordRow(rec, 'Name',  '_lively-did',               44, 30, '_lively-did',         ew);
-          ui.recordRow(rec, 'Value', 'did=' + self._currentDid,   76, 46, 'did=' + self._currentDid, ew);
-          y += 138;
+          // The value is a did:jwk: (~180+ chars, one unbroken token), so the
+          // row's height comes from its length — a fixed height overflowed
+          // the card. Deliberately conservative (8px/char, 18px/line) since
+          // a short box clips/overflows while a slightly tall one is harmless.
+          var recVal   = 'did=' + self._currentDid;
+          var perLine  = Math.max(10, Math.floor((ew - 100) / 8));
+          var valueH   = Math.ceil(recVal.length / perLine) * 18 + 8;
+          var rec = ui.card(pane, 12, y, ew, 76 + valueH + 8);
+          ui.recordRow(rec, 'Type',  'TXT',         12, 30, null,          ew);
+          ui.recordRow(rec, 'Name',  '_lively-did', 44, 30, '_lively-did', ew);
+          ui.recordRow(rec, 'Value', recVal,        76, valueH, recVal,    ew, 10);
+          y += 76 + valueH + 8 + 10;
           ui.text(pane, 'If your DNS provider wants the full name, use _lively-did.' + dom + ' instead.',
             12, y, ew, 30, 10, 140, 140, 148, false);
           y += 34;
@@ -2216,10 +2223,10 @@ module("lively.identity.ProfileCard")
         },
 
         // One "Label   value  [copy]" row inside a card. copyValue null = no copy button.
-        recordRow: function (card, label, value, y, h, copyValue, cardW) {
+        recordRow: function (card, label, value, y, h, copyValue, cardW, size) {
           var ui = lively.identity.ProfileCard.ui;
           ui.text(card, label, 12, y + 2, 44, 18, 10, 140, 140, 148, false);
-          var v = ui.text(card, value, 60, y + 1, cardW - 60 - 40, h - 2, 11, 30, 30, 38, false);
+          var v = ui.text(card, value, 60, y + 1, cardW - 60 - 40, h - 2, size || 11, 30, 30, 38, false);
           v.applyStyle({ wordBreak: 'break-all', fixedWidth: true });
           if (copyValue) ui.copyBtn(card, cardW - 32, y - 1, copyValue);
         },
