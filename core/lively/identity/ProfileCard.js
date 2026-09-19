@@ -20,6 +20,7 @@ module("lively.identity.ProfileCard")
     "lively.identity.PostCardUtils",
     "lively.identity.QuiltPatterns",
     "lively.identity.WebKey",
+    "lively.identity.NatalChart",
     "lively.persistence.BuildSpec",
     "lively.morphic.Complete",
   )
@@ -1500,6 +1501,15 @@ module("lively.identity.ProfileCard")
         // wherever the current tab's content happens to end — the Account
         // tab's content is much shorter than Profile's, which otherwise
         // left them stranded near the top with a large dead area below.
+        // Grow the window (never shrink) if the tab's content plus the button
+        // row doesn't fit, same as the read view does — otherwise a tall tab
+        // (Profile, with the birth-chart panel) runs under Save/Cancel and
+        // past the window's bottom edge.
+        var needPaneH = y + 46, havePaneH = pane.getExtent().y;
+        if (needPaneH > havePaneH) {
+          var we = self.getExtent();
+          self.setExtent(lively.pt(we.x, we.y + (needPaneH - havePaneH)));
+        }
         var btnY = pane.getExtent().y - 36;
 
         // Save — reads named inputs from pane, merges onto self._editPayload
@@ -1686,6 +1696,15 @@ module("lively.identity.ProfileCard")
           { width: 834, height: 160, shape: 'rect', title: 'Crop Banner', basename: 'banner' });
 
         y += 4;
+        // Beside the calculator panel, drop the whole signs block down so its
+        // vertical center lines up with the panel's (stacked layout: no shift).
+        var pw = pane.getExtent().x;
+        // Pickers end at x=326 (right chevron); leave a ~22px gap before the panel.
+        var natalX = 348;
+        var sideBySide = pw - 12 - natalX >= 300;
+        var signsTop = y;                       // top of the calculator panel
+        var SIGNS_H = 22 + 3 * 34 - 8;          // label row + 3 picker rows, minus trailing gap
+        if (sideBySide) y += Math.max(0, Math.round((PC.natal.PANEL_H - SIGNS_H) / 2));
         ui.text(pane, 'Astrological signs', 12, y, ew, 16, 10, 120, 120, 128, false);
         y += 22;
 
@@ -1726,6 +1745,17 @@ module("lively.identity.ProfileCard")
           };
           y += 34;
         });
+
+        // Birth-chart calculator: beside the pickers when the pane is wide
+        // enough, otherwise stacked underneath them.
+        if (sideBySide) {
+          PC.natal.build(pane, natalX, signsTop, Math.min(pw - 12 - natalX, 410));
+          y = Math.max(y, signsTop + PC.natal.PANEL_H);
+        } else {
+          y += 4;
+          PC.natal.build(pane, 12, y, ew);
+          y += PC.natal.PANEL_H;
+        }
         return y + 6;
       },
 
@@ -2055,6 +2085,197 @@ module("lively.identity.ProfileCard")
       signLabel: function (idx) {
         var Z = lively.identity.ProfileCard.ZODIAC;
         return idx < 0 ? 'Not set' : Z.GLYPHS[idx] + '  ' + Z.SIGNS[idx];
+      },
+
+      // Birth-chart calculator panel (edit → Profile tab, beside the sign
+      // pickers). Birth date/time/place live only in these inputs: they're
+      // never added to _editPayload or saved, and are cleared after a
+      // successful calculation. Only the three sign pickers are filled.
+      natal: {
+        PANEL_H: 328,
+        INFO: 'Your birth chart details are only used locally on this device to calculate your placements ' +
+              'and never saved or sent to a remote server.',
+
+        build: function (pane, x, y, w) {
+          var PC = lively.identity.ProfileCard, ui = PC.ui, H = PC.natal.PANEL_H, PANEL_H = H;
+          var card = ui.card(pane, x, y, w, H);
+          card.name = 'pcNatalCard';
+          var heading = ui.text(card, 'Birth chart calculator', 12, 8, w - 24, 16, 11, 60, 60, 68, true);
+          heading.applyStyle({ fixedWidth: true, align: 'center' });
+          ui.icon(card, 'lock', 10, 26, 12, 120, 120, 128);
+          // Symmetric side margins (30px) keep the centered text centered on the
+          // card itself; the lock icon sits in the left margin.
+          var info = ui.text(card, PC.natal.INFO, 30, 27, w - 60, 44, 9, 120, 120, 128, false);
+          info.applyStyle({ fixedWidth: true, align: 'center' });
+          // Each label is centered over its own input; the date/time pair is centered as a row.
+          function label(str, lx, ly, lw) {
+            var t = ui.text(card, str, lx, ly, lw, 14, 9, 120, 120, 128, false);
+            t.applyStyle({ fixedWidth: true, align: 'center' });
+            return t;
+          }
+          // Widest labels need ~150px of text plus the box's own padding; below
+          // that width they fall back to shorter wording rather than wrapping.
+          var GAP = 12, IW = Math.max(112, Math.min(172, Math.floor((w - 24 - GAP) / 2)));
+          var x0 = Math.round((w - (IW * 2 + GAP)) / 2);
+          label(IW >= 168 ? 'Birth date (YYYY-MM-DD)' : 'Birth date', x0, 76, IW);
+          label(IW >= 144 ? 'Time (needed for Rising)' : 'Time (for Rising)', x0 + IW + GAP, 76, IW);
+          ui.input(card, 'pcNatalDate', x0, 98, IW, '');
+          ui.input(card, 'pcNatalTime', x0 + IW + GAP, 98, IW, '');
+          label('Birth place  (search for a city)', 12, 132, w - 24);
+          var place = ui.input(card, 'pcNatalPlace', 12, 154, w - 24, '');
+          card.addScript(function onPlaceTyped(s) {
+            lively.identity.ProfileCard.natal.placeTyped(this, s);
+          });
+          lively.bindings.connect(place, 'textString', card, 'onPlaceTyped');
+          ui.pill(card, 'Calculate', 12, 192, 96, 26, true, function () {
+            lively.identity.ProfileCard.natal.calculate(this);
+          });
+          var msg = ui.text(card, '', 12, 226, w - 24, 72, 10, 140, 140, 148, false);
+          msg.name = 'pcNatalMsg';
+          msg.applyStyle({ fixedWidth: true });
+          var credit = ui.text(card, 'Ephemeris: astronomy-engine (MIT)  ·  City data: GeoNames, CC BY 4.0',
+            12, PANEL_H - 24, w - 24, 14, 8, 160, 160, 168, false);
+          credit.applyStyle({ fixedWidth: true });
+          credit.renderContext().morphNode.title = 'astronomy-engine by Donald Cross; city data from geonames.org, licensed CC BY 4.0';
+          return card;
+        },
+
+        say: function (card, str, isError) {
+          var PC = lively.identity.ProfileCard, m = card.get('pcNatalMsg');
+          if (m) PC.ui.setMsg(card, 'pcNatalMsg', str, isError);
+        },
+
+        // Color a sign picker morph for a sign index (-1 = "Not set").
+        setSign: function (pane, field, idx) {
+          var PC = lively.identity.ProfileCard, d = pane.get(field);
+          if (!d) return;
+          d._signIdx = idx;
+          d.textString = PC.signLabel(idx);
+          var c = idx < 0 ? 'rgb(150,150,158)' : 'rgb(35,35,35)';
+          var n = d.renderContext().shapeNode;
+          n.style.color = c;
+          var kids = n.querySelectorAll('*');
+          for (var i = 0; i < kids.length; i++) kids[i].style.color = c;
+        },
+
+        clearSuggestions: function (card) {
+          var old = card.get('pcNatalSuggest');
+          if (old) old.remove();
+        },
+
+        // The place input changed: forget any earlier pick and offer matches.
+        placeTyped: function (card, s) {
+          var PC = lively.identity.ProfileCard, N = lively.identity.NatalChart;
+          s = s || '';
+          if (card._pickedLabel === s) return; // set by pick(), not typed
+          card._place = null;
+          card._pickedLabel = null;
+          PC.natal.clearSuggestions(card);
+          PC.natal.say(card, '', false);
+          if (s.trim().length < 2) return;
+          N.ensureLoaded(function (err) {
+            if (err) return PC.natal.say(card, err.message, true);
+            var inp = card.get('pcNatalPlace');
+            if (!card.world() || !inp || inp.textString !== s) return; // pane rebuilt / typed on
+            PC.natal.showSuggestions(card, N.searchCities(s, 5));
+          });
+        },
+
+        showSuggestions: function (card, cities) {
+          var PC = lively.identity.ProfileCard, ui = PC.ui, N = lively.identity.NatalChart;
+          PC.natal.clearSuggestions(card);
+          if (!cities.length) return PC.natal.say(card, 'No matching city found.', true);
+          var w = card.getExtent().x - 24, rowH = 24;
+          var box = new lively.morphic.Box(lively.rect(12, 186, w, cities.length * rowH + 4));
+          box.name = 'pcNatalSuggest';
+          ui.noDrag(box);
+          box.applyStyle({ fill: Color.white, borderColor: Color.rgb(200, 200, 200),
+            borderWidth: 1, borderRadius: 6 });
+          cities.forEach(function (c, i) {
+            var row = new lively.morphic.Text(lively.rect(2, 2 + i * rowH, w - 4, rowH), N.cityLabel(c));
+            ui.noDrag(row);
+            row.applyStyle({ allowInput: false, selectable: false, fontSize: 11,
+              textColor: Color.rgb(50, 50, 58), fill: Color.rgba(0, 0, 0, 0),
+              borderWidth: 0, borderColor: null, handStyle: 'pointer' });
+            row._city = c;
+            row.onMouseUp = function (evt) {
+              evt.stop();
+              lively.identity.ProfileCard.natal.pick(this);
+              return true;
+            };
+            box.addMorph(row);
+          });
+          card.addMorph(box);
+        },
+
+        pick: function (row) {
+          var PC = lively.identity.ProfileCard, N = lively.identity.NatalChart;
+          var card = row.owner.owner, c = row._city, label = N.cityLabel(c);
+          card._place = { lat: c.lat, lon: c.lon, tz: c.tz };
+          card._pickedLabel = label;
+          PC.natal.clearSuggestions(card);
+          var inp = card.get('pcNatalPlace');
+          if (inp) inp.textString = label;
+          PC.natal.say(card, 'Time zone: ' + c.tz.replace(/_/g, ' '), false);
+        },
+
+        calculate: function (btn) {
+          var PC = lively.identity.ProfileCard, N = lively.identity.NatalChart;
+          var pane = PC.ui.paneOf(btn), card = pane && pane.get('pcNatalCard');
+          if (!card) return;
+          var say = function (s, e) { PC.natal.say(card, s, e); };
+          var date = N.parseDate(card.get('pcNatalDate').textString);
+          if (!date) return say('Enter your birth date as YYYY-MM-DD, e.g. 1990-01-20.', true);
+          var time = N.parseTime(card.get('pcNatalTime').textString);
+          if (time === null) return say('Enter the birth time like 19:24 or 7:24 pm, or leave it empty.', true);
+          var typed = (card.get('pcNatalPlace').textString || '').trim();
+          say('Calculating…', false);
+          N.ensureLoaded(function (err) {
+            if (err) return say(err.message, true);
+            var place = card._place;
+            if (!place && typed) {
+              var hit = N.searchCities(typed, 5).filter(function (c) {
+                return N.cityLabel(c).toLowerCase() === typed.toLowerCase();
+              })[0];
+              if (!hit) return say('Pick your birth place from the suggestions.', true);
+              place = { lat: hit.lat, lon: hit.lon, tz: hit.tz };
+            }
+            var r;
+            try {
+              r = N.calculate({ date: date, time: time || null, place: place });
+            } catch (e) { return say(e.message, true); }
+
+            var Z = PC.ZODIAC, parts = [], open = [];
+            [['Sun', 'pcSunSign', r.sun, r.sunAlt], ['Moon', 'pcMoonSign', r.moon, r.moonAlt],
+             ['Rising', 'pcRisingSign', r.rising, null]].forEach(function (row) {
+              var alt = row[3];
+              if (alt && alt.length > 1) {
+                open.push(row[0] + ' is ' + alt.map(function (i) { return Z.SIGNS[i]; }).join(' or ') +
+                          ' on that day, so a birth time is needed.');
+              } else if (row[2] >= 0) {
+                PC.natal.setSign(pane, row[1], row[2]);
+                parts.push(row[0] + ' ' + Z.GLYPHS[row[2]] + ' ' + Z.SIGNS[row[2]]);
+              }
+            });
+            var lines = [];
+            if (parts.length) lines.push('Filled in: ' + parts.join(' · ') + '. Save to keep.');
+            if (r.risingAlt && r.risingAlt.length > 1) {
+              lines.push('Rising is close to the edge of ' +
+                r.risingAlt.map(function (i) { return Z.SIGNS[i]; }).join(' and ') +
+                '; a few minutes could change it.');
+            }
+            lines = lines.concat(open, r.notes);
+            if (parts.length) {
+              // The birth details have done their job; don't leave them sitting in the
+              // form. _pickedLabel = '' makes placeTyped ignore the resulting empty value.
+              card._place = null; card._pickedLabel = '';
+              ['pcNatalDate', 'pcNatalTime', 'pcNatalPlace'].forEach(function (n) {
+                var inp = card.get(n); if (inp) inp.textString = '';
+              });
+            }
+            say(lines.join(' '), !parts.length);
+          });
+        },
       },
 
       // hosts: hostnames (and their subdomains) used to auto-detect the
