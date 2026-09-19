@@ -673,7 +673,8 @@ function buildPostCardPage(envelope, handle) {
 // loading placeholders here rather than duplicating that fetching
 // server-side.
 function buildConstellationLoungePage(constellation, quickInfo) {
-  var title = escapeHtml(constellation.name);
+  // Shown name: the constellation's verified domain when it has one.
+  var title = escapeHtml(quickInfo.domain || constellation.name);
   var pageData = {
     name: constellation.name,
     did: constellation.did,
@@ -4103,6 +4104,8 @@ module.exports = function (route, app) {
               if (err) return res.status(500).json({ error: String(err) });
               constellationSpace.mintSpaceToken(constellation, req.identity, function (err, token) {
                 if (err) return res.status(500).json({ error: String(err) });
+                // A constellation's verified domain (if any) is the name shown for it.
+                handleRegistry.resolveHandleForDid(constellation.did, function (domainErr, domain) {
                 res.json({
                   token: token,
                   genesisObjId: constellation.genesisObjId,
@@ -4122,8 +4125,10 @@ module.exports = function (route, app) {
                     did: constellation.did,
                     avatarUrl: constellation.avatarUrl,
                     bannerUrl: constellation.bannerUrl,
-                    description: constellation.description
+                    description: constellation.description,
+                    domain: domain || null
                   }
+                });
                 });
               });
             });
@@ -5530,15 +5535,18 @@ module.exports = function (route, app) {
       // no breaking change for existing API callers.
       if (req.accepts(["html", "json"]) === "html") {
         return handleRegistry.resolveHandleForDid(constellation.createdBy, function (err, createdByHandle) {
-          var quickInfo = {
-            createdBy: constellation.createdBy,
-            createdByHandle: createdByHandle || null,
-            controllers: constellation.controllers,
-            memberCount: constellation.members.length,
-            createdAt: constellation.createdAt,
-            visibility: constellation.visibility
-          };
-          res.send(buildConstellationLoungePage(constellation, quickInfo));
+          handleRegistry.resolveHandleForDid(constellation.did, function (domainErr, domain) {
+            var quickInfo = {
+              createdBy: constellation.createdBy,
+              createdByHandle: createdByHandle || null,
+              controllers: constellation.controllers,
+              memberCount: constellation.members.length,
+              createdAt: constellation.createdAt,
+              visibility: constellation.visibility,
+              domain: domain || null
+            };
+            res.send(buildConstellationLoungePage(constellation, quickInfo));
+          });
         });
       }
 

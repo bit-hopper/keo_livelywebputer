@@ -340,8 +340,15 @@ module("lively.identity.ConstellationLounge")
         xhr.send();
       },
 
+      // The name to show and to build page URLs from: the constellation's
+      // verified domain when it has one, else its name. API calls keep using
+      // this._name (the domain URL is only an alias for it server-side).
+      _displayName: function () {
+        return (this._quickInfo && this._quickInfo.domain) || this._name;
+      },
+
       _start: function () {
-        document.title = "c/" + this._name;
+        document.title = "c/" + this._displayName();
         this._buildChrome();
         this._renderQuickInfo();
         this._renderMemberList();
@@ -766,7 +773,7 @@ module("lively.identity.ConstellationLounge")
         // decorative label sits behind the real field (added first, so the
         // field's own node renders after it in the same stacking context)
         // and is hidden the moment there's real text.
-        var placeholder = lively.morphic.Text.makeLabel("Search c/" + this._name + "…", {
+        var placeholder = lively.morphic.Text.makeLabel("Search c/" + this._displayName() + "…", {
           fontSize: 12, textColor: Color.rgb(170, 170, 170),
         });
         placeholder.setPosition(fieldRect.topLeft());
@@ -1624,7 +1631,7 @@ module("lively.identity.ConstellationLounge")
             type: "doc",
             content: [{
               type: "paragraph",
-              content: [{ type: "text", text: "@" + user.handle + " wants to join the \"" + room.name + "\" room in c/" + self._name + "." }],
+              content: [{ type: "text", text: "@" + lively.identity.did.displayHandle() + " wants to join the \"" + room.name + "\" room in c/" + self._name + "." }],
             }],
           };
           lively.identity.postCardSerializer.serializePlainToEnvelope({
@@ -1787,7 +1794,7 @@ module("lively.identity.ConstellationLounge")
         // throwaway height would hit the min-height-floor trap the event
         // title already ran into (CLAUDE.md's Text-morph note) — then
         // padded back by 4 for the shapeNode's own top/bottom padding.
-        var title = lively.morphic.Text.makeLabel("c/" + this._name,
+        var title = lively.morphic.Text.makeLabel("c/" + this._displayName(),
           { fontSize: 16, fontWeight: "bold", fixedWidth: true, fixedHeight: true });
         var titleY = avY + AVATAR + 10;
         title.setPosition(lively.pt(avX, titleY));
@@ -2098,7 +2105,7 @@ module("lively.identity.ConstellationLounge")
           // Same destination as the membership menu's "Open wiki" entry.
           { label: "Wiki", tooltip: "Open this constellation's wiki",
             onClick: function () {
-              window.location.href = "/c/" + encodeURIComponent(self._name) + "/wiki";
+              window.location.href = "/c/" + encodeURIComponent(self._displayName()) + "/wiki";
             } },
           { label: "Canvas", tooltip: "Canvas (coming soon)",
             onClick: function () {} },
@@ -4284,9 +4291,9 @@ module("lively.identity.ConstellationLounge")
       _patchMenuBarEntry: function (entry) {
         var self = this;
         this._menuBarEntry = entry;
-        var label = "c/" + this._name;
+        var label = "c/" + this._displayName();
         entry.currentWorldDisplayName = function () { return label; };
-        entry.toolTip = "Constellation " + this._name + " — click for options";
+        entry.toolTip = "Constellation " + this._displayName() + " — click for options";
         entry.onMouseUp = function (evt) {
           self._openMembershipMenu(entry);
           evt.stop();
@@ -4308,11 +4315,11 @@ module("lively.identity.ConstellationLounge")
         }
 
         items.push(["Open wiki", function () {
-          window.location.href = "/c/" + encodeURIComponent(self._name) + "/wiki";
+          window.location.href = "/c/" + encodeURIComponent(self._displayName()) + "/wiki";
         }]);
 
         var pos = entry.worldPoint(lively.pt(0, entry.getExtent().y));
-        lively.morphic.Menu.openAt(pos, "c/" + this._name, items);
+        lively.morphic.Menu.openAt(pos, "c/" + this._displayName(), items);
       },
 
       // A real, client-signed postcard riding the same postal rail, never
@@ -4327,7 +4334,7 @@ module("lively.identity.ConstellationLounge")
             type: "doc",
             content: [{
               type: "paragraph",
-              content: [{ type: "text", text: "@" + user.handle + " wants to join c/" + self._name + "." }],
+              content: [{ type: "text", text: "@" + lively.identity.did.displayHandle() + " wants to join c/" + self._name + "." }],
             }],
           };
           lively.identity.postCardSerializer.serializePlainToEnvelope({
