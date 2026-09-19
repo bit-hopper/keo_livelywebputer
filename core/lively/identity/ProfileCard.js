@@ -532,7 +532,7 @@ module("lively.identity.ProfileCard")
           // Filled social accounts render as the bare logo (no enclosing
           // circle); CIRC is the slot each one (and each empty "add"
           // placeholder circle) occupies, ICON the logo's own size within it.
-          var CIRC = 38, GAP = 16, ICON = 34, PAD = 16;
+          var CIRC = 38, GAP = 16, ICON = 30, PAD = 16;
           var rowEndX = pw - contentX - PAD;
           var rowStartX = rowEndX - (5 * CIRC + 4 * GAP);
           var accounts = (payload.socialAccounts || []).slice(0, 5);
