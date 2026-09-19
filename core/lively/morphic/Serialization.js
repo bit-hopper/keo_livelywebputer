@@ -167,6 +167,9 @@ lively.morphic.World.addMethods(
             this.hands.remove(this.hands[0]);
             this.addHandMorph();
         }
+        // Worlds saved before the hand became invisible carry its old red
+        // fill (a stray 2x2 dot following the mouse); clear it on load.
+        this.hands[0].setFill(null);
         this.restoreFixedMorphs.bind(this).delay(0);
         this.getLastModificationDate();
     },

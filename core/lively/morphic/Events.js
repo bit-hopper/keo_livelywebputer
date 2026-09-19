@@ -2243,7 +2243,10 @@ lively.morphic.Morph.subclass('lively.morphic.HandMorph',
     initialize: function($super, optExtent) {
         $super();
         var ext = optExtent || pt(2,2);
-        this.setFill(lively.Color.red);
+        // Invisible: the hand only needs to exist (position tracking, and as
+        // the owner of grabbed morphs). It used to be filled red, which left
+        // a stray 2x2 red dot following the mouse everywhere.
+        this.setFill(null);
         this.setBounds(ext.extentAsRectangle());
         this.disableEvents();
     }

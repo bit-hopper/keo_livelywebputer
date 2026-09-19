@@ -244,6 +244,20 @@ module("lively.identity.ProfileCard")
         if (!pane) return;
         pane.removeAllMorphs();
 
+        // Bio lines wrap at ~80 chars, so a full 300-char bio is ~4 lines,
+        // which the base layout has room for. Only if it wraps to more
+        // (wide glyphs) grow the window by the extra lines, and shrink back
+        // on the next render. Done before anything is laid out so
+        // pane.getExtent() below is already final.
+        var bioLines = payload.bio ? Math.ceil(payload.bio.length / 75) : 0;
+        var bioExtra = Math.max(0, bioLines - 4) * 18;
+        var prevExtra = self._bioExtra || 0;
+        if (bioExtra !== prevExtra) {
+          var curExt = self.getExtent();
+          self.setExtent(lively.pt(curExt.x, curExt.y + bioExtra - prevExtra));
+          self._bioExtra = bioExtra;
+        }
+
         // Preset platform catalog for the social-account circles below.
         // Declared locally (not shared from outer module scope) because
         // lively.BuildSpec methods are rehydrated via evalJS from their
@@ -434,8 +448,8 @@ module("lively.identity.ProfileCard")
         // handle + display name
         pane.addMorph(txt("@" + handle, contentX, y, cw, 16, 11, 120, 120, 120, false));
         y += 19;
-        pane.addMorph(txt(payload.displayName || handle, contentX, y, cw, 22, 16, 20, 20, 20, true));
-        y += 24;
+        pane.addMorph(txt(payload.displayName || handle, contentX, y, cw, 28, 16, 20, 20, 20, true));
+        y += 28;
         if (payload.pronouns) {
           pane.addMorph(txt(payload.pronouns, contentX, y, cw, 14, 10, 120, 120, 120, false));
           y += 17;
@@ -449,7 +463,7 @@ module("lively.identity.ProfileCard")
           // the box from a chars-per-line estimate instead of a fixed 50px
           // (which clipped anything past ~2 lines). ~18px/line, per the
           // multi-line sizing note in CLAUDE.md.
-          var bioH = Math.max(32, Math.ceil(bioText.length / 68) * 18 + 8);
+          var bioH = Math.max(32, Math.ceil(bioText.length / 75) * 18 + 8);
           var bio = new lively.morphic.Text(lively.rect(contentX, y, cw, bioH), bioText);
           bio.applyStyle({ allowInput: false, fontSize: 12,
             textColor: Color.rgb(80, 80, 80),
@@ -612,7 +626,17 @@ module("lively.identity.ProfileCard")
           var sites = (payload.links || []).filter(function (l) {
             return l && l.url && /^https?:\/\//i.test(l.url);
           }).slice(0, 3);
-          var wy = ry + ((self._isOwner || accounts.length) ? CIRC + 18 : 0);
+          var wy = ry + ((self._isOwner || accounts.length) ? CIRC + 14 : 0);
+          if (sites.length) {
+            // Same small centered caption style as "Connect" above.
+            var sitesLbl = new lively.morphic.Text(
+              lively.rect(rowStartX, wy, rowEndX - rowStartX, 12), "Websites");
+            sitesLbl.applyStyle({ allowInput: false, fontSize: 9,
+              textColor: Color.rgb(160, 160, 160),
+              fill: Color.rgba(0, 0, 0, 0), borderWidth: 0, align: 'center' });
+            pane.addMorph(sitesLbl);
+            wy += 20;
+          }
           sites.forEach(function (site) {
             var shown = (site.label || site.url).replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, '');
             if (shown.length > 38) shown = shown.slice(0, 37) + '…';
@@ -703,10 +727,17 @@ module("lively.identity.ProfileCard")
         // BuildSpec-closure-loss gotcha).
         (function () {
           var info = friendInfo || { status: self._isOwner ? 'owner' : 'signed-out' };
-          var btnW = 108, btnH = 26;
+          // Label reflects the viewer's relationship to this handle: only
+          // 'Friends' when they actually are (or it's the owner's own card,
+          // where it opens their friends list); otherwise it's the action.
+          var FRIEND_LABELS = { owner: 'Friends', friends: 'Friends',
+            none: '+ Friend request', 'signed-out': '+ Friend request',
+            'pending-outgoing': 'Request sent', 'pending-incoming': 'Respond to request' };
+          var friendLabel = FRIEND_LABELS[info.status] || '+ Friend request';
+          var btnW = friendLabel.length > 9 ? 136 : 108, btnH = 26;
           var btnX = bx + Math.floor((BW - btnW) / 2);
           var btnY = Math.round((by + astroBoxH + dividerY) / 2 - btnH / 2);
-          var friendsBtn = new lively.morphic.Button(lively.rect(btnX, btnY, btnW, btnH), 'Friends');
+          var friendsBtn = new lively.morphic.Button(lively.rect(btnX, btnY, btnW, btnH), friendLabel);
           friendsBtn.applyStyle({ borderRadius: 26, borderWidth: 1,
             borderColor: Color.rgb(204, 0, 87),
             fill: Color.rgb(255, 255, 255), textColor: Color.rgb(204, 0, 87), fontSize: 12 });
@@ -720,6 +751,16 @@ module("lively.identity.ProfileCard")
             var pane = this.owner;
             var win  = pane && pane.owner;
             var status = this._status;
+            // No relationship yet: the button IS the action, no panel.
+            if (status === 'none') {
+              fetch('/@' + this._handle + '/friend-requests',
+                { method: 'POST', credentials: 'include' })
+                .then(function (r) {
+                  if (!r.ok) alert('Could not send friend request (HTTP ' + r.status + ')');
+                  if (win) win.loadProfile(win._handle, win._worldObjId);
+                });
+              return;
+            }
             // Owner's list renders one nameplate row (avatar + handle + chat
             // icon + three-dot menu) per friend rather than a plain text
             // line, so it gets its own wider panel and taller row height —
