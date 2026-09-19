@@ -239,7 +239,7 @@ module("lively.identity.RoomSettingsDialog")
         iconChip(MARGIN, "videocam", "Video", this._isVideo, function () { self._toggleVideo(); });
         iconChip(MARGIN + 94, "headset", "Voice", this._isVoice, function () { self._toggleVoice(); });
         y += 32;
-        fieldLabel("Neither selected is a plain text room. Both can be on at once.");
+        fieldLabel("Neither selected is a plain text room. Video always includes voice.");
         divider();
 
         // ── Active Participants Nickname ──────────────────────────────────
@@ -430,12 +430,16 @@ module("lively.identity.RoomSettingsDialog")
       _toggleVideo: function _toggleVideo() {
         this._captureFieldEdits();
         this._isVideo = !this._isVideo;
+        // A video room always carries audio, so turning video on turns voice on.
+        if (this._isVideo) this._isVoice = true;
         this._render();
       },
 
       _toggleVoice: function _toggleVoice() {
         this._captureFieldEdits();
         this._isVoice = !this._isVoice;
+        // ...and turning voice off can't leave video on without audio.
+        if (!this._isVoice) this._isVideo = false;
         this._render();
       },
 

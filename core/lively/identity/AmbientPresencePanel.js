@@ -24,7 +24,8 @@ module("lively.identity.AmbientPresencePanel")
       TEXT_SECONDARY: Color.rgb(148, 155, 164),
       ICON_DEFAULT:   Color.rgb(181, 186, 193),
       ICON_DANGER:    Color.rgb(242, 63, 66),
-      HOVER_BG:       Color.rgba(255, 255, 255, 0.08),
+      ICON_INACTIVE:  Color.rgb(80, 84, 91),
+      HOVER_BG:      Color.rgba(255, 255, 255, 0.08),
       STATUS_ONLINE:  Color.rgb(35, 165, 89),
       STATUS_IDLE:    Color.rgb(240, 178, 50),
 
@@ -156,6 +157,7 @@ module("lively.identity.AmbientPresencePanel")
       },
 
       toggleMic: function toggleMic() {
+        if (!lively.identity.AmbientPresencePanel.controlEnabled("mic")) return;
         if (this.deafened) {
           this.deafened = false;
           this.micMuted = false;
@@ -168,6 +170,7 @@ module("lively.identity.AmbientPresencePanel")
       },
 
       toggleDeafen: function toggleDeafen() {
+        if (!lively.identity.AmbientPresencePanel.controlEnabled("deafen")) return;
         this.deafened = !this.deafened;
         this.micMuted = this.deafened;
         this._updateControls();
@@ -176,6 +179,7 @@ module("lively.identity.AmbientPresencePanel")
       },
 
       toggleCamera: function toggleCamera() {
+        if (!lively.identity.AmbientPresencePanel.controlEnabled("camera")) return;
         this.cameraOff = !this.cameraOff;
         this._updateControls();
         this._savePersistedPrefs();
@@ -271,12 +275,15 @@ module("lively.identity.AmbientPresencePanel")
 
       _updateControls: function _updateControls() {
         var NS = lively.identity.AmbientPresencePanel;
-        this._camBtn.textString = this.cameraOff ? "videocam_off" : "videocam";
-        this._camBtn.applyStyle({ textColor: this.cameraOff ? NS.ICON_DANGER : NS.STATUS_ONLINE });
-        this._micBtn.textString = this.micMuted ? "mic_off" : "mic";
-        this._micBtn.applyStyle({ textColor: this.micMuted ? NS.ICON_DANGER : NS.STATUS_ONLINE });
-        this._headsetBtn.textString = this.deafened ? "headset_off" : "headset_mic";
-        this._headsetBtn.applyStyle({ textColor: this.deafened ? NS.ICON_DANGER : NS.STATUS_ONLINE });
+        // A control with nothing to act on (only in a text room, or a camera in
+        // an audio-only call) shows greyed with its plain glyph, ignoring the prefs.
+        var camOn = NS.controlEnabled("camera"), micOn = NS.controlEnabled("mic"), deafOn = NS.controlEnabled("deafen");
+        this._camBtn.textString = camOn && this.cameraOff ? "videocam_off" : "videocam";
+        this._camBtn.applyStyle({ textColor: !camOn ? NS.ICON_INACTIVE : (this.cameraOff ? NS.ICON_DANGER : NS.STATUS_ONLINE) });
+        this._micBtn.textString = micOn && this.micMuted ? "mic_off" : "mic";
+        this._micBtn.applyStyle({ textColor: !micOn ? NS.ICON_INACTIVE : (this.micMuted ? NS.ICON_DANGER : NS.STATUS_ONLINE) });
+        this._headsetBtn.textString = deafOn && this.deafened ? "headset_off" : "headset_mic";
+        this._headsetBtn.applyStyle({ textColor: !deafOn ? NS.ICON_INACTIVE : (this.deafened ? NS.ICON_DANGER : NS.STATUS_ONLINE) });
       },
 
       openSettings: function openSettings() {
@@ -350,6 +357,9 @@ module("lively.identity.AmbientPresencePanel")
       // which don't apply to this plain-extension block).
       enterRoom: function enterRoom(room) {
         this._activeRoom = room;
+        // Which devices this room's call uses: audio-only rooms never capture
+        // the camera. Default (both) keeps callers that don't say working.
+        this._mediaKinds = { audio: room.audio !== false, video: room.video !== false };
         this._acquireLocalMedia();
         // MenuBarEntry.js's own init() call (which normally creates _panel
         // in response to identityChanged/sync()) races this — a room-boot
@@ -358,12 +368,31 @@ module("lively.identity.AmbientPresencePanel")
         // so calling it here guarantees a panel exists to show the row on,
         // regardless of which finished loading first.
         this.open()._showInRoomRow(room);
+        this.refreshControls();
       },
 
       leaveRoom: function leaveRoom() {
         this._activeRoom = null;
         this._releaseLocalMedia();
         if (this._panel) this._panel._hideInRoomRow();
+        this.refreshControls();
+      },
+
+      _mediaKinds: { audio: true, video: true },
+
+      // Whether a control does anything right now. Mic/deafen need a call;
+      // the camera needs a call that carries video. With no room at all the
+      // controls stay live so the prefs can be set ahead of joining; when the
+      // only thing open is a text room there is no call, so they go inactive.
+      controlEnabled: function controlEnabled(which) {
+        if (this._activeRoom) return which === "camera" ? !!this._mediaKinds.video : true;
+        var RV = lively.identity.RoomView;
+        return !(RV && RV.hasTextSession && RV.hasTextSession());
+      },
+
+      refreshControls: function refreshControls() {
+        var p = this._panel;
+        if (p && p._camBtn && p._micBtn && p._headsetBtn) p._updateControls();
       },
 
       getLocalStream: function getLocalStream() {
@@ -377,8 +406,8 @@ module("lively.identity.AmbientPresencePanel")
       _acquireLocalMedia: function _acquireLocalMedia() {
         var self = this;
         var p = this._panel;
-        var wantAudio = !(p && p.micMuted);
-        var wantVideo = !(p && p.cameraOff);
+        var wantAudio = this._mediaKinds.audio && !(p && p.micMuted);
+        var wantVideo = this._mediaKinds.video && !(p && p.cameraOff);
         if (!wantAudio && !wantVideo) return;
         if (typeof navigator === "undefined" || !navigator.mediaDevices) return;
         // A toggle while this is still resolving used to start a second
@@ -434,7 +463,8 @@ module("lively.identity.AmbientPresencePanel")
             self._pendingKinds[kind] = false;
             var p = self._panel;
             var stillWanted = self._activeRoom && self._localStream &&
-              (kind === "audio" ? !(p && p.micMuted) : !(p && p.cameraOff));
+              (kind === "audio" ? (self._mediaKinds.audio && !(p && p.micMuted))
+                                : (self._mediaKinds.video && !(p && p.cameraOff)));
             if (!stillWanted) { s.getTracks().forEach(function (t) { t.stop(); }); return; }
             var stream = self._localStream;
             stream.getTracks().filter(function (t) { return t.kind === kind; })
@@ -469,8 +499,8 @@ module("lively.identity.AmbientPresencePanel")
         if (!this._localStream) { this._acquireLocalMedia(); return; }
         var p = this._panel;
         var stream = this._localStream;
-        var wantAudio = !(p && p.micMuted);
-        var wantVideo = !(p && p.cameraOff);
+        var wantAudio = this._mediaKinds.audio && !(p && p.micMuted);
+        var wantVideo = this._mediaKinds.video && !(p && p.cameraOff);
         var audio = stream.getAudioTracks().filter(function (t) { return t.readyState === "live"; });
         var video = stream.getVideoTracks().filter(function (t) { return t.readyState === "live"; });
 

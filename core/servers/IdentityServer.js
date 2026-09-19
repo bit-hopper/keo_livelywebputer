@@ -4703,15 +4703,17 @@ module.exports = function (route, app) {
       if (!constellationRegistry.isController(constellation, req.identity.did)) {
         return res.status(403).json({ error: "Forbidden: controllers only" });
       }
+      // A video room always carries audio: never store video without voice.
+      var newIsVideo = !!body.isVideo, newIsVoice = !!body.isVoice || newIsVideo;
       constellationRegistry.createRoom({
         constellation: name, name: roomName,
-        isVideo: !!body.isVideo, isVoice: !!body.isVoice,
+        isVideo: newIsVideo, isVoice: newIsVoice,
         access: access, activity: activity, createdBy: req.identity.did
       }, function (err, roomId) {
         if (err) return res.status(500).json({ error: String(err) });
         res.status(201).json({
           room: {
-            id: roomId, name: roomName, isVideo: !!body.isVideo, isVoice: !!body.isVoice,
+            id: roomId, name: roomName, isVideo: newIsVideo, isVoice: newIsVoice,
             access: access, activity: activity, createdBy: req.identity.did, createdAt: new Date().toISOString(),
             headerUrl: null, pinned: false,
             participantCount: 0, participants: [], iJoined: false, myAccessStatus: null, canManage: true
@@ -4747,6 +4749,8 @@ module.exports = function (route, app) {
         var pinned = typeof body.pinned === "boolean" ? body.pinned : room.pinned;
         var isVideo = typeof body.isVideo === "boolean" ? body.isVideo : room.isVideo;
         var isVoice = typeof body.isVoice === "boolean" ? body.isVoice : room.isVoice;
+        // A video room always carries audio (also fixes legacy video-only rows on save).
+        if (isVideo) isVoice = true;
         var activity;
         if (body.activity === null) {
           activity = null;

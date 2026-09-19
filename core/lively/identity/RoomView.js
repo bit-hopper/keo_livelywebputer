@@ -213,7 +213,9 @@ module("lively.identity.RoomView")
           self._room = data.room;
           self._isController = !!data.isController;
           self._participants = data.participants || [];
-          self._start();
+          // Only now is it known whether this is a call room or a text room, so
+          // registration (which may have to end the current call first) happens here.
+          lively.identity.RoomView._register(self, function () { self._start(); });
         };
         xhr.onerror = function () { self._showFatalError("Network error loading room"); };
         xhr.send();
@@ -232,15 +234,28 @@ module("lively.identity.RoomView")
         this._originY = 0;
       },
 
+      // A call room is an audio or video room. A text room (neither) is just
+      // chat + roster: no signaling, no WebRTC, no media capture, no panel row.
+      // A video room implies audio, including rooms saved before the create
+      // dialog enforced that.
+      _isCall: function () {
+        return !!(this._room && (this._room.isVideo || this._room.isVoice));
+      },
+
+      _callMediaKinds: function () {
+        return { audio: true, video: !!(this._room && this._room.isVideo) };
+      },
+
       _start: function () {
+        var isCall = this._isCall();
         this._buildView();
         this._joinPresence();
         this._startHeartbeat();
         this._loadMessages();
         this._startMessagePolling();
-        this._connectSignaling();
+        if (isCall) this._connectSignaling();
 
-        // A real page load still ends the call (see RoomView.open's header
+        // A real page load still ends the session (see RoomView.open's header
         // note) — this only covers that case now, not window close/minimize.
         this._boundLeaveBestEffort = this._leaveBestEffort.bind(this);
         window.addEventListener("pagehide", this._boundLeaveBestEffort);
@@ -249,8 +264,15 @@ module("lively.identity.RoomView")
         var self = this;
         lively.require("lively.identity.AmbientPresencePanel").toRun(function () {
           if (self._roomLeft) return; // left again before the panel module finished loading
+          if (!isCall) {
+            // Text room: the panel's mic/camera/deafen buttons go inactive (no call).
+            lively.identity.AmbientPresencePanel.refreshControls();
+            return;
+          }
+          var kinds = self._callMediaKinds();
           lively.identity.AmbientPresencePanel.enterRoom({
             constellation: self._name, roomId: self._roomId, roomName: self._room.name,
+            audio: kinds.audio, video: kinds.video,
             onLeaveRequested: function () { self.leave(); },
             onShowRequested: function () { self.showView(); },
           });
@@ -388,6 +410,10 @@ module("lively.identity.RoomView")
       // Window's own X button. The window removes itself after this returns.
       _onWindowClosed: function () {
         this._detachViewRefs();
+        // A text room has no call to keep alive in the background: closing its
+        // window leaves it. (View refs are already detached, so leave() won't
+        // try to remove the window a second time.)
+        if (!this._isCall()) this.leave();
       },
 
       // Drops every reference into the (going or gone) view so background
@@ -555,7 +581,9 @@ module("lively.identity.RoomView")
         // every other member get a peer-left and re-read the roster, and that
         // read should find this presence already gone.
         this._stopSession();
-        try { lively.identity.AmbientPresencePanel.leaveRoom(); } catch (e) {}
+        // Only a call room owns the panel's call state — leaving a text room
+        // must not tear down a call running in another window.
+        if (this._isCall()) { try { lively.identity.AmbientPresencePanel.leaveRoom(); } catch (e) {} }
         this._destroyView();
       },
 
@@ -579,7 +607,7 @@ module("lively.identity.RoomView")
             method: "DELETE", keepalive: true, credentials: "same-origin",
           }).catch(function () {});
         } catch (e) {}
-        try { lively.identity.AmbientPresencePanel.leaveRoom(); } catch (e) {}
+        if (this._isCall()) { try { lively.identity.AmbientPresencePanel.leaveRoom(); } catch (e) {} }
       },
 
     },
@@ -852,9 +880,9 @@ module("lively.identity.RoomView")
             row.renderContext().shapeNode.style.cursor = "pointer";
             row.onMouseOver = function () { row.applyStyle({ fill: BG_ROW_HOVER }); };
             row.onMouseOut = function () { row.applyStyle({ fill: null }); };
-            // Switching rooms: RoomView.open leaves this session first (waiting
-            // for its presence DELETE to settle), then joins the clicked room in
-            // a fresh window — same one-active-room rule as entering from the lounge.
+            // RoomView.open decides what this means: a call room replaces the
+            // current call (leaving it first), a text room opens alongside
+            // whatever is already running.
             row.onMouseDown = function () {
               lively.identity.RoomView.open(self._name, room.id);
             };
@@ -1408,6 +1436,7 @@ module("lively.identity.RoomView")
 
       _renderVideoCircles: function () {
         if (!this._viewRoot) return; // window closed — circles are rebuilt by showView
+        if (!this._isCall()) return; // text room: roster only, no video circles
         var self = this;
         var user = lively.identity.did.currentUser();
         var myDid = user ? user.did : null;
@@ -2153,11 +2182,15 @@ module("lively.identity.RoomView")
 
     });
 
-    // World-level entry point and the one place the active room session is
-    // held. A user is in at most one room at a time: entering the room you're
-    // already in just brings its window forward (or rebuilds it if closed);
-    // entering a different one leaves the current room first, waiting for its
-    // presence DELETE to settle so it can't land after the next room's join.
+    // World-level entry point and the one place room sessions are held. A user
+    // has at most one CALL session (an audio/video room, `_active`) plus any
+    // number of TEXT sessions (`_texts`) at once. Entering a room you already
+    // have open just brings its window forward (or rebuilds it if closed);
+    // entering a different call room leaves the current call first, waiting for
+    // its presence DELETE to settle so it can't land after the next room's join.
+    // Entering a text room never touches the call. Which kind a room is only
+    // becomes known once its detail loads, so that decision is made in
+    // _register, not here.
     //
     // Scope: the session lives in this world's JS, so it survives everything
     // except a real page load (which still ends the call via the controller's
@@ -2165,30 +2198,62 @@ module("lively.identity.RoomView")
     // the document (a persistent shell page or a companion window) — the
     // controller/view split is what makes that addable later.
     lively.identity.RoomView = {
-      _active: null,      // the current RoomViewController, or null
+      _active: null,      // the current CALL RoomViewController, or null
+      _texts: {},         // "name/roomId" -> text-room RoomViewController
+      _pending: {},       // "name/roomId" -> controller whose room detail is still loading
       _listeners: [],     // fn(controllerOrNull) — presence joined/left, for the lounge's headcounts
 
-      open: function (name, roomId) {
-        var self = this;
-        var current = this._active;
-        if (current && !current._roomLeft) {
-          if (current._name === name && current._roomId === roomId) { current.showView(); return current; }
-          current.leave(function () { self._startSession(name, roomId); });
-          return null;
-        }
-        return this._startSession(name, roomId);
+      _key: function (name, roomId) { return name + "/" + roomId; },
+
+      _find: function (name, roomId) {
+        var key = this._key(name, roomId);
+        var c = this._texts[key] || this._pending[key];
+        if (!c && this._active && this._active._name === name && this._active._roomId === roomId) c = this._active;
+        return c && !c._roomLeft ? c : null;
       },
 
-      _startSession: function (name, roomId) {
+      open: function (name, roomId) {
+        var existing = this._find(name, roomId);
+        if (existing) { existing.showView(); return existing; }
         var controller = new lively.identity.RoomViewController();
-        this._active = controller;
+        this._pending[this._key(name, roomId)] = controller;
         controller.open(name, roomId);
         return controller;
       },
 
-      // True while this world holds a live session for roomId.
+      // Called by the controller once its room detail has loaded. Text rooms
+      // register alongside whatever is running; a call room first ends the
+      // current call (if any), waiting for its presence DELETE to settle.
+      _register: function (controller, start) {
+        var self = this;
+        delete this._pending[this._key(controller._name, controller._roomId)];
+        if (!controller._isCall()) {
+          this._texts[this._key(controller._name, controller._roomId)] = controller;
+          start();
+          return;
+        }
+        var current = this._active;
+        this._active = controller;
+        if (current && current !== controller && !current._roomLeft) {
+          current.leave(function () { if (!controller._roomLeft) start(); });
+        } else {
+          start();
+        }
+      },
+
+      // True while this world holds a live session (call or text) for roomId.
       isActiveRoom: function (roomId) {
-        return !!(this._active && !this._active._roomLeft && this._active._roomId === roomId);
+        var self = this;
+        if (this._active && !this._active._roomLeft && this._active._roomId === roomId) return true;
+        return Object.keys(this._texts).some(function (k) {
+          var c = self._texts[k];
+          return !c._roomLeft && c._roomId === roomId;
+        });
+      },
+
+      hasTextSession: function () {
+        var self = this;
+        return Object.keys(this._texts).some(function (k) { return !self._texts[k]._roomLeft; });
       },
 
       // Panel hook: a local track was added or removed (see
@@ -2216,8 +2281,14 @@ module("lively.identity.RoomView")
       },
 
       _sessionEnded: function (controller) {
+        var key = this._key(controller._name, controller._roomId);
         if (this._active === controller) this._active = null;
+        if (this._texts[key] === controller) delete this._texts[key];
+        if (this._pending[key] === controller) delete this._pending[key];
         this._notify(null);
+        // A text session coming or going flips the panel's controls between
+        // inactive (text only) and their normal state.
+        try { lively.identity.AmbientPresencePanel.refreshControls(); } catch (e) {}
       },
     };
 

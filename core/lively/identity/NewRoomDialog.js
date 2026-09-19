@@ -429,11 +429,17 @@ module('lively.identity.NewRoomDialog')
 
         toggleVideo: function toggleVideo() {
           this._isVideo = !this._isVideo;
+          // A video room always carries audio, so turning video on turns voice on.
+          if (this._isVideo) this._isVoice = true;
           this.paintToggle('VideoToggleChip', 'VideoIcon', 'VideoLabel', this._isVideo);
+          this.paintToggle('VoiceToggleChip', 'VoiceIcon', 'VoiceLabel', this._isVoice);
         },
 
         toggleVoice: function toggleVoice() {
           this._isVoice = !this._isVoice;
+          // ...and turning voice off can't leave video on without audio.
+          if (!this._isVoice) this._isVideo = false;
+          this.paintToggle('VideoToggleChip', 'VideoIcon', 'VideoLabel', this._isVideo);
           this.paintToggle('VoiceToggleChip', 'VoiceIcon', 'VoiceLabel', this._isVoice);
         },
 
