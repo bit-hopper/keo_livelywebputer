@@ -32,11 +32,13 @@
  * persistent chat channel — see the "chat" category below). Video/voice is
  * a real mesh WebRTC call (RoomSignalingServer.js relays offer/answer/ICE,
  * grouped by roomId and gated by canJoinRoom via a short-lived token) —
- * your own video circle streams a real getUserMedia camera preview (via
+ * your own picture streams a real getUserMedia camera preview (via
  * lively.identity.AmbientPresencePanel.enterRoom/getLocalStream — no
  * duplicate media acquisition here) and so does every other participant's,
  * via a direct RTCPeerConnection to each of them (see the "webrtc"
- * category below).
+ * category below). Pictures show as a grid of tiles inside the open window
+ * (active speaker + chat when the chat toggle is on) and as floating circles
+ * while the window is collapsed or closed (see the "video" category).
  *
  * Rendering convention: every visible element is a real Lively morph
  * (Box/Text/Image), added to $world — same "no raw DOM overlay" discipline
@@ -86,6 +88,15 @@ module("lively.identity.RoomView")
     var CHAT_X_OFFSET = ROOMS_PANEL_W + PANEL_GAP;
     var TOTAL_W = CHAT_X_OFFSET + CHAT_W + PANEL_GAP + MEMBERS_W;
     var TOTAL_H = HEADER_H + BODY_H;
+    // Video rooms: the center column is either the full-width video grid (chat
+    // hidden) or, with the chat toggle on, the active speaker on the left and a
+    // narrower chat panel on the right.
+    var CHAT_COMPACT_W = 400;
+    var VIDEO_AREA_W = CHAT_W - CHAT_COMPACT_W - PANEL_GAP;
+    var GRID_PAD = 12, GRID_GAP = 12, TILE_RADIUS = 12;
+    var GRID_BG = Color.rgb(12, 2, 14);
+    var CHAT_TOGGLE = 36;
+    var SPEAKER_POLL_MS = 250, SPEAKER_THRESHOLD = 0.012, SPEAKER_HOLD_MS = 900;
     var INPUT_H = 52;
     var AVATAR_MSG = 28, AVATAR_MEMBER = 28;
     // Reserved row height for a GIF/sticker message bubble (_isMediaMessage)
@@ -173,7 +184,22 @@ module("lively.identity.RoomView")
         this._sendingMessage = false;
         this._mediaPicker = null; // lazily created by _getMediaPicker on first emoji/GIF button click
         this._heartbeatTimer = null;
-        this._videoCircles = {};  // did -> morph
+        // Video surfaces (see "video" category): tiles live in the window's grid
+        // panel, circles float on the world while the window is collapsed/closed.
+        this._videoCircles = {};  // did -> morph (world-owned)
+        this._videoTiles = {};    // did -> morph (owned by _gridBox)
+        this._gridBox = null;
+        this._chatToggleBtn = null;
+        this._pickerBtns = [];
+        this._chatW = CHAT_W;
+        this._centerMode = "grid";   // "grid" (all participants, no chat) | "chat" (active speaker + chat)
+        this._windowCollapsed = false;
+        this._circleSpots = {};   // did -> {x, y} last dragged world position; outlives the window
+        this._activeSpeakerDid = null;
+        this._speakerTimer = null;
+        this._speakerLastLoud = 0;
+        this._audioCtx = null;
+        this._analysers = {};     // did -> {trackId, source, node, buf}
         this._boundLeaveBestEffort = null;
         // The view (window + every morph below) is detachable: the controller
         // itself is the persistent room session (presence, polling, signaling,
@@ -290,6 +316,7 @@ module("lively.identity.RoomView")
         this._loadMessages();
         this._startMessagePolling();
         if (isCall) this._connectSignaling();
+        if (this._hasVideoCircles()) this._startSpeakerDetection();
 
         // A real page load still ends the session (see RoomView.open's header
         // note) — this only covers that case now, not window close/minimize.
@@ -343,8 +370,11 @@ module("lively.identity.RoomView")
         if (this._roomLeft) return;
         var user = lively.identity.did.currentUser();
         var myDid = user ? user.did : null;
-        var circle = myDid && this._videoCircles[myDid];
-        var filledOwnCircle = circle && (circle._hasLocalVideo || this._fillWithLocalStream(circle));
+        var self0 = this;
+        var ownSurfaces = myDid ? this._videoSurfaces(myDid) : [];
+        var filledOwnCircle = ownSurfaces.length > 0 && ownSurfaces.every(function (s) {
+          return s._hasLocalVideo || self0._fillWithLocalStream(s);
+        });
         // Any peer connection already established (webrtc category, below)
         // before getUserMedia resolved was created with recvonly-capable
         // transceivers and no local tracks yet — push them in now that the
@@ -355,7 +385,7 @@ module("lively.identity.RoomView")
         // pushing tracks to peers is all that's left to do — a later
         // showView() fills the circle itself via _renderVideoCircles. Same when the
         // room has no circles at all (audio-only): there's no self view to wait for.
-        if (pushedToPeers && (filledOwnCircle || !this._viewRoot || !this._hasVideoCircles())) return;
+        if (pushedToPeers && (filledOwnCircle || !ownSurfaces.length || !this._hasVideoCircles())) return;
         var self = this;
         var remaining = attemptsLeft > 0 ? attemptsLeft - 1 : 0;
         var delay = attemptsLeft > 0 ? 300 : 3000;
@@ -398,13 +428,15 @@ module("lively.identity.RoomView")
         var self = this;
         var root = new lively.morphic.Box(lively.rect(0, 0, TOTAL_W, TOTAL_H));
         root.applyStyle({ fill: BG_MAIN, borderWidth: 0, clipMode: "hidden" });
-        // Keeps a dragged video circle inside this window instead of the drop
-        // falling through onto the world (all other chrome is noDrag'd, which
-        // also disables dropping, so the root is what catches it).
-        root.droppingEnabled = true;
         // Window#signalShutdown calls this on close (X button). Only detaches the
         // view refs — the window removes itself right after — and never the session.
         root.onShutdown = function () { self._onWindowClosed(); };
+        // Window#collapse calls the first on its target BEFORE detaching the
+        // content; Window#expand calls the second on every submorph once the
+        // content is back. They switch the video between grid and circles.
+        root.onWindowCollapse = function () { self._windowCollapsed = true; self._syncVideoMode(); };
+        root.onWindowExpand = function () { self._windowCollapsed = false; self._syncVideoMode(); };
+        this._windowCollapsed = false;
         this._viewRoot = root;
 
         var vb = $world.visibleBounds();
@@ -422,7 +454,7 @@ module("lively.identity.RoomView")
         this._buildMembersPanel();
         this._buildVideoLayer();
         this._renderMembers();
-        this._renderVideoCircles();
+        this._syncVideoMode();
         this._renderMessages();
 
         // The rail's counts for OTHER rooms only change on the server, and this
@@ -446,6 +478,9 @@ module("lively.identity.RoomView")
 
       // Window's own X button. The window removes itself after this returns.
       _onWindowClosed: function () {
+        // Grid -> circles first, while the view still exists to hand over from.
+        this._windowCollapsed = true;
+        this._syncVideoMode();
         this._detachViewRefs();
         // A text room has no call to keep alive in the background: closing its
         // window leaves it. (View refs are already detached, so leave() won't
@@ -455,13 +490,18 @@ module("lively.identity.RoomView")
 
       // Drops every reference into the (going or gone) view so background
       // session work (roster refresh, polling, ontrack) sees "no view" and skips
-      // its rendering. Video circles are removed explicitly: one dragged out of
-      // the window onto the world would otherwise outlive it.
+      // its rendering. The grid tiles go with the window. Video circles are
+      // world-owned and stand in for the window while it's closed: they stay
+      // while the call is live and are removed when the call ends (or when their
+      // participant leaves, see _renderVideoCircles).
       _detachViewRefs: function () {
         if (this._railTimer) { clearInterval(this._railTimer); this._railTimer = null; }
-        var circles = this._videoCircles || {};
-        Object.keys(circles).forEach(function (did) { try { circles[did].remove(); } catch (e) {} });
-        this._videoCircles = {};
+        this._clearGrid();
+        if (this._roomLeft) this._clearCircles();
+        this._gridBox = null;
+        this._chatToggleBtn = null;
+        this._pickerBtns = [];
+        this._chatW = CHAT_W;
         try { if (this._mediaPicker && this._mediaPicker.isOpen()) this._mediaPicker.close(); } catch (e) {}
         this._headerBox = null;
         this._roomsPanelBox = null;
@@ -562,7 +602,7 @@ module("lively.identity.RoomView")
           self._participants = data.participants || [];
           var changed = before !== self._participants.map(function (p) { return p.did; }).sort().join(",");
           self._renderMembers();
-          self._renderVideoCircles();
+          self._syncVideoMode();
           self._updateParticipantCount();
           self._fetchRoomsList(); // keeps the left rail's "N here" counts fresh too
           // Tell an open lounge in this world (its Spaces cards) the headcount moved.
@@ -585,6 +625,7 @@ module("lively.identity.RoomView")
         Object.keys(this._remoteAudio).forEach(function (did) { self._removeRemoteAudio(did); });
         this._rosterRefreshTimers.forEach(clearTimeout);
         this._rosterRefreshTimers = [];
+        this._stopSpeakerDetection();
         if (this._blackTimer) { clearInterval(this._blackTimer); this._blackTimer = null; }
         if (this._blackTrack) { try { this._blackTrack.stop(); } catch (e) {} this._blackTrack = null; }
         if (this._boundLeaveBestEffort) {
@@ -1027,6 +1068,7 @@ module("lively.identity.RoomView")
         var pill = noDrag(new lively.morphic.Box(lively.rect(16, 8, CHAT_W - 32, 36)));
         pill.applyStyle({ fill: BG_INPUT, borderWidth: 0, borderRadius: 8 });
         inputRow.addMorph(pill);
+        this._pillM = pill;
 
         // 20 clipped the bottom of any descender (g/y/p) typed into the
         // box — confirmed live by actually typing "gyp qj" and reading
@@ -1114,8 +1156,31 @@ module("lively.identity.RoomView")
           pill.addMorph(btn);
           return btn;
         }
-        pickerIconButton(lively.rect(672, 8, 20, 20), 13, "mood", "emoji");
-        pickerIconButton(lively.rect(698, 4, 28, 28), 18, "gif", "gif");
+        // [emoji, gif]; _layoutChat keeps them against the pill's right edge.
+        var pillW = pill.getExtent().x;   // 728 at full chat width
+        this._pickerBtns = [
+          pickerIconButton(lively.rect(pillW - 56, 8, 20, 20), 13, "mood", "emoji"),
+          pickerIconButton(lively.rect(pillW - 30, 4, 28, 28), 18, "gif", "gif"),
+        ];
+      },
+
+      // Resizes the chat panel to width w (full CHAT_W, or CHAT_COMPACT_W beside
+      // the speaker view) and everything in it that's sized from that width.
+      _layoutChat: function (w) {
+        if (!this._chatBox || this._chatW === w) return;
+        this._chatW = w;
+        var listH = BODY_H - INPUT_H;
+        this._chatBox.setExtent(lively.pt(w, BODY_H));
+        this._msgListBox.setExtent(lively.pt(w, listH));
+        this._inputRowM.setExtent(lively.pt(w, INPUT_H));
+        this._pillM.setExtent(lively.pt(w - 32, 36));
+        this._inputM.setExtent(lively.pt(w - 32 - 72, 24));
+        this._placeholderM.setExtent(lively.pt(w - 32 - 72, 24));
+        // Rebuilt rather than moved: setPosition on an already-rendered morph can
+        // leave its DOM node at the old spot (model and render disagree).
+        this._pickerBtns.forEach(function (b) { try { b.remove(); } catch (e) {} });
+        this._buildPickerButtons(this._pillM);
+        this._renderMessages();
       },
 
       _getMediaPicker: function () {
@@ -1326,11 +1391,11 @@ module("lively.identity.RoomView")
           // for 12px bold text, same shapeNode-padding story as
           // ConstellationLounge.js's own label-height gotchas): 20 covers
           // it with a little headroom rather than the exact measured min.
-          headM.setExtent(lively.pt(CHAT_W - PAD * 2 - AVATAR_MSG - 8, 20));
+          headM.setExtent(lively.pt(self._chatW - PAD * 2 - AVATAR_MSG - 8, 20));
           headM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, y));
           self._msgListBox.addMorph(headM);
 
-          var bw = CHAT_W - PAD * 2 - AVATAR_MSG - 8;
+          var bw = self._chatW - PAD * 2 - AVATAR_MSG - 8;
           var bh;
           if (self._isMediaMessage(msg.text)) {
             // A GIF/sticker sent via the picker (_sendMediaMessage) — its
@@ -1372,6 +1437,9 @@ module("lively.identity.RoomView")
             } else {
               var bodyM = noDrag(lively.morphic.Text.makeLabel(msg.text, {
                 fontSize: 13, textColor: Color.rgb(219, 222, 225), fixedWidth: true, fixedHeight: true,
+                // makeLabel's default is white-space:pre, which never wraps: a long
+                // message ran off the panel edge instead of wrapping onto more lines.
+                whiteSpaceHandling: "pre-wrap",
               }));
               bodyM.eventsAreIgnored = true;
               bodyM.setExtent(lively.pt(bw, 1));
@@ -1474,35 +1542,252 @@ module("lively.identity.RoomView")
 
     },
 
-    // ─── video circles ───────────────────────────────────────────────────────────
-    // Floating, draggable, loom-style circles — one per present participant.
-    // Your own circle streams a real getUserMedia camera preview (obtained via
+    // ─── video: grid tiles + floating circles ────────────────────────────────────
+    // A video room shows each present participant in one of two ways:
+    //  - GRID TILES, inside the room window's center column, while the window is
+    //    open and expanded. With the chat toggle off the grid fills the column
+    //    (everyone, chat hidden); with it on, the column splits into the ACTIVE
+    //    SPEAKER only (left) and a narrower chat panel (right).
+    //  - CIRCLES, floating draggable loom-style discs added directly to $world,
+    //    while the window is collapsed or closed. Being world-owned they outlive
+    //    the window (Window#collapse detaches the window's content), and each one
+    //    remembers where it was last dragged (_circleSpots).
+    // Your own picture streams a real getUserMedia camera preview (obtained via
     // AmbientPresencePanel.enterRoom/getLocalStream, not acquired separately
     // here); everyone else's streams a real remote MediaStream over a direct
     // RTCPeerConnection (see the "webrtc" category below) once that peer's
     // signaling handshake completes — until then (or if it never completes:
     // camera/mic both off on their end, connection still negotiating, ICE
-    // failed) the circle shows a static identicon placeholder instead. Added
-    // directly to $world (not clipped inside the chat box) so they can be
-    // dragged anywhere across the page — plain morphic dragging, no custom
-    // drag code needed.
+    // failed) the surface shows a static identicon placeholder instead.
+    // _syncVideoMode decides which of the two is up; everything that needs "the
+    // pictures of participant X" goes through _videoSurfaces(did).
 
     "video", {
 
+      // The grid panel sits over the center column, added after the chat panel so
+      // it paints above it. Tiles are built into it by _renderVideoGrid.
       _buildVideoLayer: function () {
-        // Nothing to pre-build — circles are created/destroyed per participant
-        // by _renderVideoCircles as the roster changes.
+        if (!this._hasVideoCircles()) return;
+        var grid = noDrag(new lively.morphic.Box(lively.rect(
+          this._originX + CHAT_X_OFFSET, this._originY + HEADER_H, CHAT_W, BODY_H)));
+        grid.applyStyle({ fill: GRID_BG, borderWidth: 0, clipMode: "hidden" });
+        this._viewRoot.addMorph(grid);
+        this._gridBox = grid;
       },
 
+      // Grid while the window is open and expanded, circles otherwise. Cheap when
+      // nothing changed, so every roster refresh just calls it.
+      _syncVideoMode: function () {
+        if (!this._hasVideoCircles()) return; // text and audio-only rooms: roster only, no pictures
+        if (this._viewRoot && this._gridBox && !this._windowCollapsed) {
+          this._clearCircles();
+          this._layoutCenter();
+          this._renderVideoGrid();
+        } else {
+          this._clearGrid();
+          this._renderVideoCircles();
+        }
+      },
+
+      // Sizes the center column for the current toggle state: full-width grid with
+      // chat hidden, or the speaker area on the left of a compact chat panel.
+      _layoutCenter: function () {
+        var gridMode = this._centerMode === "grid";
+        var areaW = gridMode ? CHAT_W : VIDEO_AREA_W;
+        this._chatBox.setVisible(!gridMode);
+        if (!gridMode) {
+          this._layoutChat(CHAT_COMPACT_W);
+          this._chatBox.setPosition(lively.pt(
+            this._originX + CHAT_X_OFFSET + CHAT_W - CHAT_COMPACT_W, this._originY + HEADER_H));
+        }
+        var ext = this._gridBox.getExtent();
+        if (ext.x !== areaW) this._gridBox.setExtent(lively.pt(areaW, BODY_H));
+        this._placeChatToggle(areaW);
+      },
+
+      // Round chat-bubble button at the video area's top-right. Same icon-button
+      // recipe as the header's settings gear; acts on mouse-up.
+      _placeChatToggle: function (areaW) {
+        var self = this;
+        var x = this._originX + CHAT_X_OFFSET + areaW - CHAT_TOGGLE - GRID_PAD;
+        var y = this._originY + HEADER_H + GRID_PAD;
+        if (this._chatToggleBtn) {
+          this._styleChatToggle(false);
+          if (this._chatToggleAreaW === areaW) return;
+          // setPosition on the already-rendered button left its DOM node at the old
+          // spot (model and render disagreed), so a moved button is rebuilt instead.
+          try { this._chatToggleBtn.remove(); } catch (e) {}
+          this._chatToggleBtn = null;
+        }
+        this._chatToggleAreaW = areaW;
+        var GLYPH_PX = 20;
+        var btn = new lively.morphic.Text(lively.rect(x, y, CHAT_TOGGLE, CHAT_TOGGLE));
+        btn.textString = "chat_bubble";
+        btn.applyStyle({
+          fontFamily: "'Material Symbols Rounded'", fontSize: GLYPH_PX * 0.75, textColor: TEXT_PRIMARY,
+          fill: Color.rgba(255, 255, 255, 0.12), borderRadius: CHAT_TOGGLE / 2, borderWidth: 0,
+          align: "center", padding: lively.Rectangle.inset(0, Math.round((CHAT_TOGGLE - GLYPH_PX) / 2), 0, 0),
+          allowInput: false, selectable: false, clipMode: "hidden", whiteSpaceHandling: "pre", handStyle: "pointer",
+        });
+        noDrag(btn);
+        btn.toolTip = "Show or hide chat";
+        btn.onMouseOver = function () { self._styleChatToggle(true); };
+        btn.onMouseOut = function () { self._styleChatToggle(false); };
+        btn.onMouseUp = function (evt) {
+          self._centerMode = self._centerMode === "grid" ? "chat" : "grid";
+          self._syncVideoMode();
+          evt.stop();
+          return true;
+        };
+        this._viewRoot.addMorph(btn);
+        this._chatToggleBtn = btn;
+        this._styleChatToggle(false);
+      },
+
+      // Model call plus a direct DOM write: applyStyle on an already-rendered morph
+      // can update the model without reaching the DOM (see CLAUDE.md).
+      _styleChatToggle: function (hover) {
+        var btn = this._chatToggleBtn;
+        if (!btn) return;
+        var on = this._centerMode === "chat";
+        var a = hover ? (on ? 0.4 : 0.22) : (on ? 0.3 : 0.12);
+        var color = Color.rgba(255, 255, 255, a);
+        try { btn.applyStyle({ fill: color }); } catch (e) {}
+        try { btn.renderContext().shapeNode.style.background = color.toString(); } catch (e) {}
+      },
+
+      _clearGrid: function () {
+        var tiles = this._videoTiles;
+        Object.keys(tiles).forEach(function (did) { try { tiles[did].remove(); } catch (e) {} });
+        this._videoTiles = {};
+      },
+
+      // Removes every circle, first remembering where each one was dragged to.
+      _clearCircles: function () {
+        var self = this;
+        var circles = this._videoCircles;
+        Object.keys(circles).forEach(function (did) {
+          var c = circles[did];
+          try { var wp = c.worldPoint(lively.pt(0, 0)); self._circleSpots[did] = { x: wp.x, y: wp.y }; } catch (e) {}
+          try { c.remove(); } catch (e) {}
+        });
+        this._videoCircles = {};
+      },
+
+      // Every picture currently showing this participant: their grid tile and/or
+      // their floating circle.
+      _videoSurfaces: function (did) {
+        var out = [];
+        if (this._videoTiles[did]) out.push(this._videoTiles[did]);
+        if (this._videoCircles[did]) out.push(this._videoCircles[did]);
+        return out;
+      },
+
+      // Pill = a plain fill+radius Box holding a one-line Text positioned to center in
+      // it (position baked into the constructor rect). Width hugs the text: measured via
+      // canvas (see measureNameTag), plus padding. Height is fixed, with the text's y
+      // taken from a live gap measurement — the Text's own vertical alignment can't
+      // center a single line in a taller box. fontSize is in pt (8.25pt = 11px). The
+      // Text spans the whole pill, so its own 4px side padding still leaves the
+      // measured text width plus 12px to spare. place(pillW) -> {x, y} in host coords.
+      _buildNameTag: function (host, p, myDid, place) {
+        var tagText = p.did === myDid ? "you" : nameTagText(p.handle);
+        var pillW = measureNameTag(tagText) + 2 * NAME_TAG_PAD_X;
+        var at = place(pillW);
+        var pill = noDrag(new lively.morphic.Box(lively.rect(at.x, at.y, pillW, NAME_TAG_H)));
+        pill.applyStyle({ fill: nameTagFill(p.did), borderWidth: 0, borderRadius: NAME_TAG_H / 2, clipMode: "hidden" });
+        pill.eventsAreIgnored = true;    // a grab on the tag still drags the whole circle
+        var label = new lively.morphic.Text(
+          lively.rect(0, NAME_TAG_TEXT_Y, pillW, NAME_TAG_H - NAME_TAG_TEXT_Y), tagText);
+        label.applyStyle({
+          fontSize: 8.25, fontWeight: "700", textColor: NAME_TAG_TEXT, fill: null,
+          borderWidth: 0, borderColor: null, align: "center", fixedWidth: true, fixedHeight: true,
+          clipMode: "hidden", allowInput: false, selectable: false, whiteSpaceHandling: "pre",
+        });
+        noDrag(label);
+        label.eventsAreIgnored = true;
+        pill.addMorph(label);
+        host.addMorph(pill);
+      },
+
+      // Grid mode: one rectangular tile per participant (only the active speaker in
+      // chat mode). A tile whose slot moved or resized is rebuilt; the others just get
+      // their remote-stream catch-up, so a roster refresh doesn't restart any video.
+      _renderVideoGrid: function () {
+        if (!this._gridBox) return;
+        var self = this;
+        var user = lively.identity.did.currentUser();
+        var myDid = user ? user.did : null;
+        var chatMode = this._centerMode === "chat";
+        var list = this._participants;
+        if (chatMode) {
+          var sp = this._resolveSpeaker();
+          list = list.filter(function (p) { return p.did === sp; });
+        }
+        var ext = this._gridBox.getExtent();
+        var rects = {};
+        var n = list.length;
+        if (n) {
+          var cols = chatMode ? 1 : Math.ceil(Math.sqrt(n)), rows = Math.ceil(n / cols);
+          var cw = (ext.x - 2 * GRID_PAD - (cols - 1) * GRID_GAP) / cols;
+          var ch = (ext.y - 2 * GRID_PAD - (rows - 1) * GRID_GAP) / rows;
+          var ar = chatMode ? 4 / 3 : 16 / 9;
+          var tw = Math.round(Math.min(cw, ch * ar)), th = Math.round(Math.min(ch, tw / ar));
+          var ox = Math.round((ext.x - (cols * tw + (cols - 1) * GRID_GAP)) / 2);
+          var oy = Math.round((ext.y - (rows * th + (rows - 1) * GRID_GAP)) / 2);
+          list.forEach(function (p, i) {
+            rects[p.did] = {
+              x: ox + (i % cols) * (tw + GRID_GAP), y: oy + Math.floor(i / cols) * (th + GRID_GAP),
+              w: tw, h: th, p: p,
+            };
+          });
+        }
+
+        Object.keys(this._videoTiles).forEach(function (did) {
+          var t = self._videoTiles[did], r = rects[did], b = t._slot;
+          if (!r || b.x !== r.x || b.y !== r.y || b.w !== r.w || b.h !== r.h) {
+            try { t.remove(); } catch (e) {}
+            delete self._videoTiles[did];
+          }
+        });
+
+        Object.keys(rects).forEach(function (did) {
+          var r = rects[did], p = r.p;
+          var existing = self._videoTiles[did];
+          if (existing) {
+            if (did !== myDid && self._remoteStreams[did]) self._attachRemoteStream(existing, self._remoteStreams[did]);
+            return;
+          }
+          var tile = noDrag(new lively.morphic.Box(lively.rect(r.x, r.y, r.w, r.h)));
+          // A rectangle-with-radius tile clips its own video; the pastel fill shows
+          // (with a centered identicon) until a picture arrives.
+          tile.applyStyle({ fill: nameTagFill(did), borderWidth: 0, borderRadius: TILE_RADIUS, clipMode: "hidden" });
+          tile._isTile = true;
+          tile._avatarKey = p.handle || p.did;
+          tile._slot = { x: r.x, y: r.y, w: r.w, h: r.h };
+          self._gridBox.addMorph(tile);
+          self._videoTiles[did] = tile;
+
+          var showAvatar = true;
+          if (did === myDid) showAvatar = !self._fillWithLocalStream(tile);
+          else if (self._remoteStreams[did]) { self._attachRemoteStream(tile, self._remoteStreams[did]); showAvatar = false; }
+          if (showAvatar) self._showAvatarPlaceholder(tile, p.handle || p.did);
+          self._buildNameTag(tile, p, myDid, function () { return { x: 10, y: r.h - NAME_TAG_H - 10 }; });
+        });
+        this._updateSpeakingHighlight();
+      },
+
+      // Circle mode: floating draggable discs on the world, at the participant's
+      // remembered spot or the first free slot of a default row bottom-left.
       _renderVideoCircles: function () {
-        if (!this._viewRoot) return; // window closed — circles are rebuilt by showView
         if (!this._hasVideoCircles()) return; // text and audio-only rooms: roster only, no circles
         var self = this;
         var user = lively.identity.did.currentUser();
         var myDid = user ? user.did : null;
         var stillPresent = {};
 
-        var x = this._originX + CHAT_X_OFFSET + 24, y = this._originY + HEADER_H + 24;
+        var vb = $world.visibleBounds();
+        var x = vb.x + 24, y = vb.y + vb.height - VIDEO_CIRCLE - NAME_TAG_H - NAME_TAG_GAP - 24;
         this._participants.forEach(function (p) {
           stillPresent[p.did] = true;
           var existingCircle = self._videoCircles[p.did];
@@ -1525,17 +1810,24 @@ module("lively.identity.RoomView")
             return;
           }
 
-          // First slot not already holding a circle — NOT the roster index: the roster
-          // order can differ between refreshes (someone joins earlier in the list than
-          // an existing circle), which put two circles on the same spot.
-          var taken = {};
-          Object.keys(self._videoCircles).forEach(function (d) {
-            var c = self._videoCircles[d];
-            if (c.getPosition().y === y) taken[Math.round((c.getPosition().x - x) / (VIDEO_CIRCLE + 16))] = true;
-          });
-          var slot = 0;
-          while (taken[slot]) slot++;
-          var circle = new lively.morphic.Box(lively.rect(x + slot * (VIDEO_CIRCLE + 16), y, VIDEO_CIRCLE, VIDEO_CIRCLE));
+          var pos;
+          var spot = self._circleSpots[p.did];
+          if (spot) {
+            pos = lively.pt(spot.x, spot.y);
+          } else {
+            // First slot not already holding a circle — NOT the roster index: the roster
+            // order can differ between refreshes (someone joins earlier in the list than
+            // an existing circle), which put two circles on the same spot.
+            var taken = {};
+            Object.keys(self._videoCircles).forEach(function (d) {
+              var c = self._videoCircles[d];
+              if (c.getPosition().y === y) taken[Math.round((c.getPosition().x - x) / (VIDEO_CIRCLE + 16))] = true;
+            });
+            var slot = 0;
+            while (taken[slot]) slot++;
+            pos = lively.pt(x + slot * (VIDEO_CIRCLE + 16), y);
+          }
+          var circle = new lively.morphic.Box(lively.rect(pos.x, pos.y, VIDEO_CIRCLE, VIDEO_CIRCLE));
           circle.applyStyle({
             fill: Color.rgb(30, 31, 34), borderWidth: 3, borderColor: ACCENT,
             // "visible", not "hidden": the name tag hangs below the disc, outside
@@ -1546,16 +1838,18 @@ module("lively.identity.RoomView")
           // disabled, so nothing else in this UI can get dropped into one.
           circle.draggingEnabled = true;
           circle.droppingEnabled = false;
-          self._viewRoot.addMorph(circle);
+          $world.addMorph(circle);
           // draggingEnabled alone isn't enough here: every morph is "locked" by default
           // (EventExperiments.js), and a locked morph's onDragStart returns without
-          // grabbing anything — and everything inside a Window counts as locked. unlock()
-          // is the framework's switch that makes it actually pick up under the pointer.
+          // grabbing anything. unlock() is the framework's switch that makes it
+          // actually pick up under the pointer.
           circle.unlock();
           self._videoCircles[p.did] = circle;
+          circle._avatarKey = p.handle || p.did;
 
           if (p.did === myDid) {
-            self._fillWithLocalStream(circle);
+            // No camera stream yet (or none at all): show the identicon, not a blank disc.
+            if (!self._fillWithLocalStream(circle)) self._showAvatarPlaceholder(circle, circle._avatarKey);
           } else {
             self._showAvatarPlaceholder(circle, p.handle || p.did);
             // A peer connection to this did may already have produced a
@@ -1565,30 +1859,10 @@ module("lively.identity.RoomView")
             if (self._remoteStreams[p.did]) self._attachRemoteStream(circle, self._remoteStreams[p.did]);
           }
 
-          // Pill = a plain fill+radius Box (centered under the disc, position baked into
-          // the constructor rect) holding a one-line Text positioned to center in it. Width
-          // hugs the text: measured via canvas (see measureNameTag), plus padding. Height is
-          // fixed, with the text's y taken from a live gap measurement — the Text's own
-          // vertical alignment can't center a single line in a taller box. fontSize is in
-          // pt (8.25pt = 11px). The Text spans the whole pill, so its own 4px side padding
-          // still leaves the measured text width plus 12px to spare.
-          var tagText = p.did === myDid ? "you" : nameTagText(p.handle);
-          var pillW = measureNameTag(tagText) + 2 * NAME_TAG_PAD_X;
-          var pill = noDrag(new lively.morphic.Box(lively.rect(
-            Math.round((VIDEO_CIRCLE - pillW) / 2), VIDEO_CIRCLE + NAME_TAG_GAP, pillW, NAME_TAG_H)));
-          pill.applyStyle({ fill: nameTagFill(p.did), borderWidth: 0, borderRadius: NAME_TAG_H / 2, clipMode: "hidden" });
-          pill.eventsAreIgnored = true;    // a grab on the tag still drags the whole circle
-          var label = new lively.morphic.Text(
-            lively.rect(0, NAME_TAG_TEXT_Y, pillW, NAME_TAG_H - NAME_TAG_TEXT_Y), tagText);
-          label.applyStyle({
-            fontSize: 8.25, fontWeight: "700", textColor: NAME_TAG_TEXT, fill: null,
-            borderWidth: 0, borderColor: null, align: "center", fixedWidth: true, fixedHeight: true,
-            clipMode: "hidden", allowInput: false, selectable: false, whiteSpaceHandling: "pre",
+          // Centered under the disc.
+          self._buildNameTag(circle, p, myDid, function (pillW) {
+            return { x: Math.round((VIDEO_CIRCLE - pillW) / 2), y: VIDEO_CIRCLE + NAME_TAG_GAP };
           });
-          noDrag(label);
-          label.eventsAreIgnored = true;
-          pill.addMorph(label);
-          circle.addMorph(pill);
         });
 
         // Anyone no longer present loses their circle.
@@ -1597,6 +1871,119 @@ module("lively.identity.RoomView")
             self._videoCircles[did].remove();
             delete self._videoCircles[did];
           }
+        });
+        this._updateSpeakingHighlight();
+      },
+
+      // ── active speaker ──
+      // One AnalyserNode per participant audio stream, polled every SPEAKER_POLL_MS.
+      // _speakingDid is who is loud right now (drives the tile highlight);
+      // _activeSpeakerDid is who the chat-mode tile shows, and only changes after the
+      // current one has been quiet for SPEAKER_HOLD_MS so it doesn't flicker.
+
+      _startSpeakerDetection: function () {
+        if (this._speakerTimer) return;
+        var self = this;
+        this._speakerTimer = setInterval(function () { self._pollSpeakers(); }, SPEAKER_POLL_MS);
+      },
+
+      _stopSpeakerDetection: function () {
+        if (this._speakerTimer) { clearInterval(this._speakerTimer); this._speakerTimer = null; }
+        var self = this;
+        Object.keys(this._analysers).forEach(function (did) { try { self._analysers[did].source.disconnect(); } catch (e) {} });
+        this._analysers = {};
+        if (this._audioCtx) { try { this._audioCtx.close(); } catch (e) {} this._audioCtx = null; }
+      },
+
+      // RMS level (0..1) of the stream's first audio track. Uses the stream object
+      // itself (for remote voices, the same one the session's <audio> sink plays):
+      // Chrome only feeds a remote stream to Web Audio once a media element has it.
+      _levelOf: function (did, stream) {
+        var track = stream && stream.getAudioTracks()[0];
+        if (!track || track.readyState !== "live") return 0;
+        var a = this._analysers[did];
+        if (!a || a.trackId !== track.id) {
+          if (a) { try { a.source.disconnect(); } catch (e) {} }
+          if (!this._audioCtx) {
+            var AC = window.AudioContext || window.webkitAudioContext;
+            if (!AC) return 0;
+            this._audioCtx = new AC();
+          }
+          if (this._audioCtx.state === "suspended") this._audioCtx.resume().catch(function () {});
+          var source = this._audioCtx.createMediaStreamSource(stream);
+          var node = this._audioCtx.createAnalyser();
+          node.fftSize = 512;
+          source.connect(node); // deliberately not connected onward: analysis only, never played
+          a = this._analysers[did] = { trackId: track.id, source: source, node: node, buf: new Uint8Array(node.fftSize) };
+        }
+        a.node.getByteTimeDomainData(a.buf);
+        var sum = 0;
+        for (var i = 0; i < a.buf.length; i++) { var v = (a.buf[i] - 128) / 128; sum += v * v; }
+        return Math.sqrt(sum / a.buf.length);
+      },
+
+      _pollSpeakers: function () {
+        if (this._roomLeft) return;
+        var self = this;
+        var user = lively.identity.did.currentUser();
+        var myDid = user ? user.did : null;
+        var present = {};
+        var loudDid = null, loudL = 0;
+        this._participants.forEach(function (p) {
+          present[p.did] = true;
+          var stream = p.did === myDid
+            ? lively.identity.AmbientPresencePanel.getLocalStream() : self._remoteStreams[p.did];
+          var l = self._levelOf(p.did, stream);
+          if (l > loudL) { loudL = l; loudDid = p.did; }
+        });
+        Object.keys(this._analysers).forEach(function (did) {
+          if (present[did]) return;
+          try { self._analysers[did].source.disconnect(); } catch (e) {}
+          delete self._analysers[did];
+        });
+
+        var now = Date.now();
+        var speaking = loudL > SPEAKER_THRESHOLD ? loudDid : null;
+        var speakingChanged = speaking !== this._speakingDid;
+        this._speakingDid = speaking;
+        var cur = this._activeSpeakerDid;
+        if (speaking) {
+          if (speaking === cur) {
+            this._speakerLastLoud = now;
+          } else if (!cur || now - this._speakerLastLoud > SPEAKER_HOLD_MS) {
+            this._activeSpeakerDid = speaking;
+            this._speakerLastLoud = now;
+            if (this._centerMode === "chat" && this._gridBox && !this._windowCollapsed) this._renderVideoGrid();
+          }
+        }
+        if (speakingChanged) this._updateSpeakingHighlight();
+      },
+
+      // Who the chat-mode tile shows: the held active speaker if still present, else
+      // the first other participant (or yourself when alone).
+      _resolveSpeaker: function () {
+        var dids = this._participants.map(function (p) { return p.did; });
+        var cur = this._activeSpeakerDid;
+        if (cur && dids.indexOf(cur) >= 0) return cur;
+        var user = lively.identity.did.currentUser();
+        var myDid = user ? user.did : null;
+        var other = dids.filter(function (d) { return d !== myDid; })[0];
+        this._activeSpeakerDid = other || dids[0] || null;
+        return this._activeSpeakerDid;
+      },
+
+      // Green ring on the tile or circle of whoever is speaking. Written to the DOM
+      // directly (outline sits outside the morph, so its own clip doesn't cut it, and
+      // it follows a circle's rounded corners).
+      _updateSpeakingHighlight: function () {
+        var self = this;
+        [this._videoTiles, this._videoCircles].forEach(function (surfaces) {
+          Object.keys(surfaces).forEach(function (did) {
+            try {
+              var st = surfaces[did].renderContext().shapeNode.style;
+              st.outline = did === self._speakingDid ? "3px solid rgb(87, 242, 135)" : "";
+            } catch (e) {}
+          });
         });
       },
 
@@ -1615,11 +2002,45 @@ module("lively.identity.RoomView")
         videoEl.autoplay = true;
         videoEl.playsInline = true;
         videoEl.muted = true; // never hear yourself
-        videoEl.style.cssText = "width:100%;height:100%;object-fit:cover;transform:scaleX(-1);border-radius:50%;";
+        videoEl.style.cssText = "width:100%;height:100%;object-fit:cover;transform:scaleX(-1);border-radius:" +
+          (circle._isTile ? TILE_RADIUS + "px" : "50%") + ";";
         videoEl.srcObject = stream;
         circle.renderContext().shapeNode.appendChild(videoEl);
         circle._hasLocalVideo = true;
+        this._watchVideo(circle, videoEl, stream);
         return true;
+      },
+
+      // Keeps the picture honest: the <video> is only shown while it is really
+      // producing frames (track live and unmuted, element playing); otherwise it is
+      // hidden and the identicon placeholder shows instead. Without this a stream
+      // that never delivers video (camera busy, remote sender without a camera)
+      // left a blank colored tile. Polled, because tracks are added to and swapped
+      // out of a stream without any event on the stream itself. Stops on its own once
+      // the element leaves the DOM.
+      _watchVideo: function (surface, videoEl, stream) {
+        var self = this;
+        var iv = null;
+        function check() {
+          if (!videoEl.isConnected) { if (iv) clearInterval(iv); return; }
+          var vt = stream.getVideoTracks()[0];
+          var live = !!vt && vt.readyState === "live" && !vt.muted &&
+            videoEl.readyState >= 2 && videoEl.videoWidth > 0 && !videoEl.paused;
+          videoEl.style.visibility = live ? "visible" : "hidden";
+          if (live) {
+            if (surface._avatarMorph) {
+              var node = null;
+              try { node = surface._avatarMorph.renderContext().shapeNode; } catch (e) {}
+              try { surface._avatarMorph.remove(); } catch (e) {}
+              if (node && node.parentNode) node.parentNode.removeChild(node); // it was moved out of its wrapper
+              surface._avatarMorph = null;
+            }
+          } else if (!surface._avatarMorph && surface._avatarKey) {
+            self._showAvatarPlaceholder(surface, surface._avatarKey);
+          }
+        }
+        iv = setInterval(check, 500);
+        check();
       },
 
       // Static identicon placeholder for a non-self circle — used both at
@@ -1630,9 +2051,17 @@ module("lively.identity.RoomView")
       // runs, same reasoning as _attachRemoteStream's insertBefore below.
       _showAvatarPlaceholder: function (circle, handleOrDid) {
         if (circle._avatarMorph) return;
-        var av = new lively.morphic.Image(lively.rect(0, 0, VIDEO_CIRCLE, VIDEO_CIRCLE));
-        av.applyStyle({ borderWidth: 0, borderRadius: VIDEO_CIRCLE / 2 });
-        av.setImageURL(lively.identity.postCardUtils.identiconDataUrl(handleOrDid, VIDEO_CIRCLE));
+        // A circle's identicon fills it; a tile's is a smaller disc centered in it.
+        var size = VIDEO_CIRCLE, ax = 0, ay = 0;
+        if (circle._isTile) {
+          var ext = circle.getExtent();
+          size = Math.max(48, Math.min(120, Math.round(Math.min(ext.x, ext.y) * 0.4)));
+          ax = Math.round((ext.x - size) / 2);
+          ay = Math.round((ext.y - size) / 2);
+        }
+        var av = new lively.morphic.Image(lively.rect(ax, ay, size, size));
+        av.applyStyle({ borderWidth: 0, borderRadius: size / 2 });
+        av.setImageURL(lively.identity.postCardUtils.identiconDataUrl(handleOrDid, size));
         // eventsAreIgnored (not just noDrag) — a mousedown here must bubble
         // up to the circle itself so the whole circle drags as one piece,
         // rather than this avatar image capturing the drag.
@@ -1648,6 +2077,10 @@ module("lively.identity.RoomView")
         var avImg = avNode.querySelector("img");
         if (avImg) avImg.style.borderRadius = "50%";
         shapeNode.insertBefore(avNode, shapeNode.firstChild);
+        // Moving the node out of its origin wrapper drops the wrapper's positioning,
+        // so a tile's centered offset has to be written onto the node itself.
+        avNode.style.left = ax + "px";
+        avNode.style.top = ay + "px";
       },
 
       // Attaches a remote participant's real MediaStream (from the webrtc
@@ -1661,20 +2094,9 @@ module("lively.identity.RoomView")
       _attachRemoteStream: function (circle, stream) {
         if (circle._remoteStream === stream) return;
         circle._remoteStream = stream;
-        if (circle._avatarMorph) { circle._avatarMorph.remove(); circle._avatarMorph = null; }
         var shapeNode = circle.renderContext().shapeNode;
-        // Defensive DOM-level cleanup, not just the JS reference above —
-        // confirmed live that a stray identicon <img> can still be present
-        // in the DOM here (circle._avatarMorph.remove() alone didn't
-        // reliably clear it across a renegotiation cycle, e.g. ontrack
-        // firing more than once as local media attaches asynchronously
-        // after the initial answer already went out — see
-        // _applyLocalTracksToPeer's own comment for that whole story).
-        // A leftover identicon rendered on top of real video is exactly
-        // the "still shows the placeholder" symptom this method exists to
-        // prevent, so belt-and-suspenders here is worth it.
-        var strayAvatars = shapeNode.querySelectorAll(".Morph.Image");
-        for (var i = 0; i < strayAvatars.length; i++) strayAvatars[i].remove();
+        // The identicon stays until _watchVideo sees real frames, and is removed at
+        // the DOM level there (removing only the morph left a stray <img> behind).
         var existingVideo = shapeNode.querySelector("video");
         if (existingVideo) existingVideo.remove();
         var videoEl = document.createElement("video");
@@ -1684,13 +2106,15 @@ module("lively.identity.RoomView")
         // (_playRemoteAudio) so it keeps going while this window is closed or
         // collapsed — leaving this unmuted would double every voice.
         videoEl.muted = true;
-        videoEl.style.cssText = "width:100%;height:100%;object-fit:cover;border-radius:50%;";
+        videoEl.style.cssText = "width:100%;height:100%;object-fit:cover;border-radius:" +
+          (circle._isTile ? TILE_RADIUS + "px" : "50%") + ";";
         videoEl.srcObject = stream;
         // insertBefore (not appendChild) — this can run well after the
         // circle's label submorph DOM node already exists (a late-arriving
         // ontrack, not the initial render), and the label must stay on top
         // of the video rather than getting covered by it.
         shapeNode.insertBefore(videoEl, shapeNode.firstChild);
+        this._watchVideo(circle, videoEl, stream);
       },
 
     },
@@ -1903,8 +2327,12 @@ module("lively.identity.RoomView")
           if (!(stream instanceof MediaStream)) stream = self._remoteStreams[peer.did] = new MediaStream();
           if (!stream.getTracks().some(function (t) { return t.id === e.track.id; })) stream.addTrack(e.track);
           self._playRemoteAudio(peer.did, stream);
-          var circle = self._videoCircles[peer.did];
-          if (circle) self._attachRemoteStream(circle, stream);
+          // Your own picture is always the local camera, never a stream from another
+          // session of the same account (confirmed live: a second tab in the room put
+          // that stream, paused and blank, on top of the self-view).
+          var me = lively.identity.did.currentUser();
+          if (me && me.did === peer.did) return;
+          self._videoSurfaces(peer.did).forEach(function (s) { self._attachRemoteStream(s, stream); });
         };
         pc.oniceconnectionstatechange = function () {
           var state = pc.iceConnectionState;
@@ -2195,13 +2623,14 @@ module("lively.identity.RoomView")
           delete this._remoteStreams[peer.did];
           this._removeRemoteAudio(peer.did);
           if (this._didToPeerId[peer.did] === peerId) delete this._didToPeerId[peer.did];
-          var circle = this._videoCircles[peer.did];
-          if (circle && circle._remoteStream) {
-            var v = circle.renderContext().shapeNode.querySelector("video");
+          var self = this;
+          this._videoSurfaces(peer.did).forEach(function (surface) {
+            if (!surface._remoteStream) return;
+            var v = surface.renderContext().shapeNode.querySelector("video");
             if (v) v.remove();
-            circle._remoteStream = null;
-            this._showAvatarPlaceholder(circle, peer.handle || peer.did);
-          }
+            surface._remoteStream = null;
+            self._showAvatarPlaceholder(surface, peer.handle || peer.did);
+          });
         }
 
         if (peer.pc) {
@@ -2241,14 +2670,15 @@ module("lively.identity.RoomView")
         if (this._roomLeft) return;
         this._applyLocalTracksToAllPeers();
         var user = lively.identity.did.currentUser();
-        var circle = user && this._videoCircles[user.did];
         var stream = lively.identity.AmbientPresencePanel.getLocalStream();
-        var v = circle && stream && circle.renderContext().shapeNode.querySelector("video");
-        if (v) {
+        if (!user || !stream) return;
+        this._videoSurfaces(user.did).forEach(function (surface) {
+          var v = surface.renderContext().shapeNode.querySelector("video");
+          if (!v) return;
           v.srcObject = stream;
           var p = v.play && v.play();
           if (p && p.catch) p.catch(function () {});
-        }
+        });
       },
 
       // Deafen = stop hearing everyone: mutes every session-owned remote audio
