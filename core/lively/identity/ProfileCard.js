@@ -259,6 +259,14 @@ module("lively.identity.ProfileCard")
         // (32 + 32 margins, 190 astro box, 12 gap) minus the text node's own
         // 4px left/right padding. 20px/line is the measured rendered height
         // of 12pt Helvetica; +8 padding matches the bio box below.
+        // Undo any height the Connect card added on the previous render; it
+        // re-adds what it needs (if anything) once its own size is known.
+        var prevConnect = self._connectExtra || 0;
+        if (prevConnect) {
+          var ce = self.getExtent();
+          self.setExtent(lively.pt(ce.x, ce.y - prevConnect));
+          self._connectExtra = 0;
+        }
         var BIO_LINE_H = 20, BIO_PAD = 8, BIO_BASE_H = 4 * BIO_LINE_H + BIO_PAD;
         var bioTextW = pane.getExtent().x - 266 - 8;
         var bioBoxH = payload.bio
@@ -515,42 +523,68 @@ module("lively.identity.ProfileCard")
         // visitors only see the filled ones, packed with no gaps for the
         // slots the owner hasn't used.
         (function () {
-          // CIRC=38 (up from the original 32) with a generous GAP=20 so the
-          // row reads as clearly-separated icons rather than a packed
-          // strip. The row is right-aligned to the card's existing right
-          // margin (pw - contentX, same edge the divider/astro box use)
-          // and, since 5*CIRC+4*GAP (270px) is wider than the ~190px astro
-          // -box column below which it sits, its start point extends left
-          // of that column into the space below the "encryption status"
-          // line — safe because that line is short (ends around x=300) and
-          // nothing else on the left column shares this row's y.
-          // ICON_PAD insets the icon inside the circle rather than filling
-          // it edge-to-edge, since a full-bleed icon gets its corners cut
-          // by the circular clip mask on any non-circular SVG.
-          var CIRC = 38, GAP = 20, ICON_PAD = 6;
+          // Connect card — socials and websites in one soft card, styled like
+          // the astro-signs card above it (rounded, faint border, pink icons,
+          // small gray captions) with a faint pink tint as its accent. Its
+          // right edge lines up with the divider and astro card
+          // (pw - contentX); content is inset by PAD, so the icon row's
+          // GAP is tighter than it used to be to keep the card width sane.
+          // ICON_PAD insets each icon inside its circle, since a full-bleed
+          // icon gets its corners cut by the circular clip mask.
+          var CIRC = 38, GAP = 16, ICON_PAD = 6, PAD = 16;
           var ICON_BOX = CIRC - ICON_PAD * 2;
-          var rowEndX = pw - contentX;
+          var rowEndX = pw - contentX - PAD;
           var rowStartX = rowEndX - (5 * CIRC + 4 * GAP);
           var accounts = (payload.socialAccounts || []).slice(0, 5);
+          // Websites (up to 3). Only http(s) URLs are rendered/opened.
+          var sites = (payload.links || []).filter(function (l) {
+            return l && l.url && /^https?:\/\//i.test(l.url);
+          }).slice(0, 3);
+          // The owner always gets the social row (empty "add" circles
+          // included); a visitor only sees sections that have something in
+          // them, and no card at all when both are empty.
+          var hasSocial = self._isOwner || accounts.length > 0;
+          var hasSites  = sites.length > 0;
+          if (!hasSocial && !hasSites) return;
 
-          // "Connect" caption — centered over the icon row, between the
-          // divider and the circles, in the same small-caption style as
-          // the astro box's item labels (fontSize 9, gray). Only shown when
-          // there's actually a row of circles under it: the owner always
-          // gets one (empty "add" placeholders included), but a visitor
-          // with zero filled accounts would otherwise see this caption
-          // floating alone with nothing below it (confirmed live on
-          // @tinasnow, who has no social accounts set).
-          if (self._isOwner || accounts.length) {
-            var connectLbl = new lively.morphic.Text(
-              lively.rect(rowStartX, dividerY + 6, rowEndX - rowStartX, 12), "Connect");
-            connectLbl.applyStyle({ allowInput: false, fontSize: 9,
-              textColor: Color.rgb(160, 160, 160),
-              fill: Color.rgba(0, 0, 0, 0), borderWidth: 0, align: 'center' });
-            pane.addMorph(connectLbl);
+          // Layout pass: every y is decided before the card is drawn so the
+          // card can be sized to its content (a guessed height would clip or
+          // leave dead space).
+          var cardTop = dividerY + 10;
+          var ly = cardTop + 12;
+          var connectY, ry, divY, sitesLblY, wy;
+          if (hasSocial) { connectY = ly; ly += 18; ry = ly; ly += CIRC + 14; }
+          if (hasSocial && hasSites) { divY = ly - 4; ly += 10; }
+          if (hasSites) { sitesLblY = ly; ly += 20; wy = ly; ly += sites.length * 22; }
+          var cardX = rowStartX - PAD;
+          var cardW = (pw - contentX) - cardX;
+          var cardH = ly + 2 - cardTop;
+
+          var connectCard = new lively.morphic.Box(lively.rect(cardX, cardTop, cardW, cardH));
+          connectCard.applyStyle({ fill: Color.rgb(252, 246, 249),
+            borderRadius: 12, borderColor: Color.rgb(241, 225, 233), borderWidth: 1 });
+          connectCard.draggingEnabled = false; connectCard.droppingEnabled = false;
+          connectCard.grabbingEnabled = false;
+          connectCard.eventsAreIgnored = true;
+          pane.addMorph(connectCard);
+
+          // Small pink icon + gray caption, the same pairing the astro card uses.
+          function caption(icon, label, capY) {
+            pane.addMorph(ico(icon, rowStartX, capY, 12, 204, 0, 87));
+            var l = new lively.morphic.Text(lively.rect(rowStartX + 18, capY + 1, 140, 14), label);
+            l.applyStyle({ allowInput: false, fontSize: 9, textColor: Color.rgb(160, 160, 160),
+              fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
+            l.eventsAreIgnored = true;
+            pane.addMorph(l);
           }
 
-          var ry = dividerY + 6 + 12 + 6;
+          if (hasSocial) caption('share', 'Connect', connectY);
+          if (hasSocial && hasSites) {
+            var cardDiv = new lively.morphic.Box(lively.rect(rowStartX, divY, rowEndX - rowStartX, 1));
+            cardDiv.applyStyle({ fill: Color.rgb(240, 226, 233), borderWidth: 0 });
+            cardDiv.eventsAreIgnored = true;
+            pane.addMorph(cardDiv);
+          }
 
           function addFilledCircle(cx, acc) {
             var btn = new lively.morphic.Button(lively.rect(cx, ry, CIRC, CIRC), '');
@@ -636,27 +670,11 @@ module("lively.identity.ProfileCard")
             });
           }
 
-          // Websites (up to 3), listed below the social circles in the same
-          // right-aligned strip. Only http(s) URLs are rendered/opened.
-          var sites = (payload.links || []).filter(function (l) {
-            return l && l.url && /^https?:\/\//i.test(l.url);
-          }).slice(0, 3);
-          var wy = ry + ((self._isOwner || accounts.length) ? CIRC + 14 : 0);
-          if (sites.length) {
-            // Same small centered caption style as "Connect" above.
-            var sitesLbl = new lively.morphic.Text(
-              lively.rect(rowStartX, wy, rowEndX - rowStartX, 12), "Websites");
-            sitesLbl.applyStyle({ allowInput: false, fontSize: 9,
-              textColor: Color.rgb(160, 160, 160),
-              fill: Color.rgba(0, 0, 0, 0), borderWidth: 0, align: 'center' });
-            pane.addMorph(sitesLbl);
-            wy += 20;
-          }
+          if (hasSites) caption('language', 'Websites', sitesLblY);
           sites.forEach(function (site) {
             var shown = (site.label || site.url).replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, '');
-            if (shown.length > 38) shown = shown.slice(0, 37) + '…';
-            pane.addMorph(ico('language', rowStartX, wy, 14, 150, 150, 158));
-            var siteM = txt(shown, rowStartX + 22, wy, rowEndX - rowStartX - 22, 16, 11, 204, 0, 87, false);
+            if (shown.length > 30) shown = shown.slice(0, 29) + '…';
+            var siteM = txt(shown, rowStartX + 2, wy, rowEndX - rowStartX - 2, 16, 11, 204, 0, 87, false);
             siteM.applyStyle({ fill: Color.rgba(0, 0, 0, 0), handStyle: 'pointer',
               selectable: false });
             siteM.draggingEnabled = false; siteM.droppingEnabled = false; siteM.grabbingEnabled = false;
@@ -669,6 +687,18 @@ module("lively.identity.ProfileCard")
             siteM.renderContext().morphNode.title = site.url;
             wy += 22;
           });
+
+          // Grow the window if the card (plus the Edit button pinned to the
+          // pane's bottom-right, owner only) doesn't fit in what's left below
+          // it. Runs before the Edit button is placed, which reads the
+          // pane's final height.
+          var needPaneH = cardTop + cardH + (self._isOwner ? 44 : 14);
+          var havePaneH = pane.getExtent().y;
+          if (needPaneH > havePaneH) {
+            var we = self.getExtent();
+            self.setExtent(lively.pt(we.x, we.y + (needPaneH - havePaneH)));
+            self._connectExtra = needPaneH - havePaneH;
+          }
         })();
 
         // encryption status — whether this account can receive private/shared
