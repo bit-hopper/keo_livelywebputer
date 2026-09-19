@@ -1608,12 +1608,19 @@ module.exports = function (route, app) {
     if (!domain)
       return res.status(400).json({ error: "domain is required" });
 
-    domainVerifier.verifyDomainClaim(domain, req.identity.did, function (err, result) {
-      if (err) return res.status(500).json({ error: String(err) });
-      if (!result.valid) return res.status(400).json({ error: result.reason });
-      handleRegistry.registerDomain(domain, req.identity.did, function (regErr) {
-        if (regErr) return res.status(500).json({ error: String(regErr) });
-        res.json({ ok: true, domain: domain });
+    // One domain handle per identity at a time — remove the current one first.
+    handleRegistry.listDomainsForDid(req.identity.did, function (listErr, existing) {
+      if (listErr) return res.status(500).json({ error: String(listErr) });
+      var other = (existing || []).filter(function (r) { return r.domain !== domain; });
+      if (other.length)
+        return res.status(409).json({ error: "Only one domain handle at a time — remove " + other[0].domain + " first" });
+      domainVerifier.verifyDomainClaim(domain, req.identity.did, function (err, result) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!result.valid) return res.status(400).json({ error: result.reason });
+        handleRegistry.registerDomain(domain, req.identity.did, function (regErr) {
+          if (regErr) return res.status(500).json({ error: String(regErr) });
+          res.json({ ok: true, domain: domain });
+        });
       });
     });
   });
@@ -4155,12 +4162,19 @@ module.exports = function (route, app) {
       if (!constellationRegistry.isController(constellation, req.identity.did)) {
         return res.status(403).json({ error: "Forbidden: not a controller" });
       }
-      domainVerifier.verifyDomainClaim(domain, constellation.did, function (err2, result) {
-        if (err2) return res.status(500).json({ error: String(err2) });
-        if (!result.valid) return res.status(400).json({ error: result.reason });
-        handleRegistry.registerDomain(domain, constellation.did, function (regErr) {
-          if (regErr) return res.status(500).json({ error: String(regErr) });
-          res.json({ ok: true, domain: domain });
+      // One domain per constellation at a time — remove the current one first.
+      handleRegistry.listDomainsForDid(constellation.did, function (listErr, existing) {
+        if (listErr) return res.status(500).json({ error: String(listErr) });
+        var other = (existing || []).filter(function (r) { return r.domain !== domain; });
+        if (other.length)
+          return res.status(409).json({ error: "Only one domain at a time — remove " + other[0].domain + " first" });
+        domainVerifier.verifyDomainClaim(domain, constellation.did, function (err2, result) {
+          if (err2) return res.status(500).json({ error: String(err2) });
+          if (!result.valid) return res.status(400).json({ error: result.reason });
+          handleRegistry.registerDomain(domain, constellation.did, function (regErr) {
+            if (regErr) return res.status(500).json({ error: String(regErr) });
+            res.json({ ok: true, domain: domain });
+          });
         });
       });
     });

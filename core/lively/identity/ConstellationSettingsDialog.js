@@ -370,6 +370,15 @@ module("lively.identity.ConstellationSettingsDialog")
         }
 
         y += 8;
+        if (this._domains.length >= 1) {
+          // One domain per constellation at a time (also enforced server-side).
+          var oneNote = new lively.morphic.Text(lively.rect(MARGIN, y, ew, 32),
+            "Only one domain at a time. Remove this one to add a different domain.");
+          oneNote.applyStyle({ allowInput: false, fontSize: 10,
+            textColor: Color.rgb(140, 140, 148), fill: null, borderWidth: 0 });
+          content.addMorph(oneNote);
+          y += 36;
+        } else {
         fieldLabel("Add a domain (e.g. mycommunity.com)");
         textField("csdNewDomain", "");
         var addDomBtn = styledButton(lively.rect(MARGIN + inputW + GAP, y, BTN_W, 28), "Verify");
@@ -434,6 +443,7 @@ module("lively.identity.ConstellationSettingsDialog")
         lively.bindings.connect(copyBtn, "fire", copyBtn, "doAction");
         content.addMorph(copyBtn);
         y = cardY + cardH;
+        }
         divider();
 
         // ── Controllers (moderators) ─────────────────────────────────────────

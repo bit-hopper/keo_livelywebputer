@@ -445,20 +445,18 @@ module("lively.identity.ProfileCard")
         var bioText = payload.bio ||
           (self._isOwner ? "No bio yet. Click Edit to add one." : "");
         if (bioText) {
-          var bio = new lively.morphic.Text(lively.rect(contentX, y, cw, 50), bioText);
+          // Bio is capped at 300 chars, i.e. up to ~5 wrapped lines, so size
+          // the box from a chars-per-line estimate instead of a fixed 50px
+          // (which clipped anything past ~2 lines). ~18px/line, per the
+          // multi-line sizing note in CLAUDE.md.
+          var bioH = Math.max(32, Math.ceil(bioText.length / 68) * 18 + 8);
+          var bio = new lively.morphic.Text(lively.rect(contentX, y, cw, bioH), bioText);
           bio.applyStyle({ allowInput: false, fontSize: 12,
             textColor: Color.rgb(80, 80, 80),
             fill: Color.rgb(255, 255, 255), borderWidth: 0 });
           pane.addMorph(bio);
-          y += 58;
+          y += bioH + 8;
         }
-
-        // links
-        (payload.links || []).forEach(function (link) {
-          pane.addMorph(ico('link', contentX, y, 14, 204, 0, 87));
-          pane.addMorph(txt(link.label || link.url, contentX + 20, y, cw - 20, 16, 11, 204, 0, 87, false));
-          y += 20;
-        });
 
         // Reserve room below the astro-signs box (drawn above at a fixed
         // [by, by+astroBoxH] independent of this y accumulator) so the
@@ -608,6 +606,30 @@ module("lively.identity.ProfileCard")
               addFilledCircle(rowStartX + i * (CIRC + GAP), acc);
             });
           }
+
+          // Websites (up to 3), listed below the social circles in the same
+          // right-aligned strip. Only http(s) URLs are rendered/opened.
+          var sites = (payload.links || []).filter(function (l) {
+            return l && l.url && /^https?:\/\//i.test(l.url);
+          }).slice(0, 3);
+          var wy = ry + ((self._isOwner || accounts.length) ? CIRC + 18 : 0);
+          sites.forEach(function (site) {
+            var shown = (site.label || site.url).replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, '');
+            if (shown.length > 38) shown = shown.slice(0, 37) + '…';
+            pane.addMorph(ico('language', rowStartX, wy, 14, 150, 150, 158));
+            var siteM = txt(shown, rowStartX + 22, wy, rowEndX - rowStartX - 22, 16, 11, 204, 0, 87, false);
+            siteM.applyStyle({ fill: Color.rgba(0, 0, 0, 0), handStyle: 'pointer',
+              selectable: false });
+            siteM.draggingEnabled = false; siteM.droppingEnabled = false; siteM.grabbingEnabled = false;
+            siteM._openUrl = site.url;
+            siteM.addScript(function onMouseUp(evt) {
+              if (this._openUrl) window.open(this._openUrl, '_blank', 'noopener');
+              evt.stop(); return true;
+            });
+            pane.addMorph(siteM);
+            siteM.renderContext().morphNode.title = site.url;
+            wy += 22;
+          });
         })();
 
         // encryption status — whether this account can receive private/shared
@@ -1288,7 +1310,7 @@ module("lively.identity.ProfileCard")
 
         var pw   = pane.getExtent().x;
         var y    = 12;
-        var PINK = Color.rgb(240, 26, 105);
+        var PINK = Color.rgb(204, 0, 87);
         var ew   = Math.min(pw - 24, 500); // cap form width so inputs don't span the full pane
 
         function addField(labelText, inputName, value, h) {
@@ -1314,14 +1336,25 @@ module("lively.identity.ProfileCard")
         // so in-progress edits on the tab being left aren't lost, since each
         // tab is a full pane rebuild rather than a show/hide of two
         // pre-built panels (only one tab's fields exist in the pane at a time).
+        // Button label color: applyStyle({textColor}) doesn't reach a
+        // Button's label DOM (see CLAUDE.md), so write it directly.
+        function tint(btn, r, g, b) {
+          var c = 'rgb(' + r + ',' + g + ',' + b + ')';
+          var n = btn.label && btn.label.renderContext().shapeNode;
+          if (!n) return;
+          n.style.color = c;
+          var kids = n.querySelectorAll('*');
+          for (var i = 0; i < kids.length; i++) kids[i].style.color = c;
+        }
+
         function addTabButton(label, tabName, x) {
           var isActive = tab === tabName;
-          var tb = new lively.morphic.Button(lively.rect(x, y, 138, 26), label);
+          var tb = new lively.morphic.Button(lively.rect(x, y, 124, 28), label);
           tb.applyStyle({
-            fill:       isActive ? PINK : Color.rgb(245, 245, 245),
-            borderColor: isActive ? PINK : Color.rgb(200, 200, 200),
-            borderRadius: 4, fontSize: 11,
-            textColor:  isActive ? Color.white : Color.rgb(60, 60, 60),
+            fill:       isActive ? PINK : Color.rgb(255, 255, 255),
+            borderColor: isActive ? PINK : Color.rgb(222, 222, 228),
+            borderRadius: 14, fontSize: 11,
+            textColor:  isActive ? Color.white : Color.rgb(90, 90, 98),
             borderWidth: 1,
           });
           tb.setAppearanceStylingMode(false);
@@ -1336,17 +1369,46 @@ module("lively.identity.ProfileCard")
           });
           lively.bindings.connect(tb, 'fire', tb, 'doAction');
           pane.addMorph(tb);
+          if (isActive) tint(tb, 255, 255, 255); else tint(tb, 90, 90, 98);
         }
         addTabButton("Profile", "profile", 12);
-        addTabButton("Accounts", "accounts", 154);
-        addTabButton("Domain", "domains", 296);
-        y += 36;
+        addTabButton("Accounts", "accounts", 142);
+        addTabButton("Domain Handle", "domains", 272);
+        y += 40;
 
         if (tab === 'profile') {
 
         addField("Display name", "pcDisplayName", payload.displayName || "");
         addField("Pronouns",     "pcPronouns",    payload.pronouns    || "");
-        addField("Bio",          "pcBio",         payload.bio         || "", 52);
+        // Bio is capped at 300 chars. The counter sits on the label row,
+        // right-aligned, and is fed by the input's 'textString' signal
+        // (fired from Text#onKeyUp); anything past the cap is trimmed
+        // there, and again on snapshot/save.
+        var bioLblY = y;
+        var bioStart = (payload.bio || "").slice(0, 300);
+        addField("Bio",          "pcBio",         bioStart, 88);
+        var bioCounter = new lively.morphic.Text(
+          lively.rect(12 + ew - 90, bioLblY, 90, 16), bioStart.length + " / 300");
+        bioCounter.applyStyle({ allowInput: false, fontSize: 10, align: 'right',
+          textColor: Color.rgb(140, 140, 148),
+          fill: Color.rgb(255, 255, 255), borderWidth: 0 });
+        bioCounter.addScript(function onBioChanged(s) {
+          s = s || '';
+          var inp = this.owner && this.owner.get('pcBio');
+          if (s.length > 300) {
+            s = s.slice(0, 300);
+            if (inp) {
+              inp.textString = s;
+              // Resetting textString drops the caret to the start; put it
+              // back at the end so continued typing doesn't prepend.
+              inp.setSelectionRange(s.length, s.length);
+            }
+          }
+          this.setTextString(s.length + ' / 300');
+          this.applyStyle({ textColor: s.length >= 300 ? Color.rgb(200, 40, 40) : Color.rgb(140, 140, 148) });
+        });
+        pane.addMorph(bioCounter);
+        lively.bindings.connect(pane.get("pcBio"), 'textString', bioCounter, 'onBioChanged');
 
         // Avatar URL — label + narrow input + Upload button on same row
         var avUrlLbl = new lively.morphic.Text(lively.rect(12, y, ew, 16), "Avatar URL");
@@ -1390,6 +1452,7 @@ module("lively.identity.ProfileCard")
         });
         lively.bindings.connect(avUploadBtn, 'fire', avUploadBtn, 'doAction');
         pane.addMorph(avUploadBtn);
+        tint(avUploadBtn, 50, 50, 50);
         y += 32;
 
         // Banner URL row — manual layout for Upload button
@@ -1435,6 +1498,7 @@ module("lively.identity.ProfileCard")
         });
         lively.bindings.connect(bnUploadBtn, 'fire', bnUploadBtn, 'doAction');
         pane.addMorph(bnUploadBtn);
+        tint(bnUploadBtn, 50, 50, 50);
         y += 32;
 
         // astrological signs steppers
@@ -1476,6 +1540,7 @@ module("lively.identity.ProfileCard")
           });
           lively.bindings.connect(prevBtn, 'fire', prevBtn, 'doAction');
           pane.addMorph(prevBtn);
+          tint(prevBtn, 60, 60, 60);
           var disp = new lively.morphic.Text(lively.rect(80, y, 200, 26),
             GLYPHS[idx] + '  ' + SIGNS[idx]);
           disp.name = fieldName;
@@ -1505,6 +1570,7 @@ module("lively.identity.ProfileCard")
           });
           lively.bindings.connect(nextBtn, 'fire', nextBtn, 'doAction');
           pane.addMorph(nextBtn);
+          tint(nextBtn, 60, 60, 60);
           y += 32;
         }
 
@@ -1519,7 +1585,6 @@ module("lively.identity.ProfileCard")
         // ── Accounts tab ─────────────────────────────────────────────────
 
         addField("ETH wallet address", "pcEthAddress", payload.ethAddress || "");
-        addField("Links (JSON)", "pcLinks", JSON.stringify(payload.links || []), 36);
 
         // ── social accounts (up to 5 — rendered as circles on the read
         // view, right column under the divider) ──────────────────────────
@@ -1570,6 +1635,7 @@ module("lively.identity.ProfileCard")
             });
             lively.bindings.connect(rmSaBtn, 'fire', rmSaBtn, 'doAction');
             pane.addMorph(rmSaBtn);
+            tint(rmSaBtn, 150, 30, 30);
             y += 22;
           });
         }
@@ -1694,6 +1760,7 @@ module("lively.identity.ProfileCard")
           });
           lively.bindings.connect(platTrigger, 'fire', platTrigger, 'doAction');
           pane.addMorph(platTrigger);
+          tint(platTrigger, 35, 35, 35);
           platIconPreview.updateIcon(SOCIAL_PLATFORMS[0].key);
           y += 32;
 
@@ -1723,6 +1790,7 @@ module("lively.identity.ProfileCard")
           });
           lively.bindings.connect(addSaBtn, 'fire', addSaBtn, 'doAction');
           pane.addMorph(addSaBtn);
+          tint(addSaBtn, 50, 50, 50);
           y += 36;
         } else {
           var maxSA = new lively.morphic.Text(lively.rect(12, y, ew, 16), "Maximum of 5 social accounts reached.");
@@ -1733,11 +1801,33 @@ module("lively.identity.ProfileCard")
           y += 22;
         }
 
+        // ── websites (up to 3 — listed under the social circles on the
+        // read view). Saved as payload.links = [{label, url}]. ────────────
+        y += 8;
+        var wsLbl = new lively.morphic.Text(lively.rect(12, y, ew, 16), "Websites (up to 3)");
+        wsLbl.applyStyle({ allowInput: false, fontSize: 10,
+          textColor: Color.rgb(120, 120, 120),
+          fill: Color.rgb(255, 255, 255), borderWidth: 0 });
+        pane.addMorph(wsLbl);
+        y += 20;
+        var siteLinks = payload.links || [];
+        for (var wi = 0; wi < 3; wi++) {
+          var wsInp = new lively.morphic.Text(lively.rect(12, y, ew, 24),
+            (siteLinks[wi] && (siteLinks[wi].url || siteLinks[wi].label)) || "");
+          wsInp.name = "pcWebsite" + wi;
+          wsInp.applyStyle({ allowInput: true, fontSize: 12,
+            fill: Color.rgb(252, 252, 252),
+            borderColor: Color.rgb(200, 200, 200), borderWidth: 1, borderRadius: 3 });
+          wsInp.beInputLine();
+          pane.addMorph(wsInp);
+          y += 30;
+        }
+
         } else {
 
-        // ── Domain Handles tab ──────────────────────────────────────────────
+        // ── Domain Handle tab ───────────────────────────────────────────────
 
-        var dhLbl = new lively.morphic.Text(lively.rect(12, y, ew, 16), "Domain Handles");
+        var dhLbl = new lively.morphic.Text(lively.rect(12, y, ew, 16), "Domain handle");
         dhLbl.applyStyle({ allowInput: false, fontSize: 10,
           textColor: Color.rgb(120, 120, 120),
           fill: Color.rgb(255, 255, 255), borderWidth: 0 });
@@ -1746,7 +1836,7 @@ module("lively.identity.ProfileCard")
 
         var domainRows = self._domains || [];
         if (domainRows.length === 0) {
-          var noneM = new lively.morphic.Text(lively.rect(12, y, ew, 16), "No domain handles yet.");
+          var noneM = new lively.morphic.Text(lively.rect(12, y, ew, 16), "No domain handle yet.");
           noneM.applyStyle({ allowInput: false, fontSize: 11,
             textColor: Color.rgb(160, 160, 160),
             fill: Color.rgb(255, 255, 255), borderWidth: 0 });
@@ -1792,11 +1882,22 @@ module("lively.identity.ProfileCard")
             });
             lively.bindings.connect(rmBtn, 'fire', rmBtn, 'doAction');
             pane.addMorph(rmBtn);
+            tint(rmBtn, 150, 30, 30);
             y += 22;
           });
         }
 
         y += 8;
+        if (domainRows.length >= 1) {
+          // One domain handle at a time (also enforced server-side).
+          var oneNote = new lively.morphic.Text(lively.rect(12, y, ew, 32),
+            "Only one domain handle at a time. Remove this one to add a different domain.");
+          oneNote.applyStyle({ allowInput: false, fontSize: 10,
+            textColor: Color.rgb(140, 140, 148),
+            fill: Color.rgb(255, 255, 255), borderWidth: 0 });
+          pane.addMorph(oneNote);
+          y += 36;
+        } else {
         addField("Add a domain (e.g. alice.com)", "pcNewDomain", "");
 
         var addDomainBtn = new lively.morphic.Button(lively.rect(12, y, 130, 28), "Add domain");
@@ -1817,7 +1918,9 @@ module("lively.identity.ProfileCard")
         });
         lively.bindings.connect(addDomainBtn, 'fire', addDomainBtn, 'doAction');
         pane.addMorph(addDomainBtn);
+        tint(addDomainBtn, 50, 50, 50);
         y += 36;
+        }
 
         }
 
@@ -1831,7 +1934,7 @@ module("lively.identity.ProfileCard")
         // Save — reads named inputs from pane, merges onto self._editPayload
         // so fields from whichever tab isn't currently visible survive.
         var saveBtn = new lively.morphic.Button(lively.rect(pw - 166, btnY, 74, 26), "Save");
-        saveBtn.applyStyle({ fill: PINK, borderColor: PINK, borderRadius: 4,
+        saveBtn.applyStyle({ fill: PINK, borderColor: PINK, borderRadius: 13,
           fontSize: 12, textColor: Color.white, borderWidth: 1 });
         saveBtn.setAppearanceStylingMode(false);
         saveBtn.setBorderStylingMode(false);
@@ -1866,12 +1969,13 @@ module("lively.identity.ProfileCard")
         });
         lively.bindings.connect(saveBtn, 'fire', saveBtn, 'doAction');
         pane.addMorph(saveBtn);
+        tint(saveBtn, 255, 255, 255);
 
         // Cancel — navigates to Window and reloads view
         var cancelBtn = new lively.morphic.Button(lively.rect(pw - 84, btnY, 72, 26), "Cancel");
-        cancelBtn.applyStyle({ fill: Color.rgb(160, 160, 160),
-          borderColor: Color.rgb(160, 160, 160), borderRadius: 4,
-          fontSize: 12, textColor: Color.white, borderWidth: 1 });
+        cancelBtn.applyStyle({ fill: Color.rgb(255, 255, 255),
+          borderColor: Color.rgb(200, 200, 208), borderRadius: 13,
+          fontSize: 12, textColor: Color.rgb(90, 90, 98), borderWidth: 1 });
         cancelBtn.setAppearanceStylingMode(false);
         cancelBtn.setBorderStylingMode(false);
         cancelBtn.addScript(function doAction() {
@@ -1883,6 +1987,7 @@ module("lively.identity.ProfileCard")
         });
         lively.bindings.connect(cancelBtn, 'fire', cancelBtn, 'doAction');
         pane.addMorph(cancelBtn);
+        tint(cancelBtn, 90, 90, 98);
       },
 
       // Reads whichever named inputs are currently present in `pane` (only
@@ -1898,19 +2003,25 @@ module("lively.identity.ProfileCard")
         var bioInp      = pane.get("pcBio");
         var avatarInp   = pane.get("pcAvatarUrl");
         var bannerInp   = pane.get("pcBannerUrl");
-        var linksInp    = pane.get("pcLinks");
-        var sunInp      = pane.get("pcSunSign");
+        var sunInp     = pane.get("pcSunSign");
         var moonInp     = pane.get("pcMoonSign");
         var risingInp   = pane.get("pcRisingSign");
         var ethInp      = pane.get("pcEthAddress");
         if (nameInp)     partial.displayName = nameInp.textString || "";
         if (pronounsInp) partial.pronouns    = pronounsInp.textString || "";
-        if (bioInp)      partial.bio         = bioInp.textString || "";
+        if (bioInp)      partial.bio         = (bioInp.textString || "").slice(0, 300);
         if (avatarInp)   partial.avatarUrl   = avatarInp.textString || null;
         if (bannerInp)   partial.bannerUrl   = bannerInp.textString || null;
-        if (linksInp) {
-          try { partial.links = JSON.parse(linksInp.textString || "[]"); }
-          catch (e) { partial.links = []; }
+        if (pane.get("pcWebsite0")) {
+          var links = [];
+          for (var wi = 0; wi < 3; wi++) {
+            var wInp = pane.get("pcWebsite" + wi);
+            var wUrl = ((wInp && wInp.textString) || "").trim();
+            if (!wUrl) continue;
+            if (!/^https?:\/\//i.test(wUrl)) wUrl = "https://" + wUrl;
+            links.push({ label: wUrl.replace(/^https?:\/\/(www\.)?/i, "").replace(/\/$/, ""), url: wUrl });
+          }
+          partial.links = links;
         }
         if (sunInp)    partial.sunSign    = SV[sunInp._signIdx    || 0];
         if (moonInp)   partial.moonSign   = SV[moonInp._signIdx   || 0];
