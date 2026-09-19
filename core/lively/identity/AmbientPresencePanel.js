@@ -305,7 +305,7 @@ module("lively.identity.AmbientPresencePanel")
       update: function update() {
         if (!lively.identity.did || !lively.identity.did.isLoggedIn()) return;
         var handle = lively.identity.did.currentUser().handle;
-        this._nameMorph.textString = "@" + handle;
+        this._nameMorph.textString = "@" + lively.identity.did.displayHandle();
         this._updateControls();
         this._updateStatus();
 
@@ -524,6 +524,7 @@ module("lively.identity.AmbientPresencePanel")
         function connectAndSync() {
           self.sync();
           lively.bindings.connect(lively.identity.did, "identityChanged", self, "sync");
+          lively.bindings.connect(lively.identity.did, "displayHandleChanged", self, "update");
         }
         if (lively.identity && lively.identity.did) connectAndSync();
         else lively.require("lively.identity.DID").toRun(connectAndSync);

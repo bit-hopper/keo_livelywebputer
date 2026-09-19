@@ -423,6 +423,15 @@ module("lively.identity.DID")
             (!!u.domainHandle && h === u.domainHandle);
         },
 
+        // The handle to show for the signed-in account: its verified domain
+        // handle if it has one, else its registered handle. Display only —
+        // keep using user.handle for API paths, avatar seeds and anything
+        // else keyed on the registered handle.
+        displayHandle: function () {
+          var u = this._currentUser;
+          return u ? (u.domainHandle || u.handle) : null;
+        },
+
         // Fetch the account's verified domain handle (if any) into
         // _currentUser.domainHandle. Best-effort: on failure the registered
         // handle simply remains the only own-handle.
@@ -433,7 +442,13 @@ module("lively.identity.DID")
             .then(function (r) { return r.ok ? r.json() : { domains: [] }; })
             .then(function (b) {
               var v = (b.domains || []).filter(function (d) { return d.status === "verified"; })[0];
-              if (u === lively.identity.did._currentUser) u.domainHandle = v ? String(v.domain).toLowerCase() : null;
+              if (u !== lively.identity.did._currentUser) return;
+              var next = v ? String(v.domain).toLowerCase() : null;
+              if (next === (u.domainHandle || null)) return;
+              u.domainHandle = next;
+              // Its own signal (not identityChanged, which other listeners
+              // answer by redoing presence/room work) so only display code reacts.
+              lively.bindings.signal(lively.identity.did, "displayHandleChanged", u);
             })
             .catch(function () {});
         },

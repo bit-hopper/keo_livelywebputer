@@ -217,8 +217,27 @@ module("lively.identity.MenuBarEntry")
           if (!lively.identity || !lively.identity.did) return;
           var loggedIn = lively.identity.did.isLoggedIn();
           var user = loggedIn && lively.identity.did.currentUser();
-          this.textString = loggedIn ? "@" + user.handle : "sign in";
+          this.textString = loggedIn ? "@" + lively.identity.did.displayHandle() : "sign in";
           this.updateAvatar(loggedIn ? user.handle : null);
+          this.fitWidth();
+        },
+
+        // Widen the entry (never below its base width) so a long label — a
+        // domain handle like "@tinylil.world" — isn't clipped. The label is
+        // 13.33px Helvetica on one line (white-space: pre), measured with a
+        // canvas in that font so it doesn't depend on the DOM having rendered
+        // yet; padding is the entry's own left (incl. avatar) and right insets.
+        fitWidth: function fitWidth() {
+          var PAD = this.BASE_PADDING;
+          var extra = this._avatarMorph ? this.AVATAR_SIZE + this.AVATAR_GAP : 0;
+          var ctx = document.createElement("canvas").getContext("2d");
+          ctx.font = '13.3333px "Helvetica Neue", Helvetica, sans-serif';
+          var textW = Math.ceil(ctx.measureText(this.textString || "").width);
+          var want = Math.max(this.BASE_WIDTH + extra, textW + PAD + extra + PAD + 4);
+          if (Math.abs(this.getExtent().x - want) < 1) return;
+          this.setExtent(this.getExtent().withX(want));
+          this.owner && this.owner.relayout && this.owner.relayout();
+          this.recenterText();
         },
 
         // Shows a small identicon (or the user's uploaded avatarUrl, once
@@ -277,6 +296,10 @@ module("lively.identity.MenuBarEntry")
             self.update();
             lively.bindings.connect(
               lively.identity.did, "identityChanged",
+              self, "update",
+            );
+            lively.bindings.connect(
+              lively.identity.did, "displayHandleChanged",
               self, "update",
             );
           };

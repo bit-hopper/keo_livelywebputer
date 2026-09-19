@@ -198,7 +198,7 @@ module("lively.identity.ProfileCard")
             content: [{
               type: "paragraph",
               content: [{ type: "text",
-                text: "@" + user.handle + " invited @" + (targetHandle || targetDid) + " to join c/" + constellationName + "." }],
+                text: "@" + lively.identity.did.displayHandle() + " invited @" + (targetHandle || targetDid) + " to join c/" + constellationName + "." }],
             }],
           };
           lively.identity.postCardSerializer.serializePlainToEnvelope({
