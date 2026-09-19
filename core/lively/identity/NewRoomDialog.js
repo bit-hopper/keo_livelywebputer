@@ -139,7 +139,7 @@ module('lively.identity.NewRoomDialog')
           sourceModule: 'lively.morphic.Core',
           submorphs: [{
             _Extent: lively.pt(18.0, 18.0),
-            _Position: lively.pt(10.0, 7.0),
+            _Position: lively.pt(10.0, 5.0),
             _FontFamily: "'Material Symbols Rounded'",
             _FontSize: 13.5,
             className: 'lively.morphic.Text',
@@ -153,7 +153,7 @@ module('lively.identity.NewRoomDialog')
             textString: 'videocam',
           }, {
             _Extent: lively.pt(48.0, 16.0),
-            _Position: lively.pt(30.0, 8.0),
+            _Position: lively.pt(30.0, 7.0),
             _FontFamily: 'Helvetica',
             _FontSize: 12,
             className: 'lively.morphic.Text',
@@ -186,7 +186,7 @@ module('lively.identity.NewRoomDialog')
           sourceModule: 'lively.morphic.Core',
           submorphs: [{
             _Extent: lively.pt(18.0, 18.0),
-            _Position: lively.pt(10.0, 7.0),
+            _Position: lively.pt(10.0, 5.0),
             _FontFamily: "'Material Symbols Rounded'",
             _FontSize: 13.5,
             className: 'lively.morphic.Text',
@@ -200,7 +200,7 @@ module('lively.identity.NewRoomDialog')
             textString: 'headset',
           }, {
             _Extent: lively.pt(48.0, 16.0),
-            _Position: lively.pt(30.0, 8.0),
+            _Position: lively.pt(30.0, 7.0),
             _FontFamily: 'Helvetica',
             _FontSize: 12,
             className: 'lively.morphic.Text',
@@ -235,7 +235,7 @@ module('lively.identity.NewRoomDialog')
           sourceModule: 'lively.morphic.Core',
           submorphs: [{
             _Extent: lively.pt(18.0, 18.0),
-            _Position: lively.pt(10.0, 7.0),
+            _Position: lively.pt(10.0, 5.0),
             _FontFamily: "'Material Symbols Rounded'",
             _FontSize: 13.5,
             className: 'lively.morphic.Text',
@@ -249,7 +249,7 @@ module('lively.identity.NewRoomDialog')
             textString: 'chat',
           }, {
             _Extent: lively.pt(48.0, 16.0),
-            _Position: lively.pt(30.0, 8.0),
+            _Position: lively.pt(30.0, 7.0),
             _FontFamily: 'Helvetica',
             _FontSize: 12,
             className: 'lively.morphic.Text',

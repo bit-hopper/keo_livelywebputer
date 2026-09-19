@@ -211,16 +211,19 @@ module("lively.identity.RoomSettingsDialog")
           // being computed correctly. Every OTHER working icon-glyph
           // morph in this codebase (gear buttons, card type-icon chips)
           // already sets these two; this one just needs to match.
-          var icon = new lively.morphic.Text(lively.rect(10, 7, 18, 18), glyph);
+          // clipMode "visible": the glyph's line box (~22px at this size)
+          // is taller than the 18px box, so "hidden" sliced off its bottom
+          // (confirmed live -- NewRoomDialog's same-size icons don't clip).
+          var icon = new lively.morphic.Text(lively.rect(10, 3, 18, 18), glyph);
           icon.applyStyle({ fontFamily: "'Material Symbols Rounded'", fontSize: 13.5,
             textColor: isOn ? selectedText : normalText, borderWidth: 0,
-            allowInput: false, selectable: false, clipMode: "hidden" });
+            allowInput: false, selectable: false, clipMode: "visible", fill: null });
           icon.eventsAreIgnored = true;
           chip.addMorph(icon);
-          var lbl = new lively.morphic.Text(lively.rect(30, 8, 48, 16), label);
+          var lbl = new lively.morphic.Text(lively.rect(30, 5, 48, 16), label);
           lbl.applyStyle({ fontFamily: "Helvetica", fontSize: 12,
             textColor: isOn ? selectedText : normalText, borderWidth: 0,
-            allowInput: false, selectable: false, clipMode: "hidden" });
+            allowInput: false, selectable: false, clipMode: "visible", fill: null });
           lbl.eventsAreIgnored = true;
           chip.addMorph(lbl);
           chip.onMouseDown = function (evt) { onToggle(); evt.stop(); return true; };
@@ -238,8 +241,11 @@ module("lively.identity.RoomSettingsDialog")
         sectionLabel("Room Type (optional)");
         iconChip(MARGIN, "videocam", "Video", this._isVideo, function () { self._toggleVideo(); });
         iconChip(MARGIN + 94, "headset", "Voice", this._isVoice, function () { self._toggleVoice(); });
+        // Chat is derived, not stored: lit exactly when neither video nor
+        // voice is on (a text-only room); clicking it clears both.
+        iconChip(MARGIN + 188, "chat", "Chat", !this._isVideo && !this._isVoice, function () { self._selectChatOnly(); });
         y += 32;
-        fieldLabel("Neither selected is a plain text room. Video always includes voice.");
+        fieldLabel("Chat is a plain text room (neither video nor voice). Video always includes voice.");
         divider();
 
         // ── Active Participants Nickname ──────────────────────────────────
@@ -432,6 +438,13 @@ module("lively.identity.RoomSettingsDialog")
         this._isVideo = !this._isVideo;
         // A video room always carries audio, so turning video on turns voice on.
         if (this._isVideo) this._isVoice = true;
+        this._render();
+      },
+
+      _selectChatOnly: function _selectChatOnly() {
+        this._captureFieldEdits();
+        this._isVideo = false;
+        this._isVoice = false;
         this._render();
       },
 
