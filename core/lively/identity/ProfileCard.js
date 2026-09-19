@@ -248,13 +248,23 @@ module("lively.identity.ProfileCard")
         if (!pane) return;
         pane.removeAllMorphs();
 
-        // Bio lines wrap at ~80 chars, so a full 300-char bio is ~4 lines,
-        // which the base layout has room for. Only if it wraps to more
-        // (wide glyphs) grow the window by the extra lines, and shrink back
-        // on the next render. Done before anything is laid out so
-        // pane.getExtent() below is already final.
-        var bioLines = payload.bio ? Math.ceil(payload.bio.length / 75) : 0;
-        var bioExtra = Math.max(0, bioLines - 4) * 18;
+        // The base layout has room for a 4-line bio. If the bio wraps to more,
+        // grow the window by the extra height, and shrink back on the next
+        // render. Done before anything is laid out so pane.getExtent() below
+        // is already final. The line count is measured, not estimated from
+        // the character count: long unbroken words wrap early, and a
+        // chars-per-line guess undershot by a line (the divider then ran
+        // through the last line of a 300-char bio). Text width is the pane
+        // width minus the fixed left/right layout columns used for `cw` below
+        // (32 + 32 margins, 190 astro box, 12 gap) minus the text node's own
+        // 4px left/right padding. 20px/line is the measured rendered height
+        // of 12pt Helvetica; +8 padding matches the bio box below.
+        var BIO_LINE_H = 20, BIO_PAD = 8, BIO_BASE_H = 4 * BIO_LINE_H + BIO_PAD;
+        var bioTextW = pane.getExtent().x - 266 - 8;
+        var bioBoxH = payload.bio
+          ? Math.max(32, lively.identity.ProfileCard.ui.wrapLineCount(payload.bio, bioTextW, 16, 'Helvetica') * BIO_LINE_H + BIO_PAD)
+          : 0;
+        var bioExtra = Math.max(0, bioBoxH - BIO_BASE_H);
         var prevExtra = self._bioExtra || 0;
         if (bioExtra !== prevExtra) {
           var curExt = self.getExtent();
@@ -463,11 +473,12 @@ module("lively.identity.ProfileCard")
         var bioText = payload.bio ||
           (self._isOwner ? "No bio yet. Click Edit to add one." : "");
         if (bioText) {
-          // Bio is capped at 300 chars, i.e. up to ~5 wrapped lines, so size
-          // the box from a chars-per-line estimate instead of a fixed 50px
-          // (which clipped anything past ~2 lines). ~18px/line, per the
-          // multi-line sizing note in CLAUDE.md.
-          var bioH = Math.max(32, Math.ceil(bioText.length / 75) * 18 + 8);
+          // Height comes from the measured wrapped line count (see the growth
+          // block at the top of _renderView), not a fixed or guessed value.
+          // The "No bio yet" placeholder isn't in payload.bio, so measure it here.
+          var bioH = payload.bio
+            ? bioBoxH
+            : Math.max(32, lively.identity.ProfileCard.ui.wrapLineCount(bioText, cw - 8, 16, 'Helvetica') * BIO_LINE_H + BIO_PAD);
           var bio = new lively.morphic.Text(lively.rect(contentX, y, cw, bioH), bioText);
           bio.applyStyle({ allowInput: false, fontSize: 12,
             textColor: Color.rgb(80, 80, 80),
@@ -2077,6 +2088,28 @@ module("lively.identity.ProfileCard")
       },
 
       ui: {
+        // Number of lines `text` occupies when wrapped at `widthPx` the way
+        // the browser wraps a pre-wrap Text morph: explicit newlines start a
+        // new line, words break only at whitespace, and a word wider than the
+        // line overflows rather than splitting. Measured with a canvas in the
+        // same font, so it matches the DOM without needing the morph rendered.
+        wrapLineCount: function (text, widthPx, fontPx, family) {
+          var ctx = document.createElement('canvas').getContext('2d');
+          ctx.font = fontPx + 'px ' + family;
+          var total = 0;
+          String(text).split('\n').forEach(function (para) {
+            var lines = 1, x = 0;
+            (para.match(/\S+|\s+/g) || []).forEach(function (tok) {
+              var w = ctx.measureText(tok).width;
+              if (/^\s/.test(tok)) { x += w; return; }   // trailing whitespace hangs
+              if (x > 0 && x + w > widthPx) { lines++; x = 0; }
+              x += w;
+            });
+            total += lines;
+          });
+          return total;
+        },
+
         noDrag: function (m) {
           m.draggingEnabled = false; m.droppingEnabled = false; m.grabbingEnabled = false;
           return m;
