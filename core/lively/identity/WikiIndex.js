@@ -1022,6 +1022,20 @@ module("lively.identity.WikiIndex")
         // _fitCard below measures the real (possibly wrapped) height once
         // this card is actually live in the world and hugs the card/date
         // position to it.
+        // KNOWN ISSUE (open): some pages come back with page.wikiName == null and
+        // render here as a card with no title. Seen 2026-09-18 on @tinasnow's
+        // personal wiki: 5 of 10 pages. Verified via GET /@handle/:objId — each
+        // such page's latest version has a `state.wikiName` key whose value is
+        // null (while `title` and `category` are present), and the index list
+        // (listWikiPagesForUser / listWikiPages in ObjectRepository.js) just
+        // reads state.wikiName, so the null is in the stored data, not a
+        // display or query bug. NOT yet investigated: how those versions were
+        // saved with a null name (an editor save path that drops it?), and
+        // whether they're also unreachable via /wiki/:pageName (it looks pages
+        // up by wikiName). Possible stopgaps: fall back to the page's `title`
+        // in the list query + here, and/or repair the stored data. Note that
+        // `|| ""` sorting/filtering elsewhere in this file already tolerates
+        // null names, so only this label is affected.
         var nameLabel = new lively.morphic.Text(lively.rect(14, 14, CARD_W - 28, 1), page.wikiName);
         nameLabel.applyStyle({
           fontSize: 15, fontWeight: "600", textColor: Color.rgb(30, 30, 30),
