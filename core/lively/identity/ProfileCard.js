@@ -289,6 +289,40 @@ module("lively.identity.ProfileCard")
         var AV   = 72;
         var RING = 4;
 
+        // Material Symbols glyph as a plain Text morph (see CLAUDE.md's icon
+        // section). Declared locally, not at module scope, for the same
+        // evalJS closure-loss reason as SOCIAL_PLATFORMS above. `px` is the
+        // real rendered glyph size; fontSize is points (px * 0.75). The box
+        // is px + 8 so the shapeNode's fixed internal padding doesn't clip
+        // it, and it's shifted back by 4 so the glyph's top-left lands at
+        // (x, y). Purely decorative, so it ignores Lively events.
+        function ico(name, x, y, px, r, g, b) {
+          var box = px + 8;
+          // +2 (net of the -4 padding shift): the icon font's glyph center
+          // sits ~6px above a regular-font text line's center at the same
+          // box y, measured live via getBoundingClientRect on the spans.
+          var m = new lively.morphic.Text(lively.rect(x - 4, y + 2, box, box), name);
+          m.draggingEnabled = false; m.droppingEnabled = false; m.grabbingEnabled = false;
+          m.applyStyle({ allowInput: false, selectable: false, clipMode: 'hidden',
+            fontFamily: "'Material Symbols Rounded'", fontSize: px * 0.75, align: 'center',
+            whiteSpaceHandling: 'pre', padding: lively.Rectangle.inset(0, 0, 0, 0),
+            textColor: Color.rgb(r, g, b),
+            fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
+          m.eventsAreIgnored = true;
+          return m;
+        }
+
+        // Button label color: applyStyle({textColor}) on a Button updates the
+        // model but not the label's DOM (see CLAUDE.md), so write it directly.
+        function tint(btn, r, g, b) {
+          var c = 'rgb(' + r + ',' + g + ',' + b + ')';
+          var n = btn.label && btn.label.renderContext().shapeNode;
+          if (!n) return;
+          n.style.color = c;
+          var kids = n.querySelectorAll('*');
+          for (var i = 0; i < kids.length; i++) kids[i].style.color = c;
+        }
+
         // banner — always rendered; image if set, placeholder otherwise
         var hasBanner = true;
         if (payload.bannerUrl) {
@@ -335,9 +369,9 @@ module("lively.identity.ProfileCard")
                       'Libra','Scorpio','Sagittarius','Capricorn','Aquarius','Pisces'];
         var GLYPHS = ['♈︎','♉︎','♊︎','♋︎','♌︎','♍︎','♎︎','♏︎','♐︎','♑︎','♒︎','♓︎'];
         var astroItems = [
-          { sym: '☉', label: 'Sun',    val: payload.sunSign    || null },
-          { sym: '☽', label: 'Moon',   val: payload.moonSign   || null },
-          { sym: '↑', label: 'Rising', val: payload.risingSign || null },
+          { sym: 'wb_sunny',   label: 'Sun',    val: payload.sunSign    || null },
+          { sym: 'dark_mode',  label: 'Moon',   val: payload.moonSign   || null },
+          { sym: 'north',      label: 'Rising', val: payload.risingSign || null },
         ];
         var hasAstro = astroItems.some(function (a) { return !!a.val; });
         var bx        = pw - BW - contentX;
@@ -347,17 +381,13 @@ module("lively.identity.ProfileCard")
         if (hasAstro || self._isOwner) {
           var astroBox = new lively.morphic.Box(
             lively.rect(bx, by, BW, astroBoxH));
-          astroBox.applyStyle({ fill: Color.rgb(242, 203, 217),
-            borderRadius: 8, borderColor: Color.rgb(218, 218, 224), borderWidth: 1 });
+          astroBox.applyStyle({ fill: Color.rgb(247, 246, 249),
+            borderRadius: 12, borderColor: Color.rgb(232, 230, 236), borderWidth: 1 });
           pane.addMorph(astroBox);
           astroItems.forEach(function (item, i) {
             var ry = 7 + i * ROW;
             var si = SIGNS.indexOf(item.val);
-            var symM = new lively.morphic.Text(lively.rect(10, ry, 20, ROW), item.sym);
-            symM.applyStyle({ allowInput: false, fontSize: 14,
-              textColor: Color.rgb(90, 90, 90),
-              fill: Color.rgba(0,0,0,0), borderWidth: 0 });
-            astroBox.addMorph(symM);
+            astroBox.addMorph(ico(item.sym, 12, ry, 16, 204, 0, 87));
             var lblM = new lively.morphic.Text(lively.rect(32, ry + 4, 44, 14), item.label);
             lblM.applyStyle({ allowInput: false, fontSize: 9,
               textColor: Color.rgb(160, 160, 160),
@@ -408,7 +438,8 @@ module("lively.identity.ProfileCard")
 
         // links
         (payload.links || []).forEach(function (link) {
-          pane.addMorph(txt(link.label || link.url, contentX, y, cw, 16, 11, 200, 30, 80, false));
+          pane.addMorph(ico('link', contentX, y, 14, 204, 0, 87));
+          pane.addMorph(txt(link.label || link.url, contentX + 20, y, cw - 20, 16, 11, 204, 0, 87, false));
           y += 20;
         });
 
@@ -568,13 +599,25 @@ module("lively.identity.ProfileCard")
         // including to the owner themselves if their own device never
         // completed the WebAuthn PRF delegation ceremony that publishes this.
         var encLabel = payload.accountX25519Pub
-          ? "🔒 Can receive encrypted postcards"
-          : "🔓 Hasn't set up encryption yet";
+          ? "Can receive encrypted postcards"
+          : "Hasn't set up encryption yet";
         var encColor = payload.accountX25519Pub ? [46, 125, 50] : [170, 130, 20];
-        var encW = Math.min(cw, Math.ceil(encLabel.length * 7.5) + 16);
-        pane.addMorph(txt(encLabel, contentX, y, encW, 14, 10,
+        var encW = Math.min(cw - 20, Math.ceil(encLabel.length * 7.5) + 16);
+        pane.addMorph(ico(payload.accountX25519Pub ? 'lock' : 'lock_open',
+          contentX, y, 14, encColor[0], encColor[1], encColor[2]));
+        pane.addMorph(txt(encLabel, contentX + 20, y, encW, 14, 10,
           encColor[0], encColor[1], encColor[2], false));
         y += 17;
+
+        // Section heading: small gray icon + caption, used for the
+        // identity/domain/wallet/device/meta rows below. Local for the same
+        // closure-loss reason as ico() above.
+        function heading(icon, label) {
+          pane.addMorph(ico(icon, contentX, y + 1, 12, 150, 150, 158));
+          pane.addMorph(txt(label, contentX + 18, y, cw - 18, 16, 10, 140, 140, 148, false))
+            .applyStyle({ fixedWidth: false });
+          y += 18;
+        }
 
         // Enable-encryption button — owner only, only while missing. Prior
         // to this there was no way to complete this after skipping
@@ -624,10 +667,10 @@ module("lively.identity.ProfileCard")
           var btnW = 108, btnH = 26;
           var btnX = bx + Math.floor((BW - btnW) / 2);
           var btnY = Math.round((by + astroBoxH + dividerY) / 2 - btnH / 2);
-          var friendsBtn = new lively.morphic.Button(lively.rect(btnX, btnY, btnW, btnH), '✉︎  Friends');
+          var friendsBtn = new lively.morphic.Button(lively.rect(btnX, btnY, btnW, btnH), 'Friends');
           friendsBtn.applyStyle({ borderRadius: 26, borderWidth: 1,
-            borderColor: Color.rgb(200, 200, 210),
-            fill: Color.rgb(249, 249, 251), fontSize: 12 });
+            borderColor: Color.rgb(204, 0, 87),
+            fill: Color.rgb(255, 255, 255), textColor: Color.rgb(204, 0, 87), fontSize: 12 });
           friendsBtn.setAppearanceStylingMode(false);
           friendsBtn.setBorderStylingMode(false);
           friendsBtn._handle     = handle;
@@ -967,12 +1010,12 @@ module("lively.identity.ProfileCard")
           });
           lively.bindings.connect(friendsBtn, 'fire', friendsBtn, 'doAction');
           pane.addMorph(friendsBtn);
+          tint(friendsBtn, 204, 0, 87);
         })();
 
 
         // verified identity
-        pane.addMorph(txt("Verified identity", contentX, y, cw, 16, 10, 140, 140, 140, false)).applyStyle({ fixedWidth: false });
-        y += 18;
+        heading('fingerprint', "Verified identity");
 
         var didStr = did ? lively.identity.postCardUtils.truncateDid(did) : "—";
         var didW = Math.ceil(didStr.length * 7.5) + 16;
@@ -1003,10 +1046,10 @@ module("lively.identity.ProfileCard")
         copyBtn.draggingEnabled = false;
         copyBtn.droppingEnabled = false;
         copyBtn.grabbingEnabled = false;
-        copyBtn.applyStyle({ fill: Color.rgb(240, 240, 240),
-          borderColor: Color.rgb(200, 200, 200), borderRadius: 4, borderWidth: 1,
+        copyBtn.applyStyle({ fill: Color.rgba(0, 0, 0, 0),
+          borderRadius: 12, borderWidth: 0,
           fontFamily: "'Material Symbols Rounded'", fontSize: 12,
-          textColor: Color.rgb(80, 80, 80), align: 'center',
+          textColor: Color.rgb(120, 120, 128), align: 'center',
           allowInput: false, selectable: false, clipMode: 'hidden',
           whiteSpaceHandling: 'pre', handStyle: 'pointer' });
         copyBtn._copyDid = did;
@@ -1034,14 +1077,16 @@ module("lively.identity.ProfileCard")
         // replaced by a domain, verified or not, so an invalid domain
         // "falls back to the original handle" by construction.
         if (domains && domains.length) {
-          pane.addMorph(txt("Domain", contentX, y, cw, 16, 10, 140, 140, 140, false)).applyStyle({ fixedWidth: false });
-          y += 18;
+          heading('language', "Domain");
           domains.forEach(function (d) {
             var isVerified = d.status === 'verified';
             var domW = Math.ceil(d.domain.length * 7.5) + 16;
             pane.addMorph(txt(d.domain, contentX, y, domW, 16, 10, 50, 50, 50, false));
-            var badge = txt(isVerified ? 'Verified!' : 'Invalid!', contentX + domW + 4, y, 70, 16, 10,
-              isVerified ? 34 : 200, isVerified ? 139 : 150, isVerified ? 34 : 0, false);
+            var bc = isVerified ? [34, 139, 34] : [200, 150, 0];
+            var badgeIcon = ico(isVerified ? 'verified' : 'error', contentX + domW + 4, y - 2, 14, bc[0], bc[1], bc[2]);
+            pane.addMorph(badgeIcon);
+            var badge = txt(isVerified ? 'Verified' : 'Invalid', contentX + domW + 24, y, 70, 16, 10,
+              bc[0], bc[1], bc[2], false);
             pane.addMorph(badge);
             badge.renderContext().morphNode.title = isVerified ? 'Verified domain' : 'Invalid domain';
             y += 20;
@@ -1051,8 +1096,7 @@ module("lively.identity.ProfileCard")
 
         // ETH address — heading line, then the copiable address on its own line.
         if (payload.ethAddress) {
-          pane.addMorph(txt("ETH address", contentX, y, cw, 16, 10, 140, 140, 140, false)).applyStyle({ fixedWidth: false });
-          y += 18;
+          heading('account_balance_wallet', "ETH address");
           var addrStr = lively.identity.postCardUtils.truncateAddress(payload.ethAddress);
           var addrW = Math.ceil(addrStr.length * 7.5) + 16;
           pane.addMorph(txt(addrStr, contentX, y, addrW, 16, 10, 50, 50, 50, false));
@@ -1062,10 +1106,10 @@ module("lively.identity.ProfileCard")
           addrCopyBtn.draggingEnabled = false;
           addrCopyBtn.droppingEnabled = false;
           addrCopyBtn.grabbingEnabled = false;
-          addrCopyBtn.applyStyle({ fill: Color.rgb(240, 240, 240),
-            borderColor: Color.rgb(200, 200, 200), borderRadius: 4, borderWidth: 1,
+          addrCopyBtn.applyStyle({ fill: Color.rgba(0, 0, 0, 0),
+            borderRadius: 12, borderWidth: 0,
             fontFamily: "'Material Symbols Rounded'", fontSize: 12,
-            textColor: Color.rgb(80, 80, 80), align: 'center',
+            textColor: Color.rgb(120, 120, 128), align: 'center',
             allowInput: false, selectable: false, clipMode: 'hidden',
             whiteSpaceHandling: 'pre', handStyle: 'pointer' });
           addrCopyBtn._copyText = payload.ethAddress;
@@ -1087,8 +1131,7 @@ module("lively.identity.ProfileCard")
         }
 
         // device
-        pane.addMorph(txt("Device", contentX, y, cw, 16, 10, 140, 140, 140, false)).applyStyle({ fixedWidth: false });
-        y += 18;
+        heading('devices', "Device");
         var vms = (didDoc && didDoc.verificationMethod) || [];
         if (vms.length === 0) {
           pane.addMorph(txt("No device registered", contentX, y, cw, 16, 10, 160, 160, 160, false)).applyStyle({ fixedWidth: false });
@@ -1111,9 +1154,11 @@ module("lively.identity.ProfileCard")
         }
         var hostStr = (window.location.hostname) || "—";
         y += 6;
-        pane.addMorph(txt("Joined: " + joinedStr, contentX, y, cw, 16, 10, 100, 100, 100, false)).applyStyle({ fixedWidth: false });
+        pane.addMorph(ico('calendar_today', contentX, y + 1, 12, 150, 150, 158));
+        pane.addMorph(txt("Joined " + joinedStr, contentX + 18, y, cw - 18, 16, 10, 100, 100, 108, false)).applyStyle({ fixedWidth: false });
         y += 18;
-        pane.addMorph(txt("Hosting: " + hostStr, contentX, y, cw, 16, 10, 100, 100, 100, false)).applyStyle({ fixedWidth: false });
+        pane.addMorph(ico('dns', contentX, y + 1, 12, 150, 150, 158));
+        pane.addMorph(txt("Hosted on " + hostStr, contentX + 18, y, cw - 18, 16, 10, 100, 100, 108, false)).applyStyle({ fixedWidth: false });
         y += 18;
 
         var ph = pane.getExtent().y;
@@ -1129,8 +1174,8 @@ module("lively.identity.ProfileCard")
           var worldBtn = new lively.morphic.Button(
             lively.rect(ex, ph - 36, EW, 26), "Enter World →");
           worldBtn.applyStyle({ fill: Color.rgb(255, 255, 255),
-            borderColor: Color.rgb(200, 200, 200), borderRadius: 4,
-            fontSize: 12, textColor: Color.rgb(60, 60, 60), borderWidth: 1 });
+            borderColor: Color.rgb(204, 0, 87), borderRadius: 13,
+            fontSize: 12, textColor: Color.rgb(204, 0, 87), borderWidth: 1 });
           worldBtn.setAppearanceStylingMode(false);
           worldBtn.setBorderStylingMode(false);
           worldBtn._targetHandle     = handle;
@@ -1140,14 +1185,15 @@ module("lively.identity.ProfileCard")
           });
           lively.bindings.connect(worldBtn, 'fire', worldBtn, 'doAction');
           pane.addMorph(worldBtn);
+          tint(worldBtn, 204, 0, 87);
         }
 
         // Edit button — navigates to Window via this.owner._win
         if (self._isOwner) {
           var editBtn = new lively.morphic.Button(
             lively.rect(pw - 78, ph - 36, 66, 26), "Edit");
-          editBtn.applyStyle({ fill: Color.rgb(240, 26, 105),
-            borderColor: Color.rgb(240, 26, 105), borderRadius: 4,
+          editBtn.applyStyle({ fill: Color.rgb(204, 0, 87),
+            borderColor: Color.rgb(204, 0, 87), borderRadius: 13,
             fontSize: 12, textColor: Color.white, borderWidth: 1 });
           editBtn.setAppearanceStylingMode(false);
           editBtn.setBorderStylingMode(false);
@@ -1161,6 +1207,7 @@ module("lively.identity.ProfileCard")
           });
           lively.bindings.connect(editBtn, 'fire', editBtn, 'doAction');
           pane.addMorph(editBtn);
+          tint(editBtn, 255, 255, 255);
         }
       },
 
