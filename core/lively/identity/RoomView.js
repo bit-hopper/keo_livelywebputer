@@ -275,6 +275,13 @@ module("lively.identity.RoomView")
         return { audio: true, video: !!(this._room && this._room.isVideo) };
       },
 
+      // Video circles (self-view, remote pictures, name tags) exist only in video
+      // rooms. An audio-only room has no pictures to show: people are listed in the
+      // members panel and their voices play through the session-owned audio sink.
+      _hasVideoCircles: function () {
+        return !!(this._room && this._room.isVideo);
+      },
+
       _start: function () {
         var isCall = this._isCall();
         this._buildView();
@@ -346,8 +353,9 @@ module("lively.identity.RoomView")
         var pushedToPeers = this._applyLocalTracksToAllPeers();
         // No view attached (window closed): there's no own circle to fill, so
         // pushing tracks to peers is all that's left to do — a later
-        // showView() fills the circle itself via _renderVideoCircles.
-        if (pushedToPeers && (filledOwnCircle || !this._viewRoot)) return;
+        // showView() fills the circle itself via _renderVideoCircles. Same when the
+        // room has no circles at all (audio-only): there's no self view to wait for.
+        if (pushedToPeers && (filledOwnCircle || !this._viewRoot || !this._hasVideoCircles())) return;
         var self = this;
         var remaining = attemptsLeft > 0 ? attemptsLeft - 1 : 0;
         var delay = attemptsLeft > 0 ? 300 : 3000;
@@ -1465,7 +1473,7 @@ module("lively.identity.RoomView")
 
       _renderVideoCircles: function () {
         if (!this._viewRoot) return; // window closed — circles are rebuilt by showView
-        if (!this._isCall()) return; // text room: roster only, no video circles
+        if (!this._hasVideoCircles()) return; // text and audio-only rooms: roster only, no circles
         var self = this;
         var user = lively.identity.did.currentUser();
         var myDid = user ? user.did : null;
