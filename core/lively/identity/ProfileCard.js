@@ -790,7 +790,7 @@ module("lively.identity.ProfileCard")
           var friendsBtn = new lively.morphic.Button(lively.rect(btnX, btnY, btnW, btnH), friendLabel);
           friendsBtn.applyStyle({ borderRadius: 26, borderWidth: 1,
             borderColor: Color.rgb(204, 0, 87),
-            fill: Color.rgb(255, 255, 255), textColor: Color.rgb(204, 0, 87), fontSize: 12 });
+            fill: Color.rgb(204, 0, 87), textColor: Color.white, fontSize: 12, fontWeight: 'bold' });
           friendsBtn.setAppearanceStylingMode(false);
           friendsBtn.setBorderStylingMode(false);
           friendsBtn._handle     = handle;
@@ -835,7 +835,7 @@ module("lively.identity.ProfileCard")
             var panel  = new lively.morphic.Box(
               lively.rect(px, anchorPos.y + this.getExtent().y + 4, FW, FH));
             panel.applyStyle({ fill: Color.white, borderRadius: 8,
-              borderColor: Color.rgb(218, 218, 224), borderWidth: 1 });
+              borderColor: Color.rgb(204, 0, 87), borderWidth: 1 });
             var titleM = new lively.morphic.Text(lively.rect(12, 10, FW - 44, 18), 'Friends');
             titleM.applyStyle({ allowInput: false, fontSize: 13, fontWeight: 'bold',
               fill: Color.rgba(0,0,0,0), borderWidth: 0,
@@ -1120,16 +1120,27 @@ module("lively.identity.ProfileCard")
 
             // See copyBtn's comment further down (below the astro box) for
             // why this is a Text morph, not a Button.
-            var closeBtn = new lively.morphic.Text(lively.rect(FW - 28, 6, 22, 22), 'close');
+            // Same look as MiniProfileCard's close button: light gray circle,
+            // muted 13px glyph, red circle + white glyph on hover. Literals
+            // (not that module's constants) since this handler is rebuilt
+            // from source text at runtime and loses its enclosing scope.
+            var closeBtn = new lively.morphic.Text(lively.rect(FW - 30, 8, 22, 22), 'close');
             closeBtn.draggingEnabled = false;
             closeBtn.droppingEnabled = false;
             closeBtn.grabbingEnabled = false;
-            closeBtn.applyStyle({ borderRadius: 11, borderWidth: 0, fill: Color.rgba(0,0,0,0),
-              fontFamily: "'Material Symbols Rounded'", fontSize: 12,
-              textColor: Color.rgb(100, 100, 100), align: 'center',
-              padding: lively.Rectangle.inset(0, 5, 0, 0),
+            closeBtn.applyStyle({ borderRadius: 11, borderWidth: 0,
+              fill: Color.rgb(240, 240, 240),
+              fontFamily: "'Material Symbols Rounded'", fontSize: 13 * 0.75,
+              textColor: Color.rgb(140, 140, 140), align: 'center',
+              padding: lively.Rectangle.inset(0, 3, 0, 0),
               allowInput: false, selectable: false, clipMode: 'hidden',
               whiteSpaceHandling: 'pre', handStyle: 'pointer' });
+            closeBtn.onMouseOver = function () {
+              closeBtn.applyStyle({ fill: Color.rgb(224, 66, 66), textColor: Color.white });
+            };
+            closeBtn.onMouseOut = function () {
+              closeBtn.applyStyle({ fill: Color.rgb(240, 240, 240), textColor: Color.rgb(140, 140, 140) });
+            };
             closeBtn.addScript(function onMouseUp(evt) {
               this.owner.remove();
               evt.stop();
@@ -1137,10 +1148,21 @@ module("lively.identity.ProfileCard")
             });
             panel.addMorph(closeBtn);
             if (pane) pane.addMorph(panel);
+            // Soft drop shadow, same idiom/values as the other floating panels
+            // (FilePreview, WikiEditor): written straight to the shape node.
+            panel.renderContext().shapeNode.style.boxShadow = '0 4px 12px rgba(0,0,0,0.18)';
           });
           lively.bindings.connect(friendsBtn, 'fire', friendsBtn, 'doAction');
           pane.addMorph(friendsBtn);
-          tint(friendsBtn, 204, 0, 87);
+          tint(friendsBtn, 255, 255, 255);
+          // The label is a child morph; style changes on it don't always reach
+          // the DOM (CLAUDE.md), so set the weight directly as well.
+          var fbLabel = friendsBtn.label && friendsBtn.label.renderContext().shapeNode;
+          if (fbLabel) {
+            fbLabel.style.fontWeight = 'bold';
+            var fbKids = fbLabel.querySelectorAll('*');
+            for (var fi = 0; fi < fbKids.length; fi++) fbKids[fi].style.fontWeight = 'bold';
+          }
         })();
 
 
@@ -2114,6 +2136,8 @@ module("lively.identity.ProfileCard")
           var PC = lively.identity.ProfileCard, ui = PC.ui, H = PC.natal.PANEL_H, PANEL_H = H;
           var card = ui.card(pane, x, y, w, H);
           card.name = 'pcNatalCard';
+          // Faint pink accent (the card's usual neutral fill/border, warmed).
+          card.applyStyle({ fill: Color.rgb(255, 245, 249), borderColor: Color.rgb(243, 200, 219) });
           var heading = ui.text(card, 'Birth chart calculator', 12, 8, w - 24, 16, 11, 60, 60, 68, true);
           heading.applyStyle({ fixedWidth: true, align: 'center' });
           ui.icon(card, 'lock', 10, 26, 12, 120, 120, 128);

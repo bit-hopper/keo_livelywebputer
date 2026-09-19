@@ -181,7 +181,9 @@ module("lively.identity.MiniProfileCard")
           borderRadius: CLOSE / 2,
           borderWidth: 0,
           align: "center",
-          padding: lively.Rectangle.inset(0, Math.round((CLOSE - CLOSE_GLYPH_PX) / 2), 0, 0),
+          // 3px, not (CLOSE - CLOSE_GLYPH_PX)/2: the glyph's text box sits ~2px low
+          // inside its circle at this size, measured live, so this centers the X.
+          padding: lively.Rectangle.inset(0, 3, 0, 0),
           allowInput: false, selectable: false, clipMode: "hidden",
           whiteSpaceHandling: "pre", handStyle: "pointer",
         });
@@ -192,6 +194,9 @@ module("lively.identity.MiniProfileCard")
         card.addMorph(closeX);
 
         $world.addMorph(card);
+        // Soft drop shadow, same idiom/values as the other floating panels
+        // (FilePreview, WikiEditor): written straight to the shape node.
+        card.renderContext().shapeNode.style.boxShadow = "0 4px 12px rgba(0,0,0,0.18)";
         this._card = card;
 
         fetch("/@" + handle + "/profile", { credentials: "include" })
