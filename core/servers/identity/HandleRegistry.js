@@ -194,6 +194,24 @@ function resolveHandleForDid(did, thenDo) {
   });
 }
 
+// A DID's currently-verified domain, or null -- no handle fallback. For DIDs
+// that aren't a person (constellations): resolveHandleForDid's fallback to
+// the base handle would surface the handle of any account whose DID happens
+// to equal the constellation's, instead of the constellation's own name.
+function resolveVerifiedDomainForDid(did, thenDo) {
+  withDB(function(err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      "SELECT domain FROM domains WHERE did = $1 AND status = 'verified' ORDER BY verified_at DESC LIMIT 1",
+      [did],
+      function(err, result) {
+        if (err) return thenDo(err);
+        thenDo(null, result.rows[0] ? result.rows[0].domain : null);
+      }
+    );
+  });
+}
+
 // { did, status } for a registered domain, or null.
 function resolveDomainRow(domain, thenDo) {
   withDB(function(err, pool) {
@@ -540,6 +558,7 @@ module.exports = {
   register:         register,
   resolve:          resolve,
   resolveHandleForDid: resolveHandleForDid,
+  resolveVerifiedDomainForDid: resolveVerifiedDomainForDid,
   resolveForDelivery: resolveForDelivery,
   createAlias:      createAlias,
   listAliasesForHandle: listAliasesForHandle,

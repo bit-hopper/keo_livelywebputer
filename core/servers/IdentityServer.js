@@ -4105,7 +4105,7 @@ module.exports = function (route, app) {
               constellationSpace.mintSpaceToken(constellation, req.identity, function (err, token) {
                 if (err) return res.status(500).json({ error: String(err) });
                 // A constellation's verified domain (if any) is the name shown for it.
-                handleRegistry.resolveHandleForDid(constellation.did, function (domainErr, domain) {
+                handleRegistry.resolveVerifiedDomainForDid(constellation.did, function (domainErr, domain) {
                 res.json({
                   token: token,
                   genesisObjId: constellation.genesisObjId,
@@ -5535,7 +5535,7 @@ module.exports = function (route, app) {
       // no breaking change for existing API callers.
       if (req.accepts(["html", "json"]) === "html") {
         return handleRegistry.resolveHandleForDid(constellation.createdBy, function (err, createdByHandle) {
-          handleRegistry.resolveHandleForDid(constellation.did, function (domainErr, domain) {
+          handleRegistry.resolveVerifiedDomainForDid(constellation.did, function (domainErr, domain) {
             var quickInfo = {
               createdBy: constellation.createdBy,
               createdByHandle: createdByHandle || null,
