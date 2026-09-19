@@ -468,7 +468,14 @@ module("lively.identity.ProfileCard")
         var cw = bx - contentX - 12; // stop before astro box (12px gap)
 
         // handle + display name
-        pane.addMorph(txt("@" + handle, contentX, y, cw, 16, 11, 120, 120, 120, false));
+        // A verified domain handle is the account's main handle, so show it
+        // instead of the registered handle (the handle we were opened with
+        // can be either); keep it in the window title too. Only a verified
+        // domain counts — a lapsed one falls back to the registered handle.
+        var verifiedDomain = (domains || []).filter(function (d) { return d.status === 'verified'; })[0];
+        var shownHandle = verifiedDomain ? verifiedDomain.domain : handle;
+        self.setTitle("Profile — @" + shownHandle);
+        pane.addMorph(txt("@" + shownHandle, contentX, y, cw, 16, 11, 120, 120, 120, false));
         y += 19;
         pane.addMorph(txt(payload.displayName || handle, contentX, y, cw, 28, 16, 20, 20, 20, true));
         y += 28;
@@ -532,7 +539,7 @@ module("lively.identity.ProfileCard")
           // Filled social accounts render as the bare logo (no enclosing
           // circle); CIRC is the slot each one (and each empty "add"
           // placeholder circle) occupies, ICON the logo's own size within it.
-          var CIRC = 38, GAP = 16, ICON = 30, PAD = 16;
+          var CIRC = 38, GAP = 16, ICON = 28, PAD = 16;
           var rowEndX = pw - contentX - PAD;
           var rowStartX = rowEndX - (5 * CIRC + 4 * GAP);
           var accounts = (payload.socialAccounts || []).slice(0, 5);
