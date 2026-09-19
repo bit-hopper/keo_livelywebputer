@@ -60,6 +60,23 @@ module("lively.identity.ProfileCard")
         this._isOwner    = false;
         var titleBar = this.makeTitleBar("Profile", this.getExtent().x);
         this.titleBar = this.addMorph(titleBar);
+        this._ensureAccentChromeCss();
+        this.addStyleClassName("identity-accent-chrome");
+      },
+
+      // Title text sits on the window's colored fill, so the base theme's
+      // #555 is hard to read -- same shared class/technique as
+      // LoginDialog.js's _ensureAccentChromeCss.
+      _ensureAccentChromeCss: function () {
+        var STYLE_ID = "identity-accent-chrome-style";
+        if (document.getElementById(STYLE_ID)) return;
+        var styleEl = document.createElement("style");
+        styleEl.id = STYLE_ID;
+        styleEl.textContent = [
+          ".Window.identity-accent-chrome .Text.window-title { color: #fff; }",
+          ".Window.identity-accent-chrome.highlighted .Text.window-title { color: #fff; font-weight: bold; }",
+        ].join("\n");
+        document.head.appendChild(styleEl);
       },
 
       loadProfile: function loadProfile(handle, worldObjId) {
