@@ -135,6 +135,18 @@ module("lively.identity.WikiIndex")
         this._openScope({ kind: "personal", handle: handle });
       },
 
+      // What to SHOW for this wiki's owner, and what to build page links from:
+      // a verified domain handle when the owner has one (/@tinylil.world/wiki
+      // rather than /@tinasnow/wiki), else the registered handle / constellation
+      // name. Data requests keep using the real handle/name; the domain URL is
+      // only an alias for them server-side.
+      _shownHandle: function () {
+        return this._scope.displayHandle || this._scope.handle;
+      },
+      _shownName: function () {
+        return (this._quickInfo && this._quickInfo.domain) || this._scope.name;
+      },
+
       _openScope: function (scope) {
         this._scope = scope;
         if (scope.kind === "personal") return this._startPersonal();
@@ -171,7 +183,19 @@ module("lively.identity.WikiIndex")
         var user = lively.identity.did.currentUser();
         this._canWrite = !!(user && lively.identity.did.isOwnHandle(this._scope.handle));
         this._quickInfo = {};
-        this._fetchWikiIndex();
+        // Look up the owner's verified domain (if any) before building the
+        // page, so the header shows it from the first render. Best-effort:
+        // on any failure the registered handle is shown.
+        var self = this;
+        var scope = this._scope;
+        fetch("/@" + encodeURIComponent(scope.handle) + "/domains", { credentials: "include" })
+          .then(function (r) { return r.ok ? r.json() : { domains: [] }; })
+          .then(function (b) {
+            var v = (b.domains || []).filter(function (d) { return d.status === "verified"; })[0];
+            scope.displayHandle = v ? String(v.domain).toLowerCase() : null;
+          })
+          .catch(function () {})
+          .then(function () { self._fetchWikiIndex(); });
       },
 
       _fetchWikiIndex: function () {
@@ -197,8 +221,8 @@ module("lively.identity.WikiIndex")
 
       _start: function () {
         document.title = this._scope.kind === "personal"
-          ? "@" + this._scope.handle + " wiki"
-          : "c/" + this._scope.name + " wiki";
+          ? "@" + this._shownHandle() + " wiki"
+          : "c/" + this._shownName() + " wiki";
         this._buildChrome();
         this._renderCategoriesPanel();
         this._renderPages();
@@ -221,8 +245,8 @@ module("lively.identity.WikiIndex")
         $world.addMorph(this._backBtn);
 
         var titleText = this._scope.kind === "personal"
-          ? "@" + this._scope.handle + " wiki"
-          : "c/" + this._scope.name + " wiki";
+          ? "@" + this._shownHandle() + " wiki"
+          : "c/" + this._shownName() + " wiki";
         this._titleLabel = lively.morphic.Text.makeLabel(titleText, {
           fontSize: 22, fontWeight: "bold", textColor: Color.rgb(20, 20, 20),
         });
@@ -273,10 +297,10 @@ module("lively.identity.WikiIndex")
       _buildBackButton: function () {
         var self = this;
         var isPersonal = this._scope.kind === "personal";
-        var label = isPersonal ? "← @" + this._scope.handle : "← c/" + this._scope.name;
+        var label = isPersonal ? "← @" + this._shownHandle() : "← c/" + this._shownName();
         var href = isPersonal
-          ? "/@" + encodeURIComponent(this._scope.handle)
-          : "/c/" + encodeURIComponent(this._scope.name);
+          ? "/@" + encodeURIComponent(this._shownHandle())
+          : "/c/" + encodeURIComponent(this._shownName());
         // Pink pill, same look as ConstellationLounge.js's "+ Postcard". It
         // replaces a bare makeLabel link whose click never fired — makeLabel
         // -> beLabel() calls ignoreEvents() unconditionally, and Events.js
@@ -1422,13 +1446,13 @@ module("lively.identity.WikiIndex")
       _patchMenuBarEntry: function (entry) {
         var self = this;
         var isPersonal = this._scope.kind === "personal";
-        var label = isPersonal ? "@" + this._scope.handle + " wiki" : "c/" + this._scope.name + " wiki";
+        var label = isPersonal ? "@" + this._shownHandle() + " wiki" : "c/" + this._shownName() + " wiki";
         var backHref = isPersonal
-          ? "/@" + encodeURIComponent(this._scope.handle)
-          : "/c/" + encodeURIComponent(this._scope.name);
+          ? "/@" + encodeURIComponent(this._shownHandle())
+          : "/c/" + encodeURIComponent(this._shownName());
         var tooltip = isPersonal
-          ? "@" + this._scope.handle + " — back to your home world"
-          : "Constellation " + this._scope.name + " — back to c/" + this._scope.name;
+          ? "@" + this._shownHandle() + " — back to your home world"
+          : "Constellation " + this._shownName() + " — back to c/" + this._shownName();
         entry.currentWorldDisplayName = function () { return label; };
         entry.toolTip = tooltip;
         entry.onMouseUp = function (evt) {

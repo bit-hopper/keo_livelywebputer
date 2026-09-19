@@ -519,6 +519,12 @@ module("lively.identity.WikiView")
           if (lastEditedBy) allDids.push(lastEditedBy);
 
           this._resolveHandles(allDids, function (didToHandle) {
+            // The header line shows the handle the view was opened with (the
+            // registered one); the author's resolved handle is their verified
+            // domain when they have one, so make the two agree.
+            if (didToHandle[envelope.did] && self._handleEl) {
+              self._handleEl.textContent = "@" + didToHandle[envelope.did];
+            }
             self._renderAuthorRow(envelope.did, didToHandle[envelope.did] || self._handle);
             self._renderContributorsRow(contributorDids, didToHandle);
             self._verify(envelope, lastEditedBy ? (didToHandle[lastEditedBy] || null) : null);
