@@ -52,10 +52,13 @@ module("lively.identity.FaceEffects")
 
       _maskImages: {},        // effect id -> HTMLImageElement, once requested
       THREE_SRC: "/core/lib/jenga3d/jenga3d-deps.js",   // window.jenga3dDeps.THREE (shared with Jenga3D)
-      // Curved-surface shape of the 3D mask, in the mask image's own pixels: it
-      // bulges toward the viewer across its width (sideBulge at the centre line, 0
-      // at the cheek edges, shifted by centerOffset) and curls away at forehead and chin.
-      MASK_SURFACE: { halfWidth: 72, sideBulge: 30, centerOffset: -20, vCurl: 24, vCurlRange: 130, vMin: -90, vMax: 110 },
+      // Shape of the 3D mask, in the mask image's own pixels. Over the face the
+      // surface conforms to the wearer's real face: each mask point takes its depth
+      // from the nearby face landmarks (inverse-distance weighting, softened by
+      // depthSoft), then floats `margin` in front of the skin. Above the face (the
+      // horns and hood) and past the chin there are no landmarks, so the depth of the
+      // nearest face point carries on and curls away (vCurl over vCurlRange).
+      MASK_SURFACE: { margin: 7, depthSoft: 11, vCurl: 40, vCurlRange: 110, faceTop: -95, faceBottom: 108 },
       _three: null,           // { THREE, renderer, scene, camera, mesh, geo, mw, mh, w, h } once built
       _threePromise: null,
       _selected: {},          // effect id -> true
@@ -156,7 +159,7 @@ module("lively.identity.FaceEffects")
         }).then(function (THREE) {
           var img = self._maskImage("keomask");
           return (img.complete ? Promise.resolve() : img.decode()).then(function () {
-            var geo = new THREE.PlaneGeometry(1, 1, 16, 40);
+            var geo = new THREE.PlaneGeometry(1, 1, 24, 56);
             var tex = new THREE.Texture(img);
             tex.colorSpace = THREE.SRGBColorSpace;
             tex.anisotropy = 4;
@@ -233,13 +236,31 @@ module("lively.identity.FaceEffects")
           t.camera.right = w; t.camera.top = h;
           t.camera.updateProjectionMatrix();
         }
+        // Landmarks in head-local mask units: x right, y down, z into the head (mask
+        // pixels, so they compare directly with mask vertex positions).
+        var nLm = lm.length, lx = t.lx || (t.lx = new Float32Array(nLm)),
+            ly = t.ly || (t.ly = new Float32Array(nLm)), lz = t.lz || (t.lz = new Float32Array(nLm));
+        for (var j = 0; j < nLm; j++) {
+          var rel = sub(P(j), eyeMid);
+          lx[j] = dot(rel, xAxis) / k; ly[j] = dot(rel, yAxis) / k; lz[j] = dot(rel, zAxis) / k;
+        }
+        var soft2 = SF.depthSoft * SF.depthSoft;
         var pos = t.geo.attributes.position, uv = t.geo.attributes.uv;
         for (var i = 0; i < pos.count; i++) {
           var u = uv.getX(i) * t.mw - mk.eyeMid.x, v = (1 - uv.getY(i)) * t.mh - mk.eyeMid.y;
-          var xn = u / SF.halfWidth;
-          var toward = SF.sideBulge * (1 - xn * xn) + SF.centerOffset;
-          var vc = Math.max(SF.vMin, Math.min(SF.vMax, v)) / SF.vCurlRange;
-          toward -= SF.vCurl * vc * vc;
+          // Depth of the real face under this point (weights fall off as distance^-4).
+          var sw = 0, sz = 0;
+          for (var n = 0; n < nLm; n++) {
+            var ddx = u - lx[n], ddy = v - ly[n];
+            var q = ddx * ddx + ddy * ddy + soft2;
+            var wgt = 1 / (q * q);
+            sw += wgt; sz += wgt * lz[n];
+          }
+          var toward = -(sz / sw) + SF.margin;
+          // Beyond the face (horns and hood above it, the point below the chin) curl away.
+          var over = v < SF.faceTop ? SF.faceTop - v : (v > SF.faceBottom ? v - SF.faceBottom : 0);
+          var oc = over / SF.vCurlRange;
+          toward -= SF.vCurl * oc * oc;
           // toward the viewer = smaller z in the image frame
           var wp = add(eyeMid, add(mul(xAxis, u * k), add(mul(yAxis, v * k), mul(zAxis, -toward * k))));
           pos.setXYZ(i, wp[0], h - wp[1], -wp[2]);
