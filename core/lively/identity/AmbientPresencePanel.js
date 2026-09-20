@@ -3,6 +3,7 @@ module("lively.identity.AmbientPresencePanel")
     "lively.identity.DID",
     "lively.identity.PostCardUtils",
     "lively.identity.Soundboard",
+    "lively.identity.FaceEffects",
     "lively.persistence.BuildSpec",
   )
   .toRun(function () {
@@ -302,13 +303,16 @@ module("lively.identity.AmbientPresencePanel")
         };
         block.addMorph(leaveBtn);
 
-        var BTN_W = (NS.PANEL_W - 24 - 8) / 2, BASE = Color.rgba(255, 255, 255, 0.06);
+        var BTN_W = (NS.PANEL_W - 24 - 16) / 3, BASE = Color.rgba(255, 255, 255, 0.06);
         this._screenBtn = NS.makeIconButton(lively.rect(12, 52, BTN_W, 36), "screen_share", "toggleScreenshare", 8, BASE);
         this._screenBtn.toolTip = "Share your screen";
         block.addMorph(this._screenBtn);
         this._soundBtn = NS.makeIconButton(lively.rect(12 + BTN_W + 8, 52, BTN_W, 36), "campaign", "openSoundboard", 8, BASE);
         this._soundBtn.toolTip = "Soundboard";
         block.addMorph(this._soundBtn);
+        this._faceBtn = NS.makeIconButton(lively.rect(12 + 2 * (BTN_W + 8), 52, BTN_W, 36), "face_retouching_natural", "openFaceEffects", 8, BASE);
+        this._faceBtn.toolTip = "Face effects";
+        block.addMorph(this._faceBtn);
 
         var sep = new lively.morphic.Box(lively.rect(0, ROOM_H - 1, NS.PANEL_W, 1));
         sep.applyStyle({ fill: Color.rgba(255, 255, 255, 0.08), borderWidth: 0 });
@@ -322,7 +326,7 @@ module("lively.identity.AmbientPresencePanel")
       _hideInRoomRow: function _hideInRoomRow() {
         var NS = lively.identity.AmbientPresencePanel;
         if (this._roomRow) { this._roomRow.remove(); this._roomRow = null; }
-        this._screenBtn = null; this._soundBtn = null;
+        this._screenBtn = null; this._soundBtn = null; this._faceBtn = null;
         if (this._mainRow) this._mainRow.setPosition(lively.pt(0, 0));
         this.setExtent(lively.pt(NS.PANEL_W, NS.PANEL_H));
         this.alignInWorld();
@@ -338,7 +342,15 @@ module("lively.identity.AmbientPresencePanel")
       openSoundboard: function openSoundboard() {
         var NS = lively.identity.AmbientPresencePanel;
         if (!NS.controlEnabled("soundboard")) return;
+        lively.identity.FaceEffects.close();
         lively.identity.Soundboard.toggle(this);
+      },
+
+      openFaceEffects: function openFaceEffects() {
+        var NS = lively.identity.AmbientPresencePanel;
+        if (!NS.controlEnabled("faceeffects")) return;
+        lively.identity.Soundboard.close();
+        lively.identity.FaceEffects.toggle(this);
       },
 
       _updateControls: function _updateControls() {
@@ -361,6 +373,12 @@ module("lively.identity.AmbientPresencePanel")
           var sbOn = NS.controlEnabled("soundboard");
           this._soundBtn.applyStyle({ textColor: sbOn ? NS.ICON_DEFAULT : NS.ICON_INACTIVE });
           if (!sbOn && lively.identity.Soundboard) lively.identity.Soundboard.close();
+        }
+        if (this._faceBtn) {
+          var feOn = NS.controlEnabled("faceeffects");
+          var feActive = feOn && lively.identity.FaceEffects.isActive();
+          this._faceBtn.applyStyle({ textColor: !feOn ? NS.ICON_INACTIVE : (feActive ? NS.STATUS_ONLINE : NS.ICON_DEFAULT) });
+          if (!feOn) lively.identity.FaceEffects.close();
         }
       },
 
@@ -458,6 +476,7 @@ module("lively.identity.AmbientPresencePanel")
         this._activeRoom = null;
         this._screenSharing = false;
         lively.identity.Soundboard.teardown();
+        lively.identity.FaceEffects.teardown();
         this._releaseLocalMedia();
         if (this._panel) this._panel._hideInRoomRow();
         this.refreshControls();
@@ -472,6 +491,7 @@ module("lively.identity.AmbientPresencePanel")
       controlEnabled: function controlEnabled(which) {
         // Call-only actions: need a live call; the soundboard also needs the headset on.
         if (which === "screenshare") return !!this._activeRoom;
+        if (which === "faceeffects") return !!this._activeRoom && !!this._mediaKinds.video;
         if (which === "soundboard") return !!this._activeRoom && !(this._panel && this._panel.deafened);
         if (this._activeRoom) return which === "camera" ? !!this._mediaKinds.video : true;
         var RV = lively.identity.RoomView;
@@ -485,6 +505,20 @@ module("lively.identity.AmbientPresencePanel")
 
       getLocalStream: function getLocalStream() {
         return this._localStream;
+      },
+
+      // The video track to send to peers: the face-effects canvas while effects are
+      // on and producing frames, otherwise the raw camera track (or null).
+      getOutgoingVideoTrack: function getOutgoingVideoTrack() {
+        var fx = lively.identity.FaceEffects.getOutgoingTrack();
+        if (fx) return fx;
+        return this._localStream ? (this._localStream.getVideoTracks()[0] || null) : null;
+      },
+
+      // What the self-view should play: the face-effects stream while it is
+      // producing frames, otherwise the plain local stream.
+      getLocalViewStream: function getLocalViewStream() {
+        return lively.identity.FaceEffects.getViewStream() || this._localStream;
       },
 
       // The audio track to send to peers: the soundboard mix once it has been
@@ -539,6 +573,7 @@ module("lively.identity.AmbientPresencePanel")
       // own self-view). RoomView owns those, this panel only owns the stream.
       _afterLocalTracksChanged: function _afterLocalTracksChanged() {
         try { lively.identity.Soundboard.rewireMic(); } catch (e) { console.error("[AmbientPresencePanel] rewireMic failed:", e); }
+        try { lively.identity.FaceEffects.rewire(); } catch (e) { console.error("[AmbientPresencePanel] face effects rewire failed:", e); }
         try {
           var RV = lively.identity.RoomView;
           if (RV && RV.localTracksChanged) RV.localTracksChanged();

@@ -2002,7 +2002,7 @@ module("lively.identity.RoomView")
       // (false if the stream isn't ready yet — camera off, permission still
       // pending, or denied — so the caller knows whether to keep polling).
       _fillWithLocalStream: function (circle) {
-        var stream = lively.identity.AmbientPresencePanel.getLocalStream();
+        var stream = lively.identity.AmbientPresencePanel.getLocalViewStream();
         if (!stream) return false;
         var videoEl = document.createElement("video");
         videoEl.autoplay = true;
@@ -2029,7 +2029,8 @@ module("lively.identity.RoomView")
         var iv = null;
         function check() {
           if (!videoEl.isConnected) { if (iv) clearInterval(iv); return; }
-          var vt = stream.getVideoTracks()[0];
+          // The self-view's source is re-pointed when effects toggle, so read what it plays now.
+          var vt = (videoEl.srcObject || stream).getVideoTracks()[0];
           var live = !!vt && vt.readyState === "live" && !vt.muted &&
             videoEl.readyState >= 2 && videoEl.videoWidth > 0 && !videoEl.paused;
           videoEl.style.visibility = live ? "visible" : "hidden";
@@ -2480,7 +2481,7 @@ module("lively.identity.RoomView")
           var kind = t.receiver && t.receiver.track && t.receiver.track.kind;
           if (!kind) return;
           // Audio: the soundboard mix once it has started, else the plain mic track.
-          var track = kind === "audio" ? AP.getOutgoingAudioTrack() : stream.getVideoTracks()[0];
+          var track = kind === "audio" ? AP.getOutgoingAudioTrack() : AP.getOutgoingVideoTrack();
           if (!track) {
             // The local track of this kind was removed (camera turned off: the
             // panel stops the video track to release the device). Video is
@@ -2708,7 +2709,7 @@ module("lively.identity.RoomView")
         if (this._roomLeft) return;
         this._applyLocalTracksToAllPeers();
         var user = lively.identity.did.currentUser();
-        var stream = lively.identity.AmbientPresencePanel.getLocalStream();
+        var stream = lively.identity.AmbientPresencePanel.getLocalViewStream();
         if (!user || !stream) return;
         this._videoSurfaces(user.did).forEach(function (surface) {
           var v = surface.renderContext().shapeNode.querySelector("video");
