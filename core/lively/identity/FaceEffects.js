@@ -58,7 +58,15 @@ module("lively.identity.FaceEffects")
       // depthSoft), then floats `margin` in front of the skin. Above the face (the
       // horns and hood) and past the chin there are no landmarks, so the depth of the
       // nearest face point carries on and curls away (vCurl over vCurlRange).
-      MASK_SURFACE: { margin: 7, depthSoft: 11, vCurl: 40, vCurlRange: 110, faceTop: -95, faceBottom: 108 },
+      // `conform` blends a smooth quadratic fit of the whole face's depth (0) with the
+      // per-point landmark depth (1): the fit keeps the mask a clean shell, the landmark
+      // part follows the nose and cheeks but amplifies MediaPipe's depth noise, which
+      // is worst on strongly turned heads.
+      MASK_SURFACE: { margin: 7, depthSoft: 11, conform: 0.15, vCurl: 14, vCurlRange: 130, faceTop: -95, faceBottom: 108 },
+      // Landmarks are smoothed over time for the 3D mask (fraction of the new frame
+      // kept per update); a jump larger than resetJump (fraction of the eye distance)
+      // is a new face or a fast move and restarts the smoothing.
+      MASK_SMOOTH: { alpha: 0.55, resetJump: 0.6 },
       _three: null,           // { THREE, renderer, scene, camera, mesh, geo, mw, mh, w, h } once built
       _threePromise: null,
       _selected: {},          // effect id -> true
@@ -212,7 +220,23 @@ module("lively.identity.FaceEffects")
         var t = this._three;
         if (!t) return false;
         var mk = this.MASKS.keomask, SF = this.MASK_SURFACE;
-        function P(i) { return [lm[i].x * w, lm[i].y * h, lm[i].z * w]; }
+        // Smooth the landmarks over time (MediaPipe's depth jitters frame to frame).
+        var nAll = lm.length, sm = this.MASK_SMOOTH;
+        if (!t.prev || t.prev.length !== nAll * 3 || t.prevW !== w || t.prevH !== h) { t.prev = new Float32Array(nAll * 3); t.havePrev = false; t.prevW = w; t.prevH = h; }
+        var eyeSpan = Math.hypot((lm[362].x - lm[133].x) * w, (lm[362].y - lm[133].y) * h) || 1;
+        var jump = 0;
+        if (t.havePrev) {
+          jump = Math.hypot((lm[1].x * w - t.prev[3]), (lm[1].y * h - t.prev[4])) / eyeSpan;
+        }
+        var keep = (t.havePrev && jump < sm.resetJump) ? (1 - sm.alpha) : 0;
+        for (var q0 = 0; q0 < nAll; q0++) {
+          t.prev[q0 * 3]     = t.prev[q0 * 3]     * keep + lm[q0].x * w * (1 - keep);
+          t.prev[q0 * 3 + 1] = t.prev[q0 * 3 + 1] * keep + lm[q0].y * h * (1 - keep);
+          t.prev[q0 * 3 + 2] = t.prev[q0 * 3 + 2] * keep + lm[q0].z * w * (1 - keep);
+        }
+        t.havePrev = true;
+        var prev = t.prev;
+        function P(i) { return [prev[i * 3], prev[i * 3 + 1], prev[i * 3 + 2]]; }
         function sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
         function add(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
         function mul(a, q) { return [a[0] * q, a[1] * q, a[2] * q]; }
@@ -245,6 +269,33 @@ module("lively.identity.FaceEffects")
           lx[j] = dot(rel, xAxis) / k; ly[j] = dot(rel, yAxis) / k; lz[j] = dot(rel, zAxis) / k;
         }
         var soft2 = SF.depthSoft * SF.depthSoft;
+        // Least-squares quadratic fit  z = c0 + c1 u + c2 v + c3 u^2 + c4 v^2 + c5 u v  over the landmarks.
+        var A = [], bv = [], r0, r1;
+        for (r0 = 0; r0 < 6; r0++) { A.push([0, 0, 0, 0, 0, 0]); bv.push(0); }
+        for (var m = 0; m < nLm; m++) {
+          var mu = lx[m] / 60, mv = ly[m] / 100;
+          var basis = [1, mu, mv, mu * mu, mv * mv, mu * mv];
+          for (r0 = 0; r0 < 6; r0++) {
+            bv[r0] += basis[r0] * lz[m];
+            for (r1 = 0; r1 < 6; r1++) A[r0][r1] += basis[r0] * basis[r1];
+          }
+        }
+        for (r0 = 0; r0 < 6; r0++) A[r0][r0] += 1e-3;
+        // Gauss-Jordan
+        for (var col = 0; col < 6; col++) {
+          var piv = col;
+          for (r0 = col + 1; r0 < 6; r0++) if (Math.abs(A[r0][col]) > Math.abs(A[piv][col])) piv = r0;
+          var tmpRow = A[col]; A[col] = A[piv]; A[piv] = tmpRow;
+          var tmpB = bv[col]; bv[col] = bv[piv]; bv[piv] = tmpB;
+          for (r0 = 0; r0 < 6; r0++) {
+            if (r0 === col) continue;
+            var fct = A[r0][col] / A[col][col];
+            for (r1 = col; r1 < 6; r1++) A[r0][r1] -= fct * A[col][r1];
+            bv[r0] -= fct * bv[col];
+          }
+        }
+        var cf = [];
+        for (r0 = 0; r0 < 6; r0++) cf.push(bv[r0] / A[r0][r0]);
         var pos = t.geo.attributes.position, uv = t.geo.attributes.uv;
         for (var i = 0; i < pos.count; i++) {
           var u = uv.getX(i) * t.mw - mk.eyeMid.x, v = (1 - uv.getY(i)) * t.mh - mk.eyeMid.y;
@@ -256,7 +307,9 @@ module("lively.identity.FaceEffects")
             var wgt = 1 / (q * q);
             sw += wgt; sz += wgt * lz[n];
           }
-          var toward = -(sz / sw) + SF.margin;
+          var qu = u / 60, qv = Math.max(SF.faceTop, Math.min(SF.faceBottom, v)) / 100;
+          var quad = cf[0] + cf[1] * qu + cf[2] * qv + cf[3] * qu * qu + cf[4] * qv * qv + cf[5] * qu * qv;
+          var toward = -(quad + SF.conform * (sz / sw - quad)) + SF.margin;
           // Beyond the face (horns and hood above it, the point below the chin) curl away.
           var over = v < SF.faceTop ? SF.faceTop - v : (v > SF.faceBottom ? v - SF.faceBottom : 0);
           var oc = over / SF.vCurlRange;
