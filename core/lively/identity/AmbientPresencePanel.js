@@ -2,6 +2,7 @@ module("lively.identity.AmbientPresencePanel")
   .requires(
     "lively.identity.DID",
     "lively.identity.PostCardUtils",
+    "lively.identity.Soundboard",
     "lively.persistence.BuildSpec",
   )
   .toRun(function () {
@@ -19,6 +20,7 @@ module("lively.identity.AmbientPresencePanel")
     Object.extend(lively.identity.AmbientPresencePanel, {
       PANEL_W: 340,
       PANEL_H: 52,
+      ROOM_H: 100,
       PANEL_BG:       Color.black,
       TEXT_PRIMARY:   Color.rgb(242, 243, 245),
       TEXT_SECONDARY: Color.rgb(148, 155, 164),
@@ -43,7 +45,7 @@ module("lively.identity.AmbientPresencePanel")
       // glyphs as the SVGs under core/media/material-icons/, just as inline
       // text so textColor drives the on/off (gray/red) recoloring instead
       // of image tinting.
-      makeIconButton: function (rect, glyph, actionName) {
+      makeIconButton: function (rect, glyph, actionName, radius, baseFill) {
         var NS = lively.identity.AmbientPresencePanel;
         var btn = new lively.morphic.Text(rect);
         btn.textString = glyph;
@@ -54,8 +56,8 @@ module("lively.identity.AmbientPresencePanel")
           // below still uses the real 20px target since padding is genuine px.
           fontSize: 15,
           textColor: NS.ICON_DEFAULT,
-          fill: null,
-          borderRadius: rect.width / 2,
+          fill: baseFill || null,
+          borderRadius: radius != null ? radius : rect.width / 2,
           borderWidth: 1,
           borderColor: NS.PANEL_BG,
           align: "center",
@@ -67,14 +69,16 @@ module("lively.identity.AmbientPresencePanel")
           handStyle: "pointer",
         });
         btn._actionName = actionName;
+        btn._baseFill = baseFill || null;
         btn.addScript(function onMouseOver() {
           this.applyStyle({ fill: lively.identity.AmbientPresencePanel.HOVER_BG });
         });
         btn.addScript(function onMouseOut() {
-          this.applyStyle({ fill: null });
+          this.applyStyle({ fill: this._baseFill || null });
         });
         btn.addScript(function onMouseUp(evt) {
-          this.owner[this._actionName]();
+          var panel = lively.identity.AmbientPresencePanel._panel;
+          if (panel) panel[this._actionName]();
           evt.stop();
           return true;
         });
@@ -117,16 +121,25 @@ module("lively.identity.AmbientPresencePanel")
       _render: function _render() {
         var NS = lively.identity.AmbientPresencePanel;
         this.removeAllMorphs();
+        this._roomRow = null;
+
+        // Everything of the user row lives in one container so the room block
+        // can sit above it by moving just this one morph.
+        var row = new lively.morphic.Box(lively.rect(0, 0, NS.PANEL_W, NS.PANEL_H));
+        row.applyStyle({ fill: null, borderWidth: 0 });
+        row.draggingEnabled = false; row.droppingEnabled = false; row.grabbingEnabled = false;
+        this.addMorph(row);
+        this._mainRow = row;
 
         this._avatarMorph = new lively.morphic.Image(lively.rect(10, 10, 32, 32));
         this._avatarMorph.applyStyle({ borderRadius: 16, borderWidth: 0, clipMode: "hidden" });
-        this.addMorph(this._avatarMorph);
+        row.addMorph(this._avatarMorph);
 
         this._badgeBase = NS.makeEllipse(lively.rect(30, 30, 14, 14), NS.STATUS_ONLINE, 2, NS.PANEL_BG);
-        this.addMorph(this._badgeBase);
+        row.addMorph(this._badgeBase);
         this._badgeBite = NS.makeEllipse(lively.rect(27, 27, 9, 9), NS.PANEL_BG, 0, null);
         this._badgeBite.setVisible(false);
-        this.addMorph(this._badgeBite);
+        row.addMorph(this._badgeBite);
 
         // fontSize is in pt, not px (see makeIconButton's comment) — 9pt/8.25pt
         // render at the actual-target 12px/11px, with box heights generous
@@ -135,25 +148,25 @@ module("lively.identity.AmbientPresencePanel")
         this._nameMorph.applyStyle({ fontSize: 9, fontWeight: "bold",
           textColor: NS.TEXT_PRIMARY, fill: null, borderWidth: 0, allowInput: false,
           selectable: false, clipMode: "hidden", whiteSpaceHandling: "pre" });
-        this.addMorph(this._nameMorph);
+        row.addMorph(this._nameMorph);
 
         this._statusMorph = new lively.morphic.Text(lively.rect(50, 27, 140, 16));
         this._statusMorph.applyStyle({ fontSize: 8.25, fontWeight: "600", textColor: NS.TEXT_SECONDARY,
           fill: null, borderWidth: 0, allowInput: false, selectable: false,
           clipMode: "hidden", whiteSpaceHandling: "pre" });
-        this.addMorph(this._statusMorph);
+        row.addMorph(this._statusMorph);
 
         this._camBtn = NS.makeIconButton(lively.rect(200, 12, 28, 28), "videocam", "toggleCamera");
-        this.addMorph(this._camBtn);
+        row.addMorph(this._camBtn);
 
         this._micBtn = NS.makeIconButton(lively.rect(234, 12, 28, 28), "mic", "toggleMic");
-        this.addMorph(this._micBtn);
+        row.addMorph(this._micBtn);
 
         this._headsetBtn = NS.makeIconButton(lively.rect(268, 12, 28, 28), "headset_mic", "toggleDeafen");
-        this.addMorph(this._headsetBtn);
+        row.addMorph(this._headsetBtn);
 
         this._gearBtn = NS.makeIconButton(lively.rect(302, 12, 28, 28), "settings", "openSettings");
-        this.addMorph(this._gearBtn);
+        row.addMorph(this._gearBtn);
       },
 
       toggleMic: function toggleMic() {
@@ -210,26 +223,50 @@ module("lively.identity.AmbientPresencePanel")
         } catch (e) {}
       },
 
-      // Grows the panel with a second strip showing which room you're in
-      // plus a "leave" glyph — onLeaveRequested / onShowRequested are supplied
-      // by the caller (RoomView.js's enterRoom call) so the actual
+      // Grows the panel with a room block ABOVE the user row: a header (which
+      // room, click to show its window, end-call glyph) and a row of call
+      // actions (screenshare, soundboard). onLeaveRequested / onShowRequested
+      // are supplied by the caller (RoomView.js's enterRoom call) so the actual
       // leave-presence and window semantics stay owned by the room session,
       // not duplicated here; this panel only shows status and relays clicks.
       _showInRoomRow: function _showInRoomRow(room) {
         var NS = lively.identity.AmbientPresencePanel;
         this._hideInRoomRow();
-        var ROW_H = 26;
-        this.setExtent(lively.pt(NS.PANEL_W, NS.PANEL_H + ROW_H));
+        var ROOM_H = NS.ROOM_H;
+        this.setExtent(lively.pt(NS.PANEL_W, NS.PANEL_H + ROOM_H));
+        this._mainRow.setPosition(lively.pt(0, ROOM_H));
 
-        var row = new lively.morphic.Box(lively.rect(0, NS.PANEL_H, NS.PANEL_W, ROW_H));
-        row.applyStyle({ fill: Color.rgba(255, 255, 255, 0.05), borderWidth: 0 });
-        this.addMorph(row);
-        this._roomRow = row;
+        var block = new lively.morphic.Box(lively.rect(0, 0, NS.PANEL_W, ROOM_H));
+        block.applyStyle({ fill: null, borderWidth: 0 });
+        block.draggingEnabled = false; block.droppingEnabled = false; block.grabbingEnabled = false;
+        this.addMorph(block);
+        this._roomRow = block;
 
-        var label = new lively.morphic.Text(lively.rect(12, 5, NS.PANEL_W - 56, 16));
-        label.textString = "In room: " + (room.roomName || "");
+        var chip = new lively.morphic.Text(lively.rect(12, 8, 34, 34));
+        chip.textString = "podcasts";
+        chip.applyStyle({
+          fontFamily: "'Material Symbols Rounded'", fontSize: 15, textColor: NS.STATUS_ONLINE,
+          fill: Color.rgba(35, 165, 89, 0.15), borderRadius: 8, borderWidth: 0, align: "center",
+          padding: lively.Rectangle.inset(0, 7, 0, 0),
+          allowInput: false, selectable: false, clipMode: "hidden", whiteSpaceHandling: "pre",
+        });
+        chip.eventsAreIgnored = true;
+        block.addMorph(chip);
+
+        var title = new lively.morphic.Text(lively.rect(54, 6, 200, 18));
+        title.textString = "Room Connected";
+        title.applyStyle({
+          fontSize: 9.75, fontWeight: "bold", textColor: NS.STATUS_ONLINE,
+          fill: null, borderWidth: 0, allowInput: false, selectable: false,
+          clipMode: "hidden", whiteSpaceHandling: "pre",
+        });
+        title.eventsAreIgnored = true;
+        block.addMorph(title);
+
+        var label = new lively.morphic.Text(lively.rect(54, 25, NS.PANEL_W - 110, 16));
+        label.textString = room.roomName || "";
         label.applyStyle({
-          fontSize: 9, fontWeight: "600", textColor: NS.TEXT_SECONDARY,
+          fontSize: 8.25, fontWeight: "600", textColor: NS.TEXT_SECONDARY,
           fill: null, borderWidth: 0, allowInput: false, selectable: false,
           clipMode: "hidden", whiteSpaceHandling: "pre", handStyle: "pointer",
         });
@@ -242,16 +279,18 @@ module("lively.identity.AmbientPresencePanel")
           evt.stop();
           return true;
         };
-        row.addMorph(label);
+        block.addMorph(label);
 
-        var leaveBtn = new lively.morphic.Text(lively.rect(NS.PANEL_W - 40, 2, 28, 22));
+        var leaveBtn = new lively.morphic.Text(lively.rect(NS.PANEL_W - 46, 10, 32, 30));
         leaveBtn.textString = "call_end";
         leaveBtn.applyStyle({
-          fontFamily: "'Material Symbols Rounded'", fontSize: 10, textColor: NS.ICON_DANGER,
+          fontFamily: "'Material Symbols Rounded'", fontSize: 15, textColor: NS.ICON_DANGER,
           fill: null, borderWidth: 0, align: "center", allowInput: false, selectable: false,
+          padding: lively.Rectangle.inset(0, 5, 0, 0),
           clipMode: "hidden", handStyle: "pointer",
         });
-        // onMouseUp, not onMouseDown: leaving hides this very row, and the panel
+        leaveBtn.toolTip = "Leave room";
+        // onMouseUp, not onMouseDown: leaving hides this very block, and the panel
         // is bottom-anchored, so it re-aligns downward — on mouse-down that slid
         // the settings gear under the still-held pointer, whose mouse-up then
         // opened the Settings window (confirmed live). Finishing the click first
@@ -261,16 +300,45 @@ module("lively.identity.AmbientPresencePanel")
           evt.stop();
           return true;
         };
-        row.addMorph(leaveBtn);
+        block.addMorph(leaveBtn);
+
+        var BTN_W = (NS.PANEL_W - 24 - 8) / 2, BASE = Color.rgba(255, 255, 255, 0.06);
+        this._screenBtn = NS.makeIconButton(lively.rect(12, 52, BTN_W, 36), "screen_share", "toggleScreenshare", 8, BASE);
+        this._screenBtn.toolTip = "Share your screen";
+        block.addMorph(this._screenBtn);
+        this._soundBtn = NS.makeIconButton(lively.rect(12 + BTN_W + 8, 52, BTN_W, 36), "campaign", "openSoundboard", 8, BASE);
+        this._soundBtn.toolTip = "Soundboard";
+        block.addMorph(this._soundBtn);
+
+        var sep = new lively.morphic.Box(lively.rect(0, ROOM_H - 1, NS.PANEL_W, 1));
+        sep.applyStyle({ fill: Color.rgba(255, 255, 255, 0.08), borderWidth: 0 });
+        sep.eventsAreIgnored = true;
+        block.addMorph(sep);
 
         this.alignInWorld();
+        this._updateControls();
       },
 
       _hideInRoomRow: function _hideInRoomRow() {
         var NS = lively.identity.AmbientPresencePanel;
         if (this._roomRow) { this._roomRow.remove(); this._roomRow = null; }
+        this._screenBtn = null; this._soundBtn = null;
+        if (this._mainRow) this._mainRow.setPosition(lively.pt(0, 0));
         this.setExtent(lively.pt(NS.PANEL_W, NS.PANEL_H));
         this.alignInWorld();
+      },
+
+      toggleScreenshare: function toggleScreenshare() {
+        var NS = lively.identity.AmbientPresencePanel;
+        if (!NS.controlEnabled("screenshare")) return;
+        var RV = lively.identity.RoomView;
+        if (RV && RV.toggleScreenShare) RV.toggleScreenShare();
+      },
+
+      openSoundboard: function openSoundboard() {
+        var NS = lively.identity.AmbientPresencePanel;
+        if (!NS.controlEnabled("soundboard")) return;
+        lively.identity.Soundboard.toggle(this);
       },
 
       _updateControls: function _updateControls() {
@@ -284,6 +352,16 @@ module("lively.identity.AmbientPresencePanel")
         this._micBtn.applyStyle({ textColor: !micOn ? NS.ICON_INACTIVE : (this.micMuted ? NS.ICON_DANGER : NS.STATUS_ONLINE) });
         this._headsetBtn.textString = deafOn && this.deafened ? "headset_off" : "headset_mic";
         this._headsetBtn.applyStyle({ textColor: !deafOn ? NS.ICON_INACTIVE : (this.deafened ? NS.ICON_DANGER : NS.STATUS_ONLINE) });
+        if (this._screenBtn) {
+          var shOn = NS.controlEnabled("screenshare"), sharing = !!NS._screenSharing;
+          this._screenBtn.textString = shOn && sharing ? "stop_screen_share" : "screen_share";
+          this._screenBtn.applyStyle({ textColor: !shOn ? NS.ICON_INACTIVE : (sharing ? NS.STATUS_ONLINE : NS.ICON_DEFAULT) });
+        }
+        if (this._soundBtn) {
+          var sbOn = NS.controlEnabled("soundboard");
+          this._soundBtn.applyStyle({ textColor: sbOn ? NS.ICON_DEFAULT : NS.ICON_INACTIVE });
+          if (!sbOn && lively.identity.Soundboard) lively.identity.Soundboard.close();
+        }
       },
 
       openSettings: function openSettings() {
@@ -345,6 +423,11 @@ module("lively.identity.AmbientPresencePanel")
     Object.extend(lively.identity.AmbientPresencePanel, {
       _panel: null,
       _localStream: null,
+      _screenSharing: false,   // set by the room session (RoomView) while this user shares their screen
+      setScreenSharing: function setScreenSharing(on) {
+        this._screenSharing = !!on;
+        this.refreshControls();
+      },
       _activeRoom: null,   // {constellation, roomId, roomName, onLeaveRequested, onShowRequested} | null
 
       // Called by RoomView.js once it's actually joined a room's presence.
@@ -373,6 +456,8 @@ module("lively.identity.AmbientPresencePanel")
 
       leaveRoom: function leaveRoom() {
         this._activeRoom = null;
+        this._screenSharing = false;
+        lively.identity.Soundboard.teardown();
         this._releaseLocalMedia();
         if (this._panel) this._panel._hideInRoomRow();
         this.refreshControls();
@@ -385,6 +470,9 @@ module("lively.identity.AmbientPresencePanel")
       // controls stay live so the prefs can be set ahead of joining; when the
       // only thing open is a text room there is no call, so they go inactive.
       controlEnabled: function controlEnabled(which) {
+        // Call-only actions: need a live call; the soundboard also needs the headset on.
+        if (which === "screenshare") return !!this._activeRoom;
+        if (which === "soundboard") return !!this._activeRoom && !(this._panel && this._panel.deafened);
         if (this._activeRoom) return which === "camera" ? !!this._mediaKinds.video : true;
         var RV = lively.identity.RoomView;
         return !(RV && RV.hasTextSession && RV.hasTextSession());
@@ -397,6 +485,14 @@ module("lively.identity.AmbientPresencePanel")
 
       getLocalStream: function getLocalStream() {
         return this._localStream;
+      },
+
+      // The audio track to send to peers: the soundboard mix once it has been
+      // started (mic + clips), otherwise the plain mic track.
+      getOutgoingAudioTrack: function getOutgoingAudioTrack() {
+        var mixed = lively.identity.Soundboard.getOutgoingTrack();
+        if (mixed) return mixed;
+        return this._localStream ? (this._localStream.getAudioTracks()[0] || null) : null;
       },
 
       _acquiring: false,        // an initial audio+video getUserMedia is in flight
@@ -422,6 +518,7 @@ module("lively.identity.AmbientPresencePanel")
             // stream for a room we're no longer in.
             if (!self._activeRoom) { stream.getTracks().forEach(function (t) { t.stop(); }); return; }
             self._localStream = stream;
+            lively.identity.Soundboard.rewireMic();
             if (self._reapplyAfterAcquire) { self._reapplyAfterAcquire = false; self._applyTrackState(); }
           })
           .catch(function (err) {
@@ -441,6 +538,7 @@ module("lively.identity.AmbientPresencePanel")
       // Lets the room session push the change to its peer connections (and its
       // own self-view). RoomView owns those, this panel only owns the stream.
       _afterLocalTracksChanged: function _afterLocalTracksChanged() {
+        try { lively.identity.Soundboard.rewireMic(); } catch (e) { console.error("[AmbientPresencePanel] rewireMic failed:", e); }
         try {
           var RV = lively.identity.RoomView;
           if (RV && RV.localTracksChanged) RV.localTracksChanged();

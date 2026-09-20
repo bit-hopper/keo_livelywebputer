@@ -224,6 +224,9 @@ module("lively.identity.RoomView")
         this._signalingPeers = {};  // signaling peerId -> {pc, did, handle, pendingIce}, only once a pc exists
         this._didToPeerId = {};     // did -> signaling peerId, for looking up a peer by roster identity
         this._remoteStreams = {};   // did -> MediaStream, latest known remote stream per participant
+        this._screenStream = null;  // my own screen capture while sharing
+        this._screenStreams = {};   // did -> MediaStream of that participant's shared screen
+        this._screenSurfaces = {};  // did -> floating screen tile morph
       },
     },
 
@@ -618,6 +621,9 @@ module("lively.identity.RoomView")
       // would silently re-join presence right after the DELETE.
       _stopSession: function () {
         this._roomLeft = true;
+        try { this.stopScreenShare(); } catch (e) {}   // before signaling closes, so viewers are told
+        var selfForScreens = this;
+        Object.keys(this._screenSurfaces).forEach(function (did) { selfForScreens._removeScreenSurface(did); });
         if (this._messagePollTimer) { clearInterval(this._messagePollTimer); this._messagePollTimer = null; }
         if (this._heartbeatTimer) { clearInterval(this._heartbeatTimer); this._heartbeatTimer = null; }
         try { this._teardownSignaling(); } catch (e) {}
@@ -2303,7 +2309,7 @@ module("lively.identity.RoomView")
         var self = this;
         var meta = this._peerMeta[peerId] || {};
         var pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-        var peer = { pc: pc, did: meta.did, handle: meta.handle, pendingIce: [] };
+        var peer = { peerId: peerId, pc: pc, did: meta.did, handle: meta.handle, pendingIce: [], screenTransceiver: null };
         this._signalingPeers[peerId] = peer;
 
         pc.onicecandidate = function (e) {
@@ -2311,6 +2317,12 @@ module("lively.identity.RoomView")
         };
         pc.ontrack = function (e) {
           if (!peer.did) return;
+          // A video track on any transceiver other than the peer's primary
+          // audio/video pair is their shared screen, never their camera.
+          if (e.track.kind === "video" && self._primaryTransceivers(peer).indexOf(e.transceiver) < 0) {
+            self._onRemoteScreenTrack(peer, e);
+            return;
+          }
           // One session-owned MediaStream per remote participant, built from
           // the raw tracks — deliberately NOT e.streams[0]. The stream the
           // sender names can change under us: when their mic/camera resolves
@@ -2371,6 +2383,7 @@ module("lively.identity.RoomView")
           pc.addTransceiver("audio", { direction: "sendrecv" });
           pc.addTransceiver("video", { direction: "sendrecv" });
           this._applyLocalTracksToPeer(peer);
+          this._addScreenToPeer(peer); // sharing already: it rides this first offer, after the primary pair
 
           pc.createOffer().then(function (offer) {
             return pc.setLocalDescription(offer);
@@ -2440,14 +2453,34 @@ module("lively.identity.RoomView")
         return this._blackTrack;
       },
 
+      // The peer connection's mic and camera transceivers: the first audio and the
+      // first video one, in negotiation order, excluding our own screen transceiver.
+      _primaryTransceivers: function (peer) {
+        var seen = {}, out = [];
+        if (!peer.pc) return out;
+        peer.pc.getTransceivers().forEach(function (t) {
+          if (t === peer.screenTransceiver) return;
+          var kind = t.receiver && t.receiver.track && t.receiver.track.kind;
+          if (!kind || seen[kind]) return;
+          seen[kind] = true;
+          out.push(t);
+        });
+        return out;
+      },
+
       _applyLocalTracksToPeer: function (peer) {
         var self = this;
-        var stream = lively.identity.AmbientPresencePanel.getLocalStream();
+        var AP = lively.identity.AmbientPresencePanel;
+        var stream = AP.getLocalStream();
         if (!stream || !peer.pc) return false;
-        peer.pc.getTransceivers().forEach(function (t) {
+        // Only the primary audio and video transceivers carry the mic and camera;
+        // a shared screen rides its own extra transceiver and must never get the
+        // camera swapped onto it (nor a remote screen's auto-created one upgraded).
+        this._primaryTransceivers(peer).forEach(function (t) {
           var kind = t.receiver && t.receiver.track && t.receiver.track.kind;
           if (!kind) return;
-          var track = kind === "audio" ? stream.getAudioTracks()[0] : stream.getVideoTracks()[0];
+          // Audio: the soundboard mix once it has started, else the plain mic track.
+          var track = kind === "audio" ? AP.getOutgoingAudioTrack() : stream.getVideoTracks()[0];
           if (!track) {
             // The local track of this kind was removed (camera turned off: the
             // panel stops the video track to release the device). Video is
@@ -2493,6 +2526,7 @@ module("lively.identity.RoomView")
         if (signal.type === "offer") return this._onOffer(peerId, signal);
         var peer = this._signalingPeers[peerId];
         if (!peer) return; // for a peer we no longer have a pc for -- drop
+        if (signal.type === "screen") return this._onScreenSignal(peer, signal);
         if (signal.type === "answer") return this._onAnswer(peer, signal);
         if (signal.type === "ice") return this._onIce(peer, signal);
       },
@@ -2542,6 +2576,9 @@ module("lively.identity.RoomView")
           return peer.pc.setLocalDescription(answer);
         }).then(function () {
           self._sendSignalTo(peerId, { type: "answer", sdp: peer.pc.localDescription });
+          // Sharing already: the extra transceiver can only be added once the first
+          // handshake is done, and renegotiates from here.
+          self._addScreenToPeer(peer);
         }).catch(function (e) {
           console.error("[RoomView] Failed to answer offer", e);
           self._teardownPeerConnection(peerId);
@@ -2620,6 +2657,7 @@ module("lively.identity.RoomView")
         delete this._peerMeta[peerId];
 
         if (peer.did) {
+          this._removeScreenSurface(peer.did);
           delete this._remoteStreams[peer.did];
           this._removeRemoteAudio(peer.did);
           if (this._didToPeerId[peer.did] === peerId) delete this._didToPeerId[peer.did];
@@ -2698,6 +2736,122 @@ module("lively.identity.RoomView")
         if (!el) return;
         delete this._remoteAudio[did];
         try { el.pause(); el.srcObject = null; el.remove(); } catch (e) {}
+      },
+
+      // ── screenshare ──
+      // A shared screen is a SECOND video stream next to the camera: its own
+      // sendonly transceiver per peer (added with addTransceiver, so it
+      // renegotiates), announced with a {type:"screen"} signal. The receiver
+      // recognises it as any video track that is not on the peer's primary pair
+      // (see _primaryTransceivers). Each screen shows as a floating, draggable
+      // 16:9 tile in the world, in both grid and circle mode.
+
+      isScreenSharing: function () { return !!this._screenStream; },
+
+      startScreenShare: function () {
+        var self = this;
+        if (this._screenStream || this._roomLeft) return;
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+          console.warn("[RoomView] Screen sharing is not available in this browser");
+          return;
+        }
+        navigator.mediaDevices.getDisplayMedia({ video: true, audio: false }).then(function (stream) {
+          if (self._roomLeft || self._screenStream) { stream.getTracks().forEach(function (t) { t.stop(); }); return; }
+          self._screenStream = stream;
+          // The browser's own "Stop sharing" control ends the track from outside.
+          stream.getVideoTracks()[0].addEventListener("ended", function () {
+            if (self._screenStream === stream) self.stopScreenShare();
+          });
+          Object.keys(self._signalingPeers).forEach(function (id) { self._addScreenToPeer(self._signalingPeers[id]); });
+          var me = lively.identity.did.currentUser();
+          if (me) self._showScreenSurface(me.did, stream, me.handle);
+          lively.identity.AmbientPresencePanel.setScreenSharing(true);
+        }).catch(function (err) {
+          console.warn("[RoomView] Screen share was not started:", err && err.message);
+        });
+      },
+
+      stopScreenShare: function () {
+        var self = this;
+        var stream = this._screenStream;
+        if (!stream) return;
+        this._screenStream = null;
+        Object.keys(this._signalingPeers).forEach(function (id) {
+          var peer = self._signalingPeers[id];
+          if (peer.screenTransceiver) {
+            try { peer.screenTransceiver.stop(); } catch (e) {}
+            peer.screenTransceiver = null;
+            self._sendSignalTo(id, { type: "screen", on: false });
+          }
+        });
+        stream.getTracks().forEach(function (t) { t.stop(); });
+        var me = lively.identity.did.currentUser();
+        if (me) this._removeScreenSurface(me.did);
+        lively.identity.AmbientPresencePanel.setScreenSharing(false);
+      },
+
+      // Adds our screen to one peer connection (once). No-op when not sharing.
+      _addScreenToPeer: function (peer) {
+        if (!this._screenStream || !peer.pc || peer.screenTransceiver) return;
+        var track = this._screenStream.getVideoTracks()[0];
+        if (!track) return;
+        try {
+          peer.screenTransceiver = peer.pc.addTransceiver(track, { direction: "sendonly", streams: [this._screenStream] });
+          this._sendSignalTo(peer.peerId, { type: "screen", on: true });
+        } catch (e) { console.error("[RoomView] Could not add screen to peer", e); }
+      },
+
+      _onScreenSignal: function (peer, signal) {
+        if (!signal.on && peer.did) this._removeScreenSurface(peer.did);
+      },
+
+      _onRemoteScreenTrack: function (peer, e) {
+        var self = this;
+        var me = lively.identity.did.currentUser();
+        if (me && me.did === peer.did) return; // our own account from another tab
+        // Built from the raw track, like the camera stream (see ontrack).
+        var stream = new MediaStream([e.track]);
+        this._showScreenSurface(peer.did, stream, peer.handle);
+        e.track.addEventListener("ended", function () {
+          if (self._screenStreams[peer.did] === stream) self._removeScreenSurface(peer.did);
+        });
+      },
+
+      _showScreenSurface: function (did, stream, handle) {
+        this._removeScreenSurface(did);
+        var user = lively.identity.did.currentUser();
+        var myDid = user ? user.did : null;
+        var W = 320, H = 180;
+        var vb = $world.visibleBounds();
+        var n = Object.keys(this._screenSurfaces).length;
+        var box = new lively.morphic.Box(lively.rect(vb.x + 24 + n * 36, vb.y + 90 + n * 36, W, H));
+        box.applyStyle({ fill: Color.black, borderWidth: 3, borderColor: ACCENT, borderRadius: 10, clipMode: "hidden" });
+        box.draggingEnabled = true;
+        box.droppingEnabled = false;
+        $world.addMorph(box);
+        box.unlock(); // see the video-circle comment: locked morphs don't pick up under the pointer
+        var videoEl = document.createElement("video");
+        videoEl.autoplay = true;
+        videoEl.playsInline = true;
+        videoEl.muted = true;
+        videoEl.style.cssText = "width:100%;height:100%;object-fit:contain;background:#000;pointer-events:none;";
+        videoEl.srcObject = stream;
+        box.renderContext().shapeNode.appendChild(videoEl);
+        var p = videoEl.play && videoEl.play();
+        if (p && p.catch) p.catch(function () {});
+        this._buildNameTag(box, { did: did, handle: handle }, myDid, function () {
+          return { x: 10, y: H - NAME_TAG_H - 10 };
+        });
+        box._isScreen = true;
+        this._screenSurfaces[did] = box;
+        this._screenStreams[did] = stream;
+      },
+
+      _removeScreenSurface: function (did) {
+        var box = this._screenSurfaces[did];
+        if (box) { try { box.remove(); } catch (e) {} }
+        delete this._screenSurfaces[did];
+        delete this._screenStreams[did];
       },
 
       _teardownSignaling: function () {
@@ -2796,6 +2950,13 @@ module("lively.identity.RoomView")
       // the deafened flag to the active session's audio.
       applyDeafened: function () {
         if (this._active && !this._active._roomLeft) this._active._applyDeafen();
+      },
+
+      // Panel hook: start or stop sharing the screen in the current call.
+      toggleScreenShare: function () {
+        var c = this.getActive();
+        if (!c) return;
+        if (c.isScreenSharing()) c.stopScreenShare(); else c.startScreenShare();
       },
 
       getActive: function () {
