@@ -62,7 +62,7 @@ module("lively.identity.FaceEffects")
       // per-point landmark depth (1): the fit keeps the mask a clean shell, the landmark
       // part follows the nose and cheeks but amplifies MediaPipe's depth noise, which
       // is worst on strongly turned heads.
-      MASK_SURFACE: { margin: 7, depthSoft: 11, conform: 0.15, vCurl: 14, vCurlRange: 130, faceTop: -95, faceBottom: 108 },
+      MASK_SURFACE: { margin: 7, depthSoft: 11, conform: 0.15, symmetric: true, hornFlatten: 0.85, hornStart: 90, hornRange: 110, vCurl: 14, vCurlRange: 130, faceTop: -95, faceBottom: 108 },
       // Landmarks are smoothed over time for the 3D mask (fraction of the new frame
       // kept per update); a jump larger than resetJump (fraction of the eye distance)
       // is a new face or a fast move and restarts the smoothing.
@@ -296,6 +296,10 @@ module("lively.identity.FaceEffects")
         }
         var cf = [];
         for (r0 = 0; r0 < 6; r0++) cf.push(bv[r0] / A[r0][r0]);
+        // A face is left-right symmetric in its own frame, so a slope across the
+        // width is only error in the head-frame estimate; keeping it would tilt the
+        // whole mask surface (the far horn went edge-on) and grow at the horns.
+        if (SF.symmetric) { cf[1] = 0; cf[5] = 0; }
         var pos = t.geo.attributes.position, uv = t.geo.attributes.uv;
         for (var i = 0; i < pos.count; i++) {
           var u = uv.getX(i) * t.mw - mk.eyeMid.x, v = (1 - uv.getY(i)) * t.mh - mk.eyeMid.y;
@@ -308,7 +312,11 @@ module("lively.identity.FaceEffects")
             sw += wgt; sz += wgt * lz[n];
           }
           var qu = u / 60, qv = Math.max(SF.faceTop, Math.min(SF.faceBottom, v)) / 100;
-          var quad = cf[0] + cf[1] * qu + cf[2] * qv + cf[3] * qu * qu + cf[4] * qv * qv + cf[5] * qu * qv;
+          // The mask wraps round the sides of the head like a shell, but the horns stick
+          // up and away from it: above hornStart the width-wise curve fades toward
+          // hornFlatten of the way to flat, so the far horn doesn't turn edge-on.
+          var hf = 1 - SF.hornFlatten * Math.max(0, Math.min(1, (-v - SF.hornStart) / SF.hornRange));
+          var quad = cf[0] + cf[1] * qu + cf[2] * qv + cf[3] * hf * qu * qu + cf[4] * qv * qv + cf[5] * qu * qv;
           var toward = -(quad + SF.conform * (sz / sw - quad)) + SF.margin;
           // Beyond the face (horns and hood above it, the point below the chin) curl away.
           var over = v < SF.faceTop ? SF.faceTop - v : (v > SF.faceBottom ? v - SF.faceBottom : 0);
