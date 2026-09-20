@@ -37,7 +37,20 @@ module("lively.identity.FaceEffects")
       MASKS: {
         keomask: { file: "keo.png", eyeMid: { x: 74.05, y: 251.5 }, eyeDist: 64.3 },
       },
+      // The solid 3D version: face/hood shell with thickness and a relief map, plus two
+      // real 3D horns (positions/radii in mask pixels, measured off the artwork).
+      SOLID: {
+        shell: "keo_shell.png", normal: "keo_normal.png",
+        layers: 7, layerStep: 1.0, layerColor: 0x6a3a30, normalScale: 1.4,
+        horns: [
+          { u0: -47, v0: -79.5, u1: -48, v1: -251, r0: 17, r1: 6, sweepBack: 46, outward: -1 },
+          { u0: 41,  v0: -79.5, u1: 33,  v1: -251, r0: 18, r1: 6, sweepBack: 46, outward: 1 },
+        ],
+      },
+      _solid: null,
+      _solidPromise: null,
       EFFECTS: [
+        { id: "keomask3d", label: "keo mask 3D" },
         { id: "keomask", label: "keo mask" },
         { id: "glasses",  label: "glasses" },
         { id: "hat",      label: "party hat" },
@@ -62,11 +75,18 @@ module("lively.identity.FaceEffects")
       // per-point landmark depth (1): the fit keeps the mask a clean shell, the landmark
       // part follows the nose and cheeks but amplifies MediaPipe's depth noise, which
       // is worst on strongly turned heads.
-      MASK_SURFACE: { margin: 7, depthSoft: 11, conform: 0.15, symmetric: true, eyeLock: true, eyeSigma: 20, eyeMargin: 1.5, hornFlatten: 0.85, hornStart: 90, hornRange: 110, vCurl: 14, vCurlRange: 130, faceTop: -95, faceBottom: 108 },
+      MASK_SURFACE: { canonical: true, canonMargin: 5, skullR: 95, skullSpan: 45, margin: 7, depthSoft: 11, conform: 0.15, symmetric: true, eyeLock: true, eyeSigma: 20, eyeMargin: 1.5, hornFlatten: 0.85, hornStart: 90, hornRange: 110, vCurl: 14, vCurlRange: 130, faceTop: -95, faceBottom: 108 },
       // Landmarks are smoothed over time for the 3D mask (fraction of the new frame
       // kept per update); a jump larger than resetJump (fraction of the eye distance)
       // is a new face or a fast move and restarts the smoothing.
       MASK_SMOOTH: { alpha: 0.55, resetJump: 0.6 },
+      // MediaPipe's canonical face mesh (Apache-2.0): the rigid reference shape the
+      // landmark topology is defined on. Fitting it to the tracked landmarks gives a
+      // much steadier head pose than a few landmark axes, and rasterising it gives the
+      // mask a real face-shaped surface (nose, cheeks, brow) with no per-frame noise.
+      CANON_URL: "/core/lib/mediapipe/canonical_face_model.obj",
+      _canon: null,
+      _canonPromise: null,
       _three: null,           // { THREE, renderer, scene, camera, mesh, geo, mw, mh, w, h } once built
       _threePromise: null,
       _selected: {},          // effect id -> true
@@ -148,6 +168,166 @@ module("lively.identity.FaceEffects")
         return this._landmarkerPromise;
       },
 
+      // ── canonical face model ──
+
+      _ensureCanonical: function () {
+        var self = this;
+        if (this._canon) return Promise.resolve(this._canon);
+        if (this._canonPromise) return this._canonPromise;
+        this._canonPromise = fetch(this.CANON_URL)
+          .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
+          .then(function (txt) { self._canon = self._buildCanonical(txt); return self._canon; })
+          .catch(function (err) {
+            console.warn("[FaceEffects] canonical face model unavailable, using the fitted surface:", err && err.message);
+            self._canonPromise = null;
+            return null;
+          });
+        return this._canonPromise;
+      },
+
+      // Parses the OBJ and precomputes what the mask needs: the vertices in the image
+      // frame (x right, y down, z away, centimetres), the rigid subset used to fit the
+      // pose, and a 1 mask-pixel depth grid of the face surface in mask units.
+      _buildCanonical: function (txt) {
+        var mk = this.MASKS.keomask, V = [], T = [];
+        txt.split("\n").forEach(function (l) {
+          var p = l.trim().split(/\s+/);
+          if (p[0] === "v") V.push([+p[1], +p[2], +p[3]]);
+          else if (p[0] === "f") T.push([1, 2, 3].map(function (i) { return parseInt(p[i].split("/")[0], 10) - 1; }));
+        });
+        var n = V.length, i;
+        var C = new Float32Array(n * 3);
+        for (i = 0; i < n; i++) { C[i * 3] = V[i][0]; C[i * 3 + 1] = -V[i][1]; C[i * 3 + 2] = -V[i][2]; }
+        function avg(a, b) { return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2]; }
+        var eA = avg(V[33], V[133]), eB = avg(V[362], V[263]), mid = avg(eA, eB);
+        var dC = Math.hypot(eA[0] - eB[0], eA[1] - eB[1], eA[2] - eB[2]);
+        var kc = mk.eyeDist / dC;       // mask pixels per centimetre
+        // Rigid part of the face for the pose fit: everything above the upper lip, so
+        // opening the mouth or jaw doesn't drag the pose.
+        var rigid = [];
+        for (i = 0; i < n; i++) if (V[i][1] > -3) rigid.push(i);
+        // Depth grid: face surface in mask units. u right, v down (from the eye midpoint),
+        // value = how far toward the viewer.
+        var U0 = -100, U1 = 100, V0 = -80, V1 = 150, gw = U1 - U0 + 1, gh = V1 - V0 + 1;
+        var z = new Float32Array(gw * gh), cov = new Uint8Array(gw * gh);
+        var pu = new Float32Array(n), pv = new Float32Array(n), pz = new Float32Array(n), top = 1e9, bottom = -1e9;
+        for (i = 0; i < n; i++) {
+          pu[i] = (V[i][0] - mid[0]) * kc; pv[i] = -(V[i][1] - mid[1]) * kc; pz[i] = (V[i][2] - mid[2]) * kc;
+          top = Math.min(top, pv[i]); bottom = Math.max(bottom, pv[i]);
+        }
+        T.forEach(function (tr) {
+          var a = tr[0], b = tr[1], c = tr[2];
+          var x0 = Math.max(U0, Math.floor(Math.min(pu[a], pu[b], pu[c]))), x1 = Math.min(U1, Math.ceil(Math.max(pu[a], pu[b], pu[c])));
+          var y0 = Math.max(V0, Math.floor(Math.min(pv[a], pv[b], pv[c]))), y1 = Math.min(V1, Math.ceil(Math.max(pv[a], pv[b], pv[c])));
+          var den = (pv[b] - pv[c]) * (pu[a] - pu[c]) + (pu[c] - pu[b]) * (pv[a] - pv[c]);
+          if (Math.abs(den) < 1e-9) return;
+          for (var gy = y0; gy <= y1; gy++) for (var gx = x0; gx <= x1; gx++) {
+            var l1 = ((pv[b] - pv[c]) * (gx - pu[c]) + (pu[c] - pu[b]) * (gy - pv[c])) / den;
+            var l2 = ((pv[c] - pv[a]) * (gx - pu[c]) + (pu[a] - pu[c]) * (gy - pv[c])) / den;
+            var l3 = 1 - l1 - l2;
+            if (l1 < -0.02 || l2 < -0.02 || l3 < -0.02) continue;
+            var zz = l1 * pz[a] + l2 * pz[b] + l3 * pz[c], gi = (gy - V0) * gw + (gx - U0);
+            if (!cov[gi] || zz > z[gi]) { z[gi] = zz; cov[gi] = 1; }
+          }
+        });
+        // Fill the holes and the surroundings by repeated neighbour averaging, so the
+        // grid is defined everywhere (edges continue flat, then curl in _drawMask3D).
+        for (var it = 0; it < 120; it++) {
+          var changed = false, nz = new Float32Array(z), nc = new Uint8Array(cov);
+          for (var yy = 0; yy < gh; yy++) for (var xx = 0; xx < gw; xx++) {
+            var gi2 = yy * gw + xx; if (cov[gi2]) continue;
+            var sum = 0, cnt = 0;
+            if (xx > 0 && cov[gi2 - 1]) { sum += z[gi2 - 1]; cnt++; }
+            if (xx < gw - 1 && cov[gi2 + 1]) { sum += z[gi2 + 1]; cnt++; }
+            if (yy > 0 && cov[gi2 - gw]) { sum += z[gi2 - gw]; cnt++; }
+            if (yy < gh - 1 && cov[gi2 + gw]) { sum += z[gi2 + gw]; cnt++; }
+            if (cnt) { nz[gi2] = sum / cnt; nc[gi2] = 1; changed = true; }
+          }
+          z = nz; cov = nc;
+          if (!changed) break;
+        }
+        // Soften the face relief: a mask is a stylised shell, not lips and nostrils.
+        for (var pass = 0; pass < 3; pass++) {
+          var bz = new Float32Array(z), R2 = 4;
+          for (var by = 0; by < gh; by++) for (var bx = 0; bx < gw; bx++) {
+            var acc = 0, cn2 = 0;
+            for (var dx = -R2; dx <= R2; dx++) { var qx = bx + dx; if (qx < 0 || qx >= gw) continue; acc += z[by * gw + qx]; cn2++; }
+            bz[by * gw + bx] = acc / cn2;
+          }
+          var bz2 = new Float32Array(bz);
+          for (var by2 = 0; by2 < gh; by2++) for (var bx2 = 0; bx2 < gw; bx2++) {
+            var acc2 = 0, cn3 = 0;
+            for (var dy = -R2; dy <= R2; dy++) { var qy = by2 + dy; if (qy < 0 || qy >= gh) continue; acc2 += bz[qy * gw + bx2]; cn3++; }
+            bz2[by2 * gw + bx2] = acc2 / cn3;
+          }
+          z = bz2;
+        }
+        function depth(u, v) {
+          var fx = Math.max(0, Math.min(gw - 1.001, u - U0)), fy = Math.max(0, Math.min(gh - 1.001, v - V0));
+          var ix = Math.floor(fx), iy = Math.floor(fy), tx = fx - ix, ty = fy - iy, o = iy * gw + ix;
+          return (1 - ty) * ((1 - tx) * z[o] + tx * z[o + 1]) + ty * ((1 - tx) * z[o + gw] + tx * z[o + gw + 1]);
+        }
+        return { C: C, rigid: rigid, kc: kc, eyeMidC: [mid[0], -mid[1], -mid[2]], depth: depth, top: top, bottom: bottom };
+      },
+
+      // Least-squares similarity fit (Horn's quaternion method) of the canonical
+      // face's rigid part to the tracked landmarks: rotation R (row-major 3x3), a
+      // uniform scale (pixels per centimetre) and a translation, all in the image frame.
+      _fitPose: function (prev, canon) {
+        var C = canon.C, idx = canon.rigid, m = idx.length, i, j, a, b;
+        var ca = [0, 0, 0], cb = [0, 0, 0];
+        for (i = 0; i < m; i++) { j = idx[i] * 3; for (a = 0; a < 3; a++) { ca[a] += C[j + a]; cb[a] += prev[j + a]; } }
+        for (a = 0; a < 3; a++) { ca[a] /= m; cb[a] /= m; }
+        var S = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], sa = 0;
+        for (i = 0; i < m; i++) {
+          j = idx[i] * 3;
+          var pa = [C[j] - ca[0], C[j + 1] - ca[1], C[j + 2] - ca[2]], pb = [prev[j] - cb[0], prev[j + 1] - cb[1], prev[j + 2] - cb[2]];
+          for (a = 0; a < 3; a++) for (b = 0; b < 3; b++) S[a][b] += pa[a] * pb[b];
+          sa += pa[0] * pa[0] + pa[1] * pa[1] + pa[2] * pa[2];
+        }
+        var Sxx = S[0][0], Sxy = S[0][1], Sxz = S[0][2], Syx = S[1][0], Syy = S[1][1], Syz = S[1][2], Szx = S[2][0], Szy = S[2][1], Szz = S[2][2];
+        var N = [
+          [Sxx + Syy + Szz, Syz - Szy, Szx - Sxz, Sxy - Syx],
+          [Syz - Szy, Sxx - Syy - Szz, Sxy + Syx, Szx + Sxz],
+          [Szx - Sxz, Sxy + Syx, -Sxx + Syy - Szz, Syz + Szy],
+          [Sxy - Syx, Szx + Sxz, Syz + Szy, -Sxx - Syy + Szz]];
+        // Jacobi eigen-decomposition of the symmetric 4x4; the top eigenvector is the rotation.
+        var Q = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], sweep, p, q, k;
+        for (sweep = 0; sweep < 40; sweep++) {
+          var off = 0;
+          for (p = 0; p < 3; p++) for (q = p + 1; q < 4; q++) off += N[p][q] * N[p][q];
+          if (off < 1e-20) break;
+          for (p = 0; p < 3; p++) for (q = p + 1; q < 4; q++) {
+            if (Math.abs(N[p][q]) < 1e-30) continue;
+            var th = (N[q][q] - N[p][p]) / (2 * N[p][q]);
+            var tt = (th >= 0 ? 1 : -1) / (Math.abs(th) + Math.sqrt(th * th + 1));
+            var c = 1 / Math.sqrt(tt * tt + 1), sn = tt * c;
+            for (k = 0; k < 4; k++) { var akp = N[k][p], akq = N[k][q]; N[k][p] = c * akp - sn * akq; N[k][q] = sn * akp + c * akq; }
+            for (k = 0; k < 4; k++) { var apk = N[p][k], aqk = N[q][k]; N[p][k] = c * apk - sn * aqk; N[q][k] = sn * apk + c * aqk; }
+            for (k = 0; k < 4; k++) { var vkp = Q[k][p], vkq = Q[k][q]; Q[k][p] = c * vkp - sn * vkq; Q[k][q] = sn * vkp + c * vkq; }
+          }
+        }
+        var best = 0;
+        for (k = 1; k < 4; k++) if (N[k][k] > N[best][best]) best = k;
+        var qw = Q[0][best], qx = Q[1][best], qy = Q[2][best], qz = Q[3][best];
+        var ql = Math.sqrt(qw * qw + qx * qx + qy * qy + qz * qz) || 1; qw /= ql; qx /= ql; qy /= ql; qz /= ql;
+        var R = [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw),
+                 2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw),
+                 2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)];
+        var num = 0;
+        for (i = 0; i < m; i++) {
+          j = idx[i] * 3;
+          var ax = C[j] - ca[0], ay = C[j + 1] - ca[1], az = C[j + 2] - ca[2];
+          num += (R[0] * ax + R[1] * ay + R[2] * az) * (prev[j] - cb[0]) + (R[3] * ax + R[4] * ay + R[5] * az) * (prev[j + 1] - cb[1]) +
+                 (R[6] * ax + R[7] * ay + R[8] * az) * (prev[j + 2] - cb[2]);
+        }
+        var sc = num / sa;
+        var tr = [cb[0] - sc * (R[0] * ca[0] + R[1] * ca[1] + R[2] * ca[2]),
+                  cb[1] - sc * (R[3] * ca[0] + R[4] * ca[1] + R[5] * ca[2]),
+                  cb[2] - sc * (R[6] * ca[0] + R[7] * ca[1] + R[8] * ca[2])];
+        return { R: R, s: sc, t: tr };
+      },
+
       // ── 3D mask (Three.js) ──
 
       _ensureThree: function () {
@@ -197,7 +377,7 @@ module("lively.identity.FaceEffects")
               THREE: THREE, renderer: renderer, scene: scene, mesh: mesh, geo: geo, camera: camera,
               mw: img.naturalWidth, mh: img.naturalHeight, w: 0, h: 0,
             };
-            return self._three;
+            return self._ensureCanonical().then(function () { return self._three; });
           });
         }).catch(function (err) {
           console.warn("[FaceEffects] 3D mask unavailable, using the flat mask:", err && err.message);
@@ -205,6 +385,93 @@ module("lively.identity.FaceEffects")
           return null;
         });
         return this._threePromise;
+      },
+
+      _ensureSolid: function () {
+        var self = this;
+        if (this._solid) return Promise.resolve(this._solid);
+        if (this._solidPromise) return this._solidPromise;
+        this._solidPromise = this._ensureThree().then(function (t) {
+          if (!t) return null;
+          var THREE = t.THREE, SO = self.SOLID;
+          function load(url) { var im = new Image(); im.src = url; return im.decode().then(function () { return im; }); }
+          return Promise.all([load(self.MASK_BASE + SO.shell), load(self.MASK_BASE + SO.normal)]).then(function (imgs) {
+            var texC = new THREE.Texture(imgs[0]);
+            texC.colorSpace = THREE.SRGBColorSpace; texC.anisotropy = 4; texC.premultiplyAlpha = true; texC.needsUpdate = true;
+            var texN = new THREE.Texture(imgs[1]);      // linear data, not colour
+            texN.anisotropy = 4; texN.needsUpdate = true;
+            var scene = new THREE.Scene();
+            var geo = new THREE.PlaneGeometry(1, 1, 24, 56);
+            var shell = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
+              map: texC, normalMap: texN, normalScale: new THREE.Vector2(SO.normalScale, SO.normalScale),
+              side: THREE.DoubleSide, transparent: true, premultipliedAlpha: true, alphaTest: 0.02 }));
+            shell.frustumCulled = false; shell.renderOrder = 20;
+            scene.add(shell);
+            // Thickness: darker copies of the shell stepped back into the head; seen from
+            // an angle they read as the carved edge of the mask.
+            var layers = [];
+            for (var i = 0; i < SO.layers; i++) {
+              var lg = geo.clone();
+              var lm = new THREE.Mesh(lg, new THREE.MeshLambertMaterial({
+                map: texC, color: SO.layerColor, side: THREE.DoubleSide, transparent: true, premultipliedAlpha: true, alphaTest: 0.02 }));
+              lm.frustumCulled = false; lm.renderOrder = 10 + i;
+              scene.add(lm); layers.push(lm);
+            }
+            var horns = SO.horns.map(function (spec) {
+              var m = new THREE.Mesh(self._hornGeometry(THREE, spec),
+                new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 28, specular: 0x2a2a2a }));
+              m.frustumCulled = false; m.matrixAutoUpdate = false;
+              scene.add(m); return m;
+            });
+            // Lights are physical: ambient near PI keeps facing surfaces close to their
+            // texture colour; the key light from the upper left and a cool rim from the
+            // right give the relief and the horns their shading as the head turns.
+            scene.add(new THREE.AmbientLight(0xffffff, Math.PI * 0.62));
+            var key = new THREE.DirectionalLight(0xffffff, Math.PI * 0.62); key.position.set(-0.55, 0.65, 0.75); scene.add(key);
+            var rim = new THREE.DirectionalLight(0xbcd0ff, Math.PI * 0.22); rim.position.set(0.8, 0.2, 0.3); scene.add(rim);
+            self._solid = { scene: scene, shell: shell, geo: geo, layers: layers, horns: horns };
+            return self._solid;
+          });
+        }).catch(function (err) {
+          console.warn("[FaceEffects] solid 3D mask unavailable:", err && err.message);
+          self._solidPromise = null;
+          return null;
+        });
+        return this._solidPromise;
+      },
+
+      // A tapered, rounded-tip horn as a swept circle, in head-local mask units (u right,
+      // v down, tw toward the viewer, with tw = 0 at its base). Vertex colours make the
+      // outer side light grey and the inner side black, like the artwork.
+      _hornGeometry: function (THREE, sp) {
+        var K = 32, M = 14, pos = [], col = [], idx = [], i, j;
+        function lin(c) { return Math.pow(c / 255, 2.2); }
+        var grey = lin(124), black = lin(12);
+        function C(s) { return [sp.u0 + (sp.u1 - sp.u0) * s, sp.v0 + (sp.v1 - sp.v0) * s, -sp.sweepBack * s * s]; }
+        for (i = 0; i <= K; i++) {
+          var s0 = i / K, c0 = C(s0), c1 = C(Math.min(1, s0 + 0.01)), c2 = C(Math.max(0, s0 - 0.01));
+          var T = [c1[0] - c2[0], c1[1] - c2[1], c1[2] - c2[2]], tl = Math.hypot(T[0], T[1], T[2]); T = [T[0] / tl, T[1] / tl, T[2] / tl];
+          var ax = [1, 0, 0], d0 = ax[0] * T[0] + ax[1] * T[1] + ax[2] * T[2];
+          var N1 = [ax[0] - d0 * T[0], ax[1] - d0 * T[1], ax[2] - d0 * T[2]], nl = Math.hypot(N1[0], N1[1], N1[2]); N1 = [N1[0] / nl, N1[1] / nl, N1[2] / nl];
+          var N2 = [T[1] * N1[2] - T[2] * N1[1], T[2] * N1[0] - T[0] * N1[2], T[0] * N1[1] - T[1] * N1[0]];
+          var r = sp.r0 + (sp.r1 - sp.r0) * Math.pow(s0, 0.9), capStart = 0.9;
+          if (s0 > capStart) r *= Math.sqrt(Math.max(0, 1 - Math.pow((s0 - capStart) / (1 - capStart), 2)));
+          for (j = 0; j < M; j++) {
+            var th = j / M * Math.PI * 2, ct = Math.cos(th), st = Math.sin(th);
+            pos.push(c0[0] + r * (ct * N1[0] + st * N2[0]), c0[1] + r * (ct * N1[1] + st * N2[1]), c0[2] + r * (ct * N1[2] + st * N2[2]));
+            var f = Math.max(0, Math.min(1, (sp.outward * ct + 0.3) / 0.7)); f = f * f * (3 - 2 * f);
+            var g = black + (grey - black) * f; col.push(g, g, g);
+          }
+        }
+        for (i = 0; i < K; i++) for (j = 0; j < M; j++) {
+          var a = i * M + j, b = i * M + (j + 1) % M, c = (i + 1) * M + j, d = (i + 1) * M + (j + 1) % M;
+          idx.push(a, c, b, b, c, d);
+        }
+        var g2 = new THREE.BufferGeometry();
+        g2.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+        g2.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+        g2.setIndex(idx); g2.computeVertexNormals();
+        return g2;
       },
 
       // Renders the mask as a curved surface turned with the head, onto ctx.
@@ -220,6 +487,7 @@ module("lively.identity.FaceEffects")
         var t = this._three;
         if (!t) return false;
         var mk = this.MASKS.keomask, SF = this.MASK_SURFACE;
+        var solid = (this._selected.keomask3d && this._solid && this._canon && SF.canonical) ? this._solid : null;
         // Smooth the landmarks over time (MediaPipe's depth jitters frame to frame).
         var nAll = lm.length, sm = this.MASK_SMOOTH;
         if (!t.prev || t.prev.length !== nAll * 3 || t.prevW !== w || t.prevH !== h) { t.prev = new Float32Array(nAll * 3); t.havePrev = false; t.prevW = w; t.prevH = h; }
@@ -245,14 +513,27 @@ module("lively.identity.FaceEffects")
         function norm(a) { var l = len(a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
         function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
 
-        var eA = mul(add(P(33), P(133)), 0.5), eB = mul(add(P(362), P(263)), 0.5);
-        var eyeMid = mul(add(eA, eB), 0.5);
-        var d3 = len(sub(eB, eA));
-        var xAxis = norm(add(norm(sub(P(454), P(234))), norm(sub(eB, eA))));
-        var yv = sub(P(152), P(10));
-        var yAxis = norm(sub(yv, mul(xAxis, dot(yv, xAxis))));
-        var zAxis = cross(xAxis, yAxis);
-        var k = d3 / mk.eyeDist;
+        var canon = (SF.canonical && this._canon) ? this._canon : null;
+        var eyeMid, xAxis, yAxis, zAxis, k;
+        if (canon) {
+          // Head frame from fitting the canonical face to the landmarks: the columns of
+          // the rotation are the head's right, down and away axes in the image frame.
+          var pose = this._fitPose(prev, canon), R = pose.R, mc = canon.eyeMidC;
+          xAxis = [R[0], R[3], R[6]]; yAxis = [R[1], R[4], R[7]]; zAxis = [R[2], R[5], R[8]];
+          k = pose.s / canon.kc;
+          eyeMid = [pose.s * (R[0] * mc[0] + R[1] * mc[1] + R[2] * mc[2]) + pose.t[0],
+                    pose.s * (R[3] * mc[0] + R[4] * mc[1] + R[5] * mc[2]) + pose.t[1],
+                    pose.s * (R[6] * mc[0] + R[7] * mc[1] + R[8] * mc[2]) + pose.t[2]];
+        } else {
+          var eA = mul(add(P(33), P(133)), 0.5), eB = mul(add(P(362), P(263)), 0.5);
+          eyeMid = mul(add(eA, eB), 0.5);
+          var d3 = len(sub(eB, eA));
+          xAxis = norm(add(norm(sub(P(454), P(234))), norm(sub(eB, eA))));
+          var yv = sub(P(152), P(10));
+          yAxis = norm(sub(yv, mul(xAxis, dot(yv, xAxis))));
+          zAxis = cross(xAxis, yAxis);
+          k = d3 / mk.eyeDist;
+        }
 
         if (t.w !== w || t.h !== h) {
           t.w = w; t.h = h;
@@ -268,6 +549,10 @@ module("lively.identity.FaceEffects")
           var rel = sub(P(j), eyeMid);
           lx[j] = dot(rel, xAxis) / k; ly[j] = dot(rel, yAxis) / k; lz[j] = dot(rel, zAxis) / k;
         }
+        var baseToward;
+        if (canon) {
+          baseToward = function (u, v) { return canon.depth(u, v); };
+        } else {
         var soft2 = SF.depthSoft * SF.depthSoft;
         // Least-squares quadratic fit  z = c0 + c1 u + c2 v + c3 u^2 + c4 v^2 + c5 u v  over the landmarks.
         var A = [], bv = [], r0, r1;
@@ -302,7 +587,7 @@ module("lively.identity.FaceEffects")
         if (SF.symmetric) { cf[1] = 0; cf[5] = 0; }
         // Depth (toward the viewer, mask px, before the margin) of the smooth shell at
         // head-local (u, v): the quadratic fit blended with per-point landmark depth.
-        function baseToward(u, v) {
+        baseToward = function (u, v) {
           var sw = 0, sz = 0;
           for (var n = 0; n < nLm; n++) {
             var ddx = u - lx[n], ddy = v - ly[n];
@@ -317,6 +602,7 @@ module("lively.identity.FaceEffects")
           var hf = 1 - SF.hornFlatten * Math.max(0, Math.min(1, (-v - SF.hornStart) / SF.hornRange));
           var quad = cf[0] + cf[1] * qu + cf[2] * qv + cf[3] * hf * qu * qu + cf[4] * qv * qv + cf[5] * qu * qv;
           return -(quad + SF.conform * (sz / sw - quad));
+        };
         }
         // Eye lock: the shell sits in front of the (recessed) eyes, so when the head
         // turns the holes slide off them. Near each hole, pull the surface to the real
@@ -329,7 +615,13 @@ module("lively.identity.FaceEffects")
           });
         }
         var sig2 = 2 * SF.eyeSigma * SF.eyeSigma;
-        var pos = t.geo.attributes.position, uv = t.geo.attributes.uv;
+        // The skull rounds off over the hood; past skullSpan the curl continues only gently.
+        function skullCurl(over) {
+          var Lc = SF.skullSpan;
+          return over <= Lc ? over * over / (2 * SF.skullR) : Lc * Lc / (2 * SF.skullR) + (over - Lc) * (Lc / SF.skullR) * 0.25;
+        }
+        var shellGeo = solid ? solid.geo : t.geo;
+        var pos = shellGeo.attributes.position, uv = shellGeo.attributes.uv;
         for (var i = 0; i < pos.count; i++) {
           var u = uv.getX(i) * t.mw - mk.eyeMid.x, v = (1 - uv.getY(i)) * t.mh - mk.eyeMid.y;
           var gsum = 0, du = 0, dv = 0, dres = 0;
@@ -338,18 +630,48 @@ module("lively.identity.FaceEffects")
             gsum = Math.max(gsum, g); du += g * L2.dx; dv += g * L2.dy; dres += g * L2.res;
           }
           var uu = u + du, vv = v + dv;
-          var toward = baseToward(uu, vv) + dres + SF.margin - (SF.margin - SF.eyeMargin) * gsum;
-          // Beyond the face (horns and hood above it, the point below the chin) curl away.
-          var over = v < SF.faceTop ? SF.faceTop - v : (v > SF.faceBottom ? v - SF.faceBottom : 0);
-          var oc = over / SF.vCurlRange;
-          toward -= SF.vCurl * oc * oc;
+          var mg = canon ? SF.canonMargin : SF.margin;
+          var toward = baseToward(uu, vv) + dres + mg - (mg - SF.eyeMargin) * gsum;
+          // Beyond the face (horns and hood above it, the point below the chin) curl away:
+          // over the canonical face the skull rounds off away from the forehead, else the
+          // legacy gentle curl.
+          var fTop = canon ? canon.top : SF.faceTop, fBot = canon ? canon.bottom : SF.faceBottom;
+          var over = v < fTop ? fTop - v : (v > fBot ? v - fBot : 0);
+          if (canon) toward -= skullCurl(over);
+          else { var oc = over / SF.vCurlRange; toward -= SF.vCurl * oc * oc; }
           // toward the viewer = smaller z in the image frame
           var wp = add(eyeMid, add(mul(xAxis, uu * k), add(mul(yAxis, vv * k), mul(zAxis, -toward * k))));
           pos.setXYZ(i, wp[0], h - wp[1], -wp[2]);
         }
         pos.needsUpdate = true;
-        t.geo.computeVertexNormals();
-        t.renderer.render(t.scene, t.camera);
+        shellGeo.computeVertexNormals();
+        if (solid) {
+          var SO = this.SOLID;
+          // Thickness layers: the shell stepped back into the head along the head's z.
+          var into = [zAxis[0] * k, -zAxis[1] * k, -zAxis[2] * k];
+          var nrm = shellGeo.attributes.normal;
+          for (var li = 0; li < solid.layers.length; li++) {
+            var lp = solid.layers[li].geometry.attributes.position, off = (li + 1) * SO.layerStep;
+            for (var pi = 0; pi < lp.count; pi++) lp.setXYZ(pi, pos.getX(pi) + into[0] * off, pos.getY(pi) + into[1] * off, pos.getZ(pi) + into[2] * off);
+            lp.needsUpdate = true;
+            solid.layers[li].geometry.attributes.normal.copyArray(nrm.array); solid.layers[li].geometry.attributes.normal.needsUpdate = true;
+          }
+          // Horns: rigid; each is placed on the hood at the surface depth under its base.
+          var cu = [xAxis[0] * k, -xAxis[1] * k, -xAxis[2] * k], cv = [yAxis[0] * k, -yAxis[1] * k, -yAxis[2] * k], ct2 = [-zAxis[0] * k, zAxis[1] * k, zAxis[2] * k];
+          for (var hi = 0; hi < solid.horns.length; hi++) {
+            var hs = SO.horns[hi], hm = solid.horns[hi];
+            var mgH = SF.canonMargin, oh = Math.max(0, (canon.top - hs.v0));
+            var tw0 = baseToward(hs.u0, hs.v0) + mgH - skullCurl(oh) - 3;
+            var T0 = [eyeMid[0] + ct2[0] * tw0, h - eyeMid[1] + ct2[1] * tw0, -eyeMid[2] + ct2[2] * tw0];
+            // column-major basis (u, v, tw) plus translation; local origin is the eye midpoint
+            hm.matrix.set(cu[0], cv[0], ct2[0], T0[0],
+                          cu[1], cv[1], ct2[1], T0[1],
+                          cu[2], cv[2], ct2[2], T0[2],
+                          0, 0, 0, 1);
+            hm.matrixWorldNeedsUpdate = true;
+          }
+        }
+        t.renderer.render(solid ? solid.scene : t.scene, t.camera);
         ctx.drawImage(t.renderer.domElement, 0, 0, w, h);
         return true;
       },
@@ -360,6 +682,7 @@ module("lively.identity.FaceEffects")
         if (this._selected[id]) delete this._selected[id]; else this._selected[id] = true;
         this._notice = "";
         if (id === "keomask" && this._selected[id]) this._ensureThree();
+        if (id === "keomask3d" && this._selected[id]) this._ensureSolid();
         if (!this.isActive()) {
           this._stop(true);
           this._state = this._landmarker ? "ready" : "idle";
@@ -541,7 +864,7 @@ module("lively.identity.FaceEffects")
           });
         }
 
-        if (S.keomask && !this._drawMask3D(ctx, lm, w, h)) {
+        if ((S.keomask || S.keomask3d) && !this._drawMask3D(ctx, lm, w, h)) {
           // Flat fallback (three.js still loading or unavailable).
           var mk = this.MASKS.keomask, img = this._maskImage("keomask");
           if (img && img.complete && img.naturalWidth) {
