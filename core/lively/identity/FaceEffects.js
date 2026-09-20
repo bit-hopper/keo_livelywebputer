@@ -51,6 +51,13 @@ module("lively.identity.FaceEffects")
       WARMUP_FRAMES: 5,
 
       _maskImages: {},        // effect id -> HTMLImageElement, once requested
+      THREE_SRC: "/core/lib/jenga3d/jenga3d-deps.js",   // window.jenga3dDeps.THREE (shared with Jenga3D)
+      // Curved-surface shape of the 3D mask, in the mask image's own pixels: it
+      // bulges toward the viewer across its width (sideBulge at the centre line, 0
+      // at the cheek edges, shifted by centerOffset) and curls away at forehead and chin.
+      MASK_SURFACE: { halfWidth: 72, sideBulge: 30, centerOffset: -20, vCurl: 24, vCurlRange: 130, vMin: -90, vMax: 110 },
+      _three: null,           // { THREE, renderer, scene, camera, mesh, geo, mw, mh, w, h } once built
+      _threePromise: null,
       _selected: {},          // effect id -> true
       _state: "idle",         // idle | loading | ready | error
       _notice: "",            // shown in the popover header (errors, auto-disable)
@@ -130,11 +137,126 @@ module("lively.identity.FaceEffects")
         return this._landmarkerPromise;
       },
 
+      // ── 3D mask (Three.js) ──
+
+      _ensureThree: function () {
+        var self = this;
+        if (this._three) return Promise.resolve(this._three);
+        if (this._threePromise) return this._threePromise;
+        this._threePromise = new Promise(function (resolve, reject) {
+          if (window.jenga3dDeps && window.jenga3dDeps.THREE) return resolve(window.jenga3dDeps.THREE);
+          var sc = document.createElement("script");
+          sc.src = self.THREE_SRC;
+          sc.onload = function () {
+            if (window.jenga3dDeps && window.jenga3dDeps.THREE) resolve(window.jenga3dDeps.THREE);
+            else reject(new Error("three.js missing from " + self.THREE_SRC));
+          };
+          sc.onerror = function () { reject(new Error("could not load " + self.THREE_SRC)); };
+          document.head.appendChild(sc);
+        }).then(function (THREE) {
+          var img = self._maskImage("keomask");
+          return (img.complete ? Promise.resolve() : img.decode()).then(function () {
+            var geo = new THREE.PlaneGeometry(1, 1, 16, 40);
+            var tex = new THREE.Texture(img);
+            tex.colorSpace = THREE.SRGBColorSpace;
+            tex.anisotropy = 4;
+            // Transparent pixels are black in the PNG; premultiplying keeps that black
+            // from bleeding into the edges when the texture is filtered.
+            tex.premultiplyAlpha = true;
+            tex.needsUpdate = true;
+            var mat = new THREE.MeshLambertMaterial({
+              map: tex, side: THREE.DoubleSide, transparent: true, premultipliedAlpha: true, alphaTest: 0.02,
+            });
+            var mesh = new THREE.Mesh(geo, mat);
+            mesh.frustumCulled = false;
+            var scene = new THREE.Scene();
+            scene.add(mesh);
+            // Lights are physical in this three.js: ambient near PI leaves a facing
+            // surface close to its texture colour; the directional light adds relief
+            // when the surface turns.
+            scene.add(new THREE.AmbientLight(0xffffff, Math.PI * 0.72));
+            var sun = new THREE.DirectionalLight(0xffffff, Math.PI * 0.5);
+            sun.position.set(-0.4, 0.6, 1);
+            scene.add(sun);
+            var renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, premultipliedAlpha: true });
+            renderer.setClearColor(0x000000, 0);
+            var camera = new THREE.OrthographicCamera(0, 1, 1, 0, -6000, 6000);
+            camera.position.z = 3000;
+            self._three = {
+              THREE: THREE, renderer: renderer, scene: scene, mesh: mesh, geo: geo, camera: camera,
+              mw: img.naturalWidth, mh: img.naturalHeight, w: 0, h: 0,
+            };
+            return self._three;
+          });
+        }).catch(function (err) {
+          console.warn("[FaceEffects] 3D mask unavailable, using the flat mask:", err && err.message);
+          self._threePromise = null;
+          return null;
+        });
+        return this._threePromise;
+      },
+
+      // Renders the mask as a curved surface turned with the head, onto ctx.
+      // Returns false when three.js isn't ready (the caller draws the flat mask).
+      //
+      // The head frame comes straight from the landmarks' own 3D positions (x, y in
+      // pixels; z, which MediaPipe scales like x, times the width): x axis across
+      // the cheeks and eyes, y axis forehead to chin, z = x cross y, all in the
+      // image's y-down frame (z away from the camera). Three's camera is
+      // orthographic in pixel space and the surface is mapped with (x, h-y, -z),
+      // a proper rotation, so triangle winding and lighting stay correct.
+      _drawMask3D: function (ctx, lm, w, h) {
+        var t = this._three;
+        if (!t) return false;
+        var mk = this.MASKS.keomask, SF = this.MASK_SURFACE;
+        function P(i) { return [lm[i].x * w, lm[i].y * h, lm[i].z * w]; }
+        function sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+        function add(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
+        function mul(a, q) { return [a[0] * q, a[1] * q, a[2] * q]; }
+        function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+        function len(a) { return Math.sqrt(dot(a, a)); }
+        function norm(a) { var l = len(a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
+        function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+
+        var eA = mul(add(P(33), P(133)), 0.5), eB = mul(add(P(362), P(263)), 0.5);
+        var eyeMid = mul(add(eA, eB), 0.5);
+        var d3 = len(sub(eB, eA));
+        var xAxis = norm(add(norm(sub(P(454), P(234))), norm(sub(eB, eA))));
+        var yv = sub(P(152), P(10));
+        var yAxis = norm(sub(yv, mul(xAxis, dot(yv, xAxis))));
+        var zAxis = cross(xAxis, yAxis);
+        var k = d3 / mk.eyeDist;
+
+        if (t.w !== w || t.h !== h) {
+          t.w = w; t.h = h;
+          t.renderer.setSize(w, h, false);
+          t.camera.right = w; t.camera.top = h;
+          t.camera.updateProjectionMatrix();
+        }
+        var pos = t.geo.attributes.position, uv = t.geo.attributes.uv;
+        for (var i = 0; i < pos.count; i++) {
+          var u = uv.getX(i) * t.mw - mk.eyeMid.x, v = (1 - uv.getY(i)) * t.mh - mk.eyeMid.y;
+          var xn = u / SF.halfWidth;
+          var toward = SF.sideBulge * (1 - xn * xn) + SF.centerOffset;
+          var vc = Math.max(SF.vMin, Math.min(SF.vMax, v)) / SF.vCurlRange;
+          toward -= SF.vCurl * vc * vc;
+          // toward the viewer = smaller z in the image frame
+          var wp = add(eyeMid, add(mul(xAxis, u * k), add(mul(yAxis, v * k), mul(zAxis, -toward * k))));
+          pos.setXYZ(i, wp[0], h - wp[1], -wp[2]);
+        }
+        pos.needsUpdate = true;
+        t.geo.computeVertexNormals();
+        t.renderer.render(t.scene, t.camera);
+        ctx.drawImage(t.renderer.domElement, 0, 0, w, h);
+        return true;
+      },
+
       // ── effect selection ──
 
       toggleEffect: function (id) {
         if (this._selected[id]) delete this._selected[id]; else this._selected[id] = true;
         this._notice = "";
+        if (id === "keomask" && this._selected[id]) this._ensureThree();
         if (!this.isActive()) {
           this._stop(true);
           this._state = this._landmarker ? "ready" : "idle";
@@ -316,7 +438,8 @@ module("lively.identity.FaceEffects")
           });
         }
 
-        if (S.keomask) {
+        if (S.keomask && !this._drawMask3D(ctx, lm, w, h)) {
+          // Flat fallback (three.js still loading or unavailable).
           var mk = this.MASKS.keomask, img = this._maskImage("keomask");
           if (img && img.complete && img.naturalWidth) {
             // Head turn: the nose slides along the eye axis as the head yaws, so use
