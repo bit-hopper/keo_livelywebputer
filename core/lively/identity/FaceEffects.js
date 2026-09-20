@@ -62,7 +62,7 @@ module("lively.identity.FaceEffects")
       // per-point landmark depth (1): the fit keeps the mask a clean shell, the landmark
       // part follows the nose and cheeks but amplifies MediaPipe's depth noise, which
       // is worst on strongly turned heads.
-      MASK_SURFACE: { margin: 7, depthSoft: 11, conform: 0.15, symmetric: true, hornFlatten: 0.85, hornStart: 90, hornRange: 110, vCurl: 14, vCurlRange: 130, faceTop: -95, faceBottom: 108 },
+      MASK_SURFACE: { margin: 7, depthSoft: 11, conform: 0.15, symmetric: true, eyeLock: true, eyeSigma: 20, eyeMargin: 1.5, hornFlatten: 0.85, hornStart: 90, hornRange: 110, vCurl: 14, vCurlRange: 130, faceTop: -95, faceBottom: 108 },
       // Landmarks are smoothed over time for the 3D mask (fraction of the new frame
       // kept per update); a jump larger than resetJump (fraction of the eye distance)
       // is a new face or a fast move and restarts the smoothing.
@@ -300,10 +300,9 @@ module("lively.identity.FaceEffects")
         // width is only error in the head-frame estimate; keeping it would tilt the
         // whole mask surface (the far horn went edge-on) and grow at the horns.
         if (SF.symmetric) { cf[1] = 0; cf[5] = 0; }
-        var pos = t.geo.attributes.position, uv = t.geo.attributes.uv;
-        for (var i = 0; i < pos.count; i++) {
-          var u = uv.getX(i) * t.mw - mk.eyeMid.x, v = (1 - uv.getY(i)) * t.mh - mk.eyeMid.y;
-          // Depth of the real face under this point (weights fall off as distance^-4).
+        // Depth (toward the viewer, mask px, before the margin) of the smooth shell at
+        // head-local (u, v): the quadratic fit blended with per-point landmark depth.
+        function baseToward(u, v) {
           var sw = 0, sz = 0;
           for (var n = 0; n < nLm; n++) {
             var ddx = u - lx[n], ddy = v - ly[n];
@@ -317,13 +316,35 @@ module("lively.identity.FaceEffects")
           // hornFlatten of the way to flat, so the far horn doesn't turn edge-on.
           var hf = 1 - SF.hornFlatten * Math.max(0, Math.min(1, (-v - SF.hornStart) / SF.hornRange));
           var quad = cf[0] + cf[1] * qu + cf[2] * qv + cf[3] * hf * qu * qu + cf[4] * qv * qv + cf[5] * qu * qv;
-          var toward = -(quad + SF.conform * (sz / sw - quad)) + SF.margin;
+          return -(quad + SF.conform * (sz / sw - quad));
+        }
+        // Eye lock: the shell sits in front of the (recessed) eyes, so when the head
+        // turns the holes slide off them. Near each hole, pull the surface to the real
+        // eye's depth and shift the mask in-plane so the hole centre sits on the eye.
+        var locks = [];
+        if (SF.eyeLock) {
+          [[[33, 133], -mk.eyeDist / 2, -0.5], [[362, 263], mk.eyeDist / 2, 0.5]].forEach(function (e) {
+            var ex = (lx[e[0][0]] + lx[e[0][1]]) / 2, ey = (ly[e[0][0]] + ly[e[0][1]]) / 2, ez = (lz[e[0][0]] + lz[e[0][1]]) / 2;
+            locks.push({ hx: e[1], hy: e[2], dx: ex - e[1], dy: ey - e[2], res: -ez - baseToward(ex, ey) });
+          });
+        }
+        var sig2 = 2 * SF.eyeSigma * SF.eyeSigma;
+        var pos = t.geo.attributes.position, uv = t.geo.attributes.uv;
+        for (var i = 0; i < pos.count; i++) {
+          var u = uv.getX(i) * t.mw - mk.eyeMid.x, v = (1 - uv.getY(i)) * t.mh - mk.eyeMid.y;
+          var gsum = 0, du = 0, dv = 0, dres = 0;
+          for (var e2 = 0; e2 < locks.length; e2++) {
+            var L2 = locks[e2], g = Math.exp(-((u - L2.hx) * (u - L2.hx) + (v - L2.hy) * (v - L2.hy)) / sig2);
+            gsum = Math.max(gsum, g); du += g * L2.dx; dv += g * L2.dy; dres += g * L2.res;
+          }
+          var uu = u + du, vv = v + dv;
+          var toward = baseToward(uu, vv) + dres + SF.margin - (SF.margin - SF.eyeMargin) * gsum;
           // Beyond the face (horns and hood above it, the point below the chin) curl away.
           var over = v < SF.faceTop ? SF.faceTop - v : (v > SF.faceBottom ? v - SF.faceBottom : 0);
           var oc = over / SF.vCurlRange;
           toward -= SF.vCurl * oc * oc;
           // toward the viewer = smaller z in the image frame
-          var wp = add(eyeMid, add(mul(xAxis, u * k), add(mul(yAxis, v * k), mul(zAxis, -toward * k))));
+          var wp = add(eyeMid, add(mul(xAxis, uu * k), add(mul(yAxis, vv * k), mul(zAxis, -toward * k))));
           pos.setXYZ(i, wp[0], h - wp[1], -wp[2]);
         }
         pos.needsUpdate = true;
