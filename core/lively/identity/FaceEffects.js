@@ -30,7 +30,15 @@ module("lively.identity.FaceEffects")
     // addScript'd handler.
     lively.identity.FaceEffects = {
       BASE: "/core/lib/mediapipe/",
+      MASK_BASE: "/core/media/face-masks/",
+      // Masks are PNGs with transparent eye holes, so the wearer's own eyes show
+      // through. eyeMid/eyeDist are the eye-hole midpoint and spacing in the image's
+      // own pixels; the mask is placed by lining those up with the real eyes.
+      MASKS: {
+        keomask: { file: "keo.png", eyeMid: { x: 74.05, y: 251.5 }, eyeDist: 64.3 },
+      },
       EFFECTS: [
+        { id: "keomask", label: "keo mask" },
         { id: "glasses",  label: "glasses" },
         { id: "hat",      label: "party hat" },
         { id: "mustache", label: "mustache" },
@@ -42,6 +50,7 @@ module("lively.identity.FaceEffects")
       BUDGET_FRAMES: 45,
       WARMUP_FRAMES: 5,
 
+      _maskImages: {},        // effect id -> HTMLImageElement, once requested
       _selected: {},          // effect id -> true
       _state: "idle",         // idle | loading | ready | error
       _notice: "",            // shown in the popover header (errors, auto-disable)
@@ -275,6 +284,15 @@ module("lively.identity.FaceEffects")
         }
       },
 
+      _maskImage: function (id) {
+        if (!this._maskImages[id]) {
+          var img = new Image();
+          img.src = this.MASK_BASE + this.MASKS[id].file;
+          this._maskImages[id] = img;
+        }
+        return this._maskImages[id];
+      },
+
       _draw: function (ctx, lm, w, h) {
         var S = this._selected;
         function P(i) { return { x: lm[i].x * w, y: lm[i].y * h }; }
@@ -296,6 +314,24 @@ module("lively.identity.FaceEffects")
             ctx.fillStyle = g;
             ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, Math.PI * 2); ctx.fill();
           });
+        }
+
+        if (S.keomask) {
+          var mk = this.MASKS.keomask, img = this._maskImage("keomask");
+          if (img && img.complete && img.naturalWidth) {
+            // Head turn: the nose slides along the eye axis as the head yaws, so use
+            // its offset to narrow the mask (a flat mask can't rotate, only squash).
+            var nose = P(1), ax = Math.cos(roll), ay = Math.sin(roll);
+            var off = ((nose.x - eyeMid.x) * ax + (nose.y - eyeMid.y) * ay) / d;
+            var sinYaw = Math.max(-0.85, Math.min(0.85, off / 0.55));
+            var sx = Math.sqrt(1 - sinYaw * sinYaw);
+            var k = d / mk.eyeDist;
+            ctx.save();
+            ctx.translate(eyeMid.x, eyeMid.y); ctx.rotate(roll);
+            ctx.scale(k * sx, k);
+            ctx.drawImage(img, -mk.eyeMid.x, -mk.eyeMid.y);
+            ctx.restore();
+          }
         }
 
         if (S.mustache) {
