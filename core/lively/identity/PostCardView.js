@@ -283,7 +283,7 @@ module("lively.identity.PostCardView")
             "top:76px",
             "left:0",
             "right:0",
-            "bottom:26px", // leave room for the reactions footer below
+            "bottom:32px", // leave room for the reactions footer below
             "padding:8px 14px 14px",
             "overflow-y:auto",
             "font-size:13px",
@@ -469,7 +469,7 @@ module("lively.identity.PostCardView")
             "left:0",
             "right:0",
             "bottom:0",
-            "height:26px",
+            "height:32px",
             "display:none",
             "align-items:center",
             "gap:4px",
@@ -941,9 +941,9 @@ module("lively.identity.PostCardView")
           chip.title = address;
           chip.style.cssText = [
             "flex:none",
-            "font-size:12px",
-            "padding:1px 7px",
-            "border-radius:11px",
+            "font-size:14px",
+            "padding:2px 9px",
+            "border-radius:13px",
             "cursor:pointer",
             "border:1px solid #ddd",
             "background:#fffaf0",
@@ -1014,9 +1014,9 @@ module("lively.identity.PostCardView")
             pill.title = (data.byEmoji && data.byEmoji[emoji] || []).join(", ");
             pill.style.cssText = [
               "flex:none",
-              "font-size:12px",
-              "padding:1px 7px",
-              "border-radius:11px",
+              "font-size:14px",
+              "padding:2px 9px",
+              "border-radius:13px",
               "cursor:" + (currentUser ? "pointer" : "default"),
               "border:1px solid " + (isMine ? "#5566cc" : "#ddd"),
               "background:" + (isMine ? "#eef0fd" : "#fafafa"),
