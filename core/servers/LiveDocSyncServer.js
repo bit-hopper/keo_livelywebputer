@@ -123,6 +123,37 @@ function isLiveDocPath(pathname) {
   return pathname.indexOf(LIVEDOC_PATH_PREFIX) === 0;
 }
 
+// Yjs sync protocol frames are [messageType, syncType, ...]: messageType 0 is
+// a sync message, whose syncType is 0 = step 1 (a state-vector request), 1 =
+// step 2 (a full update), 2 = an incremental update. Types 1 and 2 CHANGE the
+// document; step 1 only asks for it. (messageType 1 is awareness -- cursors,
+// presence -- which a read-only viewer may still send.)
+function isDocWriteFrame(data) {
+  var buf;
+  if (Buffer.isBuffer(data)) buf = data;
+  else if (data instanceof ArrayBuffer) buf = Buffer.from(data);
+  else if (Array.isArray(data)) buf = Buffer.concat(data);
+  else return true; // unknown framing on a read-only connection: drop, don't guess
+  if (buf.length < 2) return false;
+  return buf[0] === 0 && (buf[1] === 1 || buf[1] === 2);
+}
+
+// Makes a connection read-only by wrapping every 'message' listener that gets
+// registered on it AFTERWARDS (i.e. the one y-websocket's setupWSConnection
+// attaches) so document-changing frames are dropped before they reach it.
+// Must be called before setupWSConnection; the connection's own pre-setup
+// buffering listener was attached earlier and is unaffected.
+function restrictToReadOnly(ws) {
+  var origOn = ws.on;
+  ws.on = function (event, listener) {
+    if (event !== 'message') return origOn.apply(this, arguments);
+    return origOn.call(this, event, function (data) {
+      if (isDocWriteFrame(data)) return;
+      return listener.apply(this, arguments);
+    });
+  };
+}
+
 // life_star subserver export — no Express route; registers a raw
 // pre-handshake upgrade handler on the shared WebSocket listener instead.
 // Called once per worker (or once, non-clustered) by SubserverHandler.
@@ -199,18 +230,27 @@ module.exports = function (route, app) {
       }
 
       if (!constellation) {
-        // Wiki-mode post card room — the only kind of "plain post card"
-        // room this ever actually serves (see this file's header).
-        // gc: false is passed here so y-websocket creates all new Y.Doc
-        // instances with gc disabled — required for playback support.
-        finishSetupWSConnection({ docName: objId, gc: false });
-        // setupWSConnection creates the doc via its own internal getYDoc
-        // closure (not the exported one this file holds), so it can't be
-        // intercepted from outside -- wire it here instead, right after it's
-        // guaranteed to exist. wireDoc is idempotent per objId, so this is
-        // safe to call on every connection to the same room, not just the
-        // first.
-        if (liveDocRegistry) liveDocRegistry.wireDoc(objId, docs.get(objId));
+        // Wiki page room. Anyone may connect and READ (the page is public,
+        // and the read-only view live-syncs too), but only a connection that
+        // presents a valid edit token with canWrite (minted by GET
+        // /@:handle/:objId/edit-token after WikiPermissions.canEditWikiPage)
+        // may push edits. A missing/invalid/expired token is not rejected --
+        // it is just a read-only connection -- so readers and anonymous
+        // viewers keep working.
+        constellationSpace.verifyWikiRoomToken(query.token, objId, function (tokErr, verified) {
+          var canWrite = !tokErr && !!(verified && verified.canWrite);
+          if (!canWrite) restrictToReadOnly(ws);
+          // gc: false is passed here so y-websocket creates all new Y.Doc
+          // instances with gc disabled — required for playback support.
+          finishSetupWSConnection({ docName: objId, gc: false });
+          // setupWSConnection creates the doc via its own internal getYDoc
+          // closure (not the exported one this file holds), so it can't be
+          // intercepted from outside -- wire it here instead, right after it's
+          // guaranteed to exist. wireDoc is idempotent per objId, so this is
+          // safe to call on every connection to the same room, not just the
+          // first.
+          if (liveDocRegistry) liveDocRegistry.wireDoc(objId, docs.get(objId));
+        });
         return;
       }
 

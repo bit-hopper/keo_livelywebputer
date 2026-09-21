@@ -58,6 +58,7 @@ module('lively.identity.WikiEditor')
   .requires(
     'lively.identity.WikiSerializer',
     'lively.identity.WikiPlayback',
+    'lively.identity.WikiPolicy',
     'lively.identity.DID',
     'lively.identity.WebAuthn',
     'lively.identity.WebKey',
@@ -90,7 +91,8 @@ module('lively.identity.WikiEditor')
     'serialization', {
       doNotSerialize: ['editorView', 'yDoc', 'wsProvider', '_saveTimer', '_pmContainer', '_contentLoadStarted', '_onSaved',
         '_previewContainer', '_previewMode', '_activeDropdown', '_outsideClickHandler',
-        '_flowEl', '_heightObserver', '_onHeightChanged'],
+        '_flowEl', '_heightObserver', '_onHeightChanged',
+        '_editAccess', '_tokenTimer', '_permissionsRow', '_permPanel', '_permCloseHandler'],
     },
 
     // ─── initialization ──────────────────────────────────────────────────────────
@@ -152,6 +154,14 @@ module('lively.identity.WikiEditor')
         this._wikiName = this._wikiName || null;
         this._category = this._category || null;
         this._tags = this._tags || [];
+        // Who may edit this page (constellation pages only): { mode, handles? }
+        // as stored at state.editPolicy, or null = all members. Re-sent on
+        // every save like category/tags (see _saveNow). The server's
+        // GET .../edit-token answer -- canEdit, why not, the sync-room token --
+        // is cached in _editAccess (see _fetchEditAccess).
+        this._editPolicy = this._editPolicy || null;
+        this._editAccess = null;
+        this._readOnlyReason = null;
         this._buildChrome();
 
         // Guards against double-firing the async content-load dispatch
@@ -198,6 +208,9 @@ module('lively.identity.WikiEditor')
         shapeNode.appendChild(toolbarDiv);
         this._toolbarDiv = toolbarDiv;
         this._buildToolbar(toolbarDiv);
+        // A new page's author is known now; an existing page's is only known
+        // once it has loaded (see _loadExistingNow's finishLoad).
+        if (this._isNew) this._refreshPermissionsRow();
 
         // No footer: History/Save/status live in the toolbar (see
         // _buildSaveControls), so they stay reachable on a long page.
@@ -334,13 +347,28 @@ module('lively.identity.WikiEditor')
       _buildToolbar: function (toolbarDiv) {
         var self = this;
 
+        // Two parts side by side: the formatting buttons/menus in `row`, which
+        // scrolls horizontally when the editor is narrow, and Preview / History
+        // / status / Save in `actions`, which never scrolls away -- Save has to
+        // stay reachable at any editor width.
+        var bar = document.createElement('div');
+        bar.style.cssText = [
+          'position:absolute', 'top:0', 'left:6px', 'right:6px', 'bottom:0',
+          'display:flex', 'align-items:center', 'gap:8px', 'padding:0 2px',
+        ].join(';');
+        toolbarDiv.appendChild(bar);
+
         var row = document.createElement('div');
         row.style.cssText = [
-          'position:absolute', 'top:0', 'left:6px', 'right:6px', 'bottom:0',
-          'display:flex', 'align-items:center', 'gap:6px', 'padding:0 2px',
+          'flex:1 1 auto', 'min-width:0', 'height:100%',
+          'display:flex', 'align-items:center', 'gap:6px',
           'overflow-x:auto', 'overflow-y:hidden', 'white-space:nowrap',
         ].join(';');
-        toolbarDiv.appendChild(row);
+        bar.appendChild(row);
+
+        var actions = document.createElement('div');
+        actions.style.cssText = 'flex:0 0 auto;display:flex;align-items:center;gap:6px;';
+        bar.appendChild(actions);
 
         this._toggleButtons = [];
 
@@ -418,6 +446,9 @@ module('lively.identity.WikiEditor')
             self._buildDropdownRow(panel, 'Clear formatting', { cmd: 'clearFormatting' }, close);
             self._buildDropdownRow(panel, 'Indent', { cmd: 'indent' }, close);
             self._buildDropdownRow(panel, 'Outdent', { cmd: 'outdent' }, close);
+            // Author-only, constellation pages only -- hidden until
+            // _refreshPermissionsRow decides it applies.
+            self._buildPermissionsRow(panel, close);
 
             var divider = document.createElement('div');
             divider.style.cssText = 'height:1px;background:#eee;margin:4px 2px;';
@@ -441,10 +472,6 @@ module('lively.identity.WikiEditor')
           },
         });
 
-        var spacer = document.createElement('div');
-        spacer.style.cssText = 'flex:1 1 auto;';
-        row.appendChild(spacer);
-
         var previewBtn = document.createElement('button');
         previewBtn.textContent = 'Preview';
         previewBtn.title = 'Preview the current draft as it will look published';
@@ -457,10 +484,10 @@ module('lively.identity.WikiEditor')
           e.stopPropagation();
           self._togglePreview();
         });
-        row.appendChild(previewBtn);
+        actions.appendChild(previewBtn);
         this._previewButton = previewBtn;
 
-        this._buildSaveControls(row);
+        this._buildSaveControls(actions);
       },
 
       // A native-DOM dropdown (trigger button + absolutely-positioned
@@ -563,6 +590,155 @@ module('lively.identity.WikiEditor')
         });
         panel.appendChild(row);
         return row;
+      },
+
+      // ─── who can edit (constellation pages, author only) ───────────────────────
+      // The row in the More menu, and the small panel it opens. The panel is a
+      // position:fixed native-DOM box on document.body (not inside this
+      // morph's shapeNode): the toolbar is sticky, so anchoring to the shape
+      // would put it wherever the top of the editor scrolled to, and CLAUDE.md's
+      // notes on native inputs in overlays favour body-level dialogs.
+
+      _buildPermissionsRow: function (panel, close) {
+        var self = this;
+        var row = document.createElement('div');
+        row.textContent = 'Who can edit…';
+        row.style.cssText = [
+          'padding:5px 10px', 'font-size:12px', 'cursor:pointer', 'border-radius:3px',
+          'white-space:nowrap', 'display:none',
+        ].join(';');
+        row.addEventListener('mouseover', function () { row.style.background = '#eef4ff'; });
+        row.addEventListener('mouseout', function () { row.style.background = ''; });
+        row.addEventListener('mousedown', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          close();
+          self._openPermissionsPanel();
+        });
+        panel.appendChild(row);
+        this._permissionsRow = row;
+        return row;
+      },
+
+      // Only the page's author on a constellation page (the server refuses
+      // anyone else changing the policy regardless).
+      _refreshPermissionsRow: function () {
+        if (!this._permissionsRow) return;
+        var show = !!(this._constellation && this._isOwner && !this._forceReadOnly);
+        this._permissionsRow.style.display = show ? '' : 'none';
+      },
+
+      _closePermissionsPanel: function () {
+        if (this._permPanel && this._permPanel.parentNode) this._permPanel.parentNode.removeChild(this._permPanel);
+        this._permPanel = null;
+        if (this._permCloseHandler) {
+          document.removeEventListener('mousedown', this._permCloseHandler, true);
+          this._permCloseHandler = null;
+        }
+      },
+
+      _openPermissionsPanel: function () {
+        var self = this;
+        if (this._permPanel) return this._closePermissionsPanel();
+        var WP = lively.identity.WikiPolicy;
+        var current = this._editPolicy || { mode: 'members' };
+        var chosen = current.mode;
+
+        var panel = document.createElement('div');
+        panel.style.cssText = [
+          'position:fixed', 'z-index:100000', 'width:320px', 'box-sizing:border-box',
+          'background:#fff', 'border:1px solid #ccc', 'border-radius:6px',
+          'box-shadow:0 4px 16px rgba(0,0,0,0.25)', 'padding:12px',
+          'font:12px sans-serif', 'color:#333',
+        ].join(';');
+
+        var title = document.createElement('div');
+        title.textContent = 'Who can edit this page';
+        title.style.cssText = 'font-weight:600;font-size:13px;margin-bottom:8px;';
+        panel.appendChild(title);
+
+        var handlesInput = document.createElement('input');
+        handlesInput.type = 'text';
+        handlesInput.placeholder = 'alice, bob, carol.example';
+        handlesInput.value = (current.handles || []).join(', ');
+        handlesInput.style.cssText = 'display:none;width:100%;box-sizing:border-box;margin:2px 0 6px 22px;width:calc(100% - 22px);padding:4px 6px;font-size:12px;border:1px solid #ccc;border-radius:3px;';
+
+        function syncHandlesVisibility() { handlesInput.style.display = chosen === 'handles' ? 'block' : 'none'; }
+
+        var group = 'wiki-perm-' + (this.id || 'editor');
+        WP.MODES.forEach(function (m) {
+          var label = document.createElement('label');
+          label.style.cssText = 'display:block;cursor:pointer;margin:4px 0;';
+          var radio = document.createElement('input');
+          radio.type = 'radio';
+          radio.name = group;
+          radio.checked = chosen === m.key;
+          radio.style.cssText = 'margin:0 8px 0 0;vertical-align:middle;';
+          radio.addEventListener('change', function () { chosen = m.key; syncHandlesVisibility(); });
+          var name = document.createElement('span');
+          name.textContent = m.label;
+          name.style.cssText = 'font-weight:600;';
+          var hint = document.createElement('div');
+          hint.textContent = m.hint;
+          hint.style.cssText = 'color:#888;font-size:11px;margin-left:22px;';
+          label.appendChild(radio);
+          label.appendChild(name);
+          label.appendChild(hint);
+          panel.appendChild(label);
+          if (m.key === 'handles') panel.appendChild(handlesInput);
+        });
+        syncHandlesVisibility();
+
+        var err = document.createElement('div');
+        err.style.cssText = 'color:#c33;font-size:11px;min-height:14px;margin:4px 0;';
+        panel.appendChild(err);
+
+        var buttons = document.createElement('div');
+        buttons.style.cssText = 'display:flex;justify-content:flex-end;gap:6px;';
+        function button(text, primary) {
+          var b = document.createElement('button');
+          b.textContent = text;
+          b.style.cssText = 'height:24px;padding:0 12px;font-size:12px;cursor:pointer;border-radius:3px;' +
+            (primary ? 'border:1px solid #5a5;background:#efe;' : 'border:1px solid #ccc;background:#fff;');
+          return b;
+        }
+        var cancel = button('Cancel', false), apply = button('Apply', true);
+        cancel.addEventListener('click', function () { self._closePermissionsPanel(); });
+        apply.addEventListener('click', function () {
+          var built = WP.build(chosen, handlesInput.value);
+          if (built.error) { err.textContent = built.error; return; }
+          var previous = self._editPolicy;
+          self._editPolicy = built.policy;
+          self._closePermissionsPanel();
+          // A page that hasn't been saved yet carries the policy in its first
+          // save; an existing one saves now, and rolls the change back if the
+          // server refuses it.
+          if (self._isNew) return;
+          self._saveNow(function (saveErr) {
+            if (saveErr) { self._editPolicy = previous; return; }
+            self._editAccess = null; // policy changed: refetch access next time
+          });
+        });
+        buttons.appendChild(cancel);
+        buttons.appendChild(apply);
+        panel.appendChild(buttons);
+
+        // Keystrokes in the handles field belong to the field, not to Lively's
+        // world-level key handling.
+        ['keydown', 'keyup', 'keypress'].forEach(function (t) {
+          panel.addEventListener(t, function (e) { e.stopPropagation(); });
+        });
+
+        var tb = this._toolbarDiv.getBoundingClientRect();
+        panel.style.top = (tb.bottom + 4) + 'px';
+        panel.style.left = Math.max(8, Math.min(window.innerWidth - 328, tb.right - 328)) + 'px';
+        document.body.appendChild(panel);
+        this._permPanel = panel;
+
+        this._permCloseHandler = function (e) {
+          if (!panel.contains(e.target)) self._closePermissionsPanel();
+        };
+        document.addEventListener('mousedown', this._permCloseHandler, true);
       },
 
       _buildColorInput: function (markName, title, fallback) {
@@ -977,6 +1153,7 @@ module('lively.identity.WikiEditor')
           self._wikiName = (envelope.state && envelope.state.wikiName) || null;
           self._category = (envelope.state && envelope.state.category) || null;
           self._tags = (envelope.state && envelope.state.tags) || [];
+          self._editPolicy = (envelope.state && envelope.state.editPolicy) || null;
           var user = lively.identity.did.currentUser();
           self._isOwner = !!(user && user.did === envelope.did);
           self._canEdit = self._isOwner;
@@ -984,6 +1161,7 @@ module('lively.identity.WikiEditor')
           function finishLoad() {
             self._attachEditor();
             self._applyReadOnlyMode();
+            self._refreshPermissionsRow();
             self._connectSync();
           }
 
@@ -998,29 +1176,19 @@ module('lively.identity.WikiEditor')
             self.yDoc = doc;
             self._attachments = (payload && payload.attachments) || [];
 
-            // Non-owner (§16.6): resolve constellation write access before
-            // attaching the editor, so a legitimate member doesn't get
-            // stuck read-only.
-            if (!self._isOwner && self._constellation) {
-              var spaceTokenUrl = base + '/c/' + encodeURIComponent(self._constellation) + '/space-token';
-              var swxhr = new XMLHttpRequest();
-              swxhr.open('GET', spaceTokenUrl, true);
-              swxhr.setRequestHeader('Accept', 'application/json');
-              swxhr.withCredentials = true;
-              swxhr.onload = function () {
-                if (swxhr.status === 200) {
-                  try {
-                    self._canEdit = !!JSON.parse(swxhr.responseText).canWrite;
-                  } catch (e) { /* leave _canEdit at its not-owner default (false) */ }
-                }
-                finishLoad();
-              };
-              swxhr.onerror = function () { finishLoad(); };
-              swxhr.send();
-              return;
-            }
-
-            finishLoad();
+            // Resolve edit access before attaching the editor, so a
+            // legitimate editor doesn't get stuck read-only. The server
+            // decides (owner, or constellation member allowed by this page's
+            // edit policy -- WikiPermissions.js), not this client; if that
+            // request fails, fall back to the conservative owner-only default
+            // already in _canEdit.
+            self._fetchEditAccess(function (access) {
+              if (access) {
+                self._canEdit = !!access.canEdit;
+                self._readOnlyReason = access.reason || null;
+              }
+              finishLoad();
+            });
           }
 
           lively.identity.wikiSerializer.deserializeFromEnvelope(envelope, onDeserialized);
@@ -1315,7 +1483,7 @@ module('lively.identity.WikiEditor')
           ].join(';');
           var label = document.createElement('span');
           label.style.cssText = 'font-size:11px;color:#888;font-family:sans-serif;';
-          label.textContent = 'Read-only — ' + (this._constellation ? ('join ' + this._constellation + ' to edit') : 'not a member');
+          label.textContent = lively.identity.WikiPolicy.readOnlyMessage(this._readOnlyReason, this._constellation);
           this._toolbarDiv.appendChild(label);
         }
         if (this._pmContainer && !this._autoHeight) {
@@ -1327,10 +1495,48 @@ module('lively.identity.WikiEditor')
       // Connects to LiveDocSyncServer via WebsocketProvider for live
       // multi-writer collaboration. Gracefully degrades if y-websocket is
       // unavailable.
+      // Asks the server whether THIS session may edit the page and, if so, for
+      // a signed token the live-edit sync room requires before it accepts
+      // edits (GET /@:handle/:objId/edit-token -- see IdentityServer.js).
+      // Calls thenDo({ canEdit, reason, policy, token? }), or thenDo(null) if
+      // the request failed. Cached in _editAccess; pass force to refetch.
+      _fetchEditAccess: function (thenDo, force) {
+        var self = this;
+        if (this._editAccess && !force) return thenDo(this._editAccess);
+        if (!this._objId || !this._handle) return thenDo(null);
+        var url = lively.identity.did.baseUrl() + '/@' + encodeURIComponent(this._handle) +
+          '/' + encodeURIComponent(this._objId) + '/edit-token';
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', url, true);
+        xhr.setRequestHeader('Accept', 'application/json');
+        xhr.withCredentials = true;
+        xhr.onload = function () {
+          var data = null;
+          if (xhr.status === 200) {
+            try { data = JSON.parse(xhr.responseText); } catch (e) { data = null; }
+          }
+          self._editAccess = data;
+          thenDo(data);
+        };
+        xhr.onerror = function () { thenDo(null); };
+        xhr.send();
+      },
+
       _connectSync: function () {
         if (!this._objId) return; // no sync until first save establishes objId
         if (!this.yDoc) return;
+        if (this.wsProvider) return;
+        var self = this;
+        // The edit token decides whether the room accepts our edits or treats
+        // this connection as read-only, so it has to be in hand before
+        // connecting (no token = read-only, which is right for a viewer).
+        this._fetchEditAccess(function (access) {
+          self._startSyncProvider(access && access.canEdit ? access.token : null);
+        });
+      },
 
+      _startSyncProvider: function (token) {
+        if (this.wsProvider) return;
         var WebsocketProvider = this._WebsocketProvider();
         if (!WebsocketProvider) {
           console.warn('[WikiEditor] WebsocketProvider not loaded — live sync disabled');
@@ -1342,14 +1548,34 @@ module('lively.identity.WikiEditor')
         // configure or inject any more.
         var wsScheme = (typeof location !== 'undefined' && location.protocol === 'https:') ? 'wss:' : 'ws:';
         var wsUrl = wsScheme + '//' + location.host + '/livedoc-sync';
+        var self = this;
         try {
-          this.wsProvider = new WebsocketProvider(wsUrl, this._objId, this.yDoc, { connect: true });
+          this.wsProvider = new WebsocketProvider(wsUrl, this._objId, this.yDoc, {
+            connect: true,
+            params: token ? { token: token } : {},
+          });
           this.wsProvider.on('status', function (event) {
             console.log('[WikiEditor] sync status:', event.status);
           });
         } catch (e) {
           console.warn('[WikiEditor] Failed to start WebSocket sync (non-fatal):', e.message);
+          return;
         }
+
+        // y-websocket reconnects by reusing the URL it was built with, token
+        // included, and the token expires (8h). Refresh it well before that so
+        // a long editing session that drops and reconnects still has a valid
+        // one. (If the fresh answer is "may not edit any more", the URL drops
+        // the token and the next reconnect is read-only.)
+        clearInterval(this._tokenTimer);
+        this._tokenTimer = setInterval(function () {
+          if (!self.world() || !self.wsProvider) return clearInterval(self._tokenTimer);
+          self._fetchEditAccess(function (access) {
+            if (!self.wsProvider) return;
+            var t = access && access.canEdit ? access.token : null;
+            self.wsProvider.url = wsUrl + '/' + self._objId + (t ? '?token=' + encodeURIComponent(t) : '');
+          }, true);
+        }, 6 * 60 * 60 * 1000);
       },
 
       // Mirrors WikiView.js's getOutline() exactly, but reads from this
@@ -1391,6 +1617,12 @@ module('lively.identity.WikiEditor')
       },
 
       // callback: optional (err) — invoked after PUT completes/fails.
+      _stateMeta: function () {
+        var meta = { category: this._category, tags: this._tags || [] };
+        if (this._editPolicy && this._constellation) meta.editPolicy = this._editPolicy;
+        return meta;
+      },
+
       _saveNow: function (callback) {
         clearTimeout(this._saveTimer);
         var self = this;
@@ -1409,7 +1641,9 @@ module('lively.identity.WikiEditor')
           // stateMeta each save (no merge with prevEnvelope.state) — so
           // category/tags must be re-sent on every autosave, not just at
           // creation, or they'd be silently wiped on the very next save.
-          stateMeta:     { category: this._category, tags: this._tags || [] },
+          // editPolicy rides along for the same reason (and only when one was
+          // ever set; absent means "all members").
+          stateMeta:     this._stateMeta(),
           // title omitted — WikiSerializer extracts it from the first PM block
         };
         this._setStatus('Saving…');
@@ -2452,6 +2686,7 @@ module('lively.identity.WikiEditor')
         editor._wikiName = opts.wikiName || null;
         editor._category = opts.category || null;
         editor._tags = opts.tags || [];
+        editor._editPolicy = opts.editPolicy || null;
         editor._onSaved = opts.onSaved || null;
         editor._autoHeight = !!opts.autoHeight;
         editor._onHeightChanged = opts.onHeightChanged || null;

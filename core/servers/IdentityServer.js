@@ -75,6 +75,7 @@ var dmSignalingTokenStore = require("./support/dm-signaling-token-store");
 var cryptoVerify = require("./identity/CryptoVerify");
 var domainVerifier = require("./identity/DomainVerifier");
 var constellationSpace = require("./identity/ConstellationSpace");
+var wikiPermissions = require("./identity/WikiPermissions");
 var plusCode = require("./identity/PlusCode");
 var roomPresence = require("./identity/RoomPresence");
 
@@ -3210,6 +3211,46 @@ module.exports = function (route, app) {
     });
   });
 
+  // ─── wiki page edit token ──────────────────────────────────────────────────
+  // Whether THIS caller may edit the wiki page, decided by the same rule the
+  // save path uses (WikiPermissions.canEditWikiPage), plus -- when they may --
+  // a signed token the live-edit sync room requires before it will accept
+  // edits from a connection (LiveDocSyncServer.js). A caller who may not edit
+  // gets no token, and connects to the room read-only. Lives here, not in a
+  // separate subserver file, so it stays ahead of this file's
+  // app.all("/@:handle/*") catch-all -- see CLAUDE.md's notes on that.
+  app.get("/@:handle/:objId/edit-token", auth.optionalAuth, function (req, res) {
+    var objId = req.params.objId;
+    res.set("Cache-Control", "no-store");
+    objectRepo.get(objId, function (err, envelope) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!envelope || envelope.type !== "wikipage") {
+        return res.status(404).json({ error: "Wiki page not found: " + objId });
+      }
+      var did = req.identity ? req.identity.did : null;
+      var policy = wikiPermissions.normalizePolicy(envelope.state && envelope.state.editPolicy);
+
+      function decide(constellation) {
+        wikiPermissions.canEditWikiPage(envelope, did, constellation, function (err, result) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (!result.allowed) {
+            return res.json({ canEdit: false, reason: result.reason, policy: policy });
+          }
+          constellationSpace.mintWikiRoomToken(objId, did, true, function (err, token) {
+            if (err) return res.status(500).json({ error: String(err) });
+            res.json({ canEdit: true, reason: null, policy: policy, token: token });
+          });
+        });
+      }
+
+      if (!envelope.constellation) return decide(null);
+      constellationRegistry.get(envelope.constellation, function (err, constellation) {
+        if (err) return res.status(500).json({ error: String(err) });
+        decide(constellation);
+      });
+    });
+  });
+
   // ─── PUT object ────────────────────────────────────────────────────────────
   // Intentionally owner-only — Phase 1 "shared" visibility grants read access
   // via record.recipients (see GET above / addRecipient), not write access.
@@ -3507,6 +3548,20 @@ module.exports = function (route, app) {
       });
     }
 
+    // A wikipage's state.editPolicy must be well-formed, and only means
+    // something on a constellation page (a personal page is author-only).
+    // Returns an error string, or null.
+    function _wikiPolicyShapeError(env) {
+      if (env.type !== "wikipage") return null;
+      var p = env.state && env.state.editPolicy;
+      var shapeErr = wikiPermissions.validatePolicy(p);
+      if (shapeErr) return shapeErr;
+      if (p && !env.constellation && wikiPermissions.normalizePolicy(p).mode !== "members") {
+        return "editPolicy only applies to constellation wiki pages";
+      }
+      return null;
+    }
+
     // Write authorization against the EXISTING stored version. Always
     // fetches it first (not gated on the incoming envelope's own claimed
     // type) so a type mismatch can be caught regardless of what the
@@ -3521,8 +3576,12 @@ module.exports = function (route, app) {
       _afterSignatureCheck(existing, function () {
       // No existing version yet (genesis) — nothing to check type or
       // authorship against; the self-consistency check above already
-      // covers this case.
-      if (!existing) return _handleRegistryCheckAndWrite();
+      // covers this case. (A wikipage's edit policy is still validated.)
+      if (!existing) {
+        var genesisPolicyErr = _wikiPolicyShapeError(envelope);
+        if (genesisPolicyErr) return res.status(400).json({ error: genesisPolicyErr });
+        return _handleRegistryCheckAndWrite();
+      }
 
       // An object's type is fixed for its whole lifetime once created —
       // never silently replaceable by a different kind of object at the
@@ -3573,20 +3632,41 @@ module.exports = function (route, app) {
       // LiveDocSyncServer.js's sync-room join already uses — this extends
       // it to the persisted-save path so both share one source of truth.
       // Wiki pages never freeze (never delivered via /inbox).
+      //
+      // Who counts as "with write access" is the page's own edit policy
+      // (state.editPolicy: all members / controllers / listed handles), applied
+      // by WikiPermissions.canEditWikiPage -- the same rule the edit-token
+      // route uses. The author is always allowed and is the only one who can
+      // change the policy.
+      var policyErr = _wikiPolicyShapeError(envelope);
+      if (policyErr) return res.status(400).json({ error: policyErr });
+
       if (existing.did === req.identity.did) {
         _applyWikiContributorTracking(existing);
         return _handleRegistryCheckAndWrite();
       }
 
+      if (!wikiPermissions.policiesEqual(
+            existing.state && existing.state.editPolicy,
+            envelope.state && envelope.state.editPolicy)) {
+        return res.status(403).json({
+          error: "Forbidden: only the page's author can change who may edit it",
+        });
+      }
+
       constellationRegistry.get(existing.constellation, function (err, constellation) {
         if (err) return res.status(500).json({ error: String(err) });
-        if (!constellation || !constellationRegistry.canWrite(constellation, req.identity.did)) {
-          return res.status(403).json({
-            error: "Forbidden: not a member of this constellation with write access",
-          });
-        }
-        _applyWikiContributorTracking(existing);
-        _handleRegistryCheckAndWrite();
+        wikiPermissions.canEditWikiPage(existing, req.identity.did, constellation, function (err, result) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (!result.allowed) {
+            return res.status(403).json({
+              error: wikiPermissions.REASON_MESSAGES[result.reason] ||
+                "Forbidden: not allowed to edit this page",
+            });
+          }
+          _applyWikiContributorTracking(existing);
+          _handleRegistryCheckAndWrite();
+        });
       });
     });
     });

@@ -148,8 +148,74 @@ function _verifySpaceTokenSync(token, expectedGenesisObjId) {
   return { did: payload.did || null, genesisObjId: payload.genesisObjId };
 }
 
+// ─── wiki-room edit tokens ──────────────────────────────────────────────────
+// A wiki page's live-edit room (LiveDocSyncServer.js, keyed by the page's
+// objId) has no session cookie to check either, so whether a connection may
+// PUSH edits rides a signed token too: { kind: 'wiki-room', did, objId,
+// canWrite, exp }, minted by GET /@:handle/:objId/edit-token after the server
+// has applied WikiPermissions.canEditWikiPage. Same HMAC secret and IPC
+// bridge as the space token, but a distinct `kind` and no genesisObjId, so
+// neither token type verifies as the other.
+//
+// Much longer TTL than a space token: that one only has to survive a
+// handshake, but y-websocket reconnects by reusing its original URL, so this
+// has to still be valid when a long editing session's socket drops and
+// retries. The cost is that a permission revoked mid-session keeps working in
+// the live room until the token expires (saving is checked fresh on every
+// PUT, so it is cut off immediately). A missing/expired/invalid token is not
+// an error at the room: it just means a read-only connection.
+var WIKI_ROOM_TOKEN_TTL_MS = 8 * 60 * 60 * 1000;
+
+function mintWikiRoomToken(objId, did, canWrite, thenDo) {
+  ensureSecret(function (err, secret) {
+    if (err) return thenDo(err);
+    var payload = {
+      kind: 'wiki-room',
+      did: did || null,
+      objId: objId,
+      canWrite: !!canWrite,
+      exp: Date.now() + WIKI_ROOM_TOKEN_TTL_MS
+    };
+    var payloadB64 = _b64url(Buffer.from(JSON.stringify(payload), 'utf8'));
+    var sig = crypto.createHmac('sha256', secret).update(payloadB64).digest();
+    thenDo(null, payloadB64 + '.' + _b64url(sig));
+  });
+}
+
+// Calls thenDo(err, result): { did, canWrite } for a valid token for this
+// exact room, else null (missing/malformed/expired/forged/other room/other
+// token kind). err only if the shared secret couldn't be obtained.
+function verifyWikiRoomToken(token, expectedObjId, thenDo) {
+  ensureSecret(function (err) {
+    if (err) return thenDo(err, null);
+    var payload = _verifySignedPayload(token);
+    if (!payload || payload.kind !== 'wiki-room' || payload.objId !== expectedObjId) {
+      return thenDo(null, null);
+    }
+    thenDo(null, { did: payload.did || null, canWrite: payload.canWrite === true });
+  });
+}
+
+// Signature + expiry check shared by the token kinds; returns the parsed
+// payload or null. TOKEN_SECRET is set by the time this runs (see callers).
+function _verifySignedPayload(token) {
+  if (typeof token !== 'string') return null;
+  var parts = token.split('.');
+  if (parts.length !== 2) return null;
+  var expectedSig = crypto.createHmac('sha256', TOKEN_SECRET).update(parts[0]).digest();
+  var gotSig;
+  try { gotSig = _b64urlDecode(parts[1]); } catch (e) { return null; }
+  if (expectedSig.length !== gotSig.length || !crypto.timingSafeEqual(expectedSig, gotSig)) return null;
+  var payload;
+  try { payload = JSON.parse(_b64urlDecode(parts[0]).toString('utf8')); } catch (e) { return null; }
+  if (!payload || typeof payload.exp !== 'number' || Date.now() > payload.exp) return null;
+  return payload;
+}
+
 module.exports = {
   mintSpaceToken: mintSpaceToken,
   verifySpaceToken: verifySpaceToken,
+  mintWikiRoomToken: mintWikiRoomToken,
+  verifyWikiRoomToken: verifyWikiRoomToken,
   wireClusterPrimary: wireClusterPrimary
 };

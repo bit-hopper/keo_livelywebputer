@@ -453,9 +453,14 @@ module("lively.identity.WikiView")
             return;
           }
           this._editBtn.style.display = "none";
-          if (!this._constellation) return;
+          if (!this._constellation || !this._handle || !this._objId) return;
+          // Whether a non-author may edit depends on the page's own edit
+          // policy (all members / controllers / listed handles), which only
+          // the server evaluates -- ask it, rather than re-deriving the rule
+          // from constellation membership here.
           var base = lively.identity.did.baseUrl();
-          var url = base + "/c/" + encodeURIComponent(this._constellation) + "/space-token";
+          var url = base + "/@" + encodeURIComponent(this._handle) + "/" +
+            encodeURIComponent(this._objId) + "/edit-token";
           var xhr = new XMLHttpRequest();
           xhr.open("GET", url, true);
           xhr.withCredentials = true;
@@ -463,7 +468,7 @@ module("lively.identity.WikiView")
           xhr.onload = function () {
             if (xhr.status !== 200) return;
             try {
-              if (JSON.parse(xhr.responseText).canWrite) {
+              if (JSON.parse(xhr.responseText).canEdit) {
                 self._canEdit = true;
                 self._editBtn.style.display = "";
               }

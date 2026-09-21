@@ -1468,6 +1468,8 @@ module("lively.identity.WikiIndex")
             wikiName: fields.wikiName,
             category: fields.category,
             tags: fields.tags,
+            // Who may edit (constellation pages; null/absent = all members).
+            editPolicy: fields.editPolicy || null,
             bounds: lively.rect(0, 0, w, 780),
             // Added directly to $world (not a floating window) — the same
             // top-level-morph shape _openPage's read-only WikiView already
