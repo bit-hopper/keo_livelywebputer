@@ -610,7 +610,7 @@ module("lively.identity.WikiIndex")
 
     "layout", {
       _layout: function () {
-        var W = window.innerWidth;
+        var W = this._pageW();
 
         // Sits BACK_BTN_LIFT px above the header row (the search row and
         // title stay at TOP) — leaves ~20px clear under the menu bar.
@@ -682,11 +682,24 @@ module("lively.identity.WikiIndex")
       // SIDEBAR_W + SIDEBAR_GAP so the sidebar has room alongside it.
       _repositionWikiView: function () {
         var y = (this._gridY || 0) + (this._gridContentHeight || 0) + GRID_TOP_GAP;
-        if (this._activeContentMorph && this._activeContentMorph.world()) {
-          this._activeContentMorph.setPosition(lively.pt(SIDE_MARGIN + SIDEBAR_W + SIDEBAR_GAP, y));
+        var m = this._activeContentMorph;
+        if (m && m.world()) {
+          m.setPosition(lively.pt(SIDE_MARGIN + SIDEBAR_W + SIDEBAR_GAP, y));
+          // Keep the page filling the space between the sidebar and the
+          // categories panel as the window (or the scrollbar) changes width.
+          var w = this._contentWidth(), ext = m.getExtent();
+          if (Math.abs(ext.x - w) >= 1) m.setExtent(lively.pt(w, ext.y));
         }
         this._pinPanels();
         this._syncPageHeight();
+      },
+
+      // Width of the area the page can use: the document's client width, so
+      // it excludes the vertical scrollbar once the page is tall enough to
+      // scroll (window.innerWidth includes it, which left the right margin
+      // 15px short of the left one).
+      _pageW: function () {
+        return document.documentElement.clientWidth;
       },
 
       // The sidebar and categories panel are position:fixed (see
@@ -707,7 +720,7 @@ module("lively.identity.WikiIndex")
           this._sidebarBox.setPosition(lively.pt(SIDE_MARGIN, viewportY + scrollY));
         }
         if (this._categoriesPanel && this._categoriesPanel.world()) {
-          var rightX = window.innerWidth - SIDE_MARGIN - RIGHT_PANEL_W;
+          var rightX = this._pageW() - SIDE_MARGIN - RIGHT_PANEL_W;
           this._categoriesPanel.setPosition(lively.pt(rightX, viewportY + scrollY));
         }
       },
@@ -724,10 +737,18 @@ module("lively.identity.WikiIndex")
         // one. And 1px under even that: a world exactly clientWidth wide still
         // gets a horizontal scrollbar (measured: 1601 does, 1600 and below
         // don't, with nothing measurably overflowing).
-        var w = document.documentElement.clientWidth - 1;
+        var pageW = this._pageW();
+        var w = pageW - 1;
         var ext = $world.getExtent();
         if (Math.abs(ext.y - h) < 1 && Math.abs(ext.x - w) < 1) return;
         $world.setExtent(lively.pt(w, h));
+        // Growing past the viewport adds the vertical scrollbar (and removing
+        // it takes it away), which changes the usable width: relayout once
+        // against the new width. _lastPageW stops this recursing.
+        if (this._pageW() !== this._lastPageW) {
+          this._lastPageW = this._pageW();
+          this._layout();
+        }
       },
 
       // Passed to WikiView.open / WikiEditor.openCard|newCard so the open
@@ -741,11 +762,13 @@ module("lively.identity.WikiIndex")
 
       // Shared by _openPage/_createNewPage — available width for the open
       // wiki view/editor between the left sidebar gutter and the right
-      // categories panel gutter, capped at WikiView's own 1180px default.
+      // categories panel gutter. Uncapped: the page runs right up to
+      // RIGHT_PANEL_GAP from the categories panel, the same gap it has from
+      // the sidebar on the left (SIDEBAR_GAP), at any window width.
       _contentWidth: function () {
         var leftEdge = SIDE_MARGIN + SIDEBAR_W + SIDEBAR_GAP;
         var rightGutter = RIGHT_PANEL_W + RIGHT_PANEL_GAP;
-        return Math.min(1180, window.innerWidth - leftEdge - rightGutter - SIDE_MARGIN);
+        return Math.max(400, this._pageW() - leftEdge - rightGutter - SIDE_MARGIN);
       },
     },
 
