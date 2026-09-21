@@ -138,14 +138,13 @@ module('lively.identity.PostCardEditor')
         this._locationCode = null;
         this._locationCleared = false;
         this._locationBtn = null;
-        // Sender-controlled opt-out toggles + tip jar (PostcardDesignSpec-v2.md
-        // §5.4) — each defaults on (reactions/replies) or absent (tip jar).
+        // Sender-controlled opt-out toggle + tip jar (PostcardDesignSpec-v2.md
+        // §5.4) — defaults on (reactions) or absent (tip jar).
         // Seeded from the loaded envelope in _loadExistingNow, same pattern
         // as _locationCode above. No compose UI yet (reverted — broke the
         // editor's typability, see chat history) — these currently just
         // carry each card's defaults through save/reload unchanged.
         this._reactionsEnabled = true;
-        this._replyEnabled = true;
         this._tipJarAddress = null;
         // True for a new card (you're creating it) or once _loadExistingNow
         // compares envelope.did to the session DID. Gates Send and the
@@ -711,8 +710,8 @@ module('lively.identity.PostCardEditor')
         return null;
       },
 
-      // Unlike location, reactionsEnabled/replyEnabled always have a value
-      // (default true) so they're always included, not conditionally
+      // Unlike location, reactionsEnabled always has a value
+      // (default true) so it's always included, not conditionally
       // omitted — there's no "never touched this session" tri-state to
       // preserve. tipJarAddress stays absent (not null) when unset, per
       // §5.4's "0x... | absent" — omitting the key rather than nulling it
@@ -720,7 +719,6 @@ module('lively.identity.PostCardEditor')
       _optionsStateMeta: function () {
         var meta = {
           reactionsEnabled: this._reactionsEnabled !== false,
-          replyEnabled: this._replyEnabled !== false,
         };
         if (this._tipJarAddress) meta.tipJarAddress = this._tipJarAddress;
         return meta;
@@ -734,7 +732,7 @@ module('lively.identity.PostCardEditor')
       // Object.assign({}, params.stateMeta, {title}) — they do NOT merge
       // against the previously-stored envelope.state. That's fine for
       // fields this editor itself owns and re-seeds from the loaded
-      // envelope every time (location/reactionsEnabled/replyEnabled/
+      // envelope every time (location/reactionsEnabled/
       // tipJarAddress, all handled above) — but ANY state field set by
       // something other than this editor, and that this editor doesn't
       // know to carry forward, gets silently dropped on the next save.
@@ -1023,7 +1021,6 @@ module('lively.identity.PostCardEditor')
           self._locationCleared = false;
           self._updateLocationBtn();
           self._reactionsEnabled = !(envelope.state && envelope.state.reactionsEnabled === false);
-          self._replyEnabled = !(envelope.state && envelope.state.replyEnabled === false);
           self._tipJarAddress = (envelope.state && envelope.state.tipJarAddress) || null;
           // Re-seed _constellation from the loaded envelope so a re-save of
           // a plain card already attached to a constellation doesn't lose
@@ -1512,7 +1509,6 @@ module('lively.identity.PostCardEditor')
         var params = {
           prevEnvelope:  this._envelope || null,
           constellation: this._constellation,
-          replyTo:       this._replyTo,
           visibility:    'public',
           attachments:   this._attachments || [],
           stateMeta:     this._composeStateMeta(),
@@ -1565,7 +1561,6 @@ module('lively.identity.PostCardEditor')
             var params = {
               prevEnvelope:  self._envelope || null,
               constellation: self._constellation,
-              replyTo:       self._replyTo,
               recipients:    result.resolved.map(function (r) {
                 return { did: r.did, x25519PublicKey: r.x25519PublicKey };
               }),
@@ -1684,7 +1679,6 @@ module('lively.identity.PostCardEditor')
           self._locationCleared = false;
           self._updateLocationBtn();
           self._reactionsEnabled = !(envelope.state && envelope.state.reactionsEnabled === false);
-          self._replyEnabled = !(envelope.state && envelope.state.replyEnabled === false);
           self._tipJarAddress = (envelope.state && envelope.state.tipJarAddress) || null;
           self._updateVisibilityBtn();
           // If this was a new card, wire up sync now that we have an objId
@@ -1981,10 +1975,10 @@ module('lively.identity.PostCardEditor')
         handleInput.type = 'text';
         handleInput.placeholder = 'handle (no @)';
         handleInput.style.cssText = 'width:100%;box-sizing:border-box;font-size:12px;padding:5px 7px;border:1px solid #ccc;border-radius:3px;margin-bottom:6px;';
-        // Reply preset (§5.2, see newCard) — prefill rather than auto-send,
+        // Recipient preset (see newCard) — prefill rather than auto-send,
         // so the recipient is still a step the user confirms by clicking
         // Send.
-        if (self._replyPresetRecipient) handleInput.value = self._replyPresetRecipient;
+        if (self._presetRecipient) handleInput.value = self._presetRecipient;
         handleSection.appendChild(handleInput);
 
         var handleMsg = document.createElement('div');
@@ -3396,8 +3390,8 @@ module('lively.identity.PostCardEditor')
       },
 
       // Create a new genesis postcard (objId not yet known) and open the editor.
-      // opts.recipientHandle/opts.visibility (PostcardDesignSpec-v2.md §5.2's
-      // reply presets): applied *after* _setup(), since _setup() itself
+      // opts.recipientHandle/opts.visibility (recipient presets, e.g. from
+      // the profile card's postcard button): applied *after* _setup(), since _setup() itself
       // resets _visibility/_recipientHandles to their new-card defaults —
       // setting them beforehand would just get overwritten.
       newCard: function (handle, options) {
@@ -3407,7 +3401,6 @@ module('lively.identity.PostCardEditor')
         editor._objId = null;
         editor._isNew = true;
         editor._constellation = opts.constellation || null;
-        editor._replyTo = opts.replyTo || null;
         if (opts.target) {
           opts.target.addMorph(editor);
           editor._setup();
@@ -3418,7 +3411,7 @@ module('lively.identity.PostCardEditor')
         if (opts.recipientHandle) {
           editor._visibility = opts.visibility || 'private';
           editor._recipientHandles = [opts.recipientHandle];
-          editor._replyPresetRecipient = opts.recipientHandle;
+          editor._presetRecipient = opts.recipientHandle;
           editor._updateVisibilityBtn();
         }
         return editor;

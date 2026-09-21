@@ -1047,9 +1047,8 @@ module("lively.identity.ConstellationLounge")
 
       // Opens a new PostCardEditor compose window preset to post into this
       // constellation — same lazy-require + newCard(handle, opts) idiom
-      // MenuBarEntry.js's "New postcard" entry and PostCardView.js's own
-      // reply flow already use, with opts.constellation carrying the
-      // target over (mirrors PostCardView.js's _openReply).
+      // MenuBarEntry.js's "New postcard" entry already uses, with
+      // opts.constellation carrying the target over.
       _openCreatePostcard: function () {
         var currentUser = lively.identity.did.currentUser();
         if (!currentUser) return;
