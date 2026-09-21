@@ -926,6 +926,10 @@ module("lively.identity.ConstellationLounge")
           row.setPosition(lively.pt(12, headerH + i * SORT_ITEM_H));
           row.setExtent(lively.pt(SORT_W - 24, SORT_ITEM_H));
           row.applyStyle({ borderWidth: 0 });
+          // makeLabel defaults eventsAreIgnored to true, which makes
+          // onMouseDownEntry skip onMouseDown entirely (Events.js) — rows
+          // have to opt back in to be clickable.
+          row.eventsAreIgnored = false;
           row.onMouseDown = function () { self._selectSortOption(option); };
           dropdown.addMorph(row);
         });
