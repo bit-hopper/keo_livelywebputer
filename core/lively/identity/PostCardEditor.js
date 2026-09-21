@@ -78,7 +78,7 @@ module('lively.identity.PostCardEditor')
     // ─── serialization guard ──────────────────────────────────────────────────────
 
     'serialization', {
-      doNotSerialize: ['editorView', 'yDoc', 'wsProvider', '_saveTimer', '_pmContainer', '_contentLoadStarted'],
+      doNotSerialize: ['editorView', 'yDoc', 'wsProvider', '_saveTimer', '_pmContainer', '_previewEl', '_contentLoadStarted'],
     },
 
     // ─── initialization ──────────────────────────────────────────────────────────
@@ -309,7 +309,7 @@ module('lively.identity.PostCardEditor')
             '}' +
             '.lively-postcard-image{max-width:100%;max-height:320px;vertical-align:middle;' +
             'border-radius:4px;}' +
-            '.lively-postcard-video{max-width:100%;max-height:400px;display:block;border-radius:4px;}' +
+            '.lively-postcard-video{display:block;width:100%;max-height:480px;object-fit:contain;background:#000;border-radius:4px;}' +
             '.lively-postcard-audio{max-width:100%;width:320px;display:block;}' +
             '.lively-math-node{cursor:pointer;border-radius:3px;}' +
             '.lively-math-node.lively-math-selected,' +
@@ -375,6 +375,7 @@ module('lively.identity.PostCardEditor')
           { label: '🔗',   title: 'Insert/remove link', cmd: 'link' },
           { label: '📎',   title: 'Insert attachment',  cmd: 'attachment' },
           { label: '🧩',   title: 'Insert part',        cmd: 'insertPart' },
+          { label: '👁',   title: 'Preview (toggle)',   cmd: 'preview' },
           { label: '∑',    title: 'Math inline',        cmd: 'insertMath', mathType: 'inline' },
           { label: '∑²',   title: 'Math display',       cmd: 'insertMath', mathType: 'display' },
         ];
@@ -2868,6 +2869,10 @@ module('lively.identity.PostCardEditor')
             this._promptAttachment();
             break;
           }
+          case 'preview': {
+            this._togglePreview();
+            return;
+          }
           case 'insertPart': {
             if (this._openPartsPicker) this._openPartsPicker();
             else alert('Insert part — coming soon');
@@ -2875,6 +2880,38 @@ module('lively.identity.PostCardEditor')
           }
         }
         view.focus();
+      },
+
+      // Toggles a read-only overlay over the editing area showing the card
+      // exactly as PostCardView will render it (photo galleries, full-frame
+      // video), so the author can check layout before saving/sending.
+      _togglePreview: function () {
+        if (this._previewEl) {
+          if (this._previewEl.parentNode) this._previewEl.parentNode.removeChild(this._previewEl);
+          this._previewEl = null;
+          this._pmContainer.style.visibility = '';
+          if (this.editorView) this.editorView.focus();
+          return;
+        }
+        if (!this.editorView) return;
+        var utils = lively.identity.postCardUtils;
+        var el = document.createElement('div');
+        el.className = 'lively-postcard-preview selectable';
+        el.style.cssText = [
+          'position:absolute', 'top:64px', 'left:0', 'right:0', 'bottom:36px',
+          'overflow-y:auto', 'padding:16px 20px', 'box-sizing:border-box',
+          'font-family:sans-serif', 'font-size:14px', 'line-height:1.6',
+          'background:#fff', 'z-index:5',
+        ].join(';');
+        ['keydown', 'keyup', 'keypress', 'mousedown', 'mousemove', 'mouseup', 'click', 'dblclick'].forEach(function (t) {
+          el.addEventListener(t, function (e) { e.stopPropagation(); });
+        });
+        el.innerHTML = utils.snapshotToHtml(this.editorView.state.doc.toJSON());
+        this._pmContainer.parentNode.appendChild(el);
+        this._pmContainer.style.visibility = 'hidden';
+        this._previewEl = el;
+        utils.hydrateEmbeddedParts(el);
+        utils.hydrateAttachments(el, this._handle, this._attachments || []);
       },
 
       // Insert/edit/remove a link mark over the current selection.

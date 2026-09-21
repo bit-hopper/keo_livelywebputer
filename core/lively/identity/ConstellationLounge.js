@@ -99,7 +99,11 @@ module("lively.identity.ConstellationLounge")
     // live-inspected morph extents (postcard pt(604.7, 367.3), comment
     // section pt(580.7, 574.0), about panel pt(973.7, 306.0), rounded here),
     // not computed to fill whatever room happens to be left.
-    var CARD_W = 650, CARD_H = 395;
+    // CARD_H is the reel card's default height; a card with tall content (a
+    // photo gallery) grows it up to CARD_H_MAX — see _fitCardToContent. The
+    // max leaves ~60px of a second gallery showing below a full 4-photo
+    // gallery, so a 5+ photo card visibly continues below the fold.
+    var CARD_W = 650, CARD_H = 395, CARD_H_MAX = 610;
     // Comment section's outer box is set to CARD_W minus its own left/right
     // CSS padding (THREAD_PAD_Y_X below) so the *rendered* box — padding is
     // real box-model padding on a content-box element, so it adds to the
@@ -408,7 +412,8 @@ module("lively.identity.ConstellationLounge")
         // top-aligned postcard and cover the search box entirely, since
         // its column overlaps the search box's centered position.
         var quickInfoY = TOP + SEARCH_H + ROW_GAP;
-        var threadY = reelY + CARD_H + NAV_H;
+        var cardH = this._cardH || CARD_H;
+        var threadY = reelY + cardH + NAV_H;
         // Rendered (visible) height comes from whatever room is actually
         // left in the viewport below the thread's top edge (minus
         // BOTTOM_MARGIN), capped at THREAD_H_MAX rather than always
@@ -471,7 +476,7 @@ module("lively.identity.ConstellationLounge")
           // Sits beside the postcard, below the search row.
           quickInfoX: rightColX, quickInfoY: quickInfoY, quickInfoW: quickInfoW, quickInfoH: QUICK_INFO_H,
           reelX: GUTTER, reelY: reelY, cardW: cardW,
-          navX: GUTTER, navY: reelY + CARD_H + 6,
+          navX: GUTTER, navY: reelY + cardH + 6,
           threadX: GUTTER, threadY: threadY, threadW: threadW, threadH: threadH,
           spacesX: rightColX, spacesY: spacesY, spacesW: quickInfoW, spacesH: threadBottom - spacesY,
           membersX: membersX, membersY: TOP, membersW: MEMBERS_W, membersH: Math.max(120, H - TOP),
@@ -497,16 +502,16 @@ module("lively.identity.ConstellationLounge")
         }
         if (this._frontCardBox) {
           this._frontCardBox.setPosition(lively.pt(g.reelX, g.reelY));
-          this._frontCardBox.setExtent(lively.pt(g.cardW, CARD_H));
+          this._frontCardBox.setExtent(lively.pt(g.cardW, cardH));
           // PostCardView's own internal DOM is fluid CSS (width:100%/
           // inset:0), so it reflows automatically once its own box extent
           // changes — no re-fetch or rebuild needed, just propagate the
           // new size down.
-          (this._frontCardBox.submorphs || []).forEach(function (m) { m.setExtent(lively.pt(g.cardW, CARD_H)); });
+          (this._frontCardBox.submorphs || []).forEach(function (m) { m.setExtent(lively.pt(g.cardW, cardH)); });
         }
         if (this._backCardBox) {
           this._backCardBox.setPosition(lively.pt(g.reelX + 8, g.reelY + 8));
-          this._backCardBox.setExtent(lively.pt(g.cardW, CARD_H));
+          this._backCardBox.setExtent(lively.pt(g.cardW, cardH));
         }
         if (this._navBox) this._navBox.setPosition(lively.pt(g.navX, g.navY));
         if (this._threadContainer) {
@@ -3219,8 +3224,42 @@ module("lively.identity.ConstellationLounge")
             var opts = { target: box, envelope: envelope, bounds: lively.rect(0, 0, box.getExtent().x, box.getExtent().y) };
             if (envelope.type === "wikipage") lively.identity.WikiView.open(handle, objId, opts);
             else lively.identity.PostCardView.open(handle, objId, opts);
+            if (box === self._frontCardBox) {
+              // Content may still be laying out / decrypting right after
+              // open(), so re-measure a couple of times.
+              [60, 500, 1800].forEach(function (ms) {
+                setTimeout(function () {
+                  if (box._cardRenderToken === token) self._fitCardToContent();
+                }, ms);
+              });
+            }
           });
         });
+      },
+
+      // The reel card is CARD_H tall by default and grows (up to CARD_H_MAX)
+      // when its content needs more room — e.g. a photo gallery — instead of
+      // scrolling inside a fixed box. Content taller than the max scrolls
+      // inside the card. Measures the content's real extent (its last
+      // child's bottom edge), not scrollHeight, because scrollHeight can't
+      // report less than the box's own current height and so could never
+      // shrink the card back down.
+      _fitCardToContent: function () {
+        var box = this._frontCardBox;
+        if (!box) return;
+        var content = box.renderContext().shapeNode.querySelector(".lively-postcard-view-content");
+        var h = CARD_H;
+        if (content && content.lastElementChild) {
+          var last = content.lastElementChild;
+          var contentH = last.offsetTop + last.offsetHeight + 14;   // + content's bottom padding
+          // 76px header above the content area, 26px reactions footer below it
+          // (PostCardView._buildChrome).
+          h = Math.max(CARD_H, Math.min(CARD_H_MAX, 76 + contentH + 26));
+        }
+        if (h !== (this._cardH || CARD_H)) {
+          this._cardH = h;
+          this._layout();
+        }
       },
 
       _fetchEnvelope: function (objId, thenDo) {

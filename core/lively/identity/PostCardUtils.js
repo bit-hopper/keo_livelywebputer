@@ -29,6 +29,7 @@ module('lively.identity.PostCardUtils')
       sanitizeLocationCode: sanitizeLocationCode,
       hydrateEmbeddedParts: hydrateEmbeddedParts,
       hydrateAttachments:  hydrateAttachments,
+      openImageViewer:     openImageViewer,
     };
 
     // BUG FIX: the .lively-postcard-image/.lively-postcard-video max-width/
@@ -56,8 +57,21 @@ module('lively.identity.PostCardUtils')
       styleEl.id = 'lively-postcard-media-style';
       styleEl.textContent =
         '.lively-postcard-image{max-width:100%;max-height:320px;vertical-align:middle;border-radius:4px;}' +
-        '.lively-postcard-video{max-width:100%;max-height:400px;display:block;border-radius:4px;}' +
+        '.lively-postcard-video{display:block;width:100%;max-height:480px;object-fit:contain;background:#000;border-radius:4px;}' +
         '.lively-postcard-audio{max-width:100%;width:320px;display:block;}' +
+        // Photo galleries (see blocksToHtml): fixed-size cells, each photo
+        // zoomed to fill its cell (object-fit:cover, edges may be cropped).
+        // 1 = full width, natural shape; 2 = side by side; 3 = one tall left
+        // + two stacked right; 4 = 2x2.
+        '.lively-media-grid{display:grid;gap:4px;margin:6px 0;}' +
+        '.lively-media-grid.lively-media-n2{grid-template-columns:1fr 1fr;height:280px;}' +
+        '.lively-media-grid.lively-media-n3{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;height:380px;}' +
+        '.lively-media-grid.lively-media-n3 .lively-media-cell:first-child{grid-row:1 / span 2;}' +
+        '.lively-media-grid.lively-media-n4{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;height:380px;}' +
+        '.lively-media-cell{position:relative;overflow:hidden;border-radius:4px;min-height:0;min-width:0;}' +
+        '.lively-postcard-view-content img.lively-postcard-image{cursor:zoom-in;}' +
+        '.lively-media-cell img.lively-postcard-image{display:block;width:100%;height:100%;max-width:none;max-height:none;object-fit:cover;border-radius:0;}' +
+        '.lively-media-grid.lively-media-n1 .lively-media-cell img.lively-postcard-image{height:auto;max-height:480px;}' +
         '.lively-embedded-part{position:relative;min-height:32px;margin:4px 0;padding:4px;}' +
         '.lively-embedded-part.lively-embed-error{color:#c33;font-style:italic;padding:8px;}' +
         // Links inside a wiki page (read-only view + editor + preview) are green,
@@ -72,9 +86,146 @@ module('lively.identity.PostCardUtils')
       document.head.appendChild(styleEl);
     }
 
+    // Photo viewer. imgs: the <img> elements of one card, in order (their
+    // current src — a decrypted blob: URL for a private photo — is read at
+    // open time, so it works for every attachment kind); index: which one to
+    // open. Two modes:
+    //   - opts.container (an element): opens *inside* that element (the card),
+    //     covering it, with an icon button that switches to the full-screen mode.
+    //   - no container: full-screen, appended to document.body (not into a
+    //     morph's DOM — see CLAUDE.md on overlays) so it sits above the whole
+    //     world.
+    // Both: X / click outside the photo / Escape closes, arrows / Left-Right
+    // keys step through the card's other photos.
+    var _fullscreenViewerOpen = false;
+
+    function openImageViewer(imgs, index, opts) {
+      if (!imgs || !imgs.length || typeof document === 'undefined') return;
+      var container = opts && opts.container;
+      var i = Math.max(0, index || 0);
+      var overlay = document.createElement('div');
+      overlay.style.cssText = container
+        ? 'position:absolute;inset:0;z-index:20;background:#111;display:flex;align-items:center;justify-content:center;'
+        : 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,0.9);display:flex;align-items:center;justify-content:center;';
+      var full = document.createElement('img');
+      full.style.cssText = (container
+        ? 'max-width:100%;max-height:100%;'
+        : 'max-width:96vw;max-height:94vh;box-shadow:0 4px 40px rgba(0,0,0,0.6);') +
+        'object-fit:contain;border-radius:4px;';
+      overlay.appendChild(full);
+
+      // Icon buttons use the vendored Material Symbols font (ligature names).
+      function btn(icon, css, title) {
+        var b = document.createElement('button');
+        b.textContent = icon;
+        b.title = title;
+        b.style.cssText = 'position:absolute;width:36px;height:36px;padding:0;border:none;border-radius:18px;' +
+          "background:rgba(255,255,255,0.18);color:#fff;font-family:'Material Symbols Rounded';font-size:22px;" +
+          'line-height:36px;cursor:pointer;' + css;
+        overlay.appendChild(b);
+        return b;
+      }
+      var closeBtn = btn('close', 'top:10px;right:10px;', 'Close (Esc)');
+      var fsBtn = container ? btn('fullscreen', 'top:10px;right:54px;', 'Full screen') : null;
+      var prevBtn = imgs.length > 1 ? btn('chevron_left', 'left:10px;top:50%;margin-top:-18px;', 'Previous') : null;
+      var nextBtn = imgs.length > 1 ? btn('chevron_right', 'right:10px;top:50%;margin-top:-18px;', 'Next') : null;
+
+      function show(n) {
+        i = (n + imgs.length) % imgs.length;
+        full.src = imgs[i].src;
+        full.alt = imgs[i].alt || '';
+      }
+      function close() {
+        document.removeEventListener('keydown', onKey, true);
+        if (!container) _fullscreenViewerOpen = false;
+        if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      }
+      function onKey(e) {
+        // A full-screen viewer opened from this in-card one owns the keys.
+        if (container && _fullscreenViewerOpen) return;
+        if (e.key === 'Escape') close();
+        else if (e.key === 'ArrowLeft' && imgs.length > 1) show(i - 1);
+        else if (e.key === 'ArrowRight' && imgs.length > 1) show(i + 1);
+        else return;
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      overlay.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (e.target === closeBtn || e.target === overlay) close();
+        else if (e.target === prevBtn) show(i - 1);
+        else if (e.target === nextBtn) show(i + 1);
+        else if (e.target === fsBtn) openImageViewer(imgs, i);
+      });
+      // Keep Lively's own mouse/key handlers (registered on the window) from
+      // seeing events aimed at the viewer.
+      ['mousedown', 'mouseup', 'mousemove', 'keyup', 'keypress'].forEach(function (t) {
+        overlay.addEventListener(t, function (e) { e.stopPropagation(); });
+      });
+      document.addEventListener('keydown', onKey, true);
+      show(i);
+      if (container) {
+        container.appendChild(overlay);
+      } else {
+        _fullscreenViewerOpen = true;
+        document.body.appendChild(overlay);
+      }
+    }
+
     function snapshotToHtml(snapshot) {
       if (!snapshot || !snapshot.content) return '';
-      return snapshot.content.map(pmNodeToHtml).join('');
+      return blocksToHtml(snapshot.content);
+    }
+
+    // A paragraph holding nothing but images (and blank text) is a photo row.
+    // Consecutive photo rows merge into one gallery, chunked 4 at a time so
+    // each gallery fits one of the 1/2/3/4 layouts.
+    function imageOnlyParagraph(node) {
+      if (!node || node.type !== 'paragraph' || !node.content || !node.content.length) return null;
+      var imgs = [];
+      for (var i = 0; i < node.content.length; i++) {
+        var c = node.content[i];
+        if (c.type === 'image') imgs.push(c);
+        else if (c.type === 'text' && !/\S/.test(c.text || '')) continue;
+        else return null;
+      }
+      return imgs.length ? imgs : null;
+    }
+
+    function blocksToHtml(nodes) {
+      var out = '', pending = [];
+      function flush() {
+        for (var i = 0; i < pending.length; i += 4) out += galleryHtml(pending.slice(i, i + 4));
+        pending = [];
+      }
+      (nodes || []).forEach(function (node) {
+        var imgs = imageOnlyParagraph(node);
+        if (imgs) { pending = pending.concat(imgs); return; }
+        flush();
+        out += pmNodeToHtml(node);
+      });
+      flush();
+      return out;
+    }
+
+    function galleryHtml(imgs) {
+      return '<div class="lively-media-grid lively-media-n' + imgs.length + '">' +
+        imgs.map(function (img) {
+          return '<div class="lively-media-cell">' + imageTagHtml(img, '', false) + '</div>';
+        }).join('') + '</div>';
+    }
+
+    function imageTagHtml(node, extraClass, decorative) {
+      var src = (node.attrs && node.attrs.src) || '';
+      var alt = decorative ? '' : ((node.attrs && node.attrs.alt) || '');
+      var imgTitle = !decorative && node.attrs && node.attrs.title;
+      var deco = decorative ? ' aria-hidden="true"' : '';
+      if (!src && node.attrs && node.attrs.objId) {
+        return '<img class="lively-postcard-image' + extraClass + attachmentPlaceholderClass() + '"' +
+               attachmentPlaceholderAttrs(node) + ' alt="' + escapeAttr(alt) + '"' + deco + '>';
+      }
+      return '<img class="lively-postcard-image' + extraClass + '" src="' + escapeAttr(src) + '" alt="' + escapeAttr(alt) + '"' +
+             (imgTitle ? ' title="' + escapeAttr(imgTitle) + '"' : '') + deco + '>';
     }
 
     // BUG FIX: no read-only view (PostCardView, PostCardFeed, WikiView,
@@ -225,17 +376,8 @@ module('lively.identity.PostCardUtils')
           return renderHighlightedCode(node);
         case 'hard_break':
           return '<br>';
-        case 'image': {
-          var src = (node.attrs && node.attrs.src) || '';
-          var alt = (node.attrs && node.attrs.alt) || '';
-          var imgTitle = node.attrs && node.attrs.title;
-          if (!src && node.attrs && node.attrs.objId) {
-            return '<img class="lively-postcard-image' + attachmentPlaceholderClass() + '"' +
-                   attachmentPlaceholderAttrs(node) + ' alt="' + escapeAttr(alt) + '">';
-          }
-          return '<img class="lively-postcard-image" src="' + escapeAttr(src) + '" alt="' + escapeAttr(alt) + '"' +
-                 (imgTitle ? ' title="' + escapeAttr(imgTitle) + '"' : '') + '>';
-        }
+        case 'image':
+          return imageTagHtml(node, '', false);
         case 'video': {
           var vsrc = (node.attrs && node.attrs.src) || '';
           if (!vsrc) {

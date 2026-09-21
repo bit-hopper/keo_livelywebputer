@@ -294,6 +294,16 @@ module("lively.identity.PostCardView")
             "color:#333",
             "box-sizing:border-box",
           ].join(";");
+          // Click a photo to view it whole inside the card; the viewer's own
+          // full-screen icon opens the full-screen one (PostCardUtils.openImageViewer).
+          content.addEventListener("click", function (e) {
+            var t = e.target;
+            if (!t || t.tagName !== "IMG" || !/lively-postcard-image/.test(t.className) || !t.src) return;
+            var imgs = Array.prototype.filter.call(
+              content.querySelectorAll("img.lively-postcard-image"),
+              function (i) { return !!i.src; });
+            lively.identity.postCardUtils.openImageViewer(imgs, imgs.indexOf(t), { container: content.parentNode });
+          });
           front.appendChild(content);
           this._contentEl = content;
 
