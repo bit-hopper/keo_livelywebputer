@@ -437,8 +437,9 @@ module("lively.identity.PostCardView")
             "width:26px",
             "height:26px",
             "border-radius:50%",
-            "border:1px solid #ccc",
-            "background:#fff",
+            "border:1px solid #e8497e",   // pink accent, same as the constellation page's buttons
+            "background:#e8497e",
+            "color:#fff",
             "cursor:pointer",
             "font-size:13px",
             "line-height:1",
