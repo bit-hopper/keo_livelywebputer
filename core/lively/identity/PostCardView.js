@@ -999,7 +999,13 @@ module("lively.identity.PostCardView")
             var isMine = emoji === mine;
             var n = counts[emoji] || 0;
             var pill = document.createElement("button");
-            pill.textContent = n ? emoji + " " + n : emoji;
+            // The emoji sits in its own inline-block span so the pop/spin
+            // animation can transform it without moving the count.
+            var em = document.createElement("span");
+            em.textContent = emoji;
+            em.style.cssText = "display:inline-block;";
+            pill.appendChild(em);
+            if (n) pill.appendChild(document.createTextNode(" " + n));
             pill.title = (data.byEmoji && data.byEmoji[emoji] || []).join(", ");
             pill.style.cssText = [
               "flex:none",
@@ -1017,11 +1023,82 @@ module("lively.identity.PostCardView")
                 e.stopPropagation();
                 if (t !== "click" || !currentUser) return;
                 if (isMine) self._deleteMyReaction();
-                else self._putReaction(emoji);
+                else {
+                  // Played once the re-render after the PUT lands, since
+                  // that rebuilds every pill (see below).
+                  self._pendingReactionAnim = emoji;
+                  self._putReaction(emoji);
+                }
               });
             });
             self._pillsWrapEl.appendChild(pill);
+            if (isMine && self._pendingReactionAnim === emoji) self._playReactionAnim(pill, em, emoji);
           });
+          this._pendingReactionAnim = null;
+        },
+
+        _ensureReactionAnimCss: function () {
+          if (document.getElementById("lively-postcard-reaction-anim")) return;
+          var st = document.createElement("style");
+          st.id = "lively-postcard-reaction-anim";
+          st.textContent = [
+            "@keyframes lpc-star-pop{0%{transform:scale(.5) rotate(0)}55%{transform:scale(1.6) rotate(200deg)}100%{transform:scale(1) rotate(360deg)}}",
+            "@keyframes lpc-goose-pop{0%{transform:scale(.5) rotate(0)}30%{transform:scale(1.5) rotate(-18deg)}60%{transform:scale(1.5) rotate(14deg)}100%{transform:scale(1) rotate(0)}}",
+            "@keyframes lpc-burst{0%{transform:translate(-50%,-50%) scale(1);opacity:1}100%{transform:translate(calc(-50% + var(--dx)),calc(-50% + var(--dy))) scale(.2);opacity:0}}",
+            "@keyframes lpc-ring{0%{transform:translate(-50%,-50%) scale(.2);opacity:.9}100%{transform:translate(-50%,-50%) scale(1.5);opacity:0}}",
+          ].join("");
+          document.head.appendChild(st);
+        },
+
+        // Like-button style pop: the emoji springs (star spins, goose
+        // wiggles) while a ring and a ring of dots burst out from it. The
+        // burst is added to the front face rather than the pill, since the
+        // footer scrolls horizontally and would clip anything overflowing it.
+        _playReactionAnim: function (pill, emojiEl, emoji) {
+          if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+          this._ensureReactionAnimCss();
+          var isStar = emoji === "⭐";
+          emojiEl.style.animation = (isStar ? "lpc-star-pop" : "lpc-goose-pop") + " 500ms cubic-bezier(.2,.8,.3,1)";
+
+          var fr = this._frontEl.getBoundingClientRect();
+          var er = emojiEl.getBoundingClientRect();
+          var scale = (this._frontEl.offsetWidth && fr.width / this._frontEl.offsetWidth) || 1;
+          var cx = (er.left + er.width / 2 - fr.left) / scale;
+          var cy = (er.top + er.height / 2 - fr.top) / scale;
+
+          var colors = isStar ? ["#f5b301", "#ffd54a", "#ff9f1c"] : ["#e8497e", "#ff8fb1", "#ffc2d6"];
+          var burst = document.createElement("div");
+          burst.style.cssText = "position:absolute;left:" + cx + "px;top:" + cy + "px;width:0;height:0;pointer-events:none;z-index:11;";
+
+          var ring = document.createElement("div");
+          ring.style.cssText = [
+            "position:absolute", "left:0", "top:0", "width:26px", "height:26px",
+            "border-radius:50%", "box-sizing:border-box",
+            "border:2px solid " + colors[0],
+            "animation:lpc-ring 450ms ease-out forwards",
+          ].join(";");
+          burst.appendChild(ring);
+
+          var N = 8;
+          for (var i = 0; i < N; i++) {
+            var ang = (i / N) * 2 * Math.PI;
+            var dist = 22;
+            var dot = document.createElement("div");
+            dot.style.cssText = [
+              "position:absolute", "left:0", "top:0", "width:5px", "height:5px",
+              "border-radius:50%",
+              "background:" + colors[i % colors.length],
+              "--dx:" + Math.round(Math.cos(ang) * dist) + "px",
+              "--dy:" + Math.round(Math.sin(ang) * dist) + "px",
+              "animation:lpc-burst 500ms ease-out forwards",
+            ].join(";");
+            burst.appendChild(dot);
+          }
+
+          this._frontEl.appendChild(burst);
+          setTimeout(function () {
+            if (burst.parentNode) burst.parentNode.removeChild(burst);
+          }, 650);
         },
 
         _putReaction: function (emoji) {
