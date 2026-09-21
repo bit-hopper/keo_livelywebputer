@@ -998,6 +998,7 @@ module("lively.identity.PostCardView")
           var counts = data.counts || {};
           var mine = data.mine || null;
           var currentUser = lively.identity.did.currentUser();
+          var toAnimate = null;
 
           ["⭐", "🪿"].forEach(function (emoji) {
             var isMine = emoji === mine;
@@ -1036,9 +1037,13 @@ module("lively.identity.PostCardView")
               });
             });
             self._pillsWrapEl.appendChild(pill);
-            if (isMine && self._pendingReactionAnim === emoji) self._playReactionAnim(pill, em, emoji);
+            if (isMine && self._pendingReactionAnim === emoji) toAnimate = { pill: pill, em: em, emoji: emoji };
           });
           this._pendingReactionAnim = null;
+          // Only once both pills are in place: the wrap is right-aligned, so
+          // measuring right after the star alone is appended (before the
+          // goose exists) puts the burst a whole pill's width too far right.
+          if (toAnimate) this._playReactionAnim(toAnimate.pill, toAnimate.em, toAnimate.emoji);
         },
 
         _ensureReactionAnimCss: function () {
