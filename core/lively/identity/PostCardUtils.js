@@ -60,6 +60,13 @@ module('lively.identity.PostCardUtils')
         '.lively-postcard-audio{max-width:100%;width:320px;display:block;}' +
         '.lively-embedded-part{position:relative;min-height:32px;margin:4px 0;padding:4px;}' +
         '.lively-embedded-part.lively-embed-error{color:#c33;font-style:italic;padding:8px;}' +
+        // Links inside a wiki page (read-only view + editor + preview) are green,
+        // not the browser's default blue. Scoped to wiki containers only: the
+        // editor's ProseMirror container class is shared with PostCardEditor,
+        // so WikiEditor adds its own lively-wiki-editor-container marker.
+        '.lively-wiki-view-content a,.lively-wiki-editor-container a{color:#1a7f37;}' +
+        '.lively-wiki-view-content a:visited,.lively-wiki-editor-container a:visited{color:#1a7f37;}' +
+        '.lively-wiki-view-content a:hover,.lively-wiki-editor-container a:hover{color:#116329;}' +
         '.lively-attachment-loading{opacity:0.35;}' +
         '.lively-attachment-error{opacity:0.5;filter:grayscale(1);}';
       document.head.appendChild(styleEl);

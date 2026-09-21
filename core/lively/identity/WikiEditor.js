@@ -219,7 +219,7 @@ module('lively.identity.WikiEditor')
         this._buildLinkPreview(shapeNode);
 
         var pmDiv = document.createElement('div');
-        pmDiv.className = 'lively-postcard-editor-container selectable';
+        pmDiv.className = 'lively-postcard-editor-container lively-wiki-editor-container selectable';
         pmDiv.style.cssText = [
           'position:absolute', 'top:40px', 'left:0', 'right:0', 'bottom:0',
           'overflow-y:auto', 'padding:16px 20px', 'box-sizing:border-box',
@@ -952,7 +952,7 @@ module('lively.identity.WikiEditor')
         var link = document.createElement('a');
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
-        link.style.cssText = 'color:#15c;text-decoration:underline;max-width:200px;overflow:hidden;' +
+        link.style.cssText = 'color:#1a7f37;text-decoration:underline;max-width:200px;overflow:hidden;' +
           'text-overflow:ellipsis;white-space:nowrap;';
         el.appendChild(link);
 
