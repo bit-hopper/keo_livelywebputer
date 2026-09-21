@@ -1054,6 +1054,13 @@ module("lively.identity.WikiIndex")
         card._dateLabel = dateLabel;
         card._cardH = CARD_H;
         card.onMouseDown = function () { self._openPage(page); };
+        // Clickable card, not a draggable part: all three flags on the card
+        // and each child (see CLAUDE.md, drag/drop/grab section).
+        [card, nameLabel, dateLabel].forEach(function (m) {
+          m.draggingEnabled = false;
+          m.droppingEnabled = false;
+          m.grabbingEnabled = false;
+        });
         return card;
       },
 
