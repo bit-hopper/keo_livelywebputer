@@ -697,7 +697,9 @@ module("lively.identity.ProfileCard")
           // pane's bottom-right, owner only) doesn't fit in what's left below
           // it. Runs before the Edit button is placed, which reads the
           // pane's final height.
-          var needPaneH = cardTop + cardH + (self._isOwner ? 44 : 14);
+          // 44 whenever a bottom-right button (Edit and/or Enter World) will
+          // sit at ph - 36 below the card; visitors without a world need less.
+          var needPaneH = cardTop + cardH + ((self._isOwner || self._worldObjId) ? 44 : 14);
           var havePaneH = pane.getExtent().y;
           if (needPaneH > havePaneH) {
             var we = self.getExtent();
@@ -781,10 +783,10 @@ module("lively.identity.ProfileCard")
           // 'Friends' when they actually are (or it's the owner's own card,
           // where it opens their friends list); otherwise it's the action.
           var FRIEND_LABELS = { owner: 'Friends', friends: 'Friends',
-            none: '+ Friend request', 'signed-out': '+ Friend request',
+            none: 'Send friend request', 'signed-out': 'Send friend request',
             'pending-outgoing': 'Request sent', 'pending-incoming': 'Respond to request' };
-          var friendLabel = FRIEND_LABELS[info.status] || '+ Friend request';
-          var btnW = friendLabel.length > 9 ? 136 : 108, btnH = 26;
+          var friendLabel = FRIEND_LABELS[info.status] || 'Send friend request';
+          var btnW = friendLabel.length > 18 ? 150 : friendLabel.length > 9 ? 136 : 108, btnH = 26;
           var btnX = bx + Math.floor((BW - btnW) / 2);
           var btnY = Math.round((by + astroBoxH + dividerY) / 2 - btnH / 2);
           var friendsBtn = new lively.morphic.Button(lively.rect(btnX, btnY, btnW, btnH), friendLabel);
@@ -870,7 +872,7 @@ module("lively.identity.ProfileCard")
                 // Nameplate row: avatar circle, @handle, a disabled chat-icon
                 // placeholder (no 1:1 DM system exists yet — this just marks
                 // the spot for when one does), and a three-dot menu (Invite
-                // to constellation / Remove friend) opened via the
+                // to constellation) opened via the
                 // framework's own lively.morphic.Menu.openAt, same idiom
                 // ConstellationLounge.js's _openMembershipMenu uses — it
                 // handles click-outside-to-close for free, unlike a
@@ -1008,14 +1010,6 @@ module("lively.identity.ProfileCard")
                       ["Invite to constellation…", function () {
                         if (w) w._openInviteToConstellationPicker(did, hndl, pos);
                       }],
-                      ["Remove friend", function () {
-                        fetch('/@' + lively.identity.did.currentUser().handle + '/friends/' + did,
-                          { method: 'DELETE', credentials: 'include' })
-                          .then(function () {
-                            if (pnl) pnl.remove();
-                            if (w) w.loadProfile(w._handle, w._worldObjId);
-                          });
-                      }],
                     ];
                     btn._openMenu = lively.morphic.Menu.openAt(pos, '@' + (hndl || did), items);
                     evt.stop();
@@ -1029,19 +1023,6 @@ module("lively.identity.ProfileCard")
               }
             } else if (status === 'friends') {
               msg('You and @' + this._handle + ' are friends.', 36);
-              var removeBtn = actionBtn('Remove friend', 80);
-              removeBtn._targetDid = this._targetDid;
-              removeBtn.addScript(function doAction() {
-                var self_ = this;
-                fetch('/@' + lively.identity.did.currentUser().handle + '/friends/' + this._targetDid,
-                  { method: 'DELETE', credentials: 'include' })
-                  .then(function () {
-                    var w = self_.owner && self_.owner.owner && self_.owner.owner.owner;
-                    self_.owner.remove();
-                    if (w) w.loadProfile(w._handle, w._worldObjId);
-                  });
-              });
-              lively.bindings.connect(removeBtn, 'fire', removeBtn, 'doAction');
             } else if (status === 'pending-outgoing') {
               msg('Friend request sent — pending.', 36);
               var cancelBtn = actionBtn('Cancel request', 80);
@@ -1162,6 +1143,44 @@ module("lively.identity.ProfileCard")
             fbLabel.style.fontWeight = 'bold';
             var fbKids = fbLabel.querySelectorAll('*');
             for (var fi = 0; fi < fbKids.length; fi++) fbKids[fi].style.fontWeight = 'bold';
+          }
+
+          // Send-postcard button, right of the Friends pill: opens a new
+          // postcard editor with this profile's handle preset as the
+          // recipient (private, encrypted to them). Signed-in visitors on
+          // someone else's card only — no point postcarding yourself.
+          var viewer = lively.identity.did.currentUser();
+          if (!self._isOwner && viewer) {
+            var pcSize = btnH;
+            var pcBtn = new lively.morphic.Text(
+              lively.rect(btnX + btnW + 8, btnY, pcSize, pcSize), 'cards_stack');
+            pcBtn.draggingEnabled = false;
+            pcBtn.droppingEnabled = false;
+            pcBtn.grabbingEnabled = false;
+            pcBtn.applyStyle({ fill: Color.rgb(204, 0, 87),
+              borderRadius: pcSize / 2, borderWidth: 0,
+              fontFamily: "'Material Symbols Rounded'", fontSize: 13.5,
+              textColor: Color.white, align: 'center',
+              // 1px top padding: measured live, the glyph's ink sat ~1.3px
+              // above the circle's center without it (now ~0.7px off).
+              padding: lively.rect(0, 1, 0, 0),
+              allowInput: false, selectable: false, clipMode: 'hidden',
+              whiteSpaceHandling: 'pre', handStyle: 'pointer' });
+            pcBtn._handle = handle;
+            pcBtn.addScript(function onMouseUp(evt) {
+              var toHandle = this._handle;
+              var me = lively.identity.did.currentUser();
+              if (me) {
+                lively.require("lively.identity.PostCardEditor").toRun(function () {
+                  lively.identity.PostCardEditor.newCard(me.handle,
+                    { recipientHandle: toHandle, visibility: 'private' });
+                });
+              }
+              evt.stop();
+              return true;
+            });
+            pane.addMorph(pcBtn);
+            pcBtn.renderContext().morphNode.title = 'Send @' + handle + ' a postcard';
           }
         })();
 
