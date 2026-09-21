@@ -166,9 +166,9 @@ module("lively.identity.ConstellationLounge")
     // postcard's top-right corner and the search box's left edge.
     var SORT_W = 110, SORT_H = SEARCH_H;   // same height as the search box, same row
     var SORT_ITEM_H = 32;
-    var SORT_OPTIONS = ["Starred", "New", "Hyphy", "Goosed"];
+    var SORT_OPTIONS = ["Stellar", "New", "Hyphy", "Goosed"];
     // Feed route's ?sort= value per option. New has none (newest first).
-    var SORT_PARAMS = { Starred: "starred", Goosed: "goosed", Hyphy: "hyphy" };
+    var SORT_PARAMS = { Stellar: "starred", Goosed: "goosed", Hyphy: "hyphy" };
 
     // "+ Postcard" — opens a new PostCardEditor compose window, preset to
     // post into this constellation. Sits left of the members list, top
@@ -844,7 +844,7 @@ module("lively.identity.ConstellationLounge")
       },
     },
 
-    // ─── sort by (Starred/Goosed rank the reel by ⭐/🪿 reaction count,
+    // ─── sort by (Stellar/Goosed rank the reel by ⭐/🪿 reaction count,
     // Hyphy by comment count, New is newest first) ─────────────────────────
 
     "sort by", {
@@ -3084,7 +3084,7 @@ module("lively.identity.ConstellationLounge")
 
     "reel", {
       // Also remembers q so picking a sort option re-fetches under the same
-      // search. Starred/Goosed come back as one server-ranked page (no
+      // search. Stellar/Goosed come back as one server-ranked page (no
       // cursor), so ask for the route's maximum up front.
       _fetchFeed: function (q) {
         var self = this;
