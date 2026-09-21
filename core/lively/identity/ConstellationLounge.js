@@ -911,7 +911,7 @@ module("lively.identity.ConstellationLounge")
         });
         header.setPosition(lively.pt(12, 6));
         header.setExtent(lively.pt(SORT_W - 24, 16));
-        header.applyStyle({ borderWidth: 0, align: "center" });
+        header.applyStyle({ borderWidth: 0 });
         header.eventsAreIgnored = true;
         dropdown.addMorph(header);
 
@@ -923,12 +923,9 @@ module("lively.identity.ConstellationLounge")
             textColor: isSelected ? Color.rgb(20, 20, 20) : Color.rgb(90, 90, 90),
             fixedWidth: true, fixedHeight: true,
           });
-          // A Text morph pins its glyphs to the top of its box, so the row
-          // is sized to one line (18px glyph + 4px shapeNode padding) and
-          // centered vertically by position within its SORT_ITEM_H slot.
-          row.setPosition(lively.pt(12, headerH + i * SORT_ITEM_H + (SORT_ITEM_H - 22) / 2));
-          row.setExtent(lively.pt(SORT_W - 24, 22));
-          row.applyStyle({ borderWidth: 0, align: "center" });
+          row.setPosition(lively.pt(12, headerH + i * SORT_ITEM_H));
+          row.setExtent(lively.pt(SORT_W - 24, SORT_ITEM_H));
+          row.applyStyle({ borderWidth: 0 });
           // makeLabel defaults eventsAreIgnored to true, which makes
           // onMouseDownEntry skip onMouseDown entirely (Events.js) — rows
           // have to opt back in to be clickable.
