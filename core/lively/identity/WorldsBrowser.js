@@ -641,41 +641,16 @@ module("lively.identity.WorldsBrowser")
       launchWikiCreation: function launchWikiCreation() {
         var user = lively.identity.did.currentUser();
         if (!user) return;
-        lively.require("lively.identity.NewWikiPageDialog").toRun(function () {
-          lively.identity.NewWikiPageDialog.open({
-            scope: { handle: user.handle },
-            onCreate: function (fields) {
-              lively.require("lively.identity.WikiEditor").toRun(function () {
-                lively.identity.WikiEditor.newCard(user.handle, {
-                  wikiName: fields.wikiName,
-                  category: fields.category,
-                  tags: fields.tags,
-                  // Fires once, only after an explicit Save-button click
-                  // succeeds (never the debounced autosave, never on a
-                  // failed save) -- see WikiEditor.js's newCard/
-                  // _buildFooter comments for that guarantee.
-                  onSaved: function (handle, objId) {
-                    // Mirrors "Blank world"/"Template"'s own redirect
-                    // below -- without this, navigating away from the
-                    // CURRENT world triggers a real "leave site?"
-                    // beforeunload confirm that blocks the redirect
-                    // until a human dismisses it.
-                    if (lively.Config) lively.Config.askBeforeQuit = false;
-                    // fields.wikiName (not objId) is the human slug this
-                    // route expects -- the exact value persisted
-                    // server-side as state.wikiName, fixed at creation
-                    // and never editable afterward inside the editor, so
-                    // it's safe to close over here instead of deriving
-                    // anything from objId.
-                    window.location.href = "/@" + user.handle + "/wiki/" + fields.wikiName;
-                  },
-                });
-              });
-            },
-          });
-        });
-        var win = lively.morphic.World.current().get("WorldsBrowser");
-        if (win) win.showWorlds();
+        // Wikis live on their own route, not inside whichever world this
+        // browser happens to be open in: hand off to the wiki index, which
+        // shows the new-page dialog and hosts the editor there
+        // (WikiIndex.js's "?new=1" handling).
+        // Mirrors "Blank world"/"Template"'s own redirect below -- without
+        // this, navigating away from the CURRENT world triggers a real
+        // "leave site?" beforeunload confirm that blocks the redirect until
+        // a human dismisses it.
+        if (lively.Config) lively.Config.askBeforeQuit = false;
+        window.location.href = "/@" + encodeURIComponent(user.handle) + "/wiki?new=1";
       },
 
       showCreateTemplateList: function showCreateTemplateList() {

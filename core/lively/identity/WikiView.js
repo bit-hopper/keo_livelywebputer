@@ -85,6 +85,8 @@ module("lively.identity.WikiView")
           "_editBtn",
           "_contentLoadStarted",
           "_onEdit",
+          "_heightObserver",
+          "_onHeightChanged",
         ],
       },
 
@@ -93,6 +95,17 @@ module("lively.identity.WikiView")
         _setup: function () {
           this.disableDragging();
           this.disableGrabbing();
+          // Rendered math/code need these on any page that shows a wiki view
+          // -- the wiki index route doesn't ship them in its HTML. Same ids
+          // as WikiEditor's _ensureRuntime, so whichever runs first wins.
+          [["katex-css", "/core/lib/postcard/katex.min.css"], ["hljs-css", "/core/lib/postcard/hljs-github.css"]].forEach(function (p) {
+            if (document.getElementById(p[0])) return;
+            var link = document.createElement("link");
+            link.id = p[0];
+            link.rel = "stylesheet";
+            link.href = p[1];
+            document.head.appendChild(link);
+          });
           this._detailsOpen = true;
           this._isOwner = false;
           this._canEdit = false;
@@ -128,10 +141,14 @@ module("lively.identity.WikiView")
           shapeNode.style.boxShadow = "0 4px 14px rgba(0,0,0,0.2)";
           shapeNode.style.overflow = "hidden";
 
+          // autoHeight: the wrapper flows at its natural height instead of
+          // filling the morph, and _watchContentHeight resizes the morph to
+          // match — so the page grows with its content and the browser page
+          // scrolls, rather than the content scrolling inside a fixed box.
           var wrapper = document.createElement("div");
           wrapper.className = "lively-wiki-view-wrapper";
           wrapper.style.cssText = [
-            "position:absolute", "inset:0",
+            this._autoHeight ? "position:relative" : "position:absolute; inset:0",
             "display:flex", "flex-direction:column",
             "font-family:sans-serif", "background:#fff",
             "box-sizing:border-box",
@@ -143,6 +160,41 @@ module("lively.identity.WikiView")
           this._buildTitle(wrapper);
           this._buildDetails(wrapper);
           this._buildContentArea(wrapper);
+          if (this._autoHeight) this._watchContentHeight(wrapper);
+        },
+
+        // Keeps the morph's height equal to the wrapper's natural height.
+        // A ResizeObserver (rather than a one-shot measure after render)
+        // also covers images/videos loading late and the details panel
+        // toggling. Only sets the extent when the height actually changed,
+        // so the resize it triggers can't feed back into another observation.
+        _watchContentHeight: function (wrapper) {
+          var self = this;
+          if (this._heightObserver) this._heightObserver.disconnect();
+          if (typeof ResizeObserver === "undefined") return;
+          this._heightObserver = new ResizeObserver(function () {
+            var h = Math.max(120, Math.ceil(wrapper.getBoundingClientRect().height));
+            var ext = self.getExtent();
+            if (Math.abs(ext.y - h) < 1) return;
+            self.setExtent(lively.pt(ext.x, h));
+            if (self._onHeightChanged) self._onHeightChanged(self, h);
+            else if (self.owner && self.owner.isWorld) self._growWorldToFit();
+          });
+          this._heightObserver.observe(wrapper);
+        },
+
+        // A standalone page view sits directly in the world with no caller
+        // managing the world's size (WikiIndex does that itself via
+        // onHeightChanged): extend the world so its background covers the
+        // whole page and the browser page scrolls to the end of it.
+        _growWorldToFit: function () {
+          var world = this.owner;
+          var bottom = this.getPosition().y + this.getExtent().y + 48;
+          var h = Math.max(window.innerHeight, Math.ceil(bottom));
+          var w = document.documentElement.clientWidth;
+          var ext = world.getExtent();
+          if (Math.abs(ext.y - h) < 1 && Math.abs(ext.x - w) < 1) return;
+          world.setExtent(lively.pt(w, h));
         },
 
         _buildTopBar: function (wrapper) {
@@ -282,7 +334,7 @@ module("lively.identity.WikiView")
           var content = document.createElement("div");
           content.className = "lively-wiki-view-content selectable";
           content.style.cssText = [
-            "flex:1 1 auto", "min-height:0", "overflow-y:auto",
+            this._autoHeight ? "flex:0 0 auto" : "flex:1 1 auto; min-height:0; overflow-y:auto",
             "padding:10px 14px 14px", "font-size:13px", "line-height:1.5",
             "color:#333", "box-sizing:border-box",
           ].join(";");
@@ -435,6 +487,7 @@ module("lively.identity.WikiView")
           var extent = this.getExtent();
           var bounds = lively.rect(0, 0, extent.x, extent.y);
           var handle = this._handle, objId = this._objId;
+          var autoHeight = !!this._autoHeight;
           this.remove();
           var editor = lively.identity.WikiEditor.openCard(handle, objId, {
             // A falsy target correctly falls through to WikiEditor's own
@@ -442,8 +495,9 @@ module("lively.identity.WikiView")
             // own (i.e. it was itself standalone via _openInWorld).
             target: owner || null,
             bounds: bounds,
+            autoHeight: autoHeight,
             onSaved: function (h, o) {
-              var view = lively.identity.WikiView.open(h, o, { target: owner || null, bounds: bounds });
+              var view = lively.identity.WikiView.open(h, o, { target: owner || null, bounds: bounds, autoHeight: autoHeight });
               // target-embed doesn't auto-center/reposition; standalone-in-
               // world does its own centering, so only reposition when we
               // had a real owner slot to return to.
@@ -704,6 +758,10 @@ module("lively.identity.WikiView")
       // embedding caller (e.g. WikiIndex.js) swap this view for an editor in
       // its own managed slot. If omitted, the view falls back to swapping
       // itself for a standalone editor in place -- see _startEditDefault.
+      // options.autoHeight  -> grow with content instead of scrolling
+      // internally (default: true when standalone, false when embedded via
+      // options.target)
+      // options.onHeightChanged(view, height) -> fired after each auto resize
       open: function (handle, objId, options) {
         var opts = options || {};
         var view = new lively.identity.WikiView(
@@ -715,6 +773,11 @@ module("lively.identity.WikiView")
         view._cid = opts.cid || null;
         view._envelope = opts.envelope || null;
         view._onEdit = opts.onEdit || null;
+        // Embedded views (opts.target) keep their fixed box unless the
+        // caller opts in; a standalone page view is the whole document, so
+        // it grows by default.
+        view._autoHeight = opts.autoHeight !== undefined ? !!opts.autoHeight : !opts.target;
+        view._onHeightChanged = opts.onHeightChanged || null;
         if (opts.target) {
           opts.target.addMorph(view);
           view._setup();

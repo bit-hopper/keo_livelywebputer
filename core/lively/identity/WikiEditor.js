@@ -89,7 +89,8 @@ module('lively.identity.WikiEditor')
 
     'serialization', {
       doNotSerialize: ['editorView', 'yDoc', 'wsProvider', '_saveTimer', '_pmContainer', '_contentLoadStarted', '_onSaved',
-        '_previewContainer', '_previewMode', '_activeDropdown', '_outsideClickHandler'],
+        '_previewContainer', '_previewMode', '_activeDropdown', '_outsideClickHandler',
+        '_flowEl', '_heightObserver', '_onHeightChanged'],
     },
 
     // ─── initialization ──────────────────────────────────────────────────────────
@@ -274,6 +275,67 @@ module('lively.identity.WikiEditor')
         ['mousedown', 'mousemove', 'mouseup', 'click', 'dblclick'].forEach(function (t) {
           pmDiv.addEventListener(t, function (e) { e.stopPropagation(); });
         });
+
+        if (this._autoHeight) this._applyAutoHeightLayout(shapeNode);
+      },
+
+      // autoHeight: instead of absolute-filling a fixed-size morph (toolbar
+      // pinned top, footer pinned bottom, editor scrolling in between), the
+      // pieces stack in normal flow so the editor takes its natural height,
+      // and the morph is resized to match (_watchContentHeight) -- the page
+      // grows with the content and the browser page scrolls. The toolbar is
+      // position:sticky so it stays on screen while scrolling a long page.
+      _applyAutoHeightLayout: function (shapeNode) {
+        var flow = document.createElement('div');
+        flow.style.cssText = [
+          'position:relative', 'display:flex', 'flex-direction:column',
+          'background:#fff', 'border-radius:8px', 'box-sizing:border-box',
+        ].join(';');
+        shapeNode.appendChild(flow);
+        this._flowEl = flow;
+
+        this._toolbarDiv.style.cssText = [
+          // top:26px: clear of the fixed world menu bar while stuck.
+          'position:sticky', 'top:26px', 'z-index:5', 'flex:0 0 auto', 'height:40px',
+          'background:#f0f0f5', 'border-bottom:1px solid #ccc', 'box-sizing:border-box',
+          'overflow:hidden', 'border-radius:8px 8px 0 0',
+        ].join(';');
+        var editorFlow = [
+          // overflow-x:auto keeps one over-wide block (e.g. display math)
+          // scrolling inside the editor instead of widening the whole page.
+          'position:relative', 'flex:0 0 auto', 'min-height:360px', 'overflow-x:auto',
+          'padding:16px 20px', 'box-sizing:border-box',
+          'font-family:sans-serif', 'font-size:14px', 'line-height:1.6', 'white-space:pre-wrap',
+        ].join(';');
+        this._pmContainer.style.cssText = editorFlow;
+        this._previewContainer.style.cssText = editorFlow + ';display:none';
+        this._footerDiv.style.cssText = [
+          'position:relative', 'flex:0 0 auto', 'height:36px',
+          'background:#f0f0f5', 'border-top:1px solid #ccc', 'box-sizing:border-box',
+          'border-radius:0 0 8px 8px',
+        ].join(';');
+
+        flow.appendChild(this._toolbarDiv);
+        flow.appendChild(this._pmContainer);
+        flow.appendChild(this._previewContainer);
+        flow.appendChild(this._footerDiv);
+        this._watchContentHeight(flow);
+      },
+
+      // Keeps the morph's height equal to the flow container's natural
+      // height (see WikiView._watchContentHeight for why a ResizeObserver).
+      _watchContentHeight: function (flow) {
+        var self = this;
+        if (this._heightObserver) this._heightObserver.disconnect();
+        if (typeof ResizeObserver === 'undefined') return;
+        this._heightObserver = new ResizeObserver(function () {
+          var h = Math.max(200, Math.ceil(flow.getBoundingClientRect().height));
+          var ext = self.getExtent();
+          if (Math.abs(ext.y - h) < 1) return;
+          self.setExtent(lively.pt(ext.x, h));
+          if (self._onHeightChanged) self._onHeightChanged(self, h);
+        });
+        this._heightObserver.observe(flow);
       },
 
       // A single toolbar row: frequently-used flat buttons, then Style/
@@ -843,18 +905,11 @@ module('lively.identity.WikiEditor')
       // Inject postcard-runtime.js if Yjs/PM aren't on the page yet — shared
       // runtime bundle with PostCardEditor.js, same lazy-load mechanism.
       _ensureRuntime: function (callback) {
-        if (this._Y() && this._ProseMirror() && this._yProsemirror()) {
-          return callback();
-        }
-        var self = this;
-        if (window._postcardRuntimeLoading) {
-          var poll = setInterval(function () {
-            if (self._Y() && self._ProseMirror()) { clearInterval(poll); callback(); }
-          }, 80);
-          return;
-        }
-        window._postcardRuntimeLoading = true;
-        this._setStatus('Loading…');
+        // Stylesheets first, before the early return below: a page that
+        // already carries the runtime bundle in its own HTML (the wiki
+        // index route) skips the load path, and used to end up with no
+        // KaTeX/highlight CSS at all -- math rendered twice (MathML +
+        // HTML) and display math at thousands of px wide.
         if (!document.getElementById('katex-css')) {
           var link = document.createElement('link');
           link.id = 'katex-css';
@@ -869,6 +924,18 @@ module('lively.identity.WikiEditor')
           hljsLink.href = '/core/lib/postcard/hljs-github.css';
           document.head.appendChild(hljsLink);
         }
+        if (this._Y() && this._ProseMirror() && this._yProsemirror()) {
+          return callback();
+        }
+        var self = this;
+        if (window._postcardRuntimeLoading) {
+          var poll = setInterval(function () {
+            if (self._Y() && self._ProseMirror()) { clearInterval(poll); callback(); }
+          }, 80);
+          return;
+        }
+        window._postcardRuntimeLoading = true;
+        this._setStatus('Loading…');
         var s = document.createElement('script');
         s.src = '/core/lib/postcard/postcard-runtime.js';
         s.onload = function () { window._postcardRuntimeLoading = false; callback(); };
@@ -1246,7 +1313,8 @@ module('lively.identity.WikiEditor')
         if (this._toolbarDiv) {
           this._toolbarDiv.innerHTML = '';
           this._toolbarDiv.style.cssText = [
-            'position:absolute', 'top:0', 'left:0', 'right:0', 'height:28px',
+            this._autoHeight ? 'position:sticky; z-index:5; flex:0 0 auto; top:26px' : 'position:absolute; left:0; right:0; top:0',
+            'height:28px',
             'background:#f0f0f5', 'border-bottom:1px solid #ccc',
             'box-sizing:border-box', 'display:flex', 'align-items:center', 'padding:0 10px',
           ].join(';');
@@ -1256,7 +1324,7 @@ module('lively.identity.WikiEditor')
           this._toolbarDiv.appendChild(label);
         }
         if (this._footerDiv) this._footerDiv.style.display = 'none';
-        if (this._pmContainer) {
+        if (this._pmContainer && !this._autoHeight) {
           this._pmContainer.style.top = '28px';
           this._pmContainer.style.bottom = '0';
         }
@@ -2357,6 +2425,8 @@ module('lively.identity.WikiEditor')
         editor._isNew = false;
         editor._forceReadOnly = !!opts.forceReadOnly;
         editor._onSaved = opts.onSaved || null;
+        editor._autoHeight = !!opts.autoHeight;
+        editor._onHeightChanged = opts.onHeightChanged || null;
         if (opts.target) {
           opts.target.addMorph(editor);
           editor._setup();
@@ -2389,6 +2459,8 @@ module('lively.identity.WikiEditor')
         editor._category = opts.category || null;
         editor._tags = opts.tags || [];
         editor._onSaved = opts.onSaved || null;
+        editor._autoHeight = !!opts.autoHeight;
+        editor._onHeightChanged = opts.onHeightChanged || null;
         if (opts.target) {
           opts.target.addMorph(editor);
           editor._setup();

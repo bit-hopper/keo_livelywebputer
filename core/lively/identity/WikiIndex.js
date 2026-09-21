@@ -83,6 +83,10 @@ module("lively.identity.WikiIndex")
     var CATEGORY_ORDER = ["Biography", "Place", "Event", "Concept", "Organization", "How-To"];
     var RIGHT_PANEL_W = 260;
     var RIGHT_PANEL_GAP = 24;
+    // Pinned side panels (see _pinPanels): once the page scrolls under this
+    // viewport y they hold here, clear of the menu bar.
+    var PANEL_STICKY_TOP = 48;
+    var PAGE_BOTTOM_MARGIN = 48; // world background kept below the open page
     var PANEL_PAD = 14;
     var PANEL_HEADER_TOP = 14;
     var PANEL_ITEMS_TOP = PANEL_HEADER_TOP + 26;
@@ -229,6 +233,22 @@ module("lively.identity.WikiIndex")
         this._installMenuBarEntry();
         var self = this;
         window.addEventListener("resize", function () { self._layout(); });
+        var pinQueued = false;
+        window.addEventListener("scroll", function () {
+          if (pinQueued) return;
+          pinQueued = true;
+          requestAnimationFrame(function () { pinQueued = false; self._pinPanels(); });
+        }, { passive: true });
+        // "?new=1" is how other worlds (WorldsBrowser's "Wiki page" card) hand
+        // off page creation to this route instead of opening a wiki editor
+        // inside their own world. Consumed once so a reload doesn't re-prompt.
+        if (this._canWrite && /(^|[?&])new=1(&|$)/.test(window.location.search)) {
+          try {
+            var clean = window.location.search.replace(/([?&])new=1(&|$)/, function (m, pre, post) { return post ? pre : ""; });
+            window.history.replaceState(null, "", window.location.pathname + clean + window.location.hash);
+          } catch (e) {}
+          this._promptNewWikiPage();
+        }
       },
     },
 
@@ -279,6 +299,7 @@ module("lively.identity.WikiIndex")
         // filtered list of every wiki page without leaving the open page.
         this._sidebarBox = this._buildSidebar();
         $world.addMorph(this._sidebarBox);
+        this._sidebarBox.enableFixedPositioning(); // pinned while the page scrolls, see _pinPanels
         this._sidebarBox.setVisible(false);
 
         // Right-hand categories/tags browse panel — unlike _sidebarBox,
@@ -286,6 +307,7 @@ module("lively.identity.WikiIndex")
         // per-open-page outline), see _renderCategoriesPanel.
         this._categoriesPanel = this._buildCategoriesPanel();
         $world.addMorph(this._categoriesPanel);
+        this._categoriesPanel.enableFixedPositioning();
 
         this._layout();
       },
@@ -663,13 +685,55 @@ module("lively.identity.WikiIndex")
         if (this._activeContentMorph && this._activeContentMorph.world()) {
           this._activeContentMorph.setPosition(lively.pt(SIDE_MARGIN + SIDEBAR_W + SIDEBAR_GAP, y));
         }
+        this._pinPanels();
+        this._syncPageHeight();
+      },
+
+      // The sidebar and categories panel are position:fixed (see
+      // _buildChrome's enableFixedPositioning calls) so they stay on screen
+      // while the page scrolls. They sit at the top of the page content
+      // until it scrolls up under PANEL_STICKY_TOP, then hold there. A fixed
+      // morph's setPosition takes WORLD coordinates and subtracts the current
+      // scroll offset itself, so the viewport y is passed back as
+      // viewportY + scrollY.
+      _pinPanels: function () {
+        var scrollY = window.pageYOffset || 0;
+        var naturalY = (this._gridY || 0) + (this._gridContentHeight || 0) + GRID_TOP_GAP;
+        var viewportY = Math.max(PANEL_STICKY_TOP, naturalY - scrollY);
+        // getScrollOffset reads a cached window rect; drop it so it matches
+        // the scroll position just read.
+        if ($world) $world.cachedWindowBounds = null;
         if (this._sidebarBox && this._sidebarBox.world() && this._sidebarBox.isVisible()) {
-          this._sidebarBox.setPosition(lively.pt(SIDE_MARGIN, y));
+          this._sidebarBox.setPosition(lively.pt(SIDE_MARGIN, viewportY + scrollY));
         }
         if (this._categoriesPanel && this._categoriesPanel.world()) {
           var rightX = window.innerWidth - SIDE_MARGIN - RIGHT_PANEL_W;
-          this._categoriesPanel.setPosition(lively.pt(rightX, y));
+          this._categoriesPanel.setPosition(lively.pt(rightX, viewportY + scrollY));
         }
+      },
+
+      // Extends the world's own extent to cover the open page, so the browser
+      // page gets a scroll range matching the page's height and the world
+      // background fills all of it (a world is normally viewport-sized).
+      _syncPageHeight: function () {
+        var m = this._activeContentMorph;
+        var bottom = (m && m.world()) ? m.getPosition().y + m.getExtent().y : 0;
+        var h = Math.max(window.innerHeight, Math.ceil(bottom + PAGE_BOTTOM_MARGIN));
+        // clientWidth, not innerWidth: innerWidth includes the vertical
+        // scrollbar this very height creates, which would add a horizontal one.
+        var w = document.documentElement.clientWidth;
+        var ext = $world.getExtent();
+        if (Math.abs(ext.y - h) < 1 && Math.abs(ext.x - w) < 1) return;
+        $world.setExtent(lively.pt(w, h));
+      },
+
+      // Passed to WikiView.open / WikiEditor.openCard|newCard so the open
+      // page grows with its content instead of scrolling inside a fixed box.
+      _autoHeightOpts: function (opts) {
+        var self = this;
+        opts.autoHeight = true;
+        opts.onHeightChanged = function () { self._syncPageHeight(); };
+        return opts;
       },
 
       // Shared by _openPage/_createNewPage — available width for the open
@@ -1103,7 +1167,7 @@ module("lively.identity.WikiIndex")
         var self = this;
         this._resolveHandle(page.objId, function (handle, envelope) {
           var w = self._contentWidth();
-          var opts = { bounds: lively.rect(0, 0, w, 780) };
+          var opts = self._autoHeightOpts({ bounds: lively.rect(0, 0, w, 780) });
           if (envelope) opts.envelope = envelope;
           opts.onEdit = function (h, o) { self._editExistingPage(h, o); };
           self._setActiveContentMorph(lively.identity.WikiView.open(handle, page.objId, opts));
@@ -1118,17 +1182,17 @@ module("lively.identity.WikiIndex")
       _editExistingPage: function (handle, objId) {
         var self = this;
         var w = self._contentWidth();
-        var editor = lively.identity.WikiEditor.openCard(handle, objId, {
+        var editor = lively.identity.WikiEditor.openCard(handle, objId, self._autoHeightOpts({
           target: $world,
           bounds: lively.rect(0, 0, w, 780),
           onSaved: function (h, o) {
-            self._setActiveContentMorph(lively.identity.WikiView.open(h, o, {
+            self._setActiveContentMorph(lively.identity.WikiView.open(h, o, self._autoHeightOpts({
               target: $world,
               bounds: lively.rect(0, 0, self._contentWidth(), 780),
               onEdit: function (h2, o2) { self._editExistingPage(h2, o2); },
-            }));
+            })));
           },
-        });
+        }));
         self._setActiveContentMorph(editor);
       },
 
@@ -1390,10 +1454,11 @@ module("lively.identity.WikiIndex")
             // page ends up presented exactly like any other once you're done
             // with it, rather than staying in edit mode indefinitely.
             onSaved: function (savedHandle, objId) {
-              var opts2 = { bounds: lively.rect(0, 0, w, 780) };
+              var opts2 = self._autoHeightOpts({ bounds: lively.rect(0, 0, w, 780) });
               self._setActiveContentMorph(lively.identity.WikiView.open(savedHandle, objId, opts2));
             },
           };
+          self._autoHeightOpts(newCardOpts);
           if (self._scope.kind === "constellation") newCardOpts.constellation = self._scope.name;
 
           var editor = lively.identity.WikiEditor.newCard(handle, newCardOpts);
