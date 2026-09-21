@@ -1010,7 +1010,7 @@ module("lively.identity.PostCardView")
             em.textContent = emoji;
             em.style.cssText = "display:inline-block;";
             pill.appendChild(em);
-            if (n) pill.appendChild(document.createTextNode(" " + n));
+            if (n) pill.appendChild(document.createTextNode(" " + self._abbreviateCount(n)));
             pill.title = (data.byEmoji && data.byEmoji[emoji] || []).join(", ");
             pill.style.cssText = [
               "flex:none",
@@ -1044,6 +1044,20 @@ module("lively.identity.PostCardView")
           // measuring right after the star alone is appended (before the
           // goose exists) puts the burst a whole pill's width too far right.
           if (toAnimate) this._playReactionAnim(toAnimate.pill, toAnimate.em, toAnimate.emoji);
+        },
+
+        // 999 -> "999", 1234 -> "1.2k", 12345 -> "12k", 1500000 -> "1.5M".
+        // Floors (never rounds up) so 999999 reads "999k", not "1000k".
+        _abbreviateCount: function (n) {
+          var units = [[1e9, "B"], [1e6, "M"], [1e3, "k"]];
+          for (var i = 0; i < units.length; i++) {
+            if (n >= units[i][0]) {
+              var v = n / units[i][0];
+              var txt = v < 10 ? (Math.floor(v * 10) / 10).toString() : Math.floor(v).toString();
+              return txt + units[i][1];
+            }
+          }
+          return String(n);
         },
 
         _ensureReactionAnimCss: function () {
