@@ -478,6 +478,10 @@ module("lively.identity.PostCardView")
             "padding:0 46px 0 10px",
             "border-top:1px solid #eee",
             "overflow-x:auto",
+            // overflow-x:auto alone makes overflow-y auto too, so the
+            // reaction pop (a scaled, rotated emoji taller than the strip)
+            // flashed a vertical scrollbar that shoved the pills left.
+            "overflow-y:hidden",
             "white-space:nowrap",
             "box-sizing:border-box",
           ].join(";");
@@ -1052,23 +1056,25 @@ module("lively.identity.PostCardView")
 
         // Like-button style pop: the emoji springs (star spins, goose
         // wiggles) while a ring and a ring of dots burst out from it. The
-        // burst is added to the front face rather than the pill, since the
-        // footer scrolls horizontally and would clip anything overflowing it.
+        // burst is added to the card (not the pill or the front face): the
+        // footer scrolls horizontally and the front face is overflow:hidden,
+        // and the pills sit ~12px from the card's bottom edge, so either
+        // would clip the lower half of the burst.
         _playReactionAnim: function (pill, emojiEl, emoji) {
           if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
           this._ensureReactionAnimCss();
           var isStar = emoji === "⭐";
           emojiEl.style.animation = (isStar ? "lpc-star-pop" : "lpc-goose-pop") + " 500ms cubic-bezier(.2,.8,.3,1)";
 
-          var fr = this._frontEl.getBoundingClientRect();
+          var fr = this._cardEl.getBoundingClientRect();
           var er = emojiEl.getBoundingClientRect();
-          var scale = (this._frontEl.offsetWidth && fr.width / this._frontEl.offsetWidth) || 1;
+          var scale = (this._cardEl.offsetWidth && fr.width / this._cardEl.offsetWidth) || 1;
           var cx = (er.left + er.width / 2 - fr.left) / scale;
           var cy = (er.top + er.height / 2 - fr.top) / scale;
 
           var colors = isStar ? ["#f5b301", "#ffd54a", "#ff9f1c"] : ["#e8497e", "#ff8fb1", "#ffc2d6"];
           var burst = document.createElement("div");
-          burst.style.cssText = "position:absolute;left:" + cx + "px;top:" + cy + "px;width:0;height:0;pointer-events:none;z-index:11;";
+          burst.style.cssText = "position:absolute;left:" + cx + "px;top:" + cy + "px;width:0;height:0;pointer-events:none;z-index:11;transform:translateZ(1px);";
 
           var ring = document.createElement("div");
           ring.style.cssText = [
@@ -1095,7 +1101,7 @@ module("lively.identity.PostCardView")
             burst.appendChild(dot);
           }
 
-          this._frontEl.appendChild(burst);
+          this._cardEl.appendChild(burst);
           setTimeout(function () {
             if (burst.parentNode) burst.parentNode.removeChild(burst);
           }, 650);
