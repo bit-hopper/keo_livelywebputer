@@ -857,9 +857,12 @@ module("lively.identity.ConstellationLounge")
         var label = lively.morphic.Text.makeLabel(this._sortSelection, {
           fontSize: 12, fontWeight: "bold", textColor: Color.rgb(30, 30, 30), fixedWidth: true, fixedHeight: true,
         });
-        label.setPosition(lively.pt(12, 0));
-        label.setExtent(lively.pt(SORT_W - 34, SORT_H));
-        label.applyStyle({ borderWidth: 0 });
+        // Centered in the space left of the chevron. A Text morph pins its
+        // glyphs to the top of its box, so the box is sized to one line
+        // (18px glyph + 4px shapeNode padding) and centered by position.
+        label.setPosition(lively.pt(6, (SORT_H - 22) / 2));
+        label.setExtent(lively.pt(SORT_W - 34, 22));
+        label.applyStyle({ borderWidth: 0, align: "center" });
         box.addMorph(label);
         this._sortByLabel = label;
 
@@ -881,8 +884,10 @@ module("lively.identity.ConstellationLounge")
           fontFamily: "'Material Symbols Rounded'", fontSize: 14, textColor: Color.rgb(90, 90, 90),
           fixedWidth: true, fixedHeight: true,
         });
-        chevron.setPosition(lively.pt(SORT_W - 26, 0));
-        chevron.setExtent(lively.pt(20, SORT_H));
+        // -3: the icon font's glyph sits low in its line box, measured
+        // live against the label's midline.
+        chevron.setPosition(lively.pt(SORT_W - 26, (SORT_H - 22) / 2 - 3));
+        chevron.setExtent(lively.pt(20, 22));
         chevron.applyStyle({ borderWidth: 0 });
         chevron.eventsAreIgnored = true;
         box.addMorph(chevron);
