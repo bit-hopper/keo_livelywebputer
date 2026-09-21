@@ -75,8 +75,6 @@ module("lively.identity.PostCardView")
           "_footerEl",
           "_tipJarChipEl",
           "_pillsWrapEl",
-          "_reactionPickerEl",
-          "_pickerCloseHandler",
           "_contentLoadStarted",
           "_decryptInFlight",
         ],
@@ -914,7 +912,6 @@ module("lively.identity.PostCardView")
             this._footerEl.style.display = "none";
             this._tipJarChipEl.innerHTML = "";
             this._pillsWrapEl.innerHTML = "";
-            this._closeReactionPicker();
             return;
           }
 
@@ -986,6 +983,10 @@ module("lively.identity.PostCardView")
             .catch(function () {}); // network error — leave the footer as-is
         },
 
+        // The two fixed reactions, always shown (count appended once
+        // non-zero). One reaction per user, so picking one replaces the
+        // other; clicking your own again removes it. Signed-out viewers see
+        // the counts but can't react.
         _renderReactionPills: function (data) {
           var self = this;
           this._pillsWrapEl.innerHTML = "";
@@ -993,17 +994,18 @@ module("lively.identity.PostCardView")
           var mine = data.mine || null;
           var currentUser = lively.identity.did.currentUser();
 
-          Object.keys(counts).forEach(function (emoji) {
+          ["⭐", "🪿"].forEach(function (emoji) {
             var isMine = emoji === mine;
+            var n = counts[emoji] || 0;
             var pill = document.createElement("button");
-            pill.textContent = emoji + " " + counts[emoji];
+            pill.textContent = n ? emoji + " " + n : emoji;
             pill.title = (data.byEmoji && data.byEmoji[emoji] || []).join(", ");
             pill.style.cssText = [
               "flex:none",
               "font-size:12px",
               "padding:1px 7px",
               "border-radius:11px",
-              "cursor:pointer",
+              "cursor:" + (currentUser ? "pointer" : "default"),
               "border:1px solid " + (isMine ? "#5566cc" : "#ddd"),
               "background:" + (isMine ? "#eef0fd" : "#fafafa"),
               "color:#333",
@@ -1019,112 +1021,6 @@ module("lively.identity.PostCardView")
             });
             self._pillsWrapEl.appendChild(pill);
           });
-
-          if (currentUser) {
-            var addBtn = document.createElement("button");
-            addBtn.textContent = "+";
-            addBtn.title = "Add a reaction";
-            addBtn.style.cssText = [
-              "flex:none",
-              "width:18px",
-              "height:18px",
-              "line-height:1",
-              "padding:0",
-              "font-size:12px",
-              "border-radius:50%",
-              "cursor:pointer",
-              "border:1px solid #ddd",
-              "background:#fafafa",
-              "color:#777",
-            ].join(";");
-            ["mousedown", "click"].forEach(function (t) {
-              addBtn.addEventListener(t, function (e) {
-                e.preventDefault();
-                e.stopPropagation();
-                if (t === "click") self._openReactionPicker(mine, addBtn);
-              });
-            });
-            this._pillsWrapEl.appendChild(addBtn);
-          }
-        },
-
-        _openReactionPicker: function (mine, anchorBtn) {
-          var self = this;
-          this._closeReactionPicker();
-
-          var picker = document.createElement("div");
-          picker.className = "lively-postcard-view-reaction-picker";
-          picker.style.cssText = [
-            "position:absolute",
-            "left:6px",
-            "bottom:30px",
-            "background:#fff",
-            "border:1px solid #ccc",
-            "border-radius:8px",
-            "box-shadow:0 2px 8px rgba(0,0,0,0.15)",
-            "padding:4px",
-            "display:flex",
-            "flex-wrap:wrap",
-            "gap:2px",
-            "z-index:10",
-          ].join(";");
-
-          ["⭐", "🪿"].forEach(function (emoji) {
-            var opt = document.createElement("button");
-            opt.textContent = emoji;
-            opt.style.cssText = [
-              "font-size:16px",
-              "padding:3px 6px",
-              "border:none",
-              "background:none",
-              "cursor:pointer",
-              "border-radius:4px",
-            ].join(";");
-            ["mousedown", "click"].forEach(function (t) {
-              opt.addEventListener(t, function (e) {
-                e.preventDefault();
-                e.stopPropagation();
-                if (t !== "click") return;
-                self._closeReactionPicker();
-                if (emoji === mine) self._deleteMyReaction();
-                else self._putReaction(emoji);
-              });
-            });
-            picker.appendChild(opt);
-          });
-
-          this._frontEl.appendChild(picker);
-          this._reactionPickerEl = picker;
-
-          // Sit directly above the "+" button, right edges aligned. Offsets
-          // come from live rects, divided by the front face's own scale
-          // (rect width / layout width) in case the morph is zoomed.
-          if (anchorBtn) {
-            var fr = this._frontEl.getBoundingClientRect();
-            var br = anchorBtn.getBoundingClientRect();
-            var scale = (this._frontEl.offsetWidth && fr.width / this._frontEl.offsetWidth) || 1;
-            picker.style.left = "auto";
-            picker.style.right = Math.round((fr.right - br.right) / scale) + "px";
-          }
-
-          // Close on any click elsewhere — deferred to the next tick so the
-          // same click that opened the picker (the "+" button's own click)
-          // doesn't immediately close it via bubbling to document.
-          setTimeout(function () {
-            self._pickerCloseHandler = function () { self._closeReactionPicker(); };
-            document.addEventListener("mousedown", self._pickerCloseHandler);
-          }, 0);
-        },
-
-        _closeReactionPicker: function () {
-          if (this._reactionPickerEl && this._reactionPickerEl.parentNode) {
-            this._reactionPickerEl.parentNode.removeChild(this._reactionPickerEl);
-          }
-          this._reactionPickerEl = null;
-          if (this._pickerCloseHandler) {
-            document.removeEventListener("mousedown", this._pickerCloseHandler);
-            this._pickerCloseHandler = null;
-          }
         },
 
         _putReaction: function (emoji) {
