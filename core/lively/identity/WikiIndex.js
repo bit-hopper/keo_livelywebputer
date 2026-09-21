@@ -720,8 +720,11 @@ module("lively.identity.WikiIndex")
         var bottom = (m && m.world()) ? m.getPosition().y + m.getExtent().y : 0;
         var h = Math.max(window.innerHeight, Math.ceil(bottom + PAGE_BOTTOM_MARGIN));
         // clientWidth, not innerWidth: innerWidth includes the vertical
-        // scrollbar this very height creates, which would add a horizontal one.
-        var w = document.documentElement.clientWidth;
+        // scrollbar this very height creates, which would add a horizontal
+        // one. And 1px under even that: a world exactly clientWidth wide still
+        // gets a horizontal scrollbar (measured: 1601 does, 1600 and below
+        // don't, with nothing measurably overflowing).
+        var w = document.documentElement.clientWidth - 1;
         var ext = $world.getExtent();
         if (Math.abs(ext.y - h) < 1 && Math.abs(ext.x - w) < 1) return;
         $world.setExtent(lively.pt(w, h));
@@ -1448,7 +1451,7 @@ module("lively.identity.WikiIndex")
             // has, so _setActiveContentMorph/_repositionWikiView can
             // position either one identically via plain setPosition.
             target: $world,
-            // Clicking Save (not autosave — see WikiEditor.js's _buildFooter)
+            // Clicking Save (not autosave — see WikiEditor.js's _buildSaveControls)
             // swaps the editor for the same read-only WikiView _openPage
             // already uses to display an existing page, so a freshly-created
             // page ends up presented exactly like any other once you're done

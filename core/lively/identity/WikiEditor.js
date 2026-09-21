@@ -199,21 +199,16 @@ module('lively.identity.WikiEditor')
         this._toolbarDiv = toolbarDiv;
         this._buildToolbar(toolbarDiv);
 
-        var footerDiv = document.createElement('div');
-        footerDiv.style.cssText = [
-          'position:absolute', 'left:0', 'right:0', 'bottom:0', 'height:36px',
-          'background:#f0f0f5', 'border-top:1px solid #ccc', 'box-sizing:border-box',
-        ].join(';');
-        shapeNode.appendChild(footerDiv);
-        this._footerDiv = footerDiv;
-        this._buildFooter(footerDiv);
+        // No footer: History/Save/status live in the toolbar (see
+        // _buildSaveControls), so they stay reachable on a long page.
+        this._footerDiv = null;
 
         this._buildLinkPreview(shapeNode);
 
         var pmDiv = document.createElement('div');
         pmDiv.className = 'lively-postcard-editor-container selectable';
         pmDiv.style.cssText = [
-          'position:absolute', 'top:40px', 'left:0', 'right:0', 'bottom:36px',
+          'position:absolute', 'top:40px', 'left:0', 'right:0', 'bottom:0',
           'overflow-y:auto', 'padding:16px 20px', 'box-sizing:border-box',
           'font-family:sans-serif', 'font-size:14px', 'line-height:1.6', 'white-space:pre-wrap',
         ].join(';');
@@ -227,7 +222,7 @@ module('lively.identity.WikiEditor')
         var previewDiv = document.createElement('div');
         previewDiv.className = 'lively-wiki-view-content selectable';
         previewDiv.style.cssText = [
-          'position:absolute', 'top:40px', 'left:0', 'right:0', 'bottom:36px',
+          'position:absolute', 'top:40px', 'left:0', 'right:0', 'bottom:0',
           'overflow-y:auto', 'padding:16px 20px', 'box-sizing:border-box', 'display:none',
         ].join(';');
         shapeNode.appendChild(previewDiv);
@@ -309,16 +304,9 @@ module('lively.identity.WikiEditor')
         ].join(';');
         this._pmContainer.style.cssText = editorFlow;
         this._previewContainer.style.cssText = editorFlow + ';display:none';
-        this._footerDiv.style.cssText = [
-          'position:relative', 'flex:0 0 auto', 'height:36px',
-          'background:#f0f0f5', 'border-top:1px solid #ccc', 'box-sizing:border-box',
-          'border-radius:0 0 8px 8px',
-        ].join(';');
-
         flow.appendChild(this._toolbarDiv);
         flow.appendChild(this._pmContainer);
         flow.appendChild(this._previewContainer);
-        flow.appendChild(this._footerDiv);
         this._watchContentHeight(flow);
       },
 
@@ -471,6 +459,8 @@ module('lively.identity.WikiEditor')
         });
         row.appendChild(previewBtn);
         this._previewButton = previewBtn;
+
+        this._buildSaveControls(row);
       },
 
       // A native-DOM dropdown (trigger button + absolutely-positioned
@@ -673,28 +663,33 @@ module('lively.identity.WikiEditor')
 
       // Footer bar: much smaller than PostCardEditor.js's — a wiki page has
       // no Send/visibility/post-to-constellation actions (see file header).
-      _buildFooter: function (footerDiv) {
+      // History, save status and Save, at the right end of the toolbar (after
+      // Preview). They used to be a footer pinned to the bottom of the
+      // editor, which on a page that grows with its content sits far down
+      // the page, under the fixed presence panel. In the toolbar they stay
+      // on screen with it (position:sticky) and clear of the panel.
+      _buildSaveControls: function (row) {
         var self = this;
 
         var histBtn = document.createElement('button');
         histBtn.textContent = 'History';
         histBtn.title = 'View version history (save first)';
-        histBtn.style.cssText = 'position:absolute;top:6px;left:8px;width:64px;height:24px;padding:0;font-size:11px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
+        histBtn.style.cssText = 'flex:0 0 auto;width:64px;height:24px;padding:0;font-size:11px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
         histBtn.addEventListener('mousedown', function (e) {
           e.preventDefault(); e.stopPropagation();
           self._openPlayback();
         });
-        footerDiv.appendChild(histBtn);
+        row.appendChild(histBtn);
 
         var statusSpan = document.createElement('span');
-        statusSpan.style.cssText = 'position:absolute;top:7px;right:80px;font-size:10px;color:#888;pointer-events:none;';
-        footerDiv.appendChild(statusSpan);
+        statusSpan.style.cssText = 'flex:0 0 auto;min-width:44px;text-align:right;font-size:10px;color:#888;pointer-events:none;';
+        row.appendChild(statusSpan);
         this._statusEl = statusSpan;
 
         var saveBtn = document.createElement('button');
         saveBtn.textContent = 'Save';
         saveBtn.title = 'Save now';
-        saveBtn.style.cssText = 'position:absolute;top:6px;right:8px;width:64px;height:24px;padding:0;font-size:12px;cursor:pointer;border:1px solid #5a5;border-radius:3px;background:#efe;';
+        saveBtn.style.cssText = 'flex:0 0 auto;width:64px;height:24px;padding:0;font-size:12px;cursor:pointer;border:1px solid #5a5;border-radius:3px;background:#efe;';
         saveBtn.addEventListener('mousedown', function (e) {
           e.preventDefault(); e.stopPropagation();
           // Only the explicit Save-button click transforms editor -> view
@@ -711,7 +706,7 @@ module('lively.identity.WikiEditor')
             if (!err && self._onSaved) self._onSaved(self._handle, self._objId);
           });
         });
-        footerDiv.appendChild(saveBtn);
+        row.appendChild(saveBtn);
       },
 
       // Reflects the current selection's formatting into the toolbar —
@@ -1323,7 +1318,6 @@ module('lively.identity.WikiEditor')
           label.textContent = 'Read-only — ' + (this._constellation ? ('join ' + this._constellation + ' to edit') : 'not a member');
           this._toolbarDiv.appendChild(label);
         }
-        if (this._footerDiv) this._footerDiv.style.display = 'none';
         if (this._pmContainer && !this._autoHeight) {
           this._pmContainer.style.top = '28px';
           this._pmContainer.style.bottom = '0';
@@ -2416,7 +2410,7 @@ module('lively.identity.WikiEditor')
       // opts.onSaved(handle, objId): fires once, only after an explicit
       // Save-button click succeeds (never from the debounced autosave) —
       // lets an embedding caller swap this editor for a read-only view in
-      // place. See _buildFooter's Save handler.
+      // place. See _buildSaveControls's Save handler.
       openCard: function (handle, objId, options) {
         var opts = options || {};
         var editor = new lively.identity.WikiEditor(opts.bounds || lively.rect(0, 0, 1180, 780));

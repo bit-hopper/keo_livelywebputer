@@ -191,7 +191,7 @@ module("lively.identity.WikiView")
           var world = this.owner;
           var bottom = this.getPosition().y + this.getExtent().y + 48;
           var h = Math.max(window.innerHeight, Math.ceil(bottom));
-          var w = document.documentElement.clientWidth;
+          var w = document.documentElement.clientWidth - 1; // see WikiIndex._syncPageHeight
           var ext = world.getExtent();
           if (Math.abs(ext.y - h) < 1 && Math.abs(ext.x - w) < 1) return;
           world.setExtent(lively.pt(w, h));
