@@ -2593,7 +2593,13 @@ module("lively.identity.ConstellationLounge")
         // instead of leaving it stretched down to cardBottomMax — same cap
         // as _renderEmptyEventCard's MAX_CARD_H, for the same
         // populated/empty-state consistency reason as MAX_CARD_W.
-        var MAX_CARD_H = 160;
+        // 200, not the empty card's 160: a member's fully populated card
+        // (title, date, location, attendee row, "N maybe" note, RSVP pills)
+        // needs ~188px, so at 160 the RSVP pills were clipped by the card's
+        // own border — most visibly right after someone clicked Maybe,
+        // which adds the "N maybe" line. The card still hugs its content,
+        // and the region's own available height caps it below this.
+        var MAX_CARD_H = 200;
         var maxCardH = Math.min((cardBottomMax - cardY) - RIGHT_MARGIN, MAX_CARD_H);
         if (maxCardW < 160 || maxCardH < 70) return; // not enough room to render legibly
 
