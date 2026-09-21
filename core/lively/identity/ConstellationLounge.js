@@ -166,7 +166,9 @@ module("lively.identity.ConstellationLounge")
     // postcard's top-right corner and the search box's left edge.
     var SORT_W = 110, SORT_H = SEARCH_H;   // same height as the search box, same row
     var SORT_ITEM_H = 32;
-    var SORT_OPTIONS = ["Best", "Hot", "New", "Top", "Rising"];
+    var SORT_OPTIONS = ["Starred", "New", "Hyphy", "Goosed"];
+    // Feed route's ?sort= value per option. New has none (newest first).
+    var SORT_PARAMS = { Starred: "starred", Goosed: "goosed", Hyphy: "hyphy" };
 
     // "+ Postcard" — opens a new PostCardEditor compose window, preset to
     // post into this constellation. Sits left of the members list, top
@@ -842,8 +844,8 @@ module("lively.identity.ConstellationLounge")
       },
     },
 
-    // ─── sort by (placeholder — a sort-order dropdown, not wired to any
-    // actual re-sorting yet) ─────────────────────────────────────────────────
+    // ─── sort by (Starred/Goosed rank the reel by ⭐/🪿 reaction count,
+    // Hyphy by comment count, New is newest first) ─────────────────────────
 
     "sort by", {
       _buildSortByButton: function () {
@@ -940,12 +942,14 @@ module("lively.identity.ConstellationLounge")
         this._sortByDropdown = null;
       },
 
-      // Placeholder only — updates the button label and closes the
-      // dropdown, doesn't actually re-sort the feed yet.
+      // Updates the button label, closes the dropdown, and re-fetches the
+      // reel in the new order (keeping any active search).
       _selectSortOption: function (option) {
+        var changed = option !== this._sortSelection;
         this._sortSelection = option;
         if (this._sortByLabel) this._sortByLabel.setTextString(option);
         this._closeSortByDropdown();
+        if (changed) this._fetchFeed(this._feedQuery);
       },
     },
 
@@ -3064,10 +3068,16 @@ module("lively.identity.ConstellationLounge")
     // ─── postcard turnover reel ────────────────────────────────────────────
 
     "reel", {
+      // Also remembers q so picking a sort option re-fetches under the same
+      // search. Starred/Goosed come back as one server-ranked page (no
+      // cursor), so ask for the route's maximum up front.
       _fetchFeed: function (q) {
         var self = this;
+        this._feedQuery = q || null;
         var base = lively.identity.did.baseUrl();
-        var url = base + "/c/" + encodeURIComponent(this._name) + "/feed?limit=20";
+        var sort = SORT_PARAMS[this._sortSelection] || null;
+        var url = base + "/c/" + encodeURIComponent(this._name) + "/feed?limit=" + (sort ? 100 : 20);
+        if (sort) url += "&sort=" + sort;
         if (q) url += "&q=" + encodeURIComponent(q);
         var xhr = new XMLHttpRequest();
         xhr.open("GET", url, true);

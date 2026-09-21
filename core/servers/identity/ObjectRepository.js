@@ -987,22 +987,57 @@ function listPostcardsForUser(did, opts, thenDo) {
 }
 
 // List the latest postcard envelopes for a constellation, newest first.
-// opts: { limit, cursor, q, hasLocation } — same pagination/search shape as
+// opts: { limit, cursor, q, hasLocation, sort } — same pagination/search shape as
 // listPostcardsForUser (q filters on state.title, ILIKE-style; hasLocation
 // keeps only cards carrying a state.location Plus Code, for the
 // constellation map).
+// sort: 'new' (default, newest first, cursor-paginated), 'starred' or
+// 'goosed' (most ⭐ / 🪿 reactions first, ties newest first), or 'hyphy'
+// (most direct comments first, ties newest first). The ranked
+// sorts don't support cursor pagination — a stable cursor over a
+// COUNT-ordered result needs a compound (count, id) cursor, same
+// resolution as listRepliesForPostcard's sort:'top' — so they return one
+// capped page with cursor: null.
 // Calls thenDo(null, { postcards: [envelopeMetadata...], cursor: String|null }).
+var _REACTION_SORT_EMOJI = { starred: '⭐', goosed: '🪿' };
+
 function listPostcardsForConstellation(constellation, opts, thenDo) {
   var limit = (opts && opts.limit) || 20;
   var cursor = (opts && opts.cursor) || null;
   var q = (opts && opts.q) || null;
   var hasLocation = !!(opts && opts.hasLocation);
   var qLike = q ? '%' + _escapeLikePrefix(q) + '%' : null;
+  var sortEmoji = (opts && _REACTION_SORT_EMOJI[opts.sort]) || null;
+  var sortHyphy = !!(opts && opts.sort === 'hyphy');
+  var sortRanked = !!(sortEmoji || sortHyphy);
 
   withDB(function (err, pool) {
     if (err) return thenDo(err);
 
     var baseParams = qLike ? [constellation, qLike] : [constellation];
+    var sortJoin = '';
+    if (sortEmoji) {
+      baseParams.push(sortEmoji);
+      sortJoin =
+        ' LEFT JOIN (SELECT obj_id, COUNT(*) AS c FROM postcard_reactions' +
+        '            WHERE emoji = $' + baseParams.length + ' GROUP BY obj_id' +
+        ' ) rc ON rc.obj_id = o.obj_id';
+    } else if (sortHyphy) {
+      // Direct replies (comments) per parent: latest version of each reply
+      // postcard, not deleted, grouped by the parent objId it points at.
+      sortJoin =
+        ' LEFT JOIN (' +
+        '   SELECT (r.envelope #>> \'{replyTo,objId}\') AS parent_id, COUNT(*) AS c' +
+        '   FROM objects r INNER JOIN (' +
+        '     SELECT obj_id, MAX(id) AS max_id FROM objects' +
+        '     WHERE type = \'postcard\' AND (envelope #>> \'{replyTo,objId}\') IS NOT NULL' +
+        '     GROUP BY obj_id' +
+        '   ) rl ON r.id = rl.max_id' +
+        '   WHERE ((r.envelope #>> \'{state,deleted}\') IS NULL' +
+        '          OR (r.envelope #>> \'{state,deleted}\') <> \'true\')' +
+        '   GROUP BY 1' +
+        ' ) rc ON rc.parent_id = o.obj_id';
+    }
     var nextPh = baseParams.length + 1;
 
     var baseSql =
@@ -1013,6 +1048,7 @@ function listPostcardsForConstellation(constellation, opts, thenDo) {
       '         AND (envelope ->> \'constellation\') = $1' +
       '   GROUP BY obj_id' +
       ' ) latest ON o.id = latest.max_id' +
+      sortJoin +
       ' WHERE ((o.envelope #>> \'{state,deleted}\') IS NULL' +
       '        OR (o.envelope #>> \'{state,deleted}\') <> \'true\')' +
       // System-generated cards (join requests riding the same postal rail
@@ -1040,6 +1076,14 @@ function listPostcardsForConstellation(constellation, opts, thenDo) {
       (hasLocation ? ' AND (o.envelope #>> \'{state,location}\') IS NOT NULL' : '');
 
     var params, sql;
+    if (sortRanked) {
+      // Exactly `limit` rows (not limit+1), so _runPostcardQuery sees no
+      // "more" and returns cursor: null.
+      return _runPostcardQuery(
+        pool,
+        baseSql + ' ORDER BY COALESCE(rc.c, 0) DESC, o.id DESC LIMIT $' + nextPh,
+        baseParams.concat([limit]), limit, thenDo);
+    }
     if (cursor) {
       pool.query(
         'SELECT MAX(id) AS pivot FROM objects WHERE obj_id = $1' +

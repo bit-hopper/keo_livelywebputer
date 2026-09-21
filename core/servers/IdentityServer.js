@@ -5419,7 +5419,8 @@ module.exports = function (route, app) {
       // hasLocation=1: only cards carrying a state.location Plus Code — the
       // constellation map's feed (ConstellationLounge.js's Map button).
       var hasLocation = req.query.hasLocation === "1";
-      objectRepo.listPostcardsForConstellation(name, { limit: limit, cursor: cursor, q: q, hasLocation: hasLocation }, function (err, result) {
+      var sort = typeof req.query.sort === "string" ? req.query.sort : null;   // "starred" | "goosed" | absent (newest first)
+      objectRepo.listPostcardsForConstellation(name, { limit: limit, cursor: cursor, q: q, hasLocation: hasLocation, sort: sort }, function (err, result) {
         if (err) return res.status(500).json({ error: String(err) });
         var viewerDid = req.identity ? req.identity.did : null;
         result.postcards = result.postcards

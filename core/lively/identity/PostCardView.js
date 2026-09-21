@@ -474,7 +474,9 @@ module("lively.identity.PostCardView")
             "display:none",
             "align-items:center",
             "gap:4px",
-            "padding:0 10px",
+            // Right padding clears the flip button (26px wide at right:10px)
+            // that sits over the footer's bottom-right corner.
+            "padding:0 46px 0 10px",
             "border-top:1px solid #eee",
             "overflow-x:auto",
             "white-space:nowrap",
@@ -1039,14 +1041,14 @@ module("lively.identity.PostCardView")
               addBtn.addEventListener(t, function (e) {
                 e.preventDefault();
                 e.stopPropagation();
-                if (t === "click") self._openReactionPicker(mine);
+                if (t === "click") self._openReactionPicker(mine, addBtn);
               });
             });
             this._pillsWrapEl.appendChild(addBtn);
           }
         },
 
-        _openReactionPicker: function (mine) {
+        _openReactionPicker: function (mine, anchorBtn) {
           var self = this;
           this._closeReactionPicker();
 
@@ -1055,7 +1057,6 @@ module("lively.identity.PostCardView")
           picker.style.cssText = [
             "position:absolute",
             "left:6px",
-            "right:6px",
             "bottom:30px",
             "background:#fff",
             "border:1px solid #ccc",
@@ -1068,7 +1069,7 @@ module("lively.identity.PostCardView")
             "z-index:10",
           ].join(";");
 
-          ["👍", "❤️", "😂", "🎉", "😮", "🤔"].forEach(function (emoji) {
+          ["⭐", "🪿"].forEach(function (emoji) {
             var opt = document.createElement("button");
             opt.textContent = emoji;
             opt.style.cssText = [
@@ -1094,6 +1095,17 @@ module("lively.identity.PostCardView")
 
           this._frontEl.appendChild(picker);
           this._reactionPickerEl = picker;
+
+          // Sit directly above the "+" button, right edges aligned. Offsets
+          // come from live rects, divided by the front face's own scale
+          // (rect width / layout width) in case the morph is zoomed.
+          if (anchorBtn) {
+            var fr = this._frontEl.getBoundingClientRect();
+            var br = anchorBtn.getBoundingClientRect();
+            var scale = (this._frontEl.offsetWidth && fr.width / this._frontEl.offsetWidth) || 1;
+            picker.style.left = "auto";
+            picker.style.right = Math.round((fr.right - br.right) / scale) + "px";
+          }
 
           // Close on any click elsewhere — deferred to the next tick so the
           // same click that opened the picker (the "+" button's own click)
