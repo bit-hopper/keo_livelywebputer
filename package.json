@@ -67,6 +67,7 @@
     "prosemirror-schema-list": "^1.4.1",
     "prosemirror-state": "^1.4.3",
     "prosemirror-view": "^1.38.0",
+    "pyodide": "^0.29.5",
     "y-prosemirror": "^1.3.4"
   },
   "scripts": {
@@ -74,6 +75,6 @@
     "test:e2e": "$npm_node_execpath node_modules/@playwright/test/cli.js test",
     "start": "$npm_node_execpath bin/lk-server.js",
     "build:postcard": "esbuild build/postcard-deps-entry.js --bundle --outfile=core/lib/postcard/postcard-deps.js --format=iife --platform=browser",
-    "postinstall": "patch-package && node scripts/build-postcard-libs.js && node scripts/build-libsodium.js && node scripts/build-geo-libs.js && node scripts/build-astro-libs.js && node scripts/build-wallet-crypto-libs.js && node scripts/build-wallet-vault-libs.js && node scripts/build-wallet-vault-sodium.js && node scripts/build-privacy-pool-client-libs.js && node scripts/fetch-privacy-pools-circuits.js && node scripts/build-wallet-vault-prover-libs.js && node scripts/build-jenga3d-libs.js"
+    "postinstall": "patch-package && node scripts/build-postcard-libs.js && node scripts/build-libsodium.js && node scripts/build-geo-libs.js && node scripts/build-astro-libs.js && node scripts/build-wallet-crypto-libs.js && node scripts/build-wallet-vault-libs.js && node scripts/build-wallet-vault-sodium.js && node scripts/build-privacy-pool-client-libs.js && node scripts/fetch-privacy-pools-circuits.js && node scripts/build-wallet-vault-prover-libs.js && node scripts/build-jenga3d-libs.js && node scripts/copy-pyodide-libs.js"
   }
 }

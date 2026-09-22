@@ -277,6 +277,38 @@ module('lively.identity.WikiEditor')
           document.head.appendChild(styleEl);
         }
 
+        // code_cell is wiki-only (not part of PostCardEditor.js's schema),
+        // so it gets its own singleton <style> tag rather than joining the
+        // shared one above -- that one is inserted idempotently by either
+        // editor, and if PostCardEditor's copy (which has no code_cell
+        // rules) happened to run first on a page, WikiEditor's own rules
+        // would never get added once the shared tag's id already exists.
+        if (!document.getElementById('lively-code-cell-style')) {
+          var codeCellStyleEl = document.createElement('style');
+          codeCellStyleEl.id = 'lively-code-cell-style';
+          codeCellStyleEl.textContent =
+            '.lively-code-cell-node{border:1px solid #ddd;border-radius:6px;margin:8px 0;' +
+            'background:#fafafa;overflow:hidden;}' +
+            '.lively-code-cell-node.lively-code-cell-selected{outline:2px solid #8cf;}' +
+            '.lively-code-cell-header{display:flex;align-items:center;gap:8px;padding:4px 8px;' +
+            'background:#eef0f5;border-bottom:1px solid #ddd;font-size:12px;}' +
+            '.lively-code-cell-badge{font-weight:bold;color:#306998;}' +
+            '.lively-code-cell-run-btn,.lively-code-cell-stop-btn{cursor:pointer;' +
+            'border:1px solid #ccc;border-radius:3px;background:#fff;font-size:11px;padding:2px 8px;}' +
+            '.lively-code-cell-stop-btn{display:none;border-color:#c33;color:#c33;}' +
+            '.lively-code-cell-status{margin-left:auto;color:#666;font-style:italic;}' +
+            '.lively-code-cell-source{display:block;width:100%;box-sizing:border-box;border:none;' +
+            'resize:vertical;font-family:monospace;font-size:13px;padding:8px;min-height:60px;' +
+            'background:#282c34;color:#eee;}' +
+            '.lively-code-cell-output{padding:8px;border-top:1px solid #ddd;font-family:monospace;' +
+            'font-size:12px;}' +
+            '.lively-code-cell-output.lively-code-cell-output-empty{color:#999;font-style:italic;}' +
+            '.lively-code-cell-output pre{margin:0 0 6px 0;white-space:pre-wrap;word-break:break-word;}' +
+            '.lively-code-cell-output pre.lively-code-cell-stderr{color:#c33;}' +
+            '.lively-code-cell-output img{max-width:100%;display:block;margin:4px 0;}';
+          document.head.appendChild(codeCellStyleEl);
+        }
+
         ['keydown', 'keyup', 'keypress', 'input'].forEach(function (t) {
           pmDiv.addEventListener(t, function (e) { e.stopPropagation(); });
         });
@@ -435,6 +467,7 @@ module('lively.identity.WikiEditor')
           buildPanel: function (panel, close) {
             self._buildDropdownRow(panel, 'Math (inline)', { cmd: 'insertMath', mathType: 'inline' }, close);
             self._buildDropdownRow(panel, 'Math (display)', { cmd: 'insertMath', mathType: 'display' }, close);
+            self._buildDropdownRow(panel, 'Python code cell', { cmd: 'insertCodeCell' }, close);
           },
         });
 
@@ -1247,6 +1280,7 @@ module('lively.identity.WikiEditor')
             image:        function (node, view, getPos) { return self._attachmentImageNodeView(node, view, getPos); },
             video:        function (node, view, getPos) { return self._attachmentVideoNodeView(node, view, getPos); },
             audio:        function (node, view, getPos) { return self._attachmentAudioNodeView(node, view, getPos); },
+            code_cell:    function (node, view, getPos) { return self._codeCellNodeView(node, view, getPos); },
           },
           handleDOMEvents: {
             blur: function () { self._hideLinkPreview(); return false; },
@@ -1415,6 +1449,184 @@ module('lively.identity.WikiEditor')
         };
       },
 
+      // Runnable Python cell (CodeEditorSpec.md §2.3). Modeled on
+      // _mathNodeView's commit()-on-blur/Escape pattern for writing edits
+      // back to node attrs, plus _embeddedPartNodeView's `destroyed`-guard
+      // discipline for callbacks that can outlive this NodeView (a Run
+      // request the user navigated away from mid-flight). `output` is never
+      // written to node.attrs -- it's plain closure state here, same
+      // lifetime as `dom` (see the schema comment for why: Yjs would
+      // broadcast it to every collaborator on every run, and it's never
+      // persisted anyway).
+      _codeCellNodeView: function (node, view, getPos) {
+        var destroyed = false;
+        var focused = false;
+        var pendingCommitTimer = null;
+
+        var dom = document.createElement('div');
+        dom.className = 'lively-code-cell-node';
+
+        var header = document.createElement('div');
+        header.className = 'lively-code-cell-header';
+        var badge = document.createElement('span');
+        badge.className = 'lively-code-cell-badge';
+        badge.textContent = 'Python';
+        var runBtn = document.createElement('button');
+        runBtn.type = 'button';
+        runBtn.className = 'lively-code-cell-run-btn';
+        runBtn.textContent = 'Run';
+        var stopBtn = document.createElement('button');
+        stopBtn.type = 'button';
+        stopBtn.className = 'lively-code-cell-stop-btn';
+        stopBtn.textContent = 'Stop';
+        var status = document.createElement('span');
+        status.className = 'lively-code-cell-status';
+        status.textContent = 'Idle';
+        header.appendChild(badge);
+        header.appendChild(runBtn);
+        header.appendChild(stopBtn);
+        header.appendChild(status);
+        dom.appendChild(header);
+
+        var textarea = document.createElement('textarea');
+        textarea.className = 'lively-code-cell-source';
+        textarea.spellcheck = false;
+        textarea.value = node.attrs.source || '';
+        dom.appendChild(textarea);
+
+        var output = document.createElement('div');
+        output.className = 'lively-code-cell-output lively-code-cell-output-empty';
+        output.textContent = 'Run to see output.';
+        dom.appendChild(output);
+
+        // Same pattern as _mathNodeView's commit(): re-reads getPos() at
+        // commit time rather than caching it, since positions shift under
+        // concurrent edits from other collaborators.
+        function commit() {
+          if (pendingCommitTimer) { clearTimeout(pendingCommitTimer); pendingCommitTimer = null; }
+          var value = textarea.value;
+          if (value === node.attrs.source) return;
+          var pos = typeof getPos === 'function' ? getPos() : null;
+          if (pos === null || pos === undefined) return;
+          view.dispatch(view.state.tr.setNodeMarkup(pos, null,
+            Object.assign({}, node.attrs, { source: value })));
+        }
+
+        // A multi-line cell risks real data loss on tab-close without this
+        // (unlike math's single-value input) -- debounce-commit while
+        // typing, on top of the blur/Escape commits below.
+        function scheduleCommit() {
+          if (pendingCommitTimer) clearTimeout(pendingCommitTimer);
+          pendingCommitTimer = setTimeout(commit, 600);
+        }
+
+        textarea.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+        textarea.addEventListener('focus', function () { focused = true; });
+        textarea.addEventListener('blur', function () { focused = false; commit(); });
+        textarea.addEventListener('input', scheduleCommit);
+        textarea.addEventListener('keydown', function (e) {
+          e.stopPropagation();
+          if (e.key === 'Escape') { e.preventDefault(); commit(); view.focus(); }
+        });
+
+        function renderOutput(response, err) {
+          output.innerHTML = '';
+          output.classList.remove('lively-code-cell-output-empty');
+          var hasContent = false;
+          if (response && response.stdout) {
+            var stdoutPre = document.createElement('pre');
+            stdoutPre.className = 'lively-code-cell-stdout';
+            stdoutPre.textContent = response.stdout;
+            output.appendChild(stdoutPre);
+            hasContent = true;
+          }
+          (response && response.images || []).forEach(function (b64) {
+            var img = document.createElement('img');
+            img.src = 'data:image/png;base64,' + b64;
+            output.appendChild(img);
+            hasContent = true;
+          });
+          if (response && response.result != null) {
+            var resultPre = document.createElement('pre');
+            resultPre.className = 'lively-code-cell-result';
+            resultPre.textContent = response.result;
+            output.appendChild(resultPre);
+            hasContent = true;
+          }
+          if (response && response.stderr) {
+            var stderrPre = document.createElement('pre');
+            stderrPre.className = 'lively-code-cell-stderr';
+            stderrPre.textContent = response.stderr;
+            output.appendChild(stderrPre);
+            hasContent = true;
+          }
+          if (err) {
+            var errPre = document.createElement('pre');
+            errPre.className = 'lively-code-cell-stderr';
+            errPre.textContent = err.message || String(err);
+            output.appendChild(errPre);
+            hasContent = true;
+          }
+          if (!hasContent) {
+            output.classList.add('lively-code-cell-output-empty');
+            output.textContent = 'Ran with no output.';
+          }
+        }
+
+        function setRunning(isRunning, statusText) {
+          runBtn.style.display = isRunning ? 'none' : '';
+          stopBtn.style.display = isRunning ? '' : 'none';
+          status.textContent = statusText;
+        }
+
+        // Click-to-run, always -- CodeEditorSpec.md §2.3: a cell never
+        // auto-executes, not even for the page's own author, and there is
+        // no remembered-trust bypass (a wiki page's source can change
+        // between two clicks). The confirm dialog + Pyodide Worker
+        // orchestration lives once in postCardUtils.runCodeCell, shared with
+        // this file's own hydrateCodeCells (read-only view/preview) rather
+        // than hand-copied a second time here.
+        runBtn.addEventListener('mousedown', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          commit();
+          lively.identity.postCardUtils.runCodeCell(textarea.value, {
+            onStatus: function (text) { if (!destroyed) setRunning(true, text); },
+            onDone: function (err, response) {
+              if (destroyed) return;
+              setRunning(false, err ? 'Error' : 'Ran just now');
+              renderOutput(response, err);
+            },
+          });
+        });
+
+        stopBtn.addEventListener('mousedown', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          lively.identity.postCardUtils.stopCodeCell();
+          setRunning(false, 'Stopped');
+        });
+
+        return {
+          dom: dom,
+          update: function (newNode) {
+            if (newNode.type !== node.type) return false;
+            var sourceChanged = newNode.attrs.source !== node.attrs.source;
+            node = newNode;
+            // Don't clobber an in-flight local edit on an incoming
+            // collaborator update -- same care _attachmentImageNodeView's
+            // diff-before-re-render already takes.
+            if (sourceChanged && !focused) textarea.value = node.attrs.source || '';
+            return true;
+          },
+          selectNode: function () { dom.classList.add('lively-code-cell-selected'); },
+          deselectNode: function () { dom.classList.remove('lively-code-cell-selected'); commit(); },
+          stopEvent: function () { return focused; },
+          ignoreMutation: function () { return true; },
+          destroy: function () { destroyed = true; if (pendingCommitTimer) clearTimeout(pendingCommitTimer); },
+        };
+      },
+
       // Reversibly makes the editor inert and visually dimmed -- shared by
       // _applyReadOnlyMode's permanent (non-writer) case and Preview mode's
       // temporary case below. Unlike _applyReadOnlyMode, this never resizes
@@ -1452,6 +1664,7 @@ module('lively.identity.WikiEditor')
           var snapshot = this.yDoc ? lively.identity.wikiSerializer._extractSnapshot(this.yDoc) : null;
           this._previewContainer.innerHTML = snapshot ? lively.identity.postCardUtils.snapshotToHtml(snapshot) : '';
           lively.identity.postCardUtils.hydrateEmbeddedParts(this._previewContainer);
+          lively.identity.postCardUtils.hydrateCodeCells(this._previewContainer);
           this._previewContainer.style.top = this._pmContainer.style.top;
           this._previewContainer.style.bottom = this._pmContainer.style.bottom;
           this._pmContainer.style.display = 'none';
@@ -2208,6 +2421,15 @@ module('lively.identity.WikiEditor')
             dispatch(state.tr.replaceSelectionWith(mathNode));
             break;
           }
+          case 'insertCodeCell': {
+            var cellType = state.schema.nodes.code_cell;
+            if (!cellType) return;
+            var cellNode = cellType.create({ language: 'python', source: '' });
+            // See the KNOWN BUG note on _insertAttachmentVideo — code_cell
+            // is a block atom, same replaceSelectionWith exposure.
+            dispatch(state.tr.replaceSelectionWith(cellNode));
+            break;
+          }
           case 'cycleAlign': {
             var alignOrder = ['left', 'center', 'right', 'justify'];
             var $ap = state.selection.$from;
@@ -2527,6 +2749,24 @@ module('lively.identity.WikiEditor')
                                 'data-cid':    n.attrs.cid    || '',
                                 'data-handle': n.attrs.handle || '',
                                 'data-embed-id': n.attrs.embedId || '' }];
+                            } },
+            // Runnable Python cell (CodeEditorSpec.md §2.3) -- deliberately
+            // its own atom node, not an overload of the plain-text
+            // code_block above: it needs a Run button/output pane/busy
+            // state a plain PM text-content node can't carry. `output` is
+            // NOT an attr here on purpose (see _codeCellNodeView) -- a
+            // page's saved state is only ever {language, source}, per the
+            // "never persist output" decision in the spec.
+            code_cell:    { group: 'block', atom: true,
+                            attrs: { language: { default: 'python' }, source: { default: '' } },
+                            parseDOM: [{ tag: 'div.lively-code-cell', getAttrs: function(d) {
+                              var pre = d.querySelector('pre.lively-code-cell-source');
+                              return { language: d.getAttribute('data-language') || 'python',
+                                       source: pre ? pre.textContent : '' };
+                            }}],
+                            toDOM: function(n) {
+                              return ['div', { class: 'lively-code-cell', 'data-language': n.attrs.language || 'python' },
+                                ['pre', { class: 'lively-code-cell-source' }, n.attrs.source || '']];
                             } },
             image:        { group: 'inline', inline: true, atom: true,
                             attrs: { src: { default: '' }, alt: { default: '' }, title: { default: null },

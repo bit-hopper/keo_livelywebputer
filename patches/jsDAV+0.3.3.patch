@@ -1,0 +1,12 @@
+diff --git a/node_modules/jsDAV/lib/shared/util.js b/node_modules/jsDAV/lib/shared/util.js
+index b2d395e..6527f7b 100644
+--- a/node_modules/jsDAV/lib/shared/util.js
++++ b/node_modules/jsDAV/lib/shared/util.js
+@@ -651,6 +651,7 @@ exports.mime = {
+           ".vcs"   : "text/x-vcalendar",
+           ".vrml"  : "model/vrml",
+           ".war"   : "application/java-archive",
++          ".wasm"  : "application/wasm",
+           ".wav"   : "audio/x-wav",
+           ".wma"   : "audio/x-ms-wma",
+           ".wmv"   : "video/x-ms-wmv",

@@ -918,6 +918,31 @@ function _renderHighlightedCode(node) {
   }
 }
 
+// Runnable Python cell (CodeEditorSpec.md §2.3), server-side static render.
+// Matches the client's copy in PostCardUtils.js's renderCodeCell exactly
+// (class names, structure) so the same client-side hydrateCodeCells finds
+// and wires up a server-rendered cell identically to a client-rendered one.
+// Source only -- no output, ever (never persisted; see the schema comment
+// in WikiEditor.js's _buildSchema).
+function _renderCodeCell(node) {
+  var attrs = node.attrs || {};
+  var text = attrs.source || '';
+  var highlighted;
+  try { highlighted = hljs.highlight(text, { language: 'python' }).value; }
+  catch (e) { highlighted = escapeHtml(text); }
+  return '<div class="lively-code-cell lively-code-cell-node" data-language="' +
+         escapeHtml(attrs.language || 'python') + '">' +
+         '<div class="lively-code-cell-header">' +
+           '<span class="lively-code-cell-badge">Python</span>' +
+           '<button type="button" class="lively-code-cell-run-btn" data-hydrate="code-cell">Run</button>' +
+           '<button type="button" class="lively-code-cell-stop-btn">Stop</button>' +
+           '<span class="lively-code-cell-status">Idle</span>' +
+         '</div>' +
+         '<pre class="lively-code-cell-source"><code class="hljs">' + highlighted + '</code></pre>' +
+         '<div class="lively-code-cell-output lively-code-cell-output-empty">Run to see output.</div>' +
+       '</div>';
+}
+
 // Server-side KaTeX render for static pages (§10.1/F17). Falls back to the
 // raw LaTeX source, escaped, if the input doesn't parse — matches the
 // editor NodeView's non-throwing behavior for malformed input.
@@ -986,6 +1011,7 @@ function _pmNodeToHtml(node) {
     case 'list_item': return '<li' + _alignIndentAttr(node) + '>' + inner + '</li>';
     case 'blockquote': return '<blockquote>' + inner + '</blockquote>';
     case 'code_block': return _renderHighlightedCode(node);
+    case 'code_cell': return _renderCodeCell(node);
     case 'horizontal_rule': return '<hr>';
     case 'hard_break': return '<br>';
     case 'image':

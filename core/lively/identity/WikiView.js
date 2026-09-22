@@ -541,6 +541,7 @@ module("lively.identity.WikiView")
             : "";
           // BUG FIX: see PostCardView.js's _renderContentArea — same fix.
           lively.identity.postCardUtils.hydrateEmbeddedParts(this._contentEl);
+          lively.identity.postCardUtils.hydrateCodeCells(this._contentEl);
         },
 
         // Public: every heading actually rendered in this page's content,

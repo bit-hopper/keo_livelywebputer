@@ -29,6 +29,9 @@ module('lively.identity.PostCardUtils')
       sanitizeLocationCode: sanitizeLocationCode,
       hydrateEmbeddedParts: hydrateEmbeddedParts,
       hydrateAttachments:  hydrateAttachments,
+      hydrateCodeCells:    hydrateCodeCells,
+      runCodeCell:         runCodeCell,
+      stopCodeCell:        stopCodeCell,
       openImageViewer:     openImageViewer,
     };
 
@@ -82,7 +85,30 @@ module('lively.identity.PostCardUtils')
         '.lively-wiki-view-content a:visited,.lively-wiki-editor-container a:visited{color:#1a7f37;}' +
         '.lively-wiki-view-content a:hover,.lively-wiki-editor-container a:hover{color:#116329;}' +
         '.lively-attachment-loading{opacity:0.35;}' +
-        '.lively-attachment-error{opacity:0.5;filter:grayscale(1);}';
+        '.lively-attachment-error{opacity:0.5;filter:grayscale(1);}' +
+        // code_cell (CodeEditorSpec.md §2.3) read-only/hydrated rendering.
+        // Same class name and identical rules as WikiEditor.js's own
+        // editor-only copy (guarded by a separate <style> id there) so a
+        // read-only view (WikiView/WikiPlayback/Preview) gets correct
+        // styling without needing the editor loaded at all -- same
+        // duplication-is-fine reasoning as this function's own header note
+        // about postcard-image/video sizing.
+        '.lively-code-cell-node{border:1px solid #ddd;border-radius:6px;margin:8px 0;' +
+        'background:#fafafa;overflow:hidden;}' +
+        '.lively-code-cell-header{display:flex;align-items:center;gap:8px;padding:4px 8px;' +
+        'background:#eef0f5;border-bottom:1px solid #ddd;font-size:12px;}' +
+        '.lively-code-cell-badge{font-weight:bold;color:#306998;}' +
+        '.lively-code-cell-run-btn,.lively-code-cell-stop-btn{cursor:pointer;' +
+        'border:1px solid #ccc;border-radius:3px;background:#fff;font-size:11px;padding:2px 8px;}' +
+        '.lively-code-cell-stop-btn{display:none;border-color:#c33;color:#c33;}' +
+        '.lively-code-cell-status{margin-left:auto;color:#666;font-style:italic;}' +
+        '.lively-code-cell-source{margin:0;padding:8px;background:#282c34;color:#eee;' +
+        'font-family:monospace;font-size:13px;overflow-x:auto;}' +
+        '.lively-code-cell-output{padding:8px;border-top:1px solid #ddd;font-family:monospace;font-size:12px;}' +
+        '.lively-code-cell-output.lively-code-cell-output-empty{color:#999;font-style:italic;}' +
+        '.lively-code-cell-output pre{margin:0 0 6px 0;white-space:pre-wrap;word-break:break-word;}' +
+        '.lively-code-cell-output pre.lively-code-cell-stderr{color:#c33;}' +
+        '.lively-code-cell-output img{max-width:100%;display:block;margin:4px 0;}';
       document.head.appendChild(styleEl);
     }
 
@@ -342,6 +368,127 @@ module('lively.identity.PostCardUtils')
       });
     }
 
+    // Wires up every code_cell placeholder's Run button in a read-only
+    // render (WikiView/WikiPlayback/WikiEditor's own Preview mode -- see
+    // WikiEditor._togglePreview) to the same runCodeCell/stopCodeCell
+    // orchestration the live editor's NodeView uses. The read-only source
+    // is inert text -- Run just executes whatever static source is already
+    // embedded in the HTML; there is nothing to edit here.
+    function hydrateCodeCells(containerEl) {
+      if (!containerEl || typeof document === 'undefined') return;
+      var buttons = containerEl.querySelectorAll('.lively-code-cell-run-btn[data-hydrate="code-cell"]');
+      Array.prototype.forEach.call(buttons, _hydrateOneCodeCell);
+    }
+
+    function _hydrateOneCodeCell(runBtn) {
+      var cellEl = runBtn.closest ? runBtn.closest('.lively-code-cell') : null;
+      if (!cellEl) return;
+      var sourceEl = cellEl.querySelector('pre.lively-code-cell-source');
+      var outputEl = cellEl.querySelector('.lively-code-cell-output');
+      var statusEl = cellEl.querySelector('.lively-code-cell-status');
+      var stopBtn = cellEl.querySelector('.lively-code-cell-stop-btn');
+      if (!sourceEl || !outputEl) return;
+
+      function setRunning(isRunning, statusText) {
+        runBtn.style.display = isRunning ? 'none' : '';
+        if (stopBtn) stopBtn.style.display = isRunning ? '' : 'none';
+        if (statusEl) statusEl.textContent = statusText;
+      }
+
+      function renderOutput(response, err) {
+        outputEl.innerHTML = '';
+        outputEl.classList.remove('lively-code-cell-output-empty');
+        var hasContent = false;
+        if (response && response.stdout) {
+          var stdoutPre = document.createElement('pre');
+          stdoutPre.textContent = response.stdout;
+          outputEl.appendChild(stdoutPre);
+          hasContent = true;
+        }
+        (response && response.images || []).forEach(function (b64) {
+          var img = document.createElement('img');
+          img.src = 'data:image/png;base64,' + b64;
+          outputEl.appendChild(img);
+          hasContent = true;
+        });
+        if (response && response.result != null) {
+          var resultPre = document.createElement('pre');
+          resultPre.textContent = response.result;
+          outputEl.appendChild(resultPre);
+          hasContent = true;
+        }
+        if (response && response.stderr) {
+          var stderrPre = document.createElement('pre');
+          stderrPre.className = 'lively-code-cell-stderr';
+          stderrPre.textContent = response.stderr;
+          outputEl.appendChild(stderrPre);
+          hasContent = true;
+        }
+        if (err) {
+          var errPre = document.createElement('pre');
+          errPre.className = 'lively-code-cell-stderr';
+          errPre.textContent = err.message || String(err);
+          outputEl.appendChild(errPre);
+          hasContent = true;
+        }
+        if (!hasContent) {
+          outputEl.classList.add('lively-code-cell-output-empty');
+          outputEl.textContent = 'Ran with no output.';
+        }
+      }
+
+      runBtn.addEventListener('click', function () {
+        runCodeCell(sourceEl.textContent, {
+          onStatus: function (text) { setRunning(true, text); },
+          onDone: function (err, response) { setRunning(false, err ? 'Error' : 'Ran just now'); renderOutput(response, err); },
+        });
+      });
+      if (stopBtn) {
+        stopBtn.addEventListener('click', function () { stopCodeCell(); setRunning(false, 'Stopped'); });
+      }
+    }
+
+    // Shared confirm-gate + Pyodide Worker orchestration for a Python code
+    // cell's Run button (CodeEditorSpec.md §2.3) -- used by both
+    // WikiEditor's live NodeView and this module's own hydrateCodeCells, so
+    // the click-to-run confirm + Worker call only exists once. callbacks:
+    // {onStatus(text), onDone(err, response)}. Fires the confirm dialog on
+    // every call -- no remembered trust (a wiki page's source can change
+    // between two clicks; see the schema comment in WikiEditor.js).
+    function runCodeCell(source, callbacks) {
+      callbacks = callbacks || {};
+      var onStatus = callbacks.onStatus || function () {};
+      var onDone = callbacks.onDone || function () {};
+      if (typeof $world === 'undefined' || !$world.multipleChoicePrompt) { onDone(new Error('Run unavailable')); return; }
+      $world.multipleChoicePrompt(
+        'Run this Python cell? It executes in your own browser (via Pyodide/WebAssembly) ' +
+        'with the same page privileges as any script here — nothing is sent to a server.',
+        ['Run', 'Cancel'],
+        function (choice) {
+          if (choice !== 'Run') return;
+          if (typeof lively === 'undefined' || !lively.require) { onDone(new Error('Run unavailable')); return; }
+          lively.require('lively.identity.PyodideWorker').toRun(function () {
+            var pyodideWorker = lively.identity.PyodideWorker;
+            onStatus('Loading Python runtime…');
+            pyodideWorker.ensureReady(function (err) {
+              if (err) { onStatus('Error'); onDone(err, null); return; }
+              onStatus('Running…');
+              pyodideWorker.run(source, function (runErr, response) { onDone(runErr, response); });
+            });
+          });
+        }
+      );
+    }
+
+    // Stops whatever cell is currently running on this page's shared
+    // interpreter (CodeEditorSpec.md §2.3's one-worker-per-page model) --
+    // a real worker.terminate(), same acknowledged can't-interrupt-mid-
+    // computation limitation as lively.jenga3d.Worker.
+    function stopCodeCell() {
+      if (typeof lively === 'undefined' || !lively.identity || !lively.identity.PyodideWorker) return;
+      lively.identity.PyodideWorker.terminate();
+    }
+
     // A private/shared attachment's src is only known once decrypted (see
     // FileCrypto.resolveAttachmentUrl) — a snapshot rendered before that
     // has objId set and src empty. These two helpers emit a placeholder
@@ -374,6 +521,8 @@ module('lively.identity.PostCardUtils')
           return '<blockquote>' + (node.content || []).map(pmNodeToHtml).join('') + '</blockquote>';
         case 'code_block':
           return renderHighlightedCode(node);
+        case 'code_cell':
+          return renderCodeCell(node);
         case 'hard_break':
           return '<br>';
         case 'image':
@@ -511,6 +660,35 @@ module('lively.identity.PostCardUtils')
       } catch (e) {
         return '<pre><code class="hljs">' + escapeHtml(text) + '</code></pre>';
       }
+    }
+
+    // Runnable Python cell (CodeEditorSpec.md §2.3), read-only/hydrated
+    // rendering. Matches the schema's toDOM shape (div.lively-code-cell,
+    // pre.lively-code-cell-source holding the plain source text) so a
+    // pasted-back copy still round-trips through the schema's parseDOM --
+    // plus the interactive chrome (Run/Stop/status, empty output
+    // placeholder) hydrateCodeCells wires up below. The outer div also
+    // carries lively-code-cell-node so it picks up the exact same CSS as
+    // the live editor's NodeView (see _ensureMediaStyle's header note on
+    // why this is a second, deliberately-identical copy of those rules).
+    function renderCodeCell(node) {
+      var attrs = node.attrs || {};
+      var source = attrs.source || '';
+      var hljs = (typeof window !== 'undefined' && window.hljs) || null;
+      var highlighted;
+      try { highlighted = hljs ? hljs.highlight(source, { language: 'python' }).value : escapeHtml(source); }
+      catch (e) { highlighted = escapeHtml(source); }
+      return '<div class="lively-code-cell lively-code-cell-node" data-language="' +
+             escapeAttr(attrs.language || 'python') + '">' +
+             '<div class="lively-code-cell-header">' +
+               '<span class="lively-code-cell-badge">Python</span>' +
+               '<button type="button" class="lively-code-cell-run-btn" data-hydrate="code-cell">Run</button>' +
+               '<button type="button" class="lively-code-cell-stop-btn">Stop</button>' +
+               '<span class="lively-code-cell-status">Idle</span>' +
+             '</div>' +
+             '<pre class="lively-code-cell-source"><code class="hljs">' + highlighted + '</code></pre>' +
+             '<div class="lively-code-cell-output lively-code-cell-output-empty">Run to see output.</div>' +
+           '</div>';
     }
 
     // Deterministic seeded-PRNG "blockie" identicon, rendered to a canvas and
