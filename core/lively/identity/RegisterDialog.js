@@ -42,6 +42,7 @@ module("lively.identity.RegisterDialog")
     "lively.identity.DID",
     "lively.identity.WebAuthn",
     "lively.identity.UserSpace",
+    "lively.identity.PasskeyPrimingDialog",
     "lively.persistence.BuildSpec",
     "lively.morphic.Complete",
   )
@@ -290,6 +291,15 @@ module("lively.identity.RegisterDialog")
           );
         }
 
+        lively.identity.PasskeyPrimingDialog.maybeShow(function () {
+          self._startRegisterCeremony(handle, displayName, deviceLabel);
+        });
+      },
+
+      // ─── registration ceremony (post-priming) ───────────────────────────────────
+
+      _startRegisterCeremony: function _startRegisterCeremony(handle, displayName, deviceLabel) {
+        var self = this;
         var btn = this.get("registerBtn");
         if (btn) btn.setActive(false);
         this.setStatus("Requesting challenge…");

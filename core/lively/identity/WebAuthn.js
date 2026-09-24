@@ -754,7 +754,10 @@ module("lively.identity.WebAuthn")
         // Use this before opening IndexedDB to avoid unnecessary async overhead
         // in the common "not yet registered" path.
         hasAnyCredential: function () {
-          return lively.LocalStorage.get("identity-has-credential") === "true";
+          // LocalStorage.get() auto-parses "true"/"false" strings back into
+          // real booleans (lively/lang/LocalStorage.js) -- comparing against
+          // the string "true" here always failed, silently.
+          return lively.LocalStorage.get("identity-has-credential") === true;
         },
       },
 

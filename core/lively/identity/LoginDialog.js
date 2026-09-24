@@ -33,6 +33,7 @@ module("lively.identity.LoginDialog")
     "lively.identity.DID",
     "lively.identity.WebAuthn",
     "lively.identity.ObjectStore",
+    "lively.identity.PasskeyPrimingDialog",
     "lively.persistence.BuildSpec",
     "lively.morphic.Complete",
   )
@@ -237,6 +238,16 @@ module("lively.identity.LoginDialog")
             .catch(function () { again(null); });
           return;
         }
+
+        lively.identity.PasskeyPrimingDialog.maybeShow(function () {
+          self._startAuthCeremony(typedHandle);
+        });
+      },
+
+      // ─── sign-in ceremony (post-priming) ────────────────────────────────────────
+
+      _startAuthCeremony: function _startAuthCeremony(typedHandle) {
+        var self = this;
         var btn = this.get("signInBtn");
         if (btn) btn.setActive(false);
         this.setStatus("Requesting challenge…");
