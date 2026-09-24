@@ -535,9 +535,20 @@ lively.BuildSpec('lively.identity.Inventory', {
             // fixed-vs-flex-sibling layout question entirely (every row
             // just hugs its own content).
             _Extent: lively.pt(360.0,601.0),
-            _Fill: Color.white,
+            // Soft-edges pass: a faint off-white fill (not pure white) plus a
+            // rounded, hairline-bordered outer card -- the teal window gutter
+            // (InventoryBrowser's own borderSize:6, see the window BuildSpec
+            // above) now shows through the rounded corners, reading as a
+            // floating panel rather than a flush rectangular column. Paired
+            // _BorderColor/_BorderRadius together per this file's own
+            // documented gotcha (setting one without the other silently
+            // zeroes the radius at construction).
+            _Fill: Color.rgb(252,252,253),
+            _BorderColor: Color.rgb(232,232,235),
+            _BorderRadius: 14,
             _Position: lively.pt(1083.0,6.0),
             _ClipMode: "auto",
+            borderWidth: 1,
             className: "lively.morphic.Box",
             droppingEnabled: false,
             layout: { resizeHeight: true, resizeWidth: false },
@@ -1371,9 +1382,21 @@ lively.BuildSpec('lively.identity.Inventory', {
         var instanceLabel = (item._instanceBaseUrl || window.location.origin)
             .replace(/^https?:\/\//, '').replace(/\/$/, '');
 
-        var W = 168, H = 180, ICON_H = 140;
+        var W = 168, H = 180, ICON_H = 140, BORDER = 2;
         var tile = new lively.morphic.Box(lively.rect(0, 0, W, H));
-        tile.applyStyle({ fill: Color.white, borderWidth: 1, borderColor: Color.rgb(230,230,230), borderRadius: 10 });
+        // borderWidth is fixed at BORDER (2) in BOTH selected and unselected
+        // states (below) -- this codebase has no box-sizing:border-box
+        // anywhere (checked core/styles/*.css), so content-box sizing means
+        // growing borderWidth on selection (was 1 -> 2) actually grows the
+        // tile's total rendered footprint by 2px right/bottom. With only an
+        // 8px gap between tiles (ItemsGrid's adjustForNewBounds delta), that
+        // growth reads as the selected tile's own highlight border getting
+        // clipped/overlapped by whatever sits after it. Keeping the width
+        // constant and only swapping *color* on selection (border color/
+        // width both reach the DOM fine via the model layer here, per this
+        // file's own established note on that) means the box footprint
+        // never changes.
+        tile.applyStyle({ fill: Color.white, borderWidth: BORDER, borderColor: Color.rgb(230,230,230), borderRadius: 10 });
         tile.partItem = item;
         tile.draggingEnabled = false;
         tile.droppingEnabled = false;
@@ -1385,12 +1408,32 @@ lively.BuildSpec('lively.identity.Inventory', {
             m.eventsAreIgnored = true;
         }
 
-        var iconArea = new lively.morphic.Box(lively.rect(0, 0, W, ICON_H));
+        // Confirmed live (getBoundingClientRect on tile vs iconArea): a
+        // child morph's local (0,0) lands at the PARENT's own outer/border-
+        // box origin in this framework, not inset by the parent's border --
+        // submorphs don't automatically sit inside the padding/content box
+        // the way normal nested CSS boxes would. iconArea used to be built
+        // flush at (0,0) with the tile's own full W -- since it's opaque and
+        // painted after the tile's own border, it fully covered the top
+        // edge of the tile's border (and the left/right edges for its own
+        // height) regardless of border width, including before this session
+        // ever touched borderWidth. This was the real cause of the
+        // selection highlight only showing as a sliver on the left/bottom.
+        // Fix: inset iconArea by BORDER on the three edges that coincide
+        // with the tile's own outer edge (top/left/right) -- its bottom
+        // edge is an interior boundary (between icon area and the title
+        // below it), not touching the tile's own border, so it stays flush
+        // at ICON_H unchanged. Every child positioned relative to iconArea
+        // below uses innerW/innerH (iconArea's real size), not the outer
+        // W/ICON_H, to stay correctly centered/anchored within the now-
+        // smaller area.
+        var innerW = W - 2 * BORDER, innerH = ICON_H - BORDER;
+        var iconArea = new lively.morphic.Box(lively.rect(BORDER, BORDER, innerW, innerH));
         iconArea.applyStyle({ fill: Color.rgbHex(meta.tint), borderWidth: 0, borderRadius: 9 });
         noDrag(iconArea);
         tile.addMorph(iconArea);
 
-        var icon = new lively.morphic.Text(lively.rect((W - 60) / 2, (ICON_H - 60) / 2, 60, 60), meta.icon);
+        var icon = new lively.morphic.Text(lively.rect((innerW - 60) / 2, (innerH - 60) / 2, 60, 60), meta.icon);
         icon.applyStyle({
             fontFamily: "'Material Symbols Rounded'", fontSize: 33, textColor: Color.rgbHex(meta.accent),
             fill: null, borderWidth: 0, allowInput: false, selectable: false, align: 'center',
@@ -1415,7 +1458,7 @@ lively.BuildSpec('lively.identity.Inventory', {
         // as before) so a fontSize:9 star glyph (renders ~12x14.67px) has
         // room -- a 14x14 icon box was clipping it, same gotcha as the
         // sidebar category icons.
-        var starBadge = new lively.morphic.Box(lively.rect(W - 6 - 44, ICON_H - 6 - 20, 44, 20));
+        var starBadge = new lively.morphic.Box(lively.rect(innerW - 6 - 44, innerH - 6 - 20, 44, 20));
         starBadge.applyStyle({ fill: Color.rgba(255,255,255,0.9), borderWidth: 0, borderRadius: 10 });
         noDrag(starBadge);
         iconArea.addMorph(starBadge);
@@ -1452,17 +1495,52 @@ lively.BuildSpec('lively.identity.Inventory', {
 
         tile.showAsSelected = function() {
             this.isSelected = true;
-            this.applyStyle({ borderColor: Color.rgbHex('#D45472'), borderWidth: 2 });
+            this.applyStyle({ borderColor: Color.rgbHex('#D45472') });
         };
         tile.showAsNotSelected = function() {
             this.isSelected = false;
-            this.applyStyle({ borderColor: Color.rgb(230,230,230), borderWidth: 1 });
+            this.applyStyle({ borderColor: Color.rgb(230,230,230) });
         };
         tile.onMouseUp = function(evt) {
             var browser = this.get('InventoryBrowser');
             if (browser) browser.selectTile(this);
             return true;
         };
+
+        // Real per-item preview. item.fetchHtmlLogo (_buildItemFromListingRow,
+        // above) lazily fetches the full envelope and resolves the part's own
+        // asHTMLLogo() snapshot (state.htmlLogo, pre-scaled to an ~85px max
+        // dimension at publish time -- see PartsBin.js's copyToIdentityPartsSpace)
+        // -- built for exactly this "fetch once the tile actually mounts"
+        // purpose (see that method's own comment, and ScriptingSupport.js's
+        // PartsBinItem.setupLogo, which already reads it the same way for the
+        // classic browser) but never wired into this tile design when it was
+        // built (inventory.md §13 explicitly scoped this tile to "a category-
+        // tinted icon square, not a live rendered preview"). Mounts the same
+        // way setupIdentityHTMLLogo does: strip the <body> wrapper, mount the
+        // raw markup via a Shapes.External morph, centered in the icon area,
+        // added with addMorphBack so it paints behind the instance/star
+        // badges (already added above) but in front of iconArea's own tint
+        // fill. The generic category glyph is removed once a real logo
+        // lands, so a part with no stored snapshot (published before this
+        // existed, or fetch failure) still falls back to today's tinted icon.
+        if (typeof item.fetchHtmlLogo === 'function') {
+            item.fetchHtmlLogo(function(err, htmlLogo) {
+                // tile.world() guards against a scope/category switch having
+                // already torn the tile back out (ItemsGrid.removeAllItems)
+                // by the time this async fetch resolves.
+                if (err || !htmlLogo || !tile.world()) return;
+                var source = htmlLogo.replace(/.*<body>/, '').replace(/<\/body>.*/, '');
+                var node = XHTMLNS.create('div');
+                try { node.innerHTML = source; } catch (e) { return; }
+                var LOGO = 85;
+                var logoMorph = new lively.morphic.Morph(new lively.morphic.Shapes.External(node));
+                logoMorph.setBounds(lively.rect((innerW - LOGO) / 2, (innerH - LOGO) / 2, LOGO, LOGO));
+                noDrag(logoMorph);
+                icon.remove();
+                iconArea.addMorphBack(logoMorph);
+            });
+        }
 
         return tile;
     },
@@ -1672,6 +1750,14 @@ lively.BuildSpec('lively.identity.Inventory', {
         var PAD = 18, W = 360 - 2 * PAD;
 
         function noDrag(m) { m.draggingEnabled = false; m.droppingEnabled = false; m.grabbingEnabled = false; }
+        // Soft-edges pass: boxShadow isn't a real BuildSpec/applyStyle style
+        // key, so it's written straight to the DOM -- same idiom as
+        // _paintScopeTab's direct style writes elsewhere in this file. Fine
+        // to call on a morph that was just constructed this same pass (not
+        // yet added to the panel): renderContext()/shapeNode are built
+        // lazily on first access (Rendering.js), not on world insertion, so
+        // the node already exists.
+        function softShadow(m) { m.renderContext().shapeNode.style.boxShadow = '0 1px 3px rgba(20,20,30,0.05)'; }
         function textRow(rect, text, style) {
             var t = new lively.morphic.Text(rect, text);
             t.applyStyle(Object.assign({ fill: null, borderWidth: 0, allowInput: false, selectable: false,
@@ -1688,24 +1774,33 @@ lively.BuildSpec('lively.identity.Inventory', {
             return;
         }
 
-        var y = 18;
+        var y = 16;
         function place(m, h) { m.setPosition(pt(PAD, y)); panel.addMorph(m); y += h; }
 
-        place(textRow(lively.rect(0,0,W,20), item.name || '',
-            { fontSize: 10.5, fontWeight: 'bold', textColor: Color.rgb(34,34,34) }), 26);
-
-        // Meta block (Published by / Created / Object ID / Author DID /
-        // Hosting / Tags -- Object ID and Author DID each on their own line)
+        // Soft-edges pass: name + meta block now live inside one rounded
+        // white card (instead of bare text sitting straight on the panel's
+        // own fill), matching the panel's own new rounded-card treatment
+        // above -- gives the top of the right panel a clear, softly
+        // separated "header" instead of text floating with no boundary.
+        var CARD_PAD = 14, innerW = W - 2 * CARD_PAD;
         var meta = this.describeItemMeta(item);
         var lineCount = meta ? meta.text.split('\n').length : 1;
         // 18px/line, not the naive fontSize-derived guess -- live-measured
         // (getComputedStyle/scrollHeight) at ~17.6px/line for this 8.5pt
         // text, confirmed by a real clipped-last-line bug this replaced.
         var metaH = lineCount * 18 + 8;
-        var metaMorph = textRow(lively.rect(0,0,W,metaH), meta ? meta.text : '',
+        var nameH = 20, nameGap = 10;
+        var metaY = CARD_PAD + nameH + nameGap; // card-local, used by the copy buttons below
+        var cardH = CARD_PAD * 2 + nameH + nameGap + metaH;
+        var headerCard = new lively.morphic.Box(lively.rect(0, 0, W, cardH));
+        headerCard.applyStyle({ fill: Color.white, borderWidth: 1, borderColor: Color.rgb(238,238,240), borderRadius: 12 });
+        noDrag(headerCard);
+        softShadow(headerCard);
+        headerCard.addMorph(textRow(lively.rect(CARD_PAD, CARD_PAD, innerW, nameH), item.name || '',
+            { fontSize: 10.5, fontWeight: 'bold', textColor: Color.rgb(34,34,34) }));
+        var metaMorph = textRow(lively.rect(CARD_PAD, metaY, innerW, metaH), meta ? meta.text : '',
             { fontSize: 8.5, textColor: Color.rgb(85,85,85) });
-        var metaY = y;
-        place(metaMorph, metaH + 12);
+        headerCard.addMorph(metaMorph);
 
         // Copy-icon buttons for Object ID / Author DID, one per field --
         // a real Text morph rendering a Material Symbols glyph, styled and
@@ -1737,13 +1832,15 @@ lively.BuildSpec('lively.identity.Inventory', {
         function makeCopyButton(lineText, valueToCopy, lineIndex, tooltip) {
             var lineW = measureTextWidth(lineText, "8.5pt Helvetica");
             var btnSize = 18;
-            var btnX = PAD + Math.ceil(lineW) + 6;
+            // Card-local coordinates now (button lives inside headerCard,
+            // not directly on the panel) -- base offset is CARD_PAD, not PAD.
+            var btnX = CARD_PAD + Math.ceil(lineW) + 6;
             var btnY = metaY + lineIndex * 18;
             var btn = new lively.morphic.Text(lively.rect(btnX, btnY, btnSize, btnSize), 'content_copy');
-            // Border softened from 200,200,200 -- right-panel border-
-            // softening pass, matches the other borders below.
-            btn.applyStyle({ fill: Color.rgb(240,240,240), borderColor: Color.rgb(234,234,234),
-                borderRadius: 3, borderWidth: 1, fontFamily: "'Material Symbols Rounded'", fontSize: 8.5,
+            // Softened further (was 240/234) and rounder (was 3) as part of
+            // the right-panel soft-edges pass.
+            btn.applyStyle({ fill: Color.rgb(244,244,246), borderColor: Color.rgb(236,236,238),
+                borderRadius: 7, borderWidth: 1, fontFamily: "'Material Symbols Rounded'", fontSize: 8.5,
                 textColor: Color.rgb(80,80,80), align: 'center',
                 allowInput: false, selectable: false, clipMode: 'hidden', whiteSpaceHandling: 'pre', handStyle: 'pointer' });
             btn._copyText = valueToCopy;
@@ -1760,11 +1857,12 @@ lively.BuildSpec('lively.identity.Inventory', {
                 return true;
             });
             noDrag(btn);
-            panel.addMorph(btn);
+            headerCard.addMorph(btn);
             btn.renderContext().morphNode.title = tooltip;
         }
         if (meta && meta.objId) makeCopyButton(meta.lines[meta.objIdLineIndex], meta.objId, meta.objIdLineIndex, 'Copy Object ID');
         if (meta && meta.did) makeCopyButton(meta.lines[meta.didLineIndex], meta.did, meta.didLineIndex, 'Copy Author DID');
+        place(headerCard, cardH + 14);
 
         // Version badge + (conditionally) expandable version list. Built
         // from item.partVersions -- {date, author, version(shortCid)} rows,
@@ -1782,8 +1880,13 @@ lively.BuildSpec('lively.identity.Inventory', {
                 'No version history';
 
             var badge = new lively.morphic.Box(lively.rect(0, 0, W, 30));
-            badge.applyStyle({ fill: Color.rgb(250,250,250), borderWidth: 1, borderColor: Color.rgb(234,234,234), borderRadius: 8 });
+            // Soft-edges pass: rounder (was 8) and a touch lighter border
+            // (was 234,234,234), white fill for contrast against the
+            // panel's own new off-white background, plus a faint shadow so
+            // it reads as its own raised card rather than a flat strip.
+            badge.applyStyle({ fill: Color.white, borderWidth: 1, borderColor: Color.rgb(238,238,240), borderRadius: 14 });
             noDrag(badge);
+            softShadow(badge);
             // Icon boxes grown past their glyphs' own 16x16 model extent --
             // a fontSize:12/14 Material Symbols glyph renders taller than
             // 16px (fontSize is points, not px) and clips under
@@ -1796,11 +1899,11 @@ lively.BuildSpec('lively.identity.Inventory', {
             badge.addMorph(textRow(lively.rect(W-32,2,24,26), this.versionsExpanded ? 'expand_less' : 'expand_more',
                 { fontFamily: "'Material Symbols Rounded'", fontSize: 14, textColor: Color.rgb(136,136,136) }));
             if (versions) badge.onMouseUp = function() { self.toggleVersionsExpanded(); return true; };
-            place(badge, 36);
+            place(badge, 40);
 
             if (this.versionsExpanded && versions) {
                 var listBox = new lively.morphic.Box(lively.rect(0, 0, W, versions.length * 22));
-                listBox.applyStyle({ fill: Color.white, borderWidth: 1, borderColor: Color.rgb(240,240,240), borderRadius: 8 });
+                listBox.applyStyle({ fill: Color.rgb(252,252,253), borderWidth: 1, borderColor: Color.rgb(242,242,244), borderRadius: 12 });
                 noDrag(listBox);
                 versions.slice().reverse().forEach(function(v, i) {
                     listBox.addMorph(textRow(lively.rect(8, i * 22 + 3, W - 16, 16),
@@ -1811,14 +1914,16 @@ lively.BuildSpec('lively.identity.Inventory', {
             }
         }
 
-        // Star button
+        // Star button -- radius bumped to a full pill (was 6, on a 28px-
+        // tall box) as part of the soft-edges pass.
         var info = this.selectedItemStarInfo;
         var starCount = info ? info.count : (item.starCount || 0);
         var starred = !!(info && info.mine);
         var starBtn = new lively.morphic.Box(lively.rect(0, 0, 78, 28));
         starBtn.applyStyle({ fill: starred ? Color.rgbHex('#D45472') : Color.white,
-            borderWidth: 1, borderColor: starred ? Color.rgbHex('#D45472') : Color.rgb(234,234,234), borderRadius: 6 });
+            borderWidth: 1, borderColor: starred ? Color.rgbHex('#D45472') : Color.rgb(238,238,240), borderRadius: 14 });
         noDrag(starBtn);
+        softShadow(starBtn);
         // 22x24, not 16x16 -- a fontSize:13 glyph renders ~17x21px tall
         // (fontSize is points, not px), clipping in a same-size box under
         // clipMode:'hidden'; same gotcha as the sidebar category icons.
@@ -1827,9 +1932,11 @@ lively.BuildSpec('lively.identity.Inventory', {
         starBtn.addMorph(textRow(lively.rect(32,8,38,14), String(starCount),
             { fontSize: 9, textColor: starred ? Color.white : Color.rgb(51,51,51) }));
         starBtn.onMouseUp = function() { self.toggleStarOnSelectedItem(); return true; };
-        place(starBtn, 38);
+        place(starBtn, 40);
 
-        // Open Item / View Source / Inspect
+        // Open Item / View Source / Inspect -- radius bumped (was 6), lighter
+        // border (was 234,234,234), plus the same faint card shadow as the
+        // version badge/star button above.
         var buttonsRow = new lively.morphic.Box(lively.rect(0, 0, W, 26));
         buttonsRow.applyStyle({ fill: null, borderWidth: 0 });
         noDrag(buttonsRow);
@@ -1838,17 +1945,18 @@ lively.BuildSpec('lively.identity.Inventory', {
          ['View Source', function() { self.viewSourceOfSelectedItem(); }],
          ['Inspect', function() { self.openInspectorMenu(); }]].forEach(function(pair, i) {
             var b = new lively.morphic.Box(lively.rect(i * (btnW + 6), 0, btnW, 26));
-            b.applyStyle({ fill: Color.white, borderWidth: 1, borderColor: Color.rgb(234,234,234), borderRadius: 6 });
+            b.applyStyle({ fill: Color.white, borderWidth: 1, borderColor: Color.rgb(238,238,240), borderRadius: 10 });
             noDrag(b);
+            softShadow(b);
             b.addMorph(textRow(lively.rect(0,5,btnW,16), pair[0], { fontSize: 8, textColor: Color.rgb(51,51,51), align: 'center' }));
             b.onMouseUp = function() { pair[1](); return true; };
             if (pair[0] === 'Inspect') self._inspectButtonMorph = b;
             buttonsRow.addMorph(b);
         });
-        place(buttonsRow, 40);
+        place(buttonsRow, 44);
 
         // Comments
-        place(textRow(lively.rect(0,4,W,16), 'COMMENTS', { fontSize: 7.5, textColor: Color.rgb(153,153,153) }), 24);
+        place(textRow(lively.rect(0,4,W,16), 'COMMENTS', { fontSize: 7.5, textColor: Color.rgb(153,153,153) }), 26);
 
         var comments = (this.selectedItemComments || []).slice().reverse();
         if (!comments.length) {
@@ -1875,22 +1983,27 @@ lively.BuildSpec('lively.identity.Inventory', {
                 var body = textRow(lively.rect(28,16,W-28,bodyH), c.body || '', { fontSize: 9, textColor: Color.rgb(26,26,27) });
                 body.applyStyle({ clipMode: 'auto' });
                 row.addMorph(body);
-                place(row, rowH + 4);
+                // Extra breathing room between comments (was +4) -- part of
+                // the right-panel soft-edges pass.
+                place(row, rowH + 10);
             });
         }
 
         // Comment input row -- a morphic Text#beInputLine() input (native
         // framework mechanism, not a raw DOM <input>), matching this file's
         // existing searchText precedent rather than a native-DOM-mount.
+        // Both the input and Post button rounded further (were 6) as part
+        // of the soft-edges pass -- Post is now a full pill on its 24px
+        // height.
         var inputRow = new lively.morphic.Box(lively.rect(0, 0, W, 32));
         inputRow.applyStyle({ fill: null, borderWidth: 0 });
         noDrag(inputRow);
         var input = new lively.morphic.Text(lively.rect(0, 4, W - 66, 24), '');
         input.applyStyle({ fixedWidth: true, fixedHeight: true, clipMode: 'hidden', allowInput: true, fontSize: 8.5,
-            borderWidth: 1, borderColor: Color.rgb(234,234,234), borderRadius: 6, fill: Color.white });
+            borderWidth: 1, borderColor: Color.rgb(238,238,240), borderRadius: 12, fill: Color.white });
         inputRow.addMorph(input);
         var postBtn = new lively.morphic.Box(lively.rect(W - 58, 4, 58, 24));
-        postBtn.applyStyle({ fill: Color.rgbHex('#e8497e'), borderWidth: 0, borderRadius: 6 });
+        postBtn.applyStyle({ fill: Color.rgbHex('#e8497e'), borderWidth: 0, borderRadius: 12 });
         noDrag(postBtn);
         postBtn.addMorph(textRow(lively.rect(0,5,58,14), 'Post', { fontSize: 8.5, textColor: Color.white, align: 'center' }));
         postBtn.onMouseUp = function() {
