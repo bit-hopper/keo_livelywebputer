@@ -83,7 +83,9 @@ module("lively.identity.WikiView")
           "_dateEl",
           "_visibilityEl",
           "_verifyBadgeEl",
-          "_editBtn",
+          "_moreBtn",
+          "_moreMenuEl",
+          "_moreMenuOutsideHandler",
           "_contentLoadStarted",
           "_onEdit",
           "_heightObserver",
@@ -230,33 +232,28 @@ module("lively.identity.WikiView")
           topBar.appendChild(handleEl);
           this._handleEl = handleEl;
 
-          var editBtn = document.createElement("button");
-          editBtn.textContent = "Edit";
-          editBtn.title = "Open in the editor";
-          editBtn.style.cssText = [
-            "position:absolute", "top:8px", "right:8px", "display:none",
-            "font-size:11px", "padding:3px 9px", "cursor:pointer",
-            "border:1px solid #ccc", "border-radius:12px", "background:#fff",
+          // "More" menu -- Edit (when write access allows it, see
+          // _resolveEditAccess), Copy link, Download. Edit used to be its
+          // own dedicated button in this same top-right corner; folded into
+          // the menu as its top entry so there's a single control here.
+          var moreBtn = document.createElement("button");
+          moreBtn.innerHTML = '<span class="material-symbols-rounded" style="font-size:16px;line-height:1;">more_vert</span>';
+          moreBtn.title = "More";
+          moreBtn.style.cssText = [
+            "position:absolute", "top:8px", "right:8px",
+            "width:24px", "height:24px", "padding:0", "cursor:pointer",
+            "display:flex", "align-items:center", "justify-content:center",
+            "border:1px solid #ccc", "border-radius:50%", "background:#fff", "color:#555",
           ].join(";");
           ["mousedown", "click"].forEach(function (t) {
-            editBtn.addEventListener(t, function (e) {
+            moreBtn.addEventListener(t, function (e) {
               e.preventDefault();
               e.stopPropagation();
-              if (t === "click") {
-                // Saving a wiki page signs its envelope with the device's
-                // soft signing key, unwrapped via a WebAuthn PRF ceremony
-                // (WikiSerializer.js's _signEnvelopeIfPossible) -- warn
-                // before the editor opens rather than let that prompt
-                // surface unannounced on first autosave.
-                lively.identity.PasskeyPrimingDialog.maybeShow(function () {
-                  if (self._onEdit) self._onEdit(self._handle, self._objId, self);
-                  else self._startEditDefault();
-                });
-              }
+              if (t === "click") self._toggleMoreMenu(moreBtn);
             });
           });
-          topBar.appendChild(editBtn);
-          this._editBtn = editBtn;
+          topBar.appendChild(moreBtn);
+          this._moreBtn = moreBtn;
         },
 
         _buildTitle: function (wrapper) {
@@ -448,19 +445,18 @@ module("lively.identity.WikiView")
           this._resolveEditAccess();
         },
 
-        // Owner-OR-constellation-canWrite (see file header) — resolves the
-        // Edit button's visibility, unlike PostCardView.js's owner-only
-        // gate, since a wiki page can legitimately be edited by any
-        // constellation member with write access.
+        // Owner-OR-constellation-canWrite (see file header) — resolves
+        // whether the "more" menu's Edit entry shows up, unlike
+        // PostCardView.js's owner-only gate, since a wiki page can
+        // legitimately be edited by any constellation member with write
+        // access. The menu is rebuilt fresh each time it's opened
+        // (_toggleMoreMenu), so it always reflects the latest _canEdit.
         _resolveEditAccess: function () {
           var self = this;
-          if (!this._editBtn) return;
           if (this._isOwner) {
             this._canEdit = true;
-            this._editBtn.style.display = "";
             return;
           }
-          this._editBtn.style.display = "none";
           if (!this._constellation || !this._handle || !this._objId) return;
           // Whether a non-author may edit depends on the page's own edit
           // policy (all members / controllers / listed handles), which only
@@ -476,10 +472,7 @@ module("lively.identity.WikiView")
           xhr.onload = function () {
             if (xhr.status !== 200) return;
             try {
-              if (JSON.parse(xhr.responseText).canEdit) {
-                self._canEdit = true;
-                self._editBtn.style.display = "";
-              }
+              if (JSON.parse(xhr.responseText).canEdit) self._canEdit = true;
             } catch (e) {}
           };
           xhr.send();
@@ -707,6 +700,181 @@ module("lively.identity.WikiView")
           }
           this._verifyBadgeEl.textContent = label;
           this._verifyBadgeEl.style.color = color;
+        },
+      },
+
+      "sharing",
+      {
+        // Small dropdown anchored under the "more" button, appended to
+        // document.body rather than nested inside this morph's own
+        // shapeNode -- the wrapper/shapeNode both set overflow:hidden (see
+        // _buildChrome), which would clip a menu popping out below the top
+        // bar. Toggle: a second click on the same button (or any outside
+        // mousedown) closes it.
+        _toggleMoreMenu: function (anchorBtn) {
+          if (this._moreMenuEl) { this._closeMoreMenu(); return; }
+          var self = this;
+          var rect = anchorBtn.getBoundingClientRect();
+          var menu = document.createElement("div");
+          menu.style.cssText = [
+            "position:fixed", "z-index:9999",
+            "top:" + Math.round(rect.bottom + 4) + "px",
+            "left:" + Math.round(rect.right - 160) + "px",
+            "width:160px", "background:#fff", "border:1px solid #ddd",
+            "border-radius:8px", "box-shadow:0 4px 14px rgba(0,0,0,0.2)",
+            "padding:4px", "font-family:sans-serif", "font-size:13px",
+            "box-sizing:border-box",
+          ].join(";");
+
+          var makeItem = function (label, iconName, onClick) {
+            var item = document.createElement("div");
+            item.style.cssText = [
+              "display:flex", "align-items:center", "gap:8px",
+              "padding:7px 10px", "border-radius:5px", "cursor:pointer", "color:#333",
+            ].join(";");
+            item.innerHTML =
+              '<span class="material-symbols-rounded" style="font-size:16px;color:#666;">' + iconName + '</span>' +
+              '<span>' + label + '</span>';
+            item.addEventListener("mouseenter", function () { item.style.background = "#f2f2f2"; });
+            item.addEventListener("mouseleave", function () { item.style.background = "transparent"; });
+            ["mousedown", "click"].forEach(function (t) {
+              item.addEventListener(t, function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (t === "click") { self._closeMoreMenu(); onClick(); }
+              });
+            });
+            return item;
+          };
+
+          if (this._canEdit) {
+            menu.appendChild(makeItem("Edit", "edit", function () { self._handleEditClick(); }));
+          }
+          menu.appendChild(makeItem("Copy link", "link", function () { self._copyShareLink(); }));
+          menu.appendChild(makeItem("Download", "download", function () { self._downloadPage(); }));
+
+          document.body.appendChild(menu);
+          this._moreMenuEl = menu;
+
+          // Deferred registration: the same click that opened the menu is
+          // still bubbling/capturing at this point, and would otherwise
+          // immediately trigger this handler and close the menu it just
+          // opened.
+          this._moreMenuOutsideHandler = function (e) {
+            if (menu.contains(e.target) || e.target === anchorBtn) return;
+            self._closeMoreMenu();
+          };
+          setTimeout(function () {
+            document.addEventListener("mousedown", self._moreMenuOutsideHandler, true);
+          }, 0);
+        },
+
+        _closeMoreMenu: function () {
+          if (!this._moreMenuEl) return;
+          this._moreMenuEl.remove();
+          this._moreMenuEl = null;
+          if (this._moreMenuOutsideHandler) {
+            document.removeEventListener("mousedown", this._moreMenuOutsideHandler, true);
+            this._moreMenuOutsideHandler = null;
+          }
+        },
+
+        // Top entry of the "more" menu when _canEdit is true -- was
+        // previously its own dedicated top-bar button; same behavior,
+        // just reached through the menu now.
+        _handleEditClick: function () {
+          var self = this;
+          // Saving a wiki page signs its envelope with the device's soft
+          // signing key, unwrapped via a WebAuthn PRF ceremony
+          // (WikiSerializer.js's _signEnvelopeIfPossible) -- warn before
+          // the editor opens rather than let that prompt surface
+          // unannounced on first autosave.
+          lively.identity.PasskeyPrimingDialog.maybeShow(function () {
+            if (self._onEdit) self._onEdit(self._handle, self._objId, self);
+            else self._startEditDefault();
+          });
+        },
+
+        // Canonical page URL: /@handle/wiki/:pageName (personal) or
+        // /c/:constellation/wiki/:pageName -- the same human-friendly-name
+        // routes IdentityServer.js serves as this page's own SSR share-link
+        // page (see file header). Falls back to the current location for
+        // the rare case a page has no state.wikiName (envelope hasn't been
+        // resaved since wiki pages gained named routing).
+        _buildShareUrl: function () {
+          var envelope = this._envelope;
+          var wikiName = envelope && envelope.state && envelope.state.wikiName;
+          if (!wikiName) return window.location.href;
+          var base = lively.identity.did.baseUrl();
+          return this._constellation
+            ? base + "/c/" + encodeURIComponent(this._constellation) + "/wiki/" + encodeURIComponent(wikiName)
+            : base + "/@" + encodeURIComponent(this._handle) + "/wiki/" + encodeURIComponent(wikiName);
+        },
+
+        _copyShareLink: function () {
+          var url = this._buildShareUrl();
+          var self = this;
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(url)
+              .then(function () { self._flashNearMoreBtn("Link copied"); })
+              .catch(function () { window.prompt("Copy this link:", url); });
+          } else {
+            window.prompt("Copy this link:", url);
+          }
+        },
+
+        // Exports the currently-rendered content as a standalone HTML file
+        // (title + the same content DOM already on screen, plus the KaTeX/
+        // highlight.js stylesheets it depends on) -- simplest faithful
+        // export given content only exists as rendered HTML client-side
+        // (WikiSerializer.js's snapshot format has no markdown form).
+        _downloadPage: function () {
+          var envelope = this._envelope;
+          var title = (envelope && envelope.state && envelope.state.title) || "wiki-page";
+          var esc = lively.identity.postCardUtils.escapeHtml;
+          var contentHtml = this._contentEl ? this._contentEl.innerHTML : "";
+          var doc = "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" +
+            "<title>" + esc(title) + "</title>" +
+            "<link rel=\"stylesheet\" href=\"" + window.location.origin + "/core/lib/postcard/katex.min.css\">" +
+            "<link rel=\"stylesheet\" href=\"" + window.location.origin + "/core/lib/postcard/hljs-github.css\">" +
+            "<style>body{font-family:sans-serif;max-width:800px;margin:40px auto;padding:0 20px;" +
+            "color:#222;line-height:1.5;}img{max-width:100%;}</style></head><body>" +
+            "<h1>" + esc(title) + "</h1>" + contentHtml + "</body></html>";
+          var blob = new Blob([doc], { type: "text/html" });
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement("a");
+          a.href = url;
+          a.download = this._slugify(title) + ".html";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(function () { URL.revokeObjectURL(url); }, 30 * 1000);
+          this._flashNearMoreBtn("Downloaded");
+        },
+
+        _slugify: function (s) {
+          return String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "wiki-page";
+        },
+
+        // Local fade-out confirmation bubble -- this file has no shared
+        // toast/status component to reuse, and a one-off action like this
+        // doesn't warrant pulling one in.
+        _flashNearMoreBtn: function (text) {
+          if (!this._topBarEl) return;
+          var bubble = document.createElement("div");
+          bubble.textContent = text;
+          bubble.style.cssText = [
+            "position:absolute", "top:36px", "right:8px",
+            "font-size:11px", "padding:3px 8px", "border-radius:6px",
+            "background:#333", "color:#fff", "white-space:nowrap",
+            "opacity:0", "transition:opacity 0.15s", "pointer-events:none", "z-index:5",
+          ].join(";");
+          this._topBarEl.appendChild(bubble);
+          requestAnimationFrame(function () { bubble.style.opacity = "1"; });
+          setTimeout(function () {
+            bubble.style.opacity = "0";
+            setTimeout(function () { bubble.remove(); }, 200);
+          }, 1200);
         },
       },
     );
