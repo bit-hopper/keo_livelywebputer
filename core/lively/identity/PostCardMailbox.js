@@ -30,6 +30,116 @@ module('lively.identity.PostCardMailbox')
   )
   .toRun(function () {
 
+    // Modern content design system for the mailbox's tab bar / search /
+    // cards / buttons / menu — injected once per world (idempotent, same
+    // guard idiom as _ensureAccentChromeCss below, which handles only the
+    // outer Window's own accent color). Everything here is scoped under
+    // `.pcm-root` (added to this morph's own shapeNode in _buildChrome) so
+    // it can't leak onto unrelated DOM elsewhere in the world. Tokens are
+    // CSS custom properties so every inline cssText string in this file
+    // can reference them via var(--pcm-*) instead of repeating hex
+    // literals — the map tab's own marker/legend colors are deliberately
+    // left alone (own/received need to stay visually distinct, unrelated
+    // to this button/tab palette).
+    function _ensureMailboxContentStyle() {
+      var STYLE_ID = 'postcard-mailbox-content-style';
+      if (document.getElementById(STYLE_ID)) return;
+      var styleEl = document.createElement('style');
+      styleEl.id = STYLE_ID;
+      styleEl.textContent = [
+        '.pcm-root {',
+        '  --pcm-bg: #fafafa; --pcm-surface: #ffffff;',
+        '  --pcm-border: #e4e4e7; --pcm-border-strong: #d4d4d8;',
+        '  --pcm-text: #18181b; --pcm-text-secondary: #52525b; --pcm-text-tertiary: #a1a1aa;',
+        '  --pcm-accent: #16a34a; --pcm-accent-soft: #f0fdf4; --pcm-accent-soft-border: #bbf7d0;',
+        '  --pcm-danger: #e11d48; --pcm-danger-soft: #fff1f2; --pcm-danger-soft-border: #fecdd3;',
+        '  --pcm-warn: #b45309; --pcm-warn-soft: #fffbeb; --pcm-warn-soft-border: #fde68a;',
+        '  --pcm-info: #4f46e5; --pcm-info-soft: #eef2ff;',
+        '  --pcm-radius: 12px; --pcm-radius-sm: 8px; --pcm-radius-pill: 999px;',
+        '  --pcm-shadow-card: 0 1px 2px rgba(24,24,27,0.04), 0 1px 8px rgba(24,24,27,0.04);',
+        '  --pcm-shadow-card-hover: 0 2px 6px rgba(24,24,27,0.06), 0 4px 16px rgba(24,24,27,0.08);',
+        '  --pcm-shadow-menu: 0 8px 24px rgba(24,24,27,0.14), 0 2px 6px rgba(24,24,27,0.08);',
+        '  --pcm-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;',
+        '  font-family: var(--pcm-font);',
+        '}',
+        '.pcm-content::-webkit-scrollbar { width: 9px; height: 9px; }',
+        '.pcm-content::-webkit-scrollbar-thumb { background: var(--pcm-border-strong); border-radius: 5px; border: 2px solid var(--pcm-bg); }',
+        '.pcm-content::-webkit-scrollbar-track { background: transparent; }',
+
+        '.pcm-tabbar { display: flex; align-items: center; gap: 2px; overflow-x: auto; scrollbar-width: none; height: 100%; }',
+        '.pcm-tabbar::-webkit-scrollbar { display: none; }',
+        '.pcm-tab { display: flex; align-items: center; gap: 4px; flex: none; border: none; background: transparent;',
+        '  cursor: pointer; font-size: 12px; font-weight: 500; color: var(--pcm-text-secondary);',
+        '  padding: 7px 9px; border-radius: var(--pcm-radius-pill); white-space: nowrap;',
+        '  font-family: var(--pcm-font); transition: background .15s, color .15s; }',
+        '.pcm-tab-icon { font-family: "Material Symbols Rounded"; font-size: 15px; line-height: 1; }',
+        '.pcm-tab:hover { background: var(--pcm-bg); color: var(--pcm-text); }',
+        '.pcm-tab.active { background: var(--pcm-accent-soft); color: var(--pcm-accent); font-weight: 600; }',
+
+        '.pcm-search { display: flex; align-items: center; gap: 8px; background: var(--pcm-bg);',
+        '  border-radius: var(--pcm-radius-sm); padding: 0 10px; }',
+        '.pcm-search-icon { font-family: "Material Symbols Rounded"; font-size: 16px; color: var(--pcm-text-tertiary); }',
+        '.pcm-search input { flex: 1; border: none; background: transparent; outline: none;',
+        '  font-size: 12.5px; padding: 8px 0; color: var(--pcm-text); font-family: var(--pcm-font); }',
+        '.pcm-search input::placeholder { color: var(--pcm-text-tertiary); }',
+
+        '.pcm-card { background: var(--pcm-surface); border: 1px solid var(--pcm-border);',
+        '  border-radius: var(--pcm-radius); padding: 12px 14px; margin-bottom: 8px; position: relative;',
+        '  box-shadow: var(--pcm-shadow-card); transition: box-shadow .15s, border-color .15s; }',
+        '.pcm-card:hover { box-shadow: var(--pcm-shadow-card-hover); border-color: var(--pcm-border-strong); }',
+
+        '.pcm-empty { display: flex; flex-direction: column; align-items: center; justify-content: center;',
+        '  gap: 8px; color: var(--pcm-text-tertiary); padding: 48px 16px; text-align: center; font-size: 12.5px; }',
+        '.pcm-empty-icon { font-family: "Material Symbols Rounded"; font-size: 32px; color: var(--pcm-border-strong); }',
+        '.pcm-empty.danger { color: var(--pcm-danger); }',
+        '.pcm-empty.danger .pcm-empty-icon { color: var(--pcm-danger); }',
+
+        '.pcm-btn { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 500;',
+        '  padding: 5px 11px; cursor: pointer; border-radius: var(--pcm-radius-pill); border: 1px solid var(--pcm-border);',
+        '  background: var(--pcm-surface); color: var(--pcm-text-secondary); font-family: var(--pcm-font);',
+        '  transition: background .15s, border-color .15s, color .15s; }',
+        '.pcm-btn:hover { background: var(--pcm-bg); }',
+        '.pcm-btn:disabled { opacity: .5; cursor: default; }',
+        '.pcm-btn-icon-glyph { font-family: "Material Symbols Rounded"; font-size: 13px; line-height: 1; }',
+        '.pcm-btn-accent { border-color: var(--pcm-accent-soft-border); color: var(--pcm-accent); background: var(--pcm-accent-soft); }',
+        '.pcm-btn-accent:hover { background: var(--pcm-accent-soft-border); }',
+        '.pcm-btn-danger { border-color: var(--pcm-danger-soft-border); color: var(--pcm-danger); background: var(--pcm-danger-soft); }',
+        '.pcm-btn-danger:hover { background: var(--pcm-danger-soft-border); }',
+        '.pcm-btn-ghost-danger { border-color: var(--pcm-border); color: var(--pcm-danger); background: var(--pcm-surface); }',
+        '.pcm-btn-ghost-danger:hover { background: var(--pcm-danger-soft); border-color: var(--pcm-danger-soft-border); }',
+
+        '.pcm-icon-btn { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px;',
+        '  border: none; border-radius: 50%; background: transparent; color: var(--pcm-text-tertiary);',
+        '  cursor: pointer; transition: background .15s, color .15s; padding: 0; }',
+        '.pcm-icon-btn-glyph { font-family: "Material Symbols Rounded"; font-size: 16px; }',
+        '.pcm-icon-btn:hover { background: var(--pcm-bg); color: var(--pcm-text); }',
+
+        '.pcm-menu { position: absolute; z-index: 20; background: var(--pcm-surface); border: 1px solid var(--pcm-border);',
+        '  border-radius: var(--pcm-radius-sm); box-shadow: var(--pcm-shadow-menu); padding: 4px; min-width: 130px; }',
+        '.pcm-menu-item { display: block; width: 100%; text-align: left; font-size: 12px; padding: 7px 10px;',
+        '  cursor: pointer; border: none; background: none; border-radius: 6px; color: var(--pcm-text);',
+        '  font-family: var(--pcm-font); }',
+        '.pcm-menu-item:hover { background: var(--pcm-bg); }',
+        '.pcm-menu-item.danger { color: var(--pcm-danger); }',
+        '.pcm-menu-item.danger:hover { background: var(--pcm-danger-soft); }',
+
+        '.pcm-badge { display: inline-block; margin-bottom: 6px; padding: 2px 8px; font-size: 10px; font-weight: 600;',
+        '  border-radius: var(--pcm-radius-pill); background: var(--pcm-info-soft); color: var(--pcm-info); }',
+        '.pcm-badge-warn { background: var(--pcm-warn-soft); color: var(--pcm-warn); }',
+        '.pcm-badge-danger { background: var(--pcm-danger); color: #fff; }',
+
+        '.pcm-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 260px;',
+        '  background: var(--pcm-info-soft); color: var(--pcm-info); font-size: 11px;',
+        '  padding: 4px 10px; border-radius: var(--pcm-radius-pill); }',
+
+        '.pcm-row-input { flex: 1; font-size: 12px; padding: 7px 10px; border: 1px solid var(--pcm-border);',
+        '  border-radius: var(--pcm-radius-sm); box-sizing: border-box; font-family: var(--pcm-font);',
+        '  background: var(--pcm-surface); color: var(--pcm-text); outline: none; transition: border-color .15s; }',
+        '.pcm-row-input:focus { border-color: var(--pcm-accent); }',
+      ].join('\n');
+      document.head.appendChild(styleEl);
+    }
+
     var MailboxClass = lively.morphic.Box.subclass('lively.identity.PostCardMailbox',
 
     'serialization', {
@@ -105,44 +215,52 @@ module('lively.identity.PostCardMailbox')
       // title bar.
       _buildChrome: function () {
         var self = this;
+        _ensureMailboxContentStyle();
         this.setFill(Color.white);
         this.setDroppingEnabled(false);
         var shapeNode = this.renderContext().shapeNode;
         shapeNode.innerHTML = ''; // idempotent: safe if this ever runs twice on one instance
+        shapeNode.classList.add('pcm-root');
 
-        // ── tab bar ──
-        var tabBar = document.createElement('div');
-        tabBar.style.cssText = [
-          'position:absolute', 'top:0', 'left:0', 'right:0', 'height:36px',
-          'background:#f2f2f7', 'border-bottom:1px solid #d1d1d6',
-          'display:flex', 'align-items:stretch', 'box-sizing:border-box',
+        // ── tab bar — a horizontally-scrolling row of icon+label pills
+        // (Material Symbols Rounded, same vendored font every other
+        // morphic UI in this codebase uses) rather than the old flex-
+        // stretched plain-text tabs, so 9 tabs read as a friendly nav
+        // strip instead of a cramped fixed grid.
+        var tabBarWrap = document.createElement('div');
+        tabBarWrap.style.cssText = [
+          'position:absolute', 'top:0', 'left:0', 'right:0', 'height:44px',
+          'border-bottom:1px solid var(--pcm-border)', 'background:var(--pcm-surface)',
+          'display:flex', 'align-items:center', 'box-sizing:border-box', 'padding:0 8px',
         ].join(';');
+        var tabBar = document.createElement('div');
+        tabBar.className = 'pcm-tabbar';
 
         var tabs = [
-          { id: 'received',  label: 'Received'  },
-          { id: 'delivered', label: 'Delivered' },
-          { id: 'returned',  label: 'Returned'  },
-          { id: 'blocked',   label: 'Blocked'   },
-          { id: 'own',       label: 'My Postcards' },
-          { id: 'aliases',   label: 'Aliases' },
-          { id: 'friends',   label: 'Friends' },
-          { id: 'rss',       label: 'RSS' },
-          { id: 'map',       label: 'Map' },
+          { id: 'received',  label: 'Received',     icon: 'inbox' },
+          { id: 'delivered', label: 'Delivered',     icon: 'outbox' },
+          { id: 'returned',  label: 'Returned',      icon: 'assignment_return' },
+          { id: 'blocked',   label: 'Blocked',       icon: 'block' },
+          { id: 'own',       label: 'My Postcards',  icon: 'draft' },
+          { id: 'aliases',   label: 'Aliases',       icon: 'alternate_email' },
+          { id: 'friends',   label: 'Friends',       icon: 'group' },
+          { id: 'rss',       label: 'RSS',           icon: 'rss_feed' },
+          { id: 'map',       label: 'Map',           icon: 'map' },
         ];
         tabs.forEach(function (t) {
           var btn = document.createElement('button');
-          btn.textContent = t.label;
-          btn.style.cssText = [
-            'flex:1', 'border:none', 'background:transparent',
-            'font-size:12px', 'font-family:sans-serif', 'cursor:pointer',
-            'border-bottom:2px solid transparent', 'transition:all 0.15s',
-            'color:#636366',
-          ].join(';');
+          btn.className = 'pcm-tab';
+          var icon = document.createElement('span');
+          icon.className = 'pcm-tab-icon';
+          icon.textContent = t.icon;
+          btn.appendChild(icon);
+          btn.appendChild(document.createTextNode(t.label));
           btn.addEventListener('click', function () { self._switchTab(t.id); });
           tabBar.appendChild(btn);
           self._tabBtns[t.id] = btn;
         });
-        shapeNode.appendChild(tabBar);
+        tabBarWrap.appendChild(tabBar);
+        shapeNode.appendChild(tabBarWrap);
 
         // ── search bar (§8.1) — title-only metadata search, shown only for
         // tabs whose rows are actual postcards (Received/Delivered/
@@ -151,16 +269,22 @@ module('lively.identity.PostCardMailbox')
         // every render function clears _contentDiv wholesale, which would
         // otherwise wipe this input (and drop focus/keystrokes) on every
         // reload a search itself triggers.
-        var searchBar = document.createElement('div');
-        searchBar.style.cssText = [
-          'position:absolute', 'top:36px', 'left:0', 'right:0', 'height:32px',
-          'background:#fff', 'border-bottom:1px solid #e5e5ea',
+        var searchBarWrap = document.createElement('div');
+        searchBarWrap.style.cssText = [
+          'position:absolute', 'top:44px', 'left:0', 'right:0', 'height:40px',
+          'background:var(--pcm-surface)', 'border-bottom:1px solid var(--pcm-border)',
           'display:none', 'align-items:center', 'padding:0 12px', 'box-sizing:border-box',
         ].join(';');
+        var searchBar = document.createElement('div');
+        searchBar.className = 'pcm-search';
+        searchBar.style.width = '100%';
+        var searchIcon = document.createElement('span');
+        searchIcon.className = 'pcm-search-icon';
+        searchIcon.textContent = 'search';
+        searchBar.appendChild(searchIcon);
         var searchInput = document.createElement('input');
         searchInput.type = 'text';
         searchInput.placeholder = 'Search by title…';
-        searchInput.style.cssText = 'flex:1;font-size:12px;padding:5px 8px;border:1px solid #d1d1d6;border-radius:4px;box-sizing:border-box;';
         var searchDebounce = null;
         searchInput.addEventListener('input', function () {
           clearTimeout(searchDebounce);
@@ -170,16 +294,18 @@ module('lively.identity.PostCardMailbox')
           }, 300);
         });
         searchBar.appendChild(searchInput);
-        shapeNode.appendChild(searchBar);
-        this._searchBar = searchBar;
+        searchBarWrap.appendChild(searchBar);
+        shapeNode.appendChild(searchBarWrap);
+        this._searchBar = searchBarWrap;
         this._searchInput = searchInput;
 
         // ── content area ──
         var contentDiv = document.createElement('div');
+        contentDiv.className = 'pcm-content';
         contentDiv.style.cssText = [
-          'position:absolute', 'top:68px', 'left:0', 'right:0', 'bottom:0',
-          'overflow-y:auto', 'padding:12px 16px', 'box-sizing:border-box',
-          'font-family:sans-serif', 'font-size:13px',
+          'position:absolute', 'top:84px', 'left:0', 'right:0', 'bottom:0',
+          'overflow-y:auto', 'padding:14px 16px', 'box-sizing:border-box',
+          'font-family:var(--pcm-font)', 'font-size:13px', 'background:var(--pcm-bg)',
         ].join(';');
         shapeNode.appendChild(contentDiv);
         this._contentDiv = contentDiv;
@@ -192,12 +318,7 @@ module('lively.identity.PostCardMailbox')
 
         // Update tab button styles
         Object.keys(this._tabBtns).forEach(function (id) {
-          var btn = self._tabBtns[id];
-          var active = id === tab;
-          btn.style.color           = active ? '#007aff' : '#636366';
-          btn.style.borderBottom    = active ? '2px solid #007aff' : '2px solid transparent';
-          btn.style.fontWeight      = active ? '600' : '400';
-          btn.style.background      = active ? '#fff' : 'transparent';
+          self._tabBtns[id].classList.toggle('active', id === tab);
         });
 
         // Each tab starts with a fresh (empty) search — a query typed into
@@ -217,7 +338,7 @@ module('lively.identity.PostCardMailbox')
         // padded/scrollable card layout.
         this._contentDiv.style.padding = tab === 'map' ? '0' : '12px 16px';
 
-        this._contentDiv.innerHTML = '<div style="color:#999;padding:20px 0;">Loading…</div>';
+        this._contentDiv.innerHTML = this._emptyHtml('hourglass_top', 'Loading…');
 
         if (tab === 'received')  this._loadReceived();
         if (tab === 'delivered') this._loadDeliveries('delivered');
@@ -730,7 +851,7 @@ module('lively.identity.PostCardMailbox')
         content.innerHTML = '';
 
         if (!records.length) {
-          content.innerHTML = '<div style="color:#999;padding:20px 0;text-align:center;">No received postcards yet.</div>';
+          content.innerHTML = self._emptyHtml('inbox', 'No received postcards yet.');
           return;
         }
 
@@ -740,11 +861,11 @@ module('lively.identity.PostCardMailbox')
           var from = self._makeIdentityRow('From: ', rec.senderHandle, rec.senderDid);
 
           var id = document.createElement('div');
-          id.style.cssText  = 'color:#636366;font-size:11px;margin-bottom:3px;';
+          id.style.cssText  = 'color:var(--pcm-text-secondary);font-size:11px;margin-bottom:3px;';
           id.textContent    = 'Card: ' + rec.objId;
 
           var when = document.createElement('div');
-          when.style.cssText = 'color:#8e8e93;font-size:11px;';
+          when.style.cssText = 'color:var(--pcm-text-tertiary);font-size:11px;';
           when.textContent   = self._formatDate(rec.sentAt);
 
           card.appendChild(from);
@@ -758,11 +879,7 @@ module('lively.identity.PostCardMailbox')
           if (rec.constellation) {
             var isJoinRequest = rec.kind === 'constellation-join-request';
             var tag = document.createElement('div');
-            tag.style.cssText = 'display:inline-block;margin-bottom:4px;padding:2px 7px;' +
-              'font-size:10px;border-radius:9px;' +
-              (isJoinRequest || isInvite
-                ? 'background:#fff3cd;color:#8a6d1f;font-weight:600;'
-                : 'background:#eef0ff;color:#4a55c4;');
+            tag.className = 'pcm-badge' + ((isJoinRequest || isInvite) ? ' pcm-badge-warn' : '');
             tag.textContent = (isJoinRequest ? '📨 join request · ' : isInvite ? '✉️ invite · ' : '') + 'c/' + rec.constellation;
             card.appendChild(tag);
           }
@@ -783,11 +900,11 @@ module('lively.identity.PostCardMailbox')
           // reload) still shows the buttons.
           if (isInvite) {
             var statusLine = document.createElement('div');
-            statusLine.style.cssText = 'font-size:11px;color:#34c759;font-weight:600;margin-top:4px;display:none;';
+            statusLine.style.cssText = 'font-size:11px;color:var(--pcm-accent);font-weight:600;margin-top:4px;display:none;';
             card.appendChild(statusLine);
 
-            var declineInviteBtn = self._makeIconTextButton('close', 'Decline', '#ff3b30');
-            var acceptInviteBtn  = self._makeIconTextButton('check', 'Accept', '#34c759');
+            var declineInviteBtn = self._makeIconTextButton('close', 'Decline', 'danger');
+            var acceptInviteBtn  = self._makeIconTextButton('check', 'Accept', 'accent');
             function respond(action, btn, otherBtn, resultLabel) {
               btn.disabled = true;
               otherBtn.disabled = true;
@@ -851,7 +968,7 @@ module('lively.identity.PostCardMailbox')
           : 'No delivered postcards yet.';
 
         if (!records.length) {
-          content.innerHTML = '<div style="color:#999;padding:20px 0;text-align:center;">' + emptyMsg + '</div>';
+          content.innerHTML = self._emptyHtml(status === 'returned' ? 'assignment_return' : 'outbox', emptyMsg);
           return;
         }
 
@@ -860,11 +977,7 @@ module('lively.identity.PostCardMailbox')
 
           if (rec.status === 'returned') {
             var badge = document.createElement('span');
-            badge.style.cssText = [
-              'display:inline-block', 'background:#ff3b30', 'color:#fff',
-              'font-size:10px', 'font-weight:600', 'border-radius:3px',
-              'padding:1px 5px', 'margin-bottom:6px',
-            ].join(';');
+            badge.className = 'pcm-badge pcm-badge-danger';
             badge.textContent = '✉ Returned';
             card.appendChild(badge);
           }
@@ -872,11 +985,11 @@ module('lively.identity.PostCardMailbox')
           var to = self._makeIdentityRow('To: ', rec.recipientHandle, null);
 
           var id = document.createElement('div');
-          id.style.cssText  = 'color:#636366;font-size:11px;margin-bottom:3px;';
+          id.style.cssText  = 'color:var(--pcm-text-secondary);font-size:11px;margin-bottom:3px;';
           id.textContent    = 'Card: ' + rec.objId;
 
           var when = document.createElement('div');
-          when.style.cssText = 'color:#8e8e93;font-size:11px;';
+          when.style.cssText = 'color:var(--pcm-text-tertiary);font-size:11px;';
           when.textContent   = self._formatDate(rec.sentAt);
 
           var openBtn = self._makeInlineOpenBtn(function () {
@@ -912,12 +1025,12 @@ module('lively.identity.PostCardMailbox')
         var input = document.createElement('input');
         input.type = 'text';
         input.placeholder = 'handle to block (no @)';
-        input.style.cssText = 'flex:1;font-size:12px;padding:6px 8px;border:1px solid #d1d1d6;border-radius:4px;box-sizing:border-box;';
+        input.className = 'pcm-row-input';
         addRow.appendChild(input);
 
         var addBtn = document.createElement('button');
         addBtn.textContent = 'Block';
-        addBtn.style.cssText = 'font-size:12px;padding:6px 12px;cursor:pointer;border:1px solid #ff3b30;color:#ff3b30;background:#fff;border-radius:4px;';
+        addBtn.className = 'pcm-btn pcm-btn-danger';
         function submitBlock() {
           var h = input.value.trim().replace(/^@/, '');
           if (!h) return;
@@ -935,10 +1048,7 @@ module('lively.identity.PostCardMailbox')
         content.appendChild(addRow);
 
         if (!blockedHandles.length) {
-          var empty = document.createElement('div');
-          empty.style.cssText = 'color:#999;padding:20px 0;text-align:center;';
-          empty.textContent = 'No blocked handles.';
-          content.appendChild(empty);
+          content.appendChild(self._emptyEl('block', 'No blocked handles.'));
           return;
         }
 
@@ -949,12 +1059,8 @@ module('lively.identity.PostCardMailbox')
 
           var removeBtn = document.createElement('button');
           removeBtn.textContent = 'Unblock';
-          removeBtn.style.cssText = [
-            'position:absolute', 'top:10px', 'right:10px',
-            'font-size:11px', 'padding:3px 8px', 'cursor:pointer',
-            'border:1px solid #ff3b30', 'color:#ff3b30',
-            'background:#fff', 'border-radius:4px',
-          ].join(';');
+          removeBtn.className = 'pcm-btn pcm-btn-ghost-danger';
+          removeBtn.style.cssText = 'position:absolute;top:10px;right:10px;';
           removeBtn.addEventListener('click', function () {
             removeBtn.disabled = true;
             self._unblockHandle(h, function (err) {
@@ -977,7 +1083,7 @@ module('lively.identity.PostCardMailbox')
         content.innerHTML = '';
 
         var intro = document.createElement('div');
-        intro.style.cssText = 'color:#8e8e93;font-size:11px;margin-bottom:10px;line-height:1.4;';
+        intro.style.cssText = 'color:var(--pcm-text-tertiary);font-size:11px;margin-bottom:10px;line-height:1.4;';
         intro.textContent = 'Give out an alias instead of your primary handle to reduce spam exposure. ' +
           'Mail sent to any alias lands in your normal inbox. Revoke one at any time without affecting the others.';
         content.appendChild(intro);
@@ -986,7 +1092,7 @@ module('lively.identity.PostCardMailbox')
         addRow.style.cssText = 'margin-bottom:12px;';
         var genBtn = document.createElement('button');
         genBtn.textContent = 'Generate new alias';
-        genBtn.style.cssText = 'font-size:12px;padding:6px 12px;cursor:pointer;border:1px solid #007aff;color:#007aff;background:#fff;border-radius:4px;';
+        genBtn.className = 'pcm-btn pcm-btn-accent';
         genBtn.addEventListener('click', function () {
           genBtn.disabled = true;
           self._generateAlias(function (err) {
@@ -999,10 +1105,7 @@ module('lively.identity.PostCardMailbox')
         content.appendChild(addRow);
 
         if (!aliases.length) {
-          var empty = document.createElement('div');
-          empty.style.cssText = 'color:#999;padding:20px 0;text-align:center;';
-          empty.textContent = 'No active aliases.';
-          content.appendChild(empty);
+          content.appendChild(self._emptyEl('alternate_email', 'No active aliases.'));
           return;
         }
 
@@ -1010,33 +1113,25 @@ module('lively.identity.PostCardMailbox')
           var card = self._makeCard();
 
           var label = document.createElement('div');
-          label.style.cssText = 'font-weight:600;color:#1c1c1e;font-family:monospace;margin-bottom:3px;padding-right:120px;';
+          label.style.cssText = 'font-weight:600;color:var(--pcm-text);font-family:monospace;margin-bottom:3px;padding-right:120px;';
           label.textContent = '@' + a.handle;
           card.appendChild(label);
 
           var when = document.createElement('div');
-          when.style.cssText = 'color:#8e8e93;font-size:11px;';
+          when.style.cssText = 'color:var(--pcm-text-tertiary);font-size:11px;';
           when.textContent = 'Created ' + self._formatDate(a.created_at);
           card.appendChild(when);
 
           var copyBtn = document.createElement('button');
           copyBtn.textContent = 'Copy';
-          copyBtn.style.cssText = [
-            'font-size:11px', 'padding:3px 8px', 'cursor:pointer',
-            'border:1px solid #007aff', 'color:#007aff',
-            'background:#fff', 'border-radius:4px',
-          ].join(';');
+          copyBtn.className = 'pcm-btn pcm-btn-accent';
           copyBtn.addEventListener('click', function () {
             self._copyToClipboard('@' + a.handle, copyBtn);
           });
 
           var revokeBtn = document.createElement('button');
           revokeBtn.textContent = 'Revoke';
-          revokeBtn.style.cssText = [
-            'font-size:11px', 'padding:3px 8px', 'cursor:pointer',
-            'border:1px solid #ff3b30', 'color:#ff3b30',
-            'background:#fff', 'border-radius:4px',
-          ].join(';');
+          revokeBtn.className = 'pcm-btn pcm-btn-ghost-danger';
           revokeBtn.addEventListener('click', function () {
             self.world().confirm(
               'Revoke @' + a.handle + '? Anyone still using it will get the same "not deliverable" ' +
@@ -1072,14 +1167,14 @@ module('lively.identity.PostCardMailbox')
 
         function heading(text, topMargin) {
           var h = document.createElement('div');
-          h.style.cssText = 'font-weight:600;color:#3a3a3c;font-size:12px;margin:' + topMargin + 'px 0 8px;';
+          h.style.cssText = 'font-weight:600;color:var(--pcm-text-secondary);font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin:' + topMargin + 'px 0 8px;';
           h.textContent = text;
           content.appendChild(h);
         }
 
         function emptyMsg(text) {
           var e = document.createElement('div');
-          e.style.cssText = 'color:#999;padding:4px 0 16px;';
+          e.style.cssText = 'color:var(--pcm-text-tertiary);padding:4px 0 16px;font-size:12.5px;';
           e.textContent = text;
           content.appendChild(e);
         }
@@ -1093,11 +1188,11 @@ module('lively.identity.PostCardMailbox')
             card.appendChild(self._makeIdentityRow('', r.handle, r.did));
 
             var when = document.createElement('div');
-            when.style.cssText = 'color:#8e8e93;font-size:11px;';
+            when.style.cssText = 'color:var(--pcm-text-tertiary);font-size:11px;';
             when.textContent = self._formatDate(r.requestedAt);
             card.appendChild(when);
 
-            var declineBtn = self._makeIconTextButton('close', 'Decline', '#ff3b30');
+            var declineBtn = self._makeIconTextButton('close', 'Decline', 'danger');
             declineBtn.addEventListener('click', function () {
               declineBtn.disabled = true;
               self._respondFriendRequest(r.did, 'decline', function (err) {
@@ -1107,7 +1202,7 @@ module('lively.identity.PostCardMailbox')
               });
             });
 
-            var acceptBtn = self._makeIconTextButton('check', 'Accept', '#34c759');
+            var acceptBtn = self._makeIconTextButton('check', 'Accept', 'accent');
             acceptBtn.addEventListener('click', function () {
               acceptBtn.disabled = true;
               self._respondFriendRequest(r.did, 'approve', function (err) {
@@ -1131,11 +1226,11 @@ module('lively.identity.PostCardMailbox')
             card.appendChild(self._makeIdentityRow('', s.handle, s.did));
 
             var when = document.createElement('div');
-            when.style.cssText = 'color:#8e8e93;font-size:11px;';
+            when.style.cssText = 'color:var(--pcm-text-tertiary);font-size:11px;';
             when.textContent = self._formatDate(s.requestedAt);
             card.appendChild(when);
 
-            var cancelBtn = self._makeIconTextButton('cancel', 'Cancel', '#ff3b30');
+            var cancelBtn = self._makeIconTextButton('cancel', 'Cancel', 'danger');
             cancelBtn.style.position = 'absolute';
             cancelBtn.style.top = '10px';
             cancelBtn.style.right = '10px';
@@ -1161,11 +1256,11 @@ module('lively.identity.PostCardMailbox')
             card.appendChild(self._makeIdentityRow('', f.handle, f.did));
 
             var since = document.createElement('div');
-            since.style.cssText = 'color:#8e8e93;font-size:11px;';
+            since.style.cssText = 'color:var(--pcm-text-tertiary);font-size:11px;';
             since.textContent = 'Friends since ' + self._formatDate(f.since);
             card.appendChild(since);
 
-            var removeBtn = self._makeIconTextButton('person_remove', 'Remove', '#ff3b30');
+            var removeBtn = self._makeIconTextButton('person_remove', 'Remove', 'danger');
             removeBtn.style.position = 'absolute';
             removeBtn.style.top = '10px';
             removeBtn.style.right = '10px';
@@ -1193,7 +1288,7 @@ module('lively.identity.PostCardMailbox')
         content.innerHTML = '';
 
         if (!postcards.length) {
-          content.innerHTML = '<div style="color:#999;padding:20px 0;text-align:center;">No postcards yet.</div>';
+          content.innerHTML = self._emptyHtml('draft', 'No postcards yet.');
           return;
         }
 
@@ -1201,11 +1296,11 @@ module('lively.identity.PostCardMailbox')
           var card = self._makeCard();
 
           var title = document.createElement('div');
-          title.style.cssText = 'font-weight:600;color:#1c1c1e;margin-bottom:3px;padding-right:76px;';
+          title.style.cssText = 'font-weight:600;color:var(--pcm-text);margin-bottom:3px;padding-right:76px;';
           title.textContent   = (pc.state && pc.state.title) || '(untitled)';
 
           var meta = document.createElement('div');
-          meta.style.cssText = 'color:#8e8e93;font-size:11px;';
+          meta.style.cssText = 'color:var(--pcm-text-tertiary);font-size:11px;';
           meta.textContent   = (pc.visibility || 'public') + ' · ' + self._formatDate(pc.created);
 
           card.appendChild(title);
@@ -1241,11 +1336,11 @@ module('lively.identity.PostCardMailbox')
         var input = document.createElement('input');
         input.type = 'text';
         input.placeholder = 'https://example.com/feed.xml';
-        input.style.cssText = 'flex:1;font-size:12px;padding:6px 8px;border:1px solid #d1d1d6;border-radius:4px;box-sizing:border-box;';
+        input.className = 'pcm-row-input';
         addRow.appendChild(input);
         var addBtn = document.createElement('button');
         addBtn.textContent = 'Add';
-        addBtn.style.cssText = 'font-size:12px;padding:6px 12px;cursor:pointer;border:1px solid #007aff;color:#007aff;background:#fff;border-radius:4px;';
+        addBtn.className = 'pcm-btn pcm-btn-accent';
         function submitAdd() {
           var url = input.value.trim();
           if (!url) return;
@@ -1263,10 +1358,7 @@ module('lively.identity.PostCardMailbox')
         content.appendChild(addRow);
 
         if (!feeds.length) {
-          var empty = document.createElement('div');
-          empty.style.cssText = 'color:#999;padding:20px 0;text-align:center;';
-          empty.textContent = 'No feeds yet — add an RSS or Atom feed URL above.';
-          content.appendChild(empty);
+          content.appendChild(self._emptyEl('rss_feed', 'No feeds yet — add an RSS or Atom feed URL above.'));
           return;
         }
 
@@ -1274,11 +1366,7 @@ module('lively.identity.PostCardMailbox')
         chipsRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;';
         feeds.forEach(function (feed) {
           var chip = document.createElement('div');
-          chip.style.cssText = [
-            'display:inline-flex', 'align-items:center', 'gap:5px', 'max-width:260px',
-            'background:#eef0ff', 'color:#4a55c4', 'font-size:11px',
-            'padding:4px 8px', 'border-radius:12px',
-          ].join(';');
+          chip.className = 'pcm-chip';
           var label = document.createElement('span');
           label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
           label.textContent = feed.url;
@@ -1299,53 +1387,48 @@ module('lively.identity.PostCardMailbox')
         content.appendChild(chipsRow);
 
         var entriesDiv = document.createElement('div');
-        entriesDiv.style.cssText = 'color:#999;padding:20px 0;text-align:center;';
-        entriesDiv.textContent = 'Loading entries…';
+        entriesDiv.innerHTML = this._emptyHtml('hourglass_top', 'Loading entries…');
         content.appendChild(entriesDiv);
 
         this._fetchFeedEntries(feeds, function (entries, errors) {
           if (self._activeTab !== 'rss') return;
           entriesDiv.innerHTML = '';
-          entriesDiv.style.cssText = '';
 
           var errorUrls = Object.keys(errors);
           errorUrls.forEach(function (url) {
             var errDiv = document.createElement('div');
             errDiv.style.cssText = [
-              'color:#ff3b30', 'font-size:11px', 'padding:6px 10px', 'margin-bottom:8px',
-              'background:#fff5f5', 'border:1px solid #ffd7d7', 'border-radius:6px', 'word-break:break-all',
+              'color:var(--pcm-danger)', 'font-size:11px', 'padding:6px 10px', 'margin-bottom:8px',
+              'background:var(--pcm-danger-soft)', 'border:1px solid var(--pcm-danger-soft-border)',
+              'border-radius:var(--pcm-radius-sm)', 'word-break:break-all',
             ].join(';');
             errDiv.textContent = 'Could not load ' + url + ': ' + errors[url];
             entriesDiv.appendChild(errDiv);
           });
 
           if (!entries.length) {
-            var emptyMsg = document.createElement('div');
-            emptyMsg.style.cssText = 'color:#999;padding:20px 0;text-align:center;';
-            emptyMsg.textContent = errorUrls.length
+            entriesDiv.appendChild(self._emptyEl('rss_feed', errorUrls.length
               ? 'No entries could be loaded — see the error' + (errorUrls.length > 1 ? 's' : '') + ' above.'
-              : 'No entries found in your subscribed feeds.';
-            entriesDiv.appendChild(emptyMsg);
+              : 'No entries found in your subscribed feeds.'));
             return;
           }
           entries.forEach(function (entry) {
             var card = self._makeCard();
 
             var feedBadge = document.createElement('div');
-            feedBadge.style.cssText = 'display:inline-block;margin-bottom:4px;padding:2px 7px;' +
-              'font-size:10px;border-radius:9px;background:#eef0ff;color:#4a55c4;';
+            feedBadge.className = 'pcm-badge';
             feedBadge.textContent = entry.feedTitle;
             card.appendChild(feedBadge);
 
             var titleEl = document.createElement('div');
-            titleEl.style.cssText = 'font-weight:600;color:#1c1c1e;margin-bottom:3px;';
+            titleEl.style.cssText = 'font-weight:600;color:var(--pcm-text);margin-bottom:3px;';
             var safeLink = self._safeHref(entry.link);
             if (safeLink) {
               var a = document.createElement('a');
               a.href = safeLink;
               a.target = '_blank';
               a.rel = 'noopener noreferrer';
-              a.style.cssText = 'color:#1c1c1e;text-decoration:none;';
+              a.style.cssText = 'color:var(--pcm-text);text-decoration:none;';
               a.textContent = entry.title || '(untitled)';
               titleEl.appendChild(a);
             } else {
@@ -1355,14 +1438,14 @@ module('lively.identity.PostCardMailbox')
 
             if (entry.published) {
               var when = document.createElement('div');
-              when.style.cssText = 'color:#8e8e93;font-size:11px;margin-bottom:4px;';
+              when.style.cssText = 'color:var(--pcm-text-tertiary);font-size:11px;margin-bottom:4px;';
               when.textContent = self._formatDate(entry.published);
               card.appendChild(when);
             }
 
             if (entry.summary) {
               var summary = document.createElement('div');
-              summary.style.cssText = 'color:#3a3a3c;font-size:12px;line-height:1.4;';
+              summary.style.cssText = 'color:var(--pcm-text-secondary);font-size:12px;line-height:1.4;';
               summary.textContent = entry.summary;
               card.appendChild(summary);
             }
@@ -1401,13 +1484,12 @@ module('lively.identity.PostCardMailbox')
 
       _makeMenuBtn: function (onClick) {
         var btn = document.createElement('button');
-        btn.textContent = '⋯';
+        btn.className = 'pcm-icon-btn';
         btn.title = 'More actions';
-        btn.style.cssText = [
-          'font-size:13px', 'width:24px', 'height:24px', 'line-height:1', 'padding:0',
-          'cursor:pointer', 'border:1px solid #d1d1d6', 'color:#3a3a3c',
-          'background:#fff', 'border-radius:4px',
-        ].join(';');
+        var glyph = document.createElement('span');
+        glyph.className = 'pcm-icon-btn-glyph';
+        glyph.textContent = 'more_horiz';
+        btn.appendChild(glyph);
         btn.addEventListener('click', function (e) { e.stopPropagation(); onClick(btn); });
         return btn;
       },
@@ -1417,11 +1499,7 @@ module('lively.identity.PostCardMailbox')
       _makeInlineOpenBtn: function (onClick) {
         var btn = document.createElement('button');
         btn.textContent = 'Open';
-        btn.style.cssText = [
-          'font-size:11px', 'padding:3px 8px', 'cursor:pointer',
-          'border:1px solid #007aff', 'color:#007aff',
-          'background:#fff', 'border-radius:4px',
-        ].join(';');
+        btn.className = 'pcm-btn pcm-btn-accent';
         btn.addEventListener('click', onClick);
         return btn;
       },
@@ -1431,18 +1509,14 @@ module('lively.identity.PostCardMailbox')
       // (core/styles/material-symbols.css, loaded once per world) by
       // setting a span's content to the icon's ligature name, same
       // technique as AmbientPresencePanel.js's makeIconButton but paired
-      // with a real text label here rather than icon-only.
-      _makeIconTextButton: function (glyph, label, colorHex) {
+      // with a real text label here rather than icon-only. `variant` is
+      // 'accent' or 'danger', matching the pcm-btn-* classes.
+      _makeIconTextButton: function (glyph, label, variant) {
         var btn = document.createElement('button');
-        btn.style.cssText = [
-          'font-size:11px', 'padding:3px 8px', 'cursor:pointer',
-          'border:1px solid ' + colorHex, 'color:' + colorHex,
-          'background:#fff', 'border-radius:4px',
-          'display:inline-flex', 'align-items:center', 'gap:3px',
-        ].join(';');
+        btn.className = 'pcm-btn pcm-btn-' + variant;
         var icon = document.createElement('span');
+        icon.className = 'pcm-btn-icon-glyph';
         icon.textContent = glyph;
-        icon.style.cssText = "font-family:'Material Symbols Rounded';font-size:13px;line-height:1;";
         btn.appendChild(icon);
         btn.appendChild(document.createTextNode(label));
         return btn;
@@ -1457,11 +1531,7 @@ module('lively.identity.PostCardMailbox')
         if (reopening) return; // second click on the same ⋯ just closes it
 
         var menu = document.createElement('div');
-        menu.style.cssText = [
-          'position:absolute', 'z-index:20',
-          'background:#fff', 'border:1px solid #d1d1d6', 'border-radius:6px',
-          'box-shadow:0 4px 12px rgba(0,0,0,0.15)', 'padding:4px', 'min-width:110px',
-        ].join(';');
+        menu.className = 'pcm-menu';
 
         // Positioned relative to _contentDiv (its nearest positioned
         // ancestor) using getBoundingClientRect math, accounting for
@@ -1475,15 +1545,7 @@ module('lively.identity.PostCardMailbox')
         items.forEach(function (item) {
           var itemBtn = document.createElement('button');
           itemBtn.textContent = item.label;
-          itemBtn.style.cssText = [
-            'display:block', 'width:100%', 'text-align:left',
-            'font-size:12px', 'padding:6px 10px', 'cursor:pointer',
-            'border:none', 'background:none', 'border-radius:4px',
-            'color:' + (item.danger ? '#ff3b30' : '#1c1c1e'),
-          ].join(';');
-          var hoverBg = item.danger ? '#fbe9e7' : '#f2f2f7';
-          itemBtn.addEventListener('mouseenter', function () { itemBtn.style.background = hoverBg; });
-          itemBtn.addEventListener('mouseleave', function () { itemBtn.style.background = 'none'; });
+          itemBtn.className = 'pcm-menu-item' + (item.danger ? ' danger' : '');
           itemBtn.addEventListener('click', function (e) {
             e.stopPropagation();
             self._closePostcardMenu();
@@ -1835,11 +1897,29 @@ module('lively.identity.PostCardMailbox')
 
       _makeCard: function () {
         var card = document.createElement('div');
-        card.style.cssText = [
-          'background:#fff', 'border:1px solid #e5e5ea', 'border-radius:8px',
-          'padding:10px 12px', 'margin-bottom:8px', 'position:relative',
-        ].join(';');
+        card.className = 'pcm-card';
         return card;
+      },
+
+      // Centered icon + message, used for every "nothing here yet" state
+      // and for the loading/error placeholders — replaces the old flat
+      // gray "No X yet." string dropped into innerHTML. `danger:true`
+      // tints it for error states (_showError).
+      _emptyHtml: function (icon, text, danger) {
+        return '<div class="pcm-empty' + (danger ? ' danger' : '') + '"><span class="pcm-empty-icon">' + icon + '</span><div>' + text + '</div></div>';
+      },
+
+      _emptyEl: function (icon, text, danger) {
+        var el = document.createElement('div');
+        el.className = 'pcm-empty' + (danger ? ' danger' : '');
+        var i = document.createElement('span');
+        i.className = 'pcm-empty-icon';
+        i.textContent = icon;
+        el.appendChild(i);
+        var t = document.createElement('div');
+        t.textContent = text;
+        el.appendChild(t);
+        return el;
       },
 
       _formatDate: function (iso) {
@@ -1859,15 +1939,15 @@ module('lively.identity.PostCardMailbox')
       // with a DID-seeded identicon rather than no row at all.
       _makeIdentityRow: function (prefix, handle, didFallback) {
         var row = document.createElement('div');
-        row.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:3px;';
+        row.style.cssText = 'display:flex;align-items:center;gap:7px;margin-bottom:3px;';
 
         var img = document.createElement('img');
-        img.style.cssText = 'width:22px;height:22px;border-radius:50%;flex:none;';
-        img.src = lively.identity.postCardUtils.identiconDataUrl(handle || didFallback || '', 22);
+        img.style.cssText = 'width:24px;height:24px;border-radius:50%;flex:none;border:1px solid var(--pcm-border);box-sizing:border-box;';
+        img.src = lively.identity.postCardUtils.identiconDataUrl(handle || didFallback || '', 24);
         row.appendChild(img);
 
         var text = document.createElement('span');
-        text.style.cssText = 'font-weight:600;color:#1c1c1e;';
+        text.style.cssText = 'font-weight:600;color:var(--pcm-text);';
         text.textContent = prefix + (handle ? '@' + handle : (didFallback ? didFallback.slice(0, 24) + '…' : '(unknown)'));
         row.appendChild(text);
 
@@ -1886,8 +1966,7 @@ module('lively.identity.PostCardMailbox')
       },
 
       _showError: function (msg) {
-        this._contentDiv.innerHTML =
-          '<div style="color:#ff3b30;padding:20px 0;">' + msg + '</div>';
+        this._contentDiv.innerHTML = this._emptyHtml('error', msg, true);
       },
 
     }); // end subclass
@@ -1902,22 +1981,39 @@ module('lively.identity.PostCardMailbox')
     // other Window-internal re-render, unlike a one-off inline style write.
     // `!important` beats base_theme.css's own `.Window.highlighted`
     // background rule so the color doesn't fade to gray when unfocused.
+    //
+    // Two bugs confirmed live via getComputedStyle on the real focused
+    // window, both inherited from base_theme.css's default (light-chrome-
+    // tuned) rules and never overridden here, unlike DMChat.js's own
+    // applyAccentChrome which already covers both for its own accent:
+    //   1. `.Window .Text.window-title` is #555/#333 dark gray — unreadable
+    //      against a saturated green title bar (rgb(51,51,51) bold-on-green,
+    //      confirmed low contrast).
+    //   2. `.Window.highlighted` adds a stray `1px solid white` border plus
+    //      a plain #333 shadow tuned for the gray default chrome — reads as
+    //      a white ring leaking around the green frame when focused
+    //      (confirmed: computed border was "0.67px solid rgb(255,255,255)").
     function _ensureAccentChromeCss() {
       var STYLE_ID = 'postcard-mailbox-accent-chrome-style';
       if (document.getElementById(STYLE_ID)) return;
       var styleEl = document.createElement('style');
       styleEl.id = STYLE_ID;
-      styleEl.textContent = '.Window.mailbox-accent-chrome { background-color: #61D565 !important; }';
+      styleEl.textContent = [
+        '.Window.mailbox-accent-chrome { background-color: #61D565 !important; }',
+        '.Window.mailbox-accent-chrome .Text.window-title { color: #fff; }',
+        '.Window.mailbox-accent-chrome.highlighted .Text.window-title { color: #fff; font-weight: bold; }',
+        '.Window.mailbox-accent-chrome.highlighted { border: none !important; box-shadow: 0px 3px 10px rgba(20,60,20,0.35) !important; }',
+      ].join('\n');
       document.head.appendChild(styleEl);
     }
 
     Object.extend(MailboxClass, {
       open: function (tab) {
-        // 780px wide: 680px was the exact wrap/no-wrap boundary for all 9
-        // tabs (confirmed via canvas text-measurement against the rendered
-        // tab bar at several candidate widths) — this leaves real breathing
-        // room above that boundary rather than sitting right on it.
-        var morph = new lively.identity.PostCardMailbox(lively.rect(0, 0, 780, 480));
+        // 820px wide, comfortably fits all 9 tab pills without scrolling
+        // at this window's default size; the tab bar itself scrolls
+        // horizontally (pcm-tabbar's overflow-x:auto) if it's ever
+        // resized narrower than that.
+        var morph = new lively.identity.PostCardMailbox(lively.rect(0, 0, 820, 480));
         morph.setName('Mailbox');
         // Real classic Window chrome (drag/resize/collapse/close, Material
         // Symbols icon controls by default) rather than the hand-rolled
@@ -1925,7 +2021,7 @@ module('lively.identity.PostCardMailbox')
         // CalendarApp.js's CalendarAppClass.open.
         morph.openInWindow({
           title: 'Mailbox',
-          pos: lively.morphic.World.current().visibleBounds().center().subPt(lively.pt(390, 240)),
+          pos: lively.morphic.World.current().visibleBounds().center().subPt(lively.pt(410, 240)),
         });
         var win = morph.getWindow();
         _ensureAccentChromeCss();
