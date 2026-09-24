@@ -59,6 +59,7 @@ module("lively.identity.WikiView")
     "lively.identity.DID",
     "lively.identity.Crypto",
     "lively.identity.WikiEditor",
+    "lively.identity.PasskeyPrimingDialog",
   )
   .toRun(function () {
     var WikiViewClass = lively.morphic.Box.subclass(
@@ -242,8 +243,15 @@ module("lively.identity.WikiView")
               e.preventDefault();
               e.stopPropagation();
               if (t === "click") {
-                if (self._onEdit) self._onEdit(self._handle, self._objId, self);
-                else self._startEditDefault();
+                // Saving a wiki page signs its envelope with the device's
+                // soft signing key, unwrapped via a WebAuthn PRF ceremony
+                // (WikiSerializer.js's _signEnvelopeIfPossible) -- warn
+                // before the editor opens rather than let that prompt
+                // surface unannounced on first autosave.
+                lively.identity.PasskeyPrimingDialog.maybeShow(function () {
+                  if (self._onEdit) self._onEdit(self._handle, self._objId, self);
+                  else self._startEditDefault();
+                });
               }
             });
           });
