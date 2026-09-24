@@ -37,6 +37,111 @@ module('lively.identity.FilesBrowser')
       ['mp4', 'webm', 'mov'],
     );
 
+    // Modern content design system for the toolbar / cards / buttons —
+    // same token-and-component approach as PostCardMailbox.js's own
+    // _ensureMailboxContentStyle (see that file for the fuller writeup),
+    // duplicated here under its own `.fls-root`/`fls-*` prefix rather than
+    // shared, since these are independent windows/modules — matches this
+    // codebase's existing tolerance for small per-module style copies
+    // (see LocalMap.js's _ensureGeoRuntime comment). Blue accent, distinct
+    // from Mailbox's green and Wallet's purple. The public/private badge
+    // pair deliberately uses its own fixed warn/neutral colors rather than
+    // this accent token, so the two stay visually distinct regardless of
+    // which color a given window's accent happens to be.
+    function _ensureFilesContentStyle() {
+      var STYLE_ID = 'files-browser-content-style';
+      if (document.getElementById(STYLE_ID)) return;
+      var styleEl = document.createElement('style');
+      styleEl.id = STYLE_ID;
+      styleEl.textContent = [
+        '.fls-root {',
+        '  --fls-bg: #fafafa; --fls-surface: #ffffff;',
+        '  --fls-border: #e4e4e7; --fls-border-strong: #d4d4d8;',
+        '  --fls-text: #18181b; --fls-text-secondary: #52525b; --fls-text-tertiary: #a1a1aa;',
+        '  --fls-accent: #2563eb; --fls-accent-soft: #eff6ff; --fls-accent-soft-border: #bfdbfe;',
+        '  --fls-danger: #e11d48; --fls-danger-soft: #fff1f2; --fls-danger-soft-border: #fecdd3;',
+        '  --fls-warn: #b45309; --fls-warn-soft: #fffbeb; --fls-warn-soft-border: #fde68a;',
+        '  --fls-radius: 12px; --fls-radius-sm: 8px; --fls-radius-pill: 999px;',
+        '  --fls-shadow-card: 0 1px 2px rgba(24,24,27,0.04), 0 1px 8px rgba(24,24,27,0.04);',
+        '  --fls-shadow-card-hover: 0 2px 6px rgba(24,24,27,0.06), 0 4px 16px rgba(24,24,27,0.08);',
+        '  --fls-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;',
+        '  font-family: var(--fls-font);',
+        '}',
+        '.fls-content::-webkit-scrollbar { width: 9px; height: 9px; }',
+        '.fls-content::-webkit-scrollbar-thumb { background: var(--fls-border-strong); border-radius: 5px; border: 2px solid var(--fls-bg); }',
+        '.fls-content::-webkit-scrollbar-track { background: transparent; }',
+
+        '.fls-toolbar { display: flex; align-items: center; gap: 10px; height: 100%; }',
+        '.fls-toolbar-label { flex: 1; color: var(--fls-text); font-weight: 600; font-size: 12.5px; }',
+
+        '.fls-toggle { font-size: 11.5px; color: var(--fls-text-secondary); display: flex; align-items: center;',
+        '  gap: 5px; cursor: pointer; user-select: none; }',
+        '.fls-toggle input { accent-color: var(--fls-accent); }',
+
+        '.fls-status { font-size: 11px; color: var(--fls-text-tertiary); white-space: nowrap; }',
+
+        '.fls-card { background: var(--fls-surface); border: 1px solid var(--fls-border);',
+        '  border-radius: var(--fls-radius); padding: 12px 14px; margin-bottom: 8px; position: relative;',
+        '  box-shadow: var(--fls-shadow-card); transition: box-shadow .15s, border-color .15s; }',
+        '.fls-card:hover { box-shadow: var(--fls-shadow-card-hover); border-color: var(--fls-border-strong); }',
+
+        '.fls-empty { display: flex; flex-direction: column; align-items: center; justify-content: center;',
+        '  gap: 8px; color: var(--fls-text-tertiary); padding: 48px 16px; text-align: center; font-size: 12.5px; }',
+        '.fls-empty-icon { font-family: "Material Symbols Rounded"; font-size: 32px; color: var(--fls-border-strong); }',
+        '.fls-empty.danger { color: var(--fls-danger); }',
+        '.fls-empty.danger .fls-empty-icon { color: var(--fls-danger); }',
+
+        '.fls-btn { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 500;',
+        '  padding: 5px 11px; cursor: pointer; border-radius: var(--fls-radius-pill); border: 1px solid var(--fls-border);',
+        '  background: var(--fls-surface); color: var(--fls-text-secondary); font-family: var(--fls-font);',
+        '  transition: background .15s, border-color .15s, color .15s; white-space: nowrap; }',
+        '.fls-btn:hover { background: var(--fls-bg); }',
+        '.fls-btn:disabled { opacity: .5; cursor: default; }',
+        '.fls-btn-icon-glyph { font-family: "Material Symbols Rounded"; font-size: 13px; line-height: 1; }',
+        '.fls-btn-accent { border-color: var(--fls-accent-soft-border); color: var(--fls-accent); background: var(--fls-accent-soft); }',
+        '.fls-btn-accent:hover { background: var(--fls-accent-soft-border); }',
+        '.fls-btn-danger { border-color: var(--fls-danger-soft-border); color: var(--fls-danger); background: var(--fls-danger-soft); }',
+        '.fls-btn-danger:hover { background: var(--fls-danger-soft-border); }',
+        '.fls-btn-ghost-danger { border-color: var(--fls-border); color: var(--fls-danger); background: var(--fls-surface); }',
+        '.fls-btn-ghost-danger:hover { background: var(--fls-danger-soft); border-color: var(--fls-danger-soft-border); }',
+
+        '.fls-badge { display: inline-flex; align-items: center; gap: 3px; padding: 2px 8px; font-size: 10px;',
+        '  font-weight: 600; border-radius: var(--fls-radius-pill); background: var(--fls-bg); color: var(--fls-text-tertiary); }',
+        '.fls-badge-icon { font-family: "Material Symbols Rounded"; font-size: 11px; line-height: 1; }',
+        '.fls-badge-public { background: var(--fls-warn-soft); color: var(--fls-warn); }',
+        // Neutral rather than tied to --fls-accent, so it stays distinct
+        // from the accent-colored buttons regardless of which color a
+        // given window's accent happens to be (see comment above).
+        '.fls-badge-private { background: var(--fls-border); color: var(--fls-text-secondary); }',
+
+        '.fls-file-icon { width: 38px; height: 38px; border-radius: var(--fls-radius-sm); flex: none;',
+        '  display: flex; align-items: center; justify-content: center; background: var(--fls-bg);',
+        '  color: var(--fls-text-tertiary); font-family: "Material Symbols Rounded"; font-size: 19px; }',
+        '.fls-file-thumb { width: 38px; height: 38px; object-fit: cover; border-radius: var(--fls-radius-sm);',
+        '  flex: none; border: 1px solid var(--fls-border); box-sizing: border-box; }',
+      ].join('\n');
+      document.head.appendChild(styleEl);
+    }
+
+    // Same accent-chrome fix DMChat.js/Wallet.js/PostCardMailbox.js already
+    // apply (title-text contrast + suppressing the base theme's white
+    // focus-ring border on `.highlighted`) — see PostCardMailbox.js's own
+    // _ensureAccentChromeCss for the confirmed-live bug writeup this
+    // pattern fixes.
+    function _ensureAccentChromeCss() {
+      var STYLE_ID = 'files-browser-accent-chrome-style';
+      if (document.getElementById(STYLE_ID)) return;
+      var styleEl = document.createElement('style');
+      styleEl.id = STYLE_ID;
+      styleEl.textContent = [
+        '.Window.files-accent-chrome { background-color: #2563EB !important; }',
+        '.Window.files-accent-chrome .Text.window-title { color: #fff; }',
+        '.Window.files-accent-chrome.highlighted .Text.window-title { color: #fff; font-weight: bold; }',
+        '.Window.files-accent-chrome.highlighted { border: none !important; box-shadow: 0px 3px 10px rgba(10,30,80,0.35) !important; }',
+      ].join('\n');
+      document.head.appendChild(styleEl);
+    }
+
     var FilesBrowserClass = lively.morphic.Box.subclass('lively.identity.FilesBrowser',
 
     'serialization', {
@@ -59,30 +164,38 @@ module('lively.identity.FilesBrowser')
       // below — see CalendarApp.js's identical precedent — so this only
       // builds the toolbar / content area, not a hand-rolled title bar.
       _buildChrome: function () {
+        _ensureFilesContentStyle();
         this.setFill(Color.white);
         this.setDroppingEnabled(false);
         var shapeNode = this.renderContext().shapeNode;
+        shapeNode.classList.add('fls-root');
 
         var toolbarDiv = document.createElement('div');
         toolbarDiv.style.cssText = [
-          'position:absolute', 'top:0', 'left:0', 'right:0', 'height:34px',
-          'background:#f2f2f7', 'border-bottom:1px solid #d1d1d6',
-          'display:flex', 'align-items:center', 'padding:0 10px',
-          'box-sizing:border-box', 'gap:8px', 'font-family:sans-serif',
+          'position:absolute', 'top:0', 'left:0', 'right:0', 'height:44px',
+          'background:var(--fls-surface)', 'border-bottom:1px solid var(--fls-border)',
+          'display:flex', 'align-items:center', 'padding:0 14px', 'box-sizing:border-box',
         ].join(';');
         shapeNode.appendChild(toolbarDiv);
         this._toolbarDiv = toolbarDiv;
 
         var contentDiv = document.createElement('div');
+        contentDiv.className = 'fls-content';
         contentDiv.style.cssText = [
-          'position:absolute', 'top:34px', 'left:0', 'right:0', 'bottom:0',
-          'overflow-y:auto', 'padding:12px 16px', 'box-sizing:border-box',
-          'font-family:sans-serif', 'font-size:13px',
+          'position:absolute', 'top:44px', 'left:0', 'right:0', 'bottom:0',
+          'overflow-y:auto', 'padding:14px 16px', 'box-sizing:border-box',
+          'font-family:var(--fls-font)', 'font-size:13px', 'background:var(--fls-bg)',
         ].join(';');
         shapeNode.appendChild(contentDiv);
         this._contentDiv = contentDiv;
 
         this._renderToolbar();
+      },
+
+      // Centered icon + message — same helper shape as
+      // PostCardMailbox.js's _emptyHtml/_emptyEl.
+      _emptyHtml: function (icon, text, danger) {
+        return '<div class="fls-empty' + (danger ? ' danger' : '') + '"><span class="fls-empty-icon">' + icon + '</span><div>' + text + '</div></div>';
       },
 
       // ── data fetching ─────────────────────────────────────────────────────
@@ -91,7 +204,7 @@ module('lively.identity.FilesBrowser')
         var self = this;
         var handle = lively.identity.did.currentUser().handle;
         var base = lively.identity.did.baseUrl();
-        this._contentDiv.innerHTML = '<div style="color:#999;padding:20px 0;">Loading…</div>';
+        this._contentDiv.innerHTML = this._emptyHtml('hourglass_top', 'Loading…');
         // Accept header is required here, not optional: GET /@:handle content-
         // negotiates between the JSON object listing and an HTML profile-card
         // page (IdentityServer.js), and a fetch() with no explicit Accept
@@ -144,21 +257,27 @@ module('lively.identity.FilesBrowser')
         var self = this;
         var bar = this._toolbarDiv;
         bar.innerHTML = '';
+        bar.className = 'fls-toolbar';
 
         var label = document.createElement('span');
         label.textContent = 'Your files';
-        label.style.cssText = 'flex:1;color:#1c1c1e;font-weight:600;font-size:12px;';
+        label.className = 'fls-toolbar-label';
         bar.appendChild(label);
 
+        var statusSpan = document.createElement('span');
+        statusSpan.className = 'fls-status';
+        bar.appendChild(statusSpan);
+        this._uploadStatusSpan = statusSpan;
+
         var publicToggle = document.createElement('label');
-        publicToggle.style.cssText = 'font-size:11px;color:#636366;display:flex;align-items:center;gap:4px;cursor:pointer;';
+        publicToggle.className = 'fls-toggle';
         var publicCheckbox = document.createElement('input');
         publicCheckbox.type = 'checkbox';
         publicToggle.appendChild(publicCheckbox);
-        publicToggle.appendChild(document.createTextNode('Upload as public'));
+        publicToggle.appendChild(document.createTextNode('Public'));
         bar.appendChild(publicToggle);
 
-        var uploadBtn = this._makeToolbarBtn('Upload');
+        var uploadBtn = this._makeToolbarBtn('upload', 'Upload', 'accent');
         var fileInput = document.createElement('input');
         fileInput.type = 'file';
         fileInput.style.display = 'none';
@@ -179,12 +298,7 @@ module('lively.identity.FilesBrowser')
         bar.appendChild(uploadBtn);
         bar.appendChild(fileInput);
 
-        var statusSpan = document.createElement('span');
-        statusSpan.style.cssText = 'font-size:11px;color:#8e8e93;';
-        bar.appendChild(statusSpan);
-        this._uploadStatusSpan = statusSpan;
-
-        var dropBtn = this._makeToolbarBtn('Drop');
+        var dropBtn = this._makeToolbarBtn('bolt', 'Drop', 'plain');
         dropBtn.addEventListener('click', function () {
           lively.require('lively.identity.WarpDrop').toRun(function () {
             lively.identity.WarpDrop.open();
@@ -197,14 +311,16 @@ module('lively.identity.FilesBrowser')
         if (this._uploadStatusSpan) this._uploadStatusSpan.textContent = msg;
       },
 
-      _makeToolbarBtn: function (label) {
+      // variant: 'accent' or 'plain' (matching pcm-btn-* naming elsewhere
+      // in this codebase — see PostCardMailbox.js's _makeIconTextButton).
+      _makeToolbarBtn: function (glyph, label, variant) {
         var btn = document.createElement('button');
-        btn.textContent = label;
-        btn.style.cssText = [
-          'font-size:11px', 'padding:4px 10px', 'cursor:pointer',
-          'border:1px solid #007aff', 'color:#007aff',
-          'background:#fff', 'border-radius:4px', 'white-space:nowrap',
-        ].join(';');
+        btn.className = 'fls-btn' + (variant === 'accent' ? ' fls-btn-accent' : '');
+        var icon = document.createElement('span');
+        icon.className = 'fls-btn-icon-glyph';
+        icon.textContent = glyph;
+        btn.appendChild(icon);
+        btn.appendChild(document.createTextNode(label));
         return btn;
       },
 
@@ -214,7 +330,7 @@ module('lively.identity.FilesBrowser')
         content.innerHTML = '';
 
         if (!this._files.length) {
-          content.innerHTML = '<div style="color:#999;padding:20px 0;text-align:center;">No files yet.</div>';
+          content.innerHTML = this._emptyHtml('folder_open', 'No files yet.');
           return;
         }
 
@@ -222,60 +338,64 @@ module('lively.identity.FilesBrowser')
           var card = self._makeCard();
           var name = (envelope.state && envelope.state.name) || envelope.objId;
           var ext = self._extOf(name);
+          var isPublic = envelope.visibility === 'public';
 
           var row = document.createElement('div');
-          row.style.cssText = 'display:flex;align-items:center;gap:10px;padding-right:170px;';
+          row.style.cssText = 'display:flex;align-items:flex-start;gap:10px;padding-right:132px;';
 
-          if (IMAGE_EXTS.indexOf(ext) !== -1 && envelope.visibility === 'public') {
+          if (IMAGE_EXTS.indexOf(ext) !== -1 && isPublic) {
             var thumb = document.createElement('img');
             var meta = envelope.record && envelope.record.payload;
             var handle = lively.identity.did.currentUser().handle;
             var base = lively.identity.did.baseUrl();
             thumb.src = base + '/@' + handle + '/blobs/' + (meta && meta.blobCid);
-            thumb.style.cssText = 'width:36px;height:36px;object-fit:cover;border-radius:4px;flex:none;';
+            thumb.className = 'fls-file-thumb';
             row.appendChild(thumb);
           } else {
             var icon = document.createElement('div');
-            icon.textContent = envelope.visibility === 'public' ? '🌐' : '🔒';
-            icon.style.cssText = 'width:36px;height:36px;display:flex;align-items:center;justify-content:center;font-size:18px;flex:none;';
+            icon.className = 'fls-file-icon';
+            icon.textContent = self._iconFor(ext);
             row.appendChild(icon);
           }
 
           var info = document.createElement('div');
           info.style.cssText = 'min-width:0;';
           var nameDiv = document.createElement('div');
-          nameDiv.style.cssText = 'font-weight:600;color:#1c1c1e;word-break:break-all;';
+          nameDiv.style.cssText = 'font-weight:600;color:var(--fls-text);word-break:break-all;margin-bottom:3px;';
           nameDiv.textContent = name;
+          info.appendChild(nameDiv);
+
+          var badge = document.createElement('span');
+          badge.className = 'fls-badge ' + (isPublic ? 'fls-badge-public' : 'fls-badge-private');
+          var badgeIcon = document.createElement('span');
+          badgeIcon.className = 'fls-badge-icon';
+          badgeIcon.textContent = isPublic ? 'public' : 'lock';
+          badge.appendChild(badgeIcon);
+          badge.appendChild(document.createTextNode(isPublic ? 'Public' : 'Private'));
+          info.appendChild(badge);
+
           var metaDiv = document.createElement('div');
-          metaDiv.style.cssText = 'color:#8e8e93;font-size:11px;';
+          metaDiv.style.cssText = 'color:var(--fls-text-tertiary);font-size:11px;margin-top:3px;';
           var sizeText = (envelope.record && envelope.record.payload && typeof envelope.record.payload.size === 'number')
             ? self._formatSize(envelope.record.payload.size) : 'encrypted';
-          metaDiv.textContent = envelope.visibility + ' · ' + sizeText + ' · ' + self._formatDate(envelope.created);
-          info.appendChild(nameDiv);
+          metaDiv.textContent = sizeText + ' · ' + self._formatDate(envelope.created);
           info.appendChild(metaDiv);
           row.appendChild(info);
 
           card.appendChild(row);
 
+          var actions = document.createElement('div');
+          actions.style.cssText = 'position:absolute;top:12px;right:14px;display:flex;gap:6px;align-items:center;';
+
           var openBtn = document.createElement('button');
           openBtn.textContent = 'Open';
-          openBtn.style.cssText = [
-            'position:absolute', 'top:10px', 'right:60px',
-            'font-size:11px', 'padding:3px 8px', 'cursor:pointer',
-            'border:1px solid #007aff', 'color:#007aff',
-            'background:#fff', 'border-radius:4px',
-          ].join(';');
+          openBtn.className = 'fls-btn fls-btn-accent';
           openBtn.addEventListener('click', function () { self._openFile(envelope); });
-          card.appendChild(openBtn);
+          actions.appendChild(openBtn);
 
           var deleteBtn = document.createElement('button');
           deleteBtn.textContent = 'Delete';
-          deleteBtn.style.cssText = [
-            'position:absolute', 'top:10px', 'right:10px',
-            'font-size:11px', 'padding:3px 8px', 'cursor:pointer',
-            'border:1px solid #ff3b30', 'color:#ff3b30',
-            'background:#fff', 'border-radius:4px',
-          ].join(';');
+          deleteBtn.className = 'fls-btn fls-btn-ghost-danger';
           deleteBtn.addEventListener('click', function () {
             $world.confirm('Delete ' + name + '?', function (ok) {
               if (!ok) return;
@@ -287,8 +407,9 @@ module('lively.identity.FilesBrowser')
               });
             });
           });
-          card.appendChild(deleteBtn);
+          actions.appendChild(deleteBtn);
 
+          card.appendChild(actions);
           content.appendChild(card);
         });
       },
@@ -315,16 +436,26 @@ module('lively.identity.FilesBrowser')
 
       _makeCard: function () {
         var card = document.createElement('div');
-        card.style.cssText = [
-          'background:#fff', 'border:1px solid #e5e5ea', 'border-radius:8px',
-          'padding:10px 12px', 'margin-bottom:8px', 'position:relative',
-        ].join(';');
+        card.className = 'fls-card';
         return card;
       },
 
       _extOf: function (p) {
         var m = /\.([a-z0-9]+)$/i.exec(p || '');
         return m ? m[1].toLowerCase() : '';
+      },
+
+      // Material Symbols Rounded glyph for a non-image/non-thumbnailed
+      // file's icon tile, grouped by rough file family.
+      _iconFor: function (ext) {
+        if (['mp3', 'wav', 'ogg', 'm4a', 'flac'].indexOf(ext) !== -1) return 'audio_file';
+        if (['mp4', 'webm', 'mov', 'avi', 'mkv'].indexOf(ext) !== -1) return 'video_file';
+        if (IMAGE_EXTS.indexOf(ext) !== -1) return 'image';
+        if (['zip', 'rar', '7z', 'tar', 'gz'].indexOf(ext) !== -1) return 'folder_zip';
+        if (ext === 'pdf') return 'picture_as_pdf';
+        if (['txt', 'md', 'log'].indexOf(ext) !== -1) return 'description';
+        if (['js', 'css', 'html', 'json', 'csv'].indexOf(ext) !== -1) return 'code';
+        return 'draft';
       },
 
       _formatSize: function (bytes) {
@@ -343,8 +474,7 @@ module('lively.identity.FilesBrowser')
       },
 
       _showError: function (msg) {
-        this._contentDiv.innerHTML =
-          '<div style="color:#ff3b30;padding:20px 0;">' + msg + '</div>';
+        this._contentDiv.innerHTML = this._emptyHtml('error', msg, true);
       },
 
     }); // end subclass
@@ -353,7 +483,9 @@ module('lively.identity.FilesBrowser')
 
     Object.extend(FilesBrowserClass, {
       open: function () {
-        var morph = new lively.identity.FilesBrowser(lively.rect(0, 0, 480, 460));
+        // 520px wide — the toolbar's pill buttons + "Public" toggle need a
+        // bit more room than the old plain-text buttons did.
+        var morph = new lively.identity.FilesBrowser(lively.rect(0, 0, 520, 460));
         morph.setName('Files');
         // Real classic Window chrome (drag/resize/collapse/close, Material
         // Symbols icon controls by default) rather than the hand-rolled
@@ -361,9 +493,12 @@ module('lively.identity.FilesBrowser')
         // CalendarApp.js's CalendarAppClass.open.
         morph.openInWindow({
           title: 'Files',
-          pos: lively.morphic.World.current().visibleBounds().center().subPt(lively.pt(240, 230)),
+          pos: lively.morphic.World.current().visibleBounds().center().subPt(lively.pt(260, 230)),
         });
-        morph.getWindow().comeForward();
+        var win = morph.getWindow();
+        _ensureAccentChromeCss();
+        win.addStyleClassName('files-accent-chrome');
+        win.comeForward();
         return morph;
       },
     });

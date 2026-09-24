@@ -81,6 +81,93 @@ module('lively.identity.WarpDrop')
       return bc.toDataURL();
     }
 
+    // Modern content design system for this panel — same token-and-
+    // component approach as PostCardMailbox.js/FilesBrowser.js's own
+    // _ensureMailboxContentStyle/_ensureFilesContentStyle (see the former
+    // for the fuller writeup), duplicated here under its own `.wd-root`/
+    // `wd-*` prefix since this is an independent module. Blue accent.
+    // Unlike Mailbox/Files, this panel is a bare Box (not a classic
+    // Window — see _buildChrome's own comment on why: openInWorldCenter,
+    // hand-rolled title bar), so there's no base-theme `.Window.highlighted`
+    // white-ring/contrast bug to fix here — the whole chrome is this
+    // stylesheet, nothing to fight from base_theme.css.
+    function _ensureWarpDropStyle() {
+      var STYLE_ID = 'warpdrop-content-style';
+      if (document.getElementById(STYLE_ID)) return;
+      var styleEl = document.createElement('style');
+      styleEl.id = STYLE_ID;
+      styleEl.textContent = [
+        '.wd-root {',
+        '  --wd-bg: #fafafa; --wd-surface: #ffffff;',
+        '  --wd-border: #e4e4e7; --wd-border-strong: #d4d4d8;',
+        '  --wd-text: #18181b; --wd-text-secondary: #52525b; --wd-text-tertiary: #a1a1aa;',
+        '  --wd-accent: #2563eb; --wd-accent-soft: #eff6ff; --wd-accent-soft-border: #bfdbfe;',
+        '  --wd-danger: #e11d48; --wd-danger-soft: #fff1f2; --wd-danger-soft-border: #fecdd3;',
+        '  --wd-radius: 12px; --wd-radius-sm: 8px; --wd-radius-pill: 999px;',
+        '  --wd-shadow-card: 0 1px 2px rgba(24,24,27,0.04), 0 1px 8px rgba(24,24,27,0.04);',
+        '  --wd-shadow-card-hover: 0 2px 6px rgba(24,24,27,0.06), 0 4px 16px rgba(24,24,27,0.08);',
+        '  --wd-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;',
+        '  font-family: var(--wd-font);',
+        '}',
+
+        '.wd-titlebar { background: var(--wd-accent); }',
+        '.wd-title-text { color: #fff; font-weight: 600; font-size: 13px; }',
+        '.wd-self-pill { display: flex; align-items: center; gap: 6px; background: rgba(255,255,255,0.16);',
+        '  border-radius: var(--wd-radius-pill); padding: 3px 10px 3px 4px; }',
+        '.wd-self-name { color: rgba(255,255,255,0.92); font-size: 11px; }',
+        '.wd-close-btn { display: flex; align-items: center; justify-content: center; width: 22px; height: 22px;',
+        '  border-radius: 50%; background: rgba(255,255,255,0.18); color: #fff; cursor: pointer;',
+        '  transition: background .15s; flex-shrink: 0; }',
+        '.wd-close-btn:hover { background: rgba(224,66,66,0.9); }',
+        '.wd-close-glyph { font-family: "Material Symbols Rounded"; font-size: 14px; line-height: 1; }',
+
+        '.wd-roombar { background: var(--wd-surface); border-bottom: 1px solid var(--wd-border); }',
+        '.wd-room-input { flex: 1; min-width: 0; font-size: 12px; padding: 7px 10px; border: 1px solid var(--wd-border);',
+        '  border-radius: var(--wd-radius-sm); box-sizing: border-box; font-family: var(--wd-font);',
+        '  background: var(--wd-surface); color: var(--wd-text); outline: none; transition: border-color .15s; }',
+        '.wd-room-input:focus { border-color: var(--wd-accent); }',
+
+        '.wd-content { background: var(--wd-bg); }',
+        '.wd-content::-webkit-scrollbar { width: 9px; height: 9px; }',
+        '.wd-content::-webkit-scrollbar-thumb { background: var(--wd-border-strong); border-radius: 5px; border: 2px solid var(--wd-bg); }',
+        '.wd-content::-webkit-scrollbar-track { background: transparent; }',
+
+        '.wd-btn { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 500;',
+        '  padding: 6px 12px; cursor: pointer; border-radius: var(--wd-radius-pill); border: 1px solid var(--wd-border);',
+        '  background: var(--wd-surface); color: var(--wd-text-secondary); font-family: var(--wd-font);',
+        '  transition: background .15s, border-color .15s, color .15s; white-space: nowrap; }',
+        '.wd-btn:hover { background: var(--wd-bg); }',
+        '.wd-btn:disabled { opacity: .5; cursor: default; }',
+        '.wd-btn-accent { border-color: var(--wd-accent-soft-border); color: var(--wd-accent); background: var(--wd-accent-soft); }',
+        '.wd-btn-accent:hover { background: var(--wd-accent-soft-border); }',
+        '.wd-btn-solid-accent { border: 1px solid var(--wd-accent); color: #fff; background: var(--wd-accent); }',
+        '.wd-btn-solid-accent:hover { background: #1d4ed8; }',
+
+        '.wd-peer-card { width: 132px; border: 2px dashed var(--wd-border); border-radius: var(--wd-radius);',
+        '  padding: 12px 10px; text-align: center; position: relative; background: var(--wd-surface);',
+        '  cursor: pointer; box-sizing: border-box; box-shadow: var(--wd-shadow-card);',
+        '  transition: box-shadow .15s, border-color .15s, background .15s; }',
+        '.wd-peer-card:hover { box-shadow: var(--wd-shadow-card-hover); border-color: var(--wd-border-strong); }',
+        '.wd-peer-card.dragover { border-color: var(--wd-accent); background: var(--wd-accent-soft); }',
+        '.wd-avatar { width: 40px; height: 40px; border-radius: 50%; margin: 0 auto 8px; display: block;',
+        '  border: 1px solid var(--wd-border); box-sizing: border-box; }',
+        '.wd-peer-name { font-weight: 600; color: var(--wd-text); word-break: break-word; font-size: 12.5px; }',
+        '.wd-peer-status { color: var(--wd-text-tertiary); font-size: 11px; margin-top: 4px; min-height: 14px; word-break: break-word; }',
+        '.wd-progress-outer { height: 4px; background: var(--wd-border); border-radius: 2px; margin-top: 8px; overflow: hidden; display: none; }',
+        '.wd-progress-inner { height: 100%; width: 0%; background: var(--wd-accent); }',
+
+        '.wd-empty { display: flex; flex-direction: column; align-items: center; justify-content: center;',
+        '  gap: 8px; color: var(--wd-text-tertiary); padding: 40px 16px; text-align: center; font-size: 12.5px;',
+        '  width: 100%; }',
+        '.wd-empty-icon { font-family: "Material Symbols Rounded"; font-size: 30px; color: var(--wd-border-strong); }',
+
+        '.wd-modal-panel { background: var(--wd-surface); border-radius: var(--wd-radius); padding: 18px;',
+        '  width: 280px; font-family: var(--wd-font); box-shadow: 0 8px 24px rgba(0,0,0,0.3); }',
+        '.wd-modal-msg { font-size: 13px; color: var(--wd-text); margin-bottom: 14px; line-height: 1.4; }',
+      ].join('\n');
+      document.head.appendChild(styleEl);
+    }
+
     var WarpDropClass = lively.morphic.Box.subclass('lively.identity.WarpDrop',
 
     'serialization', {
@@ -104,22 +191,25 @@ module('lively.identity.WarpDrop')
 
       _buildChrome: function () {
         var self = this;
+        _ensureWarpDropStyle();
         this.setFill(Color.white);
         this.setDroppingEnabled(false);
         var shapeNode = this.renderContext().shapeNode;
-        shapeNode.style.borderRadius = '8px';
+        shapeNode.classList.add('wd-root');
+        shapeNode.style.borderRadius = '10px';
         shapeNode.style.boxShadow    = '0 4px 16px rgba(0,0,0,0.18)';
+        shapeNode.style.overflow     = 'hidden'; // clips the accent title bar's square corners to the rounded shell
 
         var titleBar = document.createElement('div');
+        titleBar.className = 'wd-titlebar';
         titleBar.style.cssText = [
-          'position:absolute', 'top:0', 'left:0', 'right:0', 'height:36px',
-          'background:#2c2c2e', 'border-radius:8px 8px 0 0',
+          'position:absolute', 'top:0', 'left:0', 'right:0', 'height:40px',
           'display:flex', 'align-items:center', 'justify-content:space-between',
           'padding:0 12px', 'box-sizing:border-box',
         ].join(';');
         var titleText = document.createElement('span');
         titleText.textContent = 'WarpDrop';
-        titleText.style.cssText = 'color:#fff;font-size:13px;font-weight:600;font-family:sans-serif;';
+        titleText.className = 'wd-title-text';
         titleBar.appendChild(titleText);
 
         // "you are" self-identity display -- populated once _onJoined
@@ -127,14 +217,17 @@ module('lively.identity.WarpDrop')
         // before that), so the user knows what name/blockie their peers
         // will see them as -- there was previously no way to know this.
         var selfEl = document.createElement('div');
-        selfEl.style.cssText = 'display:flex;align-items:center;gap:6px;';
+        selfEl.style.cssText = 'display:flex;align-items:center;gap:8px;';
+        var selfPill = document.createElement('div');
+        selfPill.className = 'wd-self-pill';
         var selfIcon = document.createElement('img');
         selfIcon.style.cssText = 'width:18px;height:18px;border-radius:50%;display:none;';
         var selfName = document.createElement('span');
         selfName.textContent = 'Connecting…';
-        selfName.style.cssText = 'color:#8e8e93;font-size:11px;font-family:sans-serif;';
-        selfEl.appendChild(selfIcon);
-        selfEl.appendChild(selfName);
+        selfName.className = 'wd-self-name';
+        selfPill.appendChild(selfIcon);
+        selfPill.appendChild(selfName);
+        selfEl.appendChild(selfPill);
         titleBar.appendChild(selfEl);
         this._selfIconEl = selfIcon;
         this._selfNameEl = selfName;
@@ -152,26 +245,19 @@ module('lively.identity.WarpDrop')
         // sides makes them mutually visible regardless of network,
         // additively on top of whatever IP-based peers are already shown.
         var roomBar = document.createElement('div');
+        roomBar.className = 'wd-roombar';
         roomBar.style.cssText = [
-          'position:absolute', 'top:36px', 'left:0', 'right:0', 'height:34px',
-          'background:#f2f2f7', 'border-bottom:1px solid #d1d1d6',
+          'position:absolute', 'top:40px', 'left:0', 'right:0', 'height:40px',
           'display:flex', 'align-items:center', 'padding:0 10px',
-          'box-sizing:border-box', 'gap:6px', 'font-family:sans-serif',
+          'box-sizing:border-box', 'gap:8px',
         ].join(';');
         var roomInput = document.createElement('input');
         roomInput.type = 'text';
         roomInput.placeholder = 'Room code (optional)';
-        roomInput.style.cssText = [
-          'flex:1', 'min-width:0', 'font-size:12px', 'padding:4px 8px',
-          'border:1px solid #d1d1d6', 'border-radius:4px', 'box-sizing:border-box',
-        ].join(';');
+        roomInput.className = 'wd-room-input';
         var roomBtn = document.createElement('button');
         roomBtn.textContent = 'Join';
-        roomBtn.style.cssText = [
-          'font-size:11px', 'padding:4px 10px', 'cursor:pointer',
-          'border:1px solid #007aff', 'color:#007aff',
-          'background:#fff', 'border-radius:4px', 'white-space:nowrap',
-        ].join(';');
+        roomBtn.className = 'wd-btn wd-btn-accent';
         var self = this;
         function joinTypedRoom() {
           var code = roomInput.value.trim();
@@ -187,30 +273,32 @@ module('lively.identity.WarpDrop')
         this._roomBtn = roomBtn;
 
         var contentDiv = document.createElement('div');
+        contentDiv.className = 'wd-content';
         contentDiv.style.cssText = [
-          'position:absolute', 'top:70px', 'left:0', 'right:0', 'bottom:0',
-          'overflow-y:auto', 'padding:12px 16px', 'box-sizing:border-box',
-          'font-family:sans-serif', 'font-size:13px',
+          'position:absolute', 'top:80px', 'left:0', 'right:0', 'bottom:0',
+          'overflow-y:auto', 'padding:14px 16px', 'box-sizing:border-box',
+          'font-family:var(--wd-font)', 'font-size:13px',
           'display:flex', 'flex-wrap:wrap', 'gap:10px', 'align-content:flex-start',
         ].join(';');
         shapeNode.appendChild(contentDiv);
         this._contentDiv = contentDiv;
       },
 
-      // "x" close button for the black title bar -- this window has no
-      // standard Lively Window chrome (it's a bare Box positioned via
-      // openInWorldCenter), so without this there is no way to dismiss it
-      // short of the morph halo.
+      // Icon-circle close button for the accent title bar -- this window
+      // has no standard Lively Window chrome (it's a bare Box positioned
+      // via openInWorldCenter), so without this there is no way to
+      // dismiss it short of the morph halo. Same translucent-circle
+      // treatment as the "wiki icon controls" WindowControl style
+      // (base_theme.css), applied by hand since there's no real
+      // Button.WindowControl here to inherit it from.
       _makeCloseButton: function (onClick) {
         var btn = document.createElement('span');
-        btn.textContent = '✕';
+        btn.className = 'wd-close-btn';
         btn.title = 'Close';
-        btn.style.cssText = [
-          'color:#fff', 'font-size:13px', 'line-height:1', 'cursor:pointer',
-          'padding:3px 6px', 'border-radius:3px', 'flex-shrink:0',
-        ].join(';');
-        btn.addEventListener('mouseenter', function () { btn.style.background = 'rgba(255,255,255,0.15)'; });
-        btn.addEventListener('mouseleave', function () { btn.style.background = 'transparent'; });
+        var glyph = document.createElement('span');
+        glyph.className = 'wd-close-glyph';
+        glyph.textContent = 'close';
+        btn.appendChild(glyph);
         btn.addEventListener('click', onClick);
         return btn;
       },
@@ -362,8 +450,14 @@ module('lively.identity.WarpDrop')
       _showEmptyState: function () {
         if (this._emptyEl) return;
         var el = document.createElement('div');
-        el.style.cssText = 'color:#999;padding:20px 0;';
-        el.textContent = 'No other devices nearby yet…';
+        el.className = 'wd-empty';
+        var icon = document.createElement('span');
+        icon.className = 'wd-empty-icon';
+        icon.textContent = 'wifi_tethering';
+        el.appendChild(icon);
+        var text = document.createElement('div');
+        text.textContent = 'No other devices nearby yet…';
+        el.appendChild(text);
         this._contentDiv.appendChild(el);
         this._emptyEl = el;
       },
@@ -379,33 +473,27 @@ module('lively.identity.WarpDrop')
         var self = this;
 
         var card = document.createElement('div');
-        card.style.cssText = [
-          'width:130px', 'border:2px dashed #e5e5ea', 'border-radius:8px',
-          'padding:10px', 'text-align:center', 'position:relative',
-          'background:#fff', 'cursor:pointer', 'box-sizing:border-box',
-        ].join(';');
+        card.className = 'wd-peer-card';
 
         var icon = document.createElement('img');
         icon.src = makeBlockieDataUrl(data.peerId, AVATAR_SIZE);
-        icon.style.cssText = [
-          'width:' + AVATAR_SIZE + 'px', 'height:' + AVATAR_SIZE + 'px',
-          'border-radius:50%', 'margin:0 auto 6px', 'display:block',
-        ].join(';');
+        icon.className = 'wd-avatar';
+        icon.style.cssText = 'width:' + AVATAR_SIZE + 'px;height:' + AVATAR_SIZE + 'px;';
         card.appendChild(icon);
 
         var nameEl = document.createElement('div');
         nameEl.textContent = data.name;
-        nameEl.style.cssText = 'font-weight:600;color:#1c1c1e;word-break:break-word;';
+        nameEl.className = 'wd-peer-name';
         card.appendChild(nameEl);
 
         var statusEl = document.createElement('div');
-        statusEl.style.cssText = 'color:#8e8e93;font-size:11px;margin-top:4px;min-height:14px;word-break:break-word;';
+        statusEl.className = 'wd-peer-status';
         card.appendChild(statusEl);
 
         var progressOuter = document.createElement('div');
-        progressOuter.style.cssText = 'height:4px;background:#e5e5ea;border-radius:2px;margin-top:6px;overflow:hidden;display:none;';
+        progressOuter.className = 'wd-progress-outer';
         var progressInner = document.createElement('div');
-        progressInner.style.cssText = 'height:100%;width:0%;background:#007aff;';
+        progressInner.className = 'wd-progress-inner';
         progressOuter.appendChild(progressInner);
         card.appendChild(progressOuter);
 
@@ -433,11 +521,11 @@ module('lively.identity.WarpDrop')
         };
         this._peers[data.peerId] = peer;
 
-        card.addEventListener('dragover', function (e) { e.preventDefault(); card.style.borderColor = '#007aff'; });
-        card.addEventListener('dragleave', function () { card.style.borderColor = '#e5e5ea'; });
+        card.addEventListener('dragover', function (e) { e.preventDefault(); card.classList.add('dragover'); });
+        card.addEventListener('dragleave', function () { card.classList.remove('dragover'); });
         card.addEventListener('drop', function (e) {
           e.preventDefault();
-          card.style.borderColor = '#e5e5ea';
+          card.classList.remove('dragover');
           var f = e.dataTransfer.files[0];
           if (f) self._beginSend(peer, f);
         });
@@ -691,22 +779,27 @@ module('lively.identity.WarpDrop')
         setTimeout(function () { URL.revokeObjectURL(url); }, 30 * 1000);
       },
 
-      // raw-DOM modal overlay, matches the FilesBrowser._promptText convention
+      // raw-DOM modal overlay, matches the FilesBrowser._promptText
+      // convention. Appended to document.body (a real overlay dialog, not
+      // a morph's own always-visible content — see CLAUDE.md's native-
+      // dialog-on-body guidance), so it's outside this panel's own
+      // `.wd-root` subtree; carries its own `wd-root` class so the
+      // `--wd-*` tokens/`.wd-btn*` classes still resolve here too.
       _showAcceptPrompt: function (peer, thenDo) {
+        _ensureWarpDropStyle();
         var fileInfo = peer.fileInfo;
         var overlay = document.createElement('div');
+        overlay.className = 'wd-root';
         overlay.style.cssText =
           'position:fixed;top:0;left:0;width:100%;height:100%;' +
           'background:rgba(0,0,0,0.5);z-index:99999;' +
           'display:flex;align-items:center;justify-content:center;';
 
         var panel = document.createElement('div');
-        panel.style.cssText =
-          'background:#fff;border-radius:8px;padding:16px;width:280px;' +
-          'font-family:sans-serif;box-shadow:0 8px 24px rgba(0,0,0,0.3);';
+        panel.className = 'wd-modal-panel';
 
         var msg = document.createElement('div');
-        msg.style.cssText = 'font-size:13px;color:#1c1c1e;margin-bottom:12px;';
+        msg.className = 'wd-modal-msg';
         msg.textContent = peer.name + ' wants to send you “' + fileInfo.name + '” (' +
           this._formatSize(fileInfo.size) + ')';
         panel.appendChild(msg);
@@ -721,16 +814,12 @@ module('lively.identity.WarpDrop')
 
         var declineBtn = document.createElement('button');
         declineBtn.textContent = 'Decline';
-        declineBtn.style.cssText =
-          'font-size:12px;padding:5px 12px;cursor:pointer;border:1px solid #d1d1d6;' +
-          'background:#fff;border-radius:4px;';
+        declineBtn.className = 'wd-btn';
         declineBtn.addEventListener('click', function () { close(false); });
 
         var acceptBtn = document.createElement('button');
         acceptBtn.textContent = 'Accept';
-        acceptBtn.style.cssText =
-          'font-size:12px;padding:5px 12px;cursor:pointer;border:1px solid #007aff;' +
-          'background:#007aff;color:#fff;border-radius:4px;';
+        acceptBtn.className = 'wd-btn wd-btn-solid-accent';
         acceptBtn.addEventListener('click', function () { close(true); });
 
         btnRow.appendChild(declineBtn);
