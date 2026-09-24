@@ -322,10 +322,13 @@ ObjectGraphLinearizer.addMethods(
         function pathFromIdToId(fromId, toId, depth) {
             if (found) return;
             if (depth > 30) {
-                alert('' + stack)
                 return
             }
-            if (fromId === toId) { found = stack.clone() }
+            // ids coming back from referencesOfId are JSON-string ids (registry keys),
+            // while a caller's toId (e.g. PartInspector's jsoIdx) is often a real number —
+            // loose equality here is deliberate, matching idsFromObjectThatReferenceId's
+            // own `ref.id == wantedId` precedent just above in this same file.
+            if (fromId == toId) { found = stack.clone() }
             if (visited[fromId]) return;
             visited[fromId] = true;
             stack.push(fromId);
