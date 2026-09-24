@@ -248,7 +248,8 @@
 
 .messageMorph {
 	background: rgba(0,0,0,0.6);
-	border-radius: 20px;
+	border-radius: 8px;
+	border: none;
 }
 
 .messageMorph .closeButton {

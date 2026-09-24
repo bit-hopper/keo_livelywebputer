@@ -1273,13 +1273,8 @@ module("lively.morphic.MorphAddons")
             }
             return $super();
           });
-          morph.align(
-            morph.bounds().bottomRight(),
-            this.visibleBounds().bottomRight().addXY(-20, -20),
-          );
-          // morph.align(morph.bounds().topRight(), this.visibleBounds().topRight());
-          this.statusMessages.invoke("moveBy", pt(0, -morph.getExtent().y));
           this.statusMessages.push(morph);
+          this.restackStatusMessages();
 
           if (delay) {
             (function removeMsgMorph() {
@@ -1289,12 +1284,22 @@ module("lively.morphic.MorphAddons")
 
           return morph;
         },
+        restackStatusMessages: function () {
+          // newest message sits at the bottom-left corner, older ones stack upward
+          if (!this.statusMessages) return;
+          var pos = this.visibleBounds().bottomLeft().addXY(20, -20);
+          for (var i = this.statusMessages.length - 1; i >= 0; i--) {
+            var m = this.statusMessages[i];
+            m.align(m.bounds().bottomLeft(), pos);
+            pos = pos.addXY(0, -(m.getExtent().y + 8));
+          }
+        },
         createStatusMessage: function (msg, options) {
           // Example:
           // $world.createStatusMessage("Hello :)", {openAt: 'leftCenter'});
           options = options || {};
           var msgMorph = lively.newMorph({
-            extent: options.extent || pt(240, 68),
+            extent: options.extent || pt(280, 68),
           });
           msgMorph.isEpiMorph = true;
           msgMorph.openInWorld();
@@ -1305,6 +1310,7 @@ module("lively.morphic.MorphAddons")
             enableDragging: true,
             enableDropping: false,
             zIndex: 999,
+            borderWidth: 0,
           });
           Trait("lively.morphic.DragMoveTrait").applyTo(msgMorph, {
             override: ["onDrag", "onDragStart", "onDragEnd"],
@@ -1327,7 +1333,7 @@ module("lively.morphic.MorphAddons")
                 allowInput: false,
                 selectable: false,
                 clipMode: "visible",
-                whiteSpaceHandling: "pre",
+                whiteSpaceHandling: "normal",
               },
               options.textStyle || {},
             ]),
@@ -1370,14 +1376,38 @@ module("lively.morphic.MorphAddons")
               (Color.green.equals(color) && "success");
             cssClass && this.addStyleClassName(cssClass);
             (function () {
-              var extent = textMsg
-                .getTextExtent()
-                .minPt(this.getExtent().subXY(10, 10));
-              textMsg.setExtent(extent);
-              textMsg.align(
-                textMsg.bounds().center(),
-                this.innerBounds().center(),
+              var pad = 10,
+                boxWidth = this.getExtent().x,
+                minBoxHeight = 68,
+                maxBoxHeight = 240,
+                textWidth = boxWidth - pad * 2;
+              // shrink to a sliver first: the content div's min-height tracks
+              // the box's OWN current height, which would otherwise floor a
+              // measurement taken while the box is still tall from before
+              textMsg.setExtent(pt(textWidth, 1));
+              var contentDiv = textMsg
+                .renderContext()
+                .shapeNode.querySelector("div");
+              var measuredHeight = contentDiv
+                ? contentDiv.scrollHeight
+                : textMsg.getTextExtent().y;
+              var textHeight = Math.min(
+                maxBoxHeight - pad * 2,
+                Math.max(20, measuredHeight),
               );
+              textMsg.setExtent(pt(textWidth, textHeight));
+              var boxHeight = Math.min(
+                maxBoxHeight,
+                Math.max(minBoxHeight, textHeight + pad * 2),
+              );
+              this.setExtent(pt(boxWidth, boxHeight));
+              textMsg.align(
+                textMsg.bounds().topLeft(),
+                this.innerBounds().topLeft(),
+              );
+              var world = this.world();
+              if (world && world.restackStatusMessages)
+                world.restackStatusMessages();
             })
               .bind(this)
               .delay(0);
