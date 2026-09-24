@@ -1864,6 +1864,32 @@ lively.BuildSpec('lively.identity.Inventory', {
         if (meta && meta.did) makeCopyButton(meta.lines[meta.didLineIndex], meta.did, meta.didLineIndex, 'Copy Author DID');
         place(headerCard, cardH + 14);
 
+        // Description (state.comment) -- publish-time free-text summary, distinct
+        // from the COMMENTS discussion thread below. Deliberately NOT folded into
+        // describeItemMeta's `lines` array: that array's metaH sizing assumes one
+        // non-wrapping visual line per entry, which a free-text description can't
+        // guarantee (see CLAUDE.md's lineCount*N+padding clipping gotcha, already
+        // hit once in this exact file). Reuses the COMMENTS section's own
+        // already-proven technique for arbitrary-length user text below: a
+        // char-count line estimate plus clipMode:'auto' as the undershoot-safe
+        // fallback (scrolls instead of silently clipping).
+        var descText = ((item.loadedMetaInfo && item.loadedMetaInfo.comment) || '').trim();
+        if (descText) {
+            var descPad = 14, descInnerW = W - 2 * descPad;
+            var descEstLines = Math.max(1, Math.ceil(descText.length * 6.2 / descInnerW));
+            var descBodyH = descEstLines * 18 + 4;
+            var descCardH = descPad * 2 + descBodyH;
+            var descCard = new lively.morphic.Box(lively.rect(0, 0, W, descCardH));
+            descCard.applyStyle({ fill: Color.white, borderWidth: 1, borderColor: Color.rgb(238,238,240), borderRadius: 12 });
+            noDrag(descCard);
+            softShadow(descCard);
+            var descMorph = textRow(lively.rect(descPad, descPad, descInnerW, descBodyH), descText,
+                { fontSize: 9, textColor: Color.rgb(68,68,68) });
+            descMorph.applyStyle({ clipMode: 'auto' });
+            descCard.addMorph(descMorph);
+            place(descCard, descCardH + 14);
+        }
+
         // Version badge + (conditionally) expandable version list. Built
         // from item.partVersions -- {date, author, version(shortCid)} rows,
         // ascending -- exactly as loadPartVersions already produces; no
