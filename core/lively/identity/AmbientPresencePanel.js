@@ -22,7 +22,7 @@ module("lively.identity.AmbientPresencePanel")
       PANEL_W: 340,
       PANEL_H: 52,
       ROOM_H: 100,
-      PANEL_BG:       Color.black,
+      PANEL_BG:       Color.rgb(0x61, 0x11, 0x2B),   // #61112B
       TEXT_PRIMARY:   Color.rgb(242, 243, 245),
       TEXT_SECONDARY: Color.rgb(148, 155, 164),
       ICON_DEFAULT:   Color.rgb(181, 186, 193),
@@ -31,6 +31,39 @@ module("lively.identity.AmbientPresencePanel")
       HOVER_BG:      Color.rgba(255, 255, 255, 0.08),
       STATUS_ONLINE:  Color.rgb(35, 165, 89),
       STATUS_IDLE:    Color.rgb(240, 178, 50),
+      STATUS_DND:       Color.rgb(242, 63, 66),   // same red as ICON_DANGER
+      STATUS_INVISIBLE: Color.rgb(128, 132, 138),
+
+      // Status picker (avatar click) metadata — order matches the reference
+      // screenshot's row order, top to bottom.
+      STATUS_ORDER: ["online", "idle", "dnd", "invisible"],
+      STATUS_META: {
+        online:    { icon: "fiber_manual_record", label: "Online" },
+        idle:      { icon: "bedtime", label: "Idle" },
+        dnd:       { icon: "do_not_disturb_on", label: "Do Not Disturb",
+                     subtext: "You will not receive notifications" },
+        invisible: { icon: "radio_button_unchecked", label: "Invisible",
+                     subtext: "You will appear offline" },
+      },
+      DURATION_OPTIONS: [
+        { key: "15m",     label: "For 15 Minutes" },
+        { key: "1h",      label: "For 1 Hour" },
+        { key: "8h",      label: "For 8 Hours" },
+        { key: "24h",     label: "For 24 Hours" },
+        { key: "3d",      label: "For 3 Days" },
+        { key: "forever", label: "Forever" },
+      ],
+      // Mirrors IdentityServer.js's STATUS_DURATION_MS — used only for an
+      // optimistic local paint right after a click; the server computes and
+      // returns the real expiresAt (never trusts a client timestamp), which
+      // overwrites this estimate once the PUT resolves.
+      DURATION_MS: {
+        "15m": 15 * 60 * 1000,
+        "1h":  60 * 60 * 1000,
+        "8h":  8 * 60 * 60 * 1000,
+        "24h": 24 * 60 * 60 * 1000,
+        "3d":  3 * 24 * 60 * 60 * 1000,
+      },
 
       makeEllipse: function (rect, fill, borderWidth, borderColor) {
         var m = new lively.morphic.Morph();
@@ -96,7 +129,7 @@ module("lively.identity.AmbientPresencePanel")
       grabbingEnabled: false,
       style: {
         extent: lively.pt(340, 52),
-        fill: Color.black,
+        fill: lively.identity.AmbientPresencePanel.PANEL_BG,
         borderRadius: 12,
         borderWidth: 3,
         borderColor: Color.rgb(232, 73, 126),   // #e8497e
@@ -168,6 +201,24 @@ module("lively.identity.AmbientPresencePanel")
 
         this._gearBtn = NS.makeIconButton(lively.rect(302, 12, 28, 28), "settings", "openSettings");
         row.addMorph(this._gearBtn);
+
+        // Transparent click target covering the avatar+badge (their rects
+        // overlap each other, so a handler on either individually would eat
+        // clicks meant for the other) — added last so it paints on top.
+        this._badgeGlyph = null;
+        this._statusHitArea = new lively.morphic.Box(lively.rect(10, 10, 32, 34));
+        this._statusHitArea.applyStyle({ fill: null, borderWidth: 0, handStyle: "pointer" });
+        this._statusHitArea.draggingEnabled = false;
+        this._statusHitArea.droppingEnabled = false;
+        this._statusHitArea.grabbingEnabled = false;
+        this._statusHitArea.toolTip = "Set status";
+        this._statusHitArea.addScript(function onMouseUp(evt) {
+          var panel = lively.identity.AmbientPresencePanel._panel;
+          if (panel) panel.toggleStatusMenu();
+          evt.stop();
+          return true;
+        });
+        row.addMorph(this._statusHitArea);
       },
 
       toggleMic: function toggleMic() {
@@ -205,23 +256,21 @@ module("lively.identity.AmbientPresencePanel")
       // _saveKnown already use elsewhere in this directory. Loaded once in
       // onLoad, before the first _updateControls() paints the icons, so a
       // reload doesn't silently reset to unmuted.
+      // Routed through the NS-level read/write-merge helpers (not a plain
+      // localStorage.setItem of just these three fields) because the status
+      // picker's own local cache (_saveStatusLocal) shares this same key —
+      // a non-merging write here would silently clobber it.
       _loadPersistedPrefs: function _loadPersistedPrefs() {
-        try {
-          var raw = localStorage.getItem("lively.identity.presenceState");
-          if (!raw) return;
-          var prefs = JSON.parse(raw);
-          this.micMuted = !!prefs.micMuted;
-          this.deafened = !!prefs.deafened;
-          this.cameraOff = !!prefs.cameraOff;
-        } catch (e) {}
+        var prefs = lively.identity.AmbientPresencePanel._readPresenceState();
+        this.micMuted = !!prefs.micMuted;
+        this.deafened = !!prefs.deafened;
+        this.cameraOff = !!prefs.cameraOff;
       },
 
       _savePersistedPrefs: function _savePersistedPrefs() {
-        try {
-          localStorage.setItem("lively.identity.presenceState", JSON.stringify({
-            micMuted: this.micMuted, deafened: this.deafened, cameraOff: this.cameraOff,
-          }));
-        } catch (e) {}
+        lively.identity.AmbientPresencePanel._writePresenceState({
+          micMuted: this.micMuted, deafened: this.deafened, cameraOff: this.cameraOff,
+        });
       },
 
       // Grows the panel with a room block ABOVE the user row: a header (which
@@ -390,8 +439,70 @@ module("lively.identity.AmbientPresencePanel")
         });
       },
 
+      toggleStatusMenu: function toggleStatusMenu() {
+        lively.identity.AmbientPresencePanel._toggleStatusMenu();
+      },
+
+      // Lazily creates the small glyph badge used for Do Not Disturb/
+      // Invisible (do_not_disturb_on/radio_button_unchecked already read as
+      // self-contained circular icons, unlike the plain ellipse+crescent
+      // trick _badgeBase/_badgeBite use for Online/Idle) — sized/positioned
+      // to roughly the same footprint as _badgeBase. Visual fit (padding,
+      // exact glyph centering) hasn't been verified against the live DOM
+      // yet — check with getComputedStyle before considering this pixel-
+      // perfect, per this file's own fontSize-is-points/shapeNode-padding
+      // gotchas.
+      _ensureBadgeGlyph: function _ensureBadgeGlyph() {
+        if (this._badgeGlyph) return;
+        var NS = lively.identity.AmbientPresencePanel;
+        var g = new lively.morphic.Text(lively.rect(29, 29, 16, 16));
+        g.applyStyle({
+          fontFamily: "'Material Symbols Rounded'",
+          fontSize: 7.5,
+          fill: NS.PANEL_BG, borderRadius: 8, borderWidth: 2, borderColor: NS.PANEL_BG,
+          align: "center", padding: lively.Rectangle.inset(0, 3, 0, 0),
+          allowInput: false, selectable: false, clipMode: "hidden", whiteSpaceHandling: "pre",
+        });
+        g.eventsAreIgnored = true;
+        g.setVisible(false);
+        this._mainRow.addMorph(g);
+        this._badgeGlyph = g;
+      },
+
+      // Paints an explicitly-chosen status (Online/Idle/Do Not Disturb/
+      // Invisible). Online/Idle reuse the existing _badgeBase ellipse +
+      // _badgeBite crescent-cutout trick unchanged; DND/Invisible swap to
+      // the glyph badge above instead (simpler than compositing a minus/
+      // ring shape onto the plain ellipse).
+      _paintStatus: function _paintStatus(status) {
+        var NS = lively.identity.AmbientPresencePanel;
+        var meta = NS.STATUS_META[status] || NS.STATUS_META.online;
+        this._statusMorph.textString = meta.label;
+        if (status === "dnd" || status === "invisible") {
+          this._badgeBase.setVisible(false);
+          this._badgeBite.setVisible(false);
+          this._ensureBadgeGlyph();
+          this._badgeGlyph.textString = meta.icon;
+          this._badgeGlyph.applyStyle({ textColor: status === "dnd" ? NS.STATUS_DND : NS.STATUS_INVISIBLE });
+          this._badgeGlyph.setVisible(true);
+        } else {
+          var idle = status === "idle";
+          this._badgeBase.setVisible(true);
+          this._badgeBase.applyStyle({ fill: idle ? NS.STATUS_IDLE : NS.STATUS_ONLINE });
+          this._badgeBite.setVisible(idle);
+          if (this._badgeGlyph) this._badgeGlyph.setVisible(false);
+        }
+      },
+
+      // Tab-visibility-based auto-idle — the original, purely cosmetic
+      // status signal. Once the user has explicitly picked a status from
+      // the new avatar-click menu (_toggleStatusMenu), that explicit choice
+      // always wins and this handler stops overriding the badge; it only
+      // still runs for the untouched default (nobody has ever opened the
+      // status menu on this account/device).
       _updateStatus: function _updateStatus() {
         var NS = lively.identity.AmbientPresencePanel;
+        if (NS._explicitStatusSet) return;
         var idle = typeof document !== "undefined" && document.hidden;
         this._statusMorph.textString = idle ? "Idle" : "Online";
         this._badgeBase.applyStyle({ fill: idle ? NS.STATUS_IDLE : NS.STATUS_ONLINE });
@@ -428,6 +539,7 @@ module("lively.identity.AmbientPresencePanel")
         if (typeof document !== "undefined") {
           document.addEventListener("visibilitychange", this._visibilityHandler);
         }
+        lively.identity.AmbientPresencePanel._loadStatus();
         this.update();
       },
 
@@ -661,6 +773,23 @@ module("lively.identity.AmbientPresencePanel")
         }
         if (lively.identity && lively.identity.did) connectAndSync();
         else lively.require("lively.identity.DID").toRun(connectAndSync);
+
+        // Cross-tab fast path for status changes: same-browser tabs share
+        // localStorage and get a 'storage' event the instant another tab
+        // writes it (periodic polling in _startStatusPolling is the slower
+        // cross-device fallback, and also what catches an auto-revert on a
+        // tab that's been asleep past its own setTimeout).
+        if (typeof window !== "undefined" && !this._storageListenerInstalled) {
+          this._storageListenerInstalled = true;
+          window.addEventListener("storage", function (e) {
+            if (e.key !== "lively.identity.presenceState") return;
+            var cached = self._loadStatusLocal();
+            if (!cached) return;
+            if (cached.expiresAt && new Date(cached.expiresAt).getTime() <= Date.now()) return;
+            self._explicitStatusSet = !!cached.explicit || cached.status !== "online";
+            self._applyStatus(cached.status, cached.expiresAt);
+          });
+        }
       },
 
       sync: function sync() {
@@ -682,12 +811,401 @@ module("lively.identity.AmbientPresencePanel")
       },
 
       close: function close() {
+        this._closeStatusMenu();
+        if (this._statusPollTimer) { clearInterval(this._statusPollTimer); this._statusPollTimer = null; }
+        if (this._statusRevertTimer) { clearTimeout(this._statusRevertTimer); this._statusRevertTimer = null; }
+        this._status = null;
+        this._statusExpiresAt = null;
+        this._explicitStatusSet = false;
         if (!this._panel) return;
         if (this._panel._visibilityHandler && typeof document !== "undefined") {
           document.removeEventListener("visibilitychange", this._panel._visibilityHandler);
         }
         this._panel.remove();
         this._panel = null;
+      },
+
+      // ─── status picker (avatar click) ───────────────────────────────────────
+      // Status state lives here on the static namespace object, not on the
+      // panel morph — it must survive the panel being removed/recreated by
+      // close()/open() (e.g. across a logout/login), the same way
+      // _activeRoom/_screenSharing already do. _panel._paintStatus(status)
+      // is called whenever the badge needs repainting.
+
+      _status: null,             // 'online' | 'idle' | 'dnd' | 'invisible' | null (not yet loaded)
+      _statusExpiresAt: null,
+      _explicitStatusSet: false, // once true, the panel's tab-visibility auto-idle no longer overrides the badge
+      _statusRevertTimer: null,
+      _statusPollTimer: null,
+      _statusPopover: null,
+      _statusCloseHandlers: null,
+      _durationPopover: null,
+      _durationStatus: null,
+
+      isInvisible: function isInvisible() {
+        return this._status === "invisible";
+      },
+
+      // Shared read/write-merge helpers for the "lively.identity.presenceState"
+      // localStorage blob — shared with the panel's own mic/deafen/camera
+      // prefs (_loadPersistedPrefs/_savePersistedPrefs), so every write here
+      // merges rather than overwriting the whole key.
+      _readPresenceState: function _readPresenceState() {
+        try {
+          var raw = localStorage.getItem("lively.identity.presenceState");
+          return raw ? JSON.parse(raw) : {};
+        } catch (e) { return {}; }
+      },
+
+      _writePresenceState: function _writePresenceState(patch) {
+        try {
+          var current = this._readPresenceState();
+          Object.keys(patch).forEach(function (k) { current[k] = patch[k]; });
+          localStorage.setItem("lively.identity.presenceState", JSON.stringify(current));
+        } catch (e) {}
+      },
+
+      _saveStatusLocal: function _saveStatusLocal(status, expiresAt, explicit) {
+        this._writePresenceState({ status: status, statusExpiresAt: expiresAt || null, statusExplicit: !!explicit });
+      },
+
+      _loadStatusLocal: function _loadStatusLocal() {
+        var s = this._readPresenceState();
+        if (!s.status) return null;
+        return { status: s.status, expiresAt: s.statusExpiresAt || null, explicit: !!s.statusExplicit };
+      },
+
+      // Local-only: paints the badge, (re)arms the auto-revert timer. Never
+      // talks to the server — used both right after a successful PUT
+      // (_selectStatus) and when reconciling a GET response or a still-
+      // valid cached localStorage copy (_loadStatus, the cross-tab storage
+      // listener in init()).
+      _applyStatus: function _applyStatus(status, expiresAt) {
+        var self = this;
+        this._status = status;
+        this._statusExpiresAt = expiresAt || null;
+        if (this._panel) this._panel._paintStatus(status);
+
+        if (this._statusRevertTimer) { clearTimeout(this._statusRevertTimer); this._statusRevertTimer = null; }
+        if (expiresAt) {
+          var delay = new Date(expiresAt).getTime() - Date.now();
+          this._statusRevertTimer = setTimeout(function () {
+            // Auto-revert is a return to the untouched default, not a fresh
+            // explicit pick — tab-visibility auto-idle resumes working.
+            self._explicitStatusSet = false;
+            self._applyStatus("online", null);
+            self._saveStatusLocal("online", null, false);
+            // Best-effort push so other tabs/devices don't have to wait for
+            // their own poll cycle (or the server's self-heal-on-read) to
+            // notice this tab's timer already fired.
+            if (lively.identity.did && lively.identity.did.isLoggedIn()) {
+              var handle = lively.identity.did.currentUser().handle;
+              fetch("/@" + handle + "/status", {
+                method: "PUT", credentials: "include", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ status: "online", duration: null }),
+              }).catch(function () {});
+            }
+          }, Math.max(0, delay));
+        }
+      },
+
+      // User picked a status from the popover: paint immediately with an
+      // optimistic expiry estimate, then persist to the server (which
+      // computes and returns the real expiresAt) and reconcile against that.
+      _selectStatus: function _selectStatus(status, duration) {
+        var self = this;
+        this._explicitStatusSet = true;
+
+        var optimisticExpiresAt = null;
+        if (status !== "online" && duration && duration !== "forever" && this.DURATION_MS[duration]) {
+          optimisticExpiresAt = new Date(Date.now() + this.DURATION_MS[duration]).toISOString();
+        }
+        this._applyStatus(status, optimisticExpiresAt);
+        this._saveStatusLocal(status, optimisticExpiresAt, true);
+
+        if (!lively.identity.did || !lively.identity.did.isLoggedIn()) return;
+        var handle = lively.identity.did.currentUser().handle;
+        fetch("/@" + handle + "/status", {
+          method: "PUT", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: status, duration: duration || null }),
+        })
+          .then(function (res) { return res.ok ? res.json() : null; })
+          .then(function (result) {
+            if (!result) return;
+            self._applyStatus(status, result.expiresAt);
+            self._saveStatusLocal(status, result.expiresAt, true);
+          })
+          .catch(function () {});
+      },
+
+      // Boot-time load, called from the panel's onLoad before update(). Paints
+      // synchronously from a still-valid cached copy first (avoids a network-
+      // latency flash of stale status), then reconciles against the server —
+      // authoritative and self-healing on an expired row, so no client-side
+      // "is this expired" branch is needed for the common case.
+      _loadStatus: function _loadStatus() {
+        var self = this;
+        var cached = this._loadStatusLocal();
+        if (cached && (!cached.expiresAt || new Date(cached.expiresAt).getTime() > Date.now())) {
+          this._explicitStatusSet = true;
+          this._applyStatus(cached.status, cached.expiresAt);
+        } else if (cached) {
+          // Cached copy is itself expired — paint Online immediately rather
+          // than waiting on the network for what the server will say anyway.
+          this._explicitStatusSet = false;
+          this._applyStatus("online", null);
+        }
+
+        if (!lively.identity.did || !lively.identity.did.isLoggedIn()) return;
+        var handle = lively.identity.did.currentUser().handle;
+        fetch("/@" + handle + "/status", { credentials: "include" })
+          .then(function (res) { return res.ok ? res.json() : null; })
+          .then(function (result) {
+            if (!result) return;
+            // A non-'online' server status is always explicit (it can only
+            // exist because someone picked it). A plain 'online' response is
+            // left non-explicit unless the local cache already knew it was
+            // an explicit pick — the server alone can't tell "explicitly
+            // re-picked Online" apart from "never touched the status menu",
+            // so that one combination falls back to auto-idle rather than
+            // staying pinned Online; every other case is unambiguous.
+            var explicit = result.status !== "online" || !!(cached && cached.explicit);
+            self._explicitStatusSet = explicit;
+            self._applyStatus(result.status, result.expiresAt);
+            self._saveStatusLocal(result.status, result.expiresAt, explicit);
+          })
+          .catch(function () {});
+
+        this._startStatusPolling();
+      },
+
+      // Cross-device sync fallback (localStorage's 'storage' event in init()
+      // only reaches other tabs of the same browser) and the mechanism that
+      // catches an auto-revert on a tab that's been asleep past its own timer.
+      _startStatusPolling: function _startStatusPolling() {
+        var self = this;
+        if (this._statusPollTimer) return;
+        this._statusPollTimer = setInterval(function () {
+          if (!lively.identity.did || !lively.identity.did.isLoggedIn()) return;
+          var handle = lively.identity.did.currentUser().handle;
+          fetch("/@" + handle + "/status", { credentials: "include" })
+            .then(function (res) { return res.ok ? res.json() : null; })
+            .then(function (result) {
+              if (!result) return;
+              var explicit = result.status !== "online" || self._explicitStatusSet;
+              self._explicitStatusSet = explicit;
+              self._applyStatus(result.status, result.expiresAt);
+              self._saveStatusLocal(result.status, result.expiresAt, explicit);
+            })
+            .catch(function () {});
+        }, 45000);
+      },
+
+      _toggleStatusMenu: function _toggleStatusMenu() {
+        if (this._statusPopover) this._closeStatusMenu(); else this._openStatusMenu();
+      },
+
+      _openStatusMenu: function _openStatusMenu() {
+        var self = this;
+        var NS = lively.identity.AmbientPresencePanel;
+        var panel = this._panel;
+        if (this._statusPopover || !panel || !panel.world()) return;
+
+        // W was 220 — too narrow once the subtext went from fontSize 7.25/
+        // weight 400 to 8/600 (measured live: "You will not receive desktop
+        // notifications" needs ~209px of content width at the new weight,
+        // vs. ~154px this box actually had once the icon column and right
+        // margin were subtracted — it was clipping mid-word). 280 leaves
+        // real headroom rather than a bare minimum fit.
+        var PAD = 6, ROW_H = 44, SIMPLE_ROW_H = 32, W = 280;
+        var order = NS.STATUS_ORDER;
+        var rowHeights = order.map(function (s) { return NS.STATUS_META[s].subtext ? ROW_H : SIMPLE_ROW_H; });
+        var H = PAD * 2 + rowHeights.reduce(function (a, b) { return a + b; }, 0);
+
+        var pos = panel.getPosition();
+        var box = new lively.morphic.Box(lively.rect(pos.x, pos.y - H - 8, W, H));
+        box.isEpiMorph = true;
+        box.applyStyle({ fill: NS.PANEL_BG, borderRadius: 12, borderWidth: 3, borderColor: Color.rgb(232, 73, 126) });
+        box.draggingEnabled = false; box.droppingEnabled = false; box.grabbingEnabled = false;
+        box.name = "StatusPopover";
+
+        var y = PAD;
+        order.forEach(function (status, i) {
+          var meta = NS.STATUS_META[status];
+          var h = rowHeights[i];
+          self._buildStatusRow(box, status, meta, W, y, h);
+          y += h;
+        });
+
+        $world.addMorph(box);
+        box.enableFixedPositioning();
+        this._statusPopover = box;
+
+        var onDown = function (e) {
+          var node = box.renderContext().shapeNode;
+          var hit = panel._statusHitArea && panel._statusHitArea.renderContext().shapeNode;
+          var subNode = self._durationPopover && self._durationPopover.renderContext().shapeNode;
+          if (node.contains(e.target) || (hit && hit.contains(e.target)) || (subNode && subNode.contains(e.target))) return;
+          self._closeStatusMenu();
+        };
+        var onKey = function (e) { if (e.key === "Escape") self._closeStatusMenu(); };
+        document.addEventListener("mousedown", onDown, true);
+        document.addEventListener("keydown", onKey, true);
+        this._statusCloseHandlers = { onDown: onDown, onKey: onKey };
+      },
+
+      _closeStatusMenu: function _closeStatusMenu() {
+        this._closeDurationSubmenu();
+        if (this._statusCloseHandlers) {
+          document.removeEventListener("mousedown", this._statusCloseHandlers.onDown, true);
+          document.removeEventListener("keydown", this._statusCloseHandlers.onKey, true);
+          this._statusCloseHandlers = null;
+        }
+        if (this._statusPopover) { try { this._statusPopover.remove(); } catch (e) {} this._statusPopover = null; }
+      },
+
+      // One top-level row (Online/Idle/DND/Invisible): icon + label, an
+      // optional gray subtext line (DND/Invisible), and a chevron for the
+      // three that open a duration submenu. Online selects immediately.
+      _buildStatusRow: function _buildStatusRow(box, status, meta, W, y, h) {
+        var self = this;
+        var NS = lively.identity.AmbientPresencePanel;
+        var row = new lively.morphic.Box(lively.rect(0, y, W, h));
+        row.applyStyle({ fill: null, borderWidth: 0, borderRadius: 8, handStyle: "pointer" });
+        row.draggingEnabled = false; row.droppingEnabled = false; row.grabbingEnabled = false;
+        box.addMorph(row);
+
+        var iconColor = status === "dnd" ? NS.STATUS_DND
+          : status === "invisible" ? NS.STATUS_INVISIBLE
+          : status === "idle" ? NS.STATUS_IDLE : NS.STATUS_ONLINE;
+        var icon = new lively.morphic.Text(lively.rect(10, (h - 20) / 2, 20, 20));
+        icon.textString = meta.icon;
+        icon.applyStyle({
+          fontFamily: "'Material Symbols Rounded'", fontSize: 12, textColor: iconColor,
+          fill: null, borderWidth: 0, align: "center",
+          allowInput: false, selectable: false, clipMode: "hidden", whiteSpaceHandling: "pre",
+        });
+        icon.eventsAreIgnored = true;
+        row.addMorph(icon);
+
+        var labelY = meta.subtext ? 6 : (h - 16) / 2;
+        var label = new lively.morphic.Text(lively.rect(38, labelY, W - (status === "online" ? 50 : 66), 16));
+        label.textString = meta.label;
+        label.applyStyle({
+          fontSize: 9, fontWeight: "600", textColor: NS.TEXT_PRIMARY, fill: null, borderWidth: 0,
+          allowInput: false, selectable: false, clipMode: "hidden", whiteSpaceHandling: "pre",
+        });
+        label.eventsAreIgnored = true;
+        row.addMorph(label);
+
+        if (meta.subtext) {
+          // Wider than the label's box (which reserves room for the
+          // chevron) — the chevron sits higher/further right (see below)
+          // and doesn't overlap this line, so the subtext can run closer to
+          // the popover's edge.
+          var sub = new lively.morphic.Text(lively.rect(38, 23, W - 46, 16));
+          sub.textString = meta.subtext;
+          sub.applyStyle({
+            fontSize: 8, fontWeight: "600", textColor: NS.TEXT_SECONDARY, fill: null, borderWidth: 0,
+            allowInput: false, selectable: false, clipMode: "hidden", whiteSpaceHandling: "pre",
+          });
+          sub.eventsAreIgnored = true;
+          row.addMorph(sub);
+        }
+
+        if (status !== "online") {
+          var chevron = new lively.morphic.Text(lively.rect(W - 26, (h - 16) / 2, 16, 16));
+          chevron.textString = "chevron_right";
+          chevron.applyStyle({
+            fontFamily: "'Material Symbols Rounded'", fontSize: 9, textColor: NS.TEXT_SECONDARY,
+            fill: null, borderWidth: 0, align: "center", allowInput: false, selectable: false,
+            clipMode: "hidden", whiteSpaceHandling: "pre",
+          });
+          chevron.eventsAreIgnored = true;
+          row.addMorph(chevron);
+        }
+
+        row.onMouseOver = function () {
+          row.applyStyle({ fill: NS.HOVER_BG });
+          if (status !== "online") self._openDurationSubmenu(row, status);
+        };
+        row.onMouseOut = function () { row.applyStyle({ fill: null }); };
+        row.onMouseUp = function (evt) {
+          if (status === "online") {
+            self._selectStatus("online", null);
+            self._closeStatusMenu();
+          }
+          evt.stop();
+          return true;
+        };
+        return row;
+      },
+
+      // Flyout to the right of the hovered row, listing the 6 duration
+      // choices. Positioned off the (fixed-positioned) parent popover's own
+      // getPosition() plus the row's position within it — the same relative-
+      // offset approach _showInRoomRow/Soundboard.js already use, so no
+      // separate scroll-offset math is needed (this whole panel area is a
+      // fixed-positioned HUD, not part of scrolling page content).
+      _openDurationSubmenu: function _openDurationSubmenu(parentRow, status) {
+        var self = this;
+        var NS = lively.identity.AmbientPresencePanel;
+        if (this._durationStatus === status && this._durationPopover) return;
+        this._closeDurationSubmenu();
+
+        var box = this._statusPopover;
+        if (!box) return;
+        var boxPos = box.getPosition();
+        var rowPos = parentRow.getPosition();
+
+        var PAD = 6, ROW_H = 28, W = 160;
+        var options = NS.DURATION_OPTIONS;
+        var H = PAD * 2 + options.length * ROW_H;
+        // Opens to the LEFT of the main popover, not the right — the panel
+        // (and this popover) is anchored near the screen's right edge, so a
+        // rightward flyout had nowhere to render (confirmed: ran off the
+        // viewport).
+        var x = boxPos.x - W - 8;
+        var y = boxPos.y + rowPos.y;
+
+        var sub = new lively.morphic.Box(lively.rect(x, y, W, H));
+        sub.isEpiMorph = true;
+        sub.applyStyle({ fill: NS.PANEL_BG, borderRadius: 12, borderWidth: 3, borderColor: Color.rgb(232, 73, 126) });
+        sub.draggingEnabled = false; sub.droppingEnabled = false; sub.grabbingEnabled = false;
+        sub.name = "StatusDurationPopover";
+
+        options.forEach(function (opt, i) {
+          var optRow = new lively.morphic.Text(lively.rect(PAD, PAD + i * ROW_H, W - PAD * 2, ROW_H));
+          optRow.textString = opt.label;
+          optRow.applyStyle({
+            fontSize: 9, fontWeight: "500", textColor: NS.TEXT_PRIMARY, fill: null,
+            borderWidth: 0, borderRadius: 6, align: "left",
+            padding: lively.Rectangle.inset(8, 6, 0, 0),
+            allowInput: false, selectable: false, clipMode: "hidden", whiteSpaceHandling: "pre",
+            handStyle: "pointer",
+          });
+          optRow.draggingEnabled = false; optRow.droppingEnabled = false; optRow.grabbingEnabled = false;
+          optRow.onMouseOver = function () { optRow.applyStyle({ fill: NS.HOVER_BG }); };
+          optRow.onMouseOut = function () { optRow.applyStyle({ fill: null }); };
+          optRow.onMouseUp = function (evt) {
+            self._selectStatus(status, opt.key);
+            self._closeStatusMenu();
+            evt.stop();
+            return true;
+          };
+          sub.addMorph(optRow);
+        });
+
+        $world.addMorph(sub);
+        sub.enableFixedPositioning();
+        this._durationPopover = sub;
+        this._durationStatus = status;
+      },
+
+      _closeDurationSubmenu: function _closeDurationSubmenu() {
+        if (this._durationPopover) { try { this._durationPopover.remove(); } catch (e) {} this._durationPopover = null; }
+        this._durationStatus = null;
       },
     });
 

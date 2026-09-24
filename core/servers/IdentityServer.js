@@ -1671,6 +1671,94 @@ module.exports = function (route, app) {
     });
   });
 
+  // ─── ambient presence status (Online/Idle/Do Not Disturb/Invisible) ───────
+  // Deliberately NOT part of the /profile envelope's signed/versioned chain
+  // -- see ObjectRepository.js's user_status DDL comment for why (status
+  // changes on a timer via auto-revert, which would force a GET-then-PUT
+  // round trip and risk chain conflicts if it went through objectRepo.put()
+  // like /profile does). Registered as a literal path segment right after
+  // /profile, ahead of the /@:handle/:objId wildcard routes and the
+  // app.all("/@:handle/*", ...) catch-all further down -- same ordering
+  // discipline as /profile above.
+
+  var STATUS_DURATION_MS = {
+    "15m": 15 * 60 * 1000,
+    "1h":  60 * 60 * 1000,
+    "8h":  8 * 60 * 60 * 1000,
+    "24h": 24 * 60 * 60 * 1000,
+    "3d":  3 * 24 * 60 * 60 * 1000,
+  };
+  var VALID_STATUSES = ["online", "idle", "dnd", "invisible"];
+
+  app.put("/@:handle/status", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your status" });
+    var status = req.body && req.body.status;
+    var duration = req.body && req.body.duration;
+    if (VALID_STATUSES.indexOf(status) === -1)
+      return res.status(400).json({ error: "Invalid status" });
+
+    // Server computes expiresAt itself (never trust a client-submitted
+    // timestamp) from a fixed duration->ms map. 'online' and 'forever'
+    // both mean no expiry.
+    var expiresAt = null;
+    if (status !== "online" && duration && duration !== "forever") {
+      var ms = STATUS_DURATION_MS[duration];
+      if (!ms) return res.status(400).json({ error: "Invalid duration" });
+      expiresAt = new Date(Date.now() + ms).toISOString();
+    }
+
+    objectRepo.upsertUserStatus(req.identity.did, status, expiresAt, function (err) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json({ ok: true, status: status, expiresAt: expiresAt });
+    });
+  });
+
+  app.get("/@:handle/status", auth.optionalAuth, function (req, res) {
+    var handle = req.params.handle;
+    handleRegistry.resolve(handle, function (err, did) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!did) return res.status(404).json({ error: "Handle not found: @" + handle });
+      objectRepo.getUserStatus(did, function (err, row) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!row || row.status === "online" || !row.expiresAt) {
+          return res.json({ status: row ? row.status : "online", expiresAt: row ? row.expiresAt : null });
+        }
+        var expired = new Date(row.expiresAt).getTime() <= Date.now();
+        if (!expired) return res.json({ status: row.status, expiresAt: row.expiresAt });
+        // Self-heal: collapse the stale row back to online so the next read
+        // doesn't have to redo this same expiry check. Fire-and-forget --
+        // the response below is already correct either way.
+        objectRepo.upsertUserStatus(did, "online", null, function () {});
+        res.json({ status: "online", expiresAt: null });
+      });
+    });
+  });
+
+  // Batch read for room rosters / member lists that want many users'
+  // statuses in one call instead of N -- same shape as /dids/handles above.
+  // Does not self-heal expired rows (that only happens via the per-user GET
+  // above) to avoid N writes on one read; an expired row is simply reported
+  // as 'online' here without being collapsed in the DB yet.
+  app.get("/statuses", auth.optionalAuth, function (req, res) {
+    var raw = typeof req.query.dids === "string" ? req.query.dids : "";
+    var dids = raw.split(",").map(function (d) { return d.trim(); }).filter(Boolean).slice(0, 100);
+    objectRepo.getUserStatuses(dids, function (err, byDid) {
+      if (err) return res.status(500).json({ error: String(err) });
+      var now = Date.now();
+      var statuses = {};
+      dids.forEach(function (did) {
+        var row = byDid[did];
+        var expired = row && row.expiresAt && new Date(row.expiresAt).getTime() <= now;
+        statuses[did] = (!row || expired)
+          ? { status: "online", expiresAt: null }
+          : { status: row.status, expiresAt: row.expiresAt };
+      });
+      res.json({ statuses: statuses });
+    });
+  });
+
   // ─── domain handles ────────────────────────────────────────────────────────
   // A verified domain (e.g. "alice.com") both resolves as an alternate
   // /@alice.com URL for this account (see HandleRegistry.resolve's domain

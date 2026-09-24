@@ -179,6 +179,7 @@ module("lively.identity.RoomView")
         this._isController = false;
         this._roomLeft = false;   // stops _waitForLocalStreamThenFill's indefinite poll once the room is actually left
         this._participants = [];  // [{did, handle}]
+        this._memberStatuses = {}; // did -> {status, expiresAt}, refined async by _fetchMemberStatuses
         this._messages = [];      // [{objId, did, handle, text, created}], real (see "chat" category)
         this._messagePollTimer = null;
         this._sendingMessage = false;
@@ -314,6 +315,13 @@ module("lively.identity.RoomView")
       _start: function () {
         var isCall = this._isCall();
         this._buildView();
+        // Snapshot Invisible status once, at join time, not read live on every
+        // heartbeat tick — a room already open when the user later flips to
+        // Invisible must keep broadcasting presence normally (its video
+        // circles/roster entry stay intact); only a room joined *while*
+        // already Invisible skips announcing itself in the first place.
+        this._presenceSuppressed = !!(lively.identity.AmbientPresencePanel &&
+          lively.identity.AmbientPresencePanel.isInvisible && lively.identity.AmbientPresencePanel.isInvisible());
         this._joinPresence();
         this._startHeartbeat();
         this._loadMessages();
@@ -538,6 +546,13 @@ module("lively.identity.RoomView")
     "presence", {
 
       _joinPresence: function () {
+        if (this._presenceSuppressed) {
+          // Invisible: don't announce this room, but still pull the roster
+          // once so the invisible user's own view of who else is here isn't
+          // left empty until the next 25s heartbeat tick.
+          this._refreshRoster();
+          return;
+        }
         var self = this;
         var base = lively.identity.did.baseUrl();
         var xhr = new XMLHttpRequest();
@@ -565,6 +580,7 @@ module("lively.identity.RoomView")
       },
 
       _sendHeartbeat: function () {
+        if (this._presenceSuppressed) return; // Invisible: never re-announce this room
         var base = lively.identity.did.baseUrl();
         var xhr = new XMLHttpRequest();
         xhr.open("POST", base + "/c/" + encodeURIComponent(this._name) + "/rooms/" + this._roomId + "/presence", true);
@@ -610,8 +626,34 @@ module("lively.identity.RoomView")
           self._fetchRoomsList(); // keeps the left rail's "N here" counts fresh too
           // Tell an open lounge in this world (its Spaces cards) the headcount moved.
           if (changed) lively.identity.RoomView._notify(self);
+          // Refines the dots just rendered above once real statuses land —
+          // never blocks this render, which already used whatever was
+          // cached from the previous call (or defaulted to online).
+          self._fetchMemberStatuses();
         };
         xhr.send();
+      },
+
+      // Batch-fetches every current participant's status (Online/Idle/Do Not
+      // Disturb/Invisible) via IdentityServer's GET /statuses?dids=... route
+      // (AmbientPresencePanel.js's own per-user status GET is built on the
+      // same underlying table/read path) and re-renders the member dots once
+      // it lands. Never blocks the roster render that triggered it — that
+      // one already painted with whatever was cached from the previous call,
+      // or defaulted to online for a did never seen before.
+      _fetchMemberStatuses: function () {
+        var self = this;
+        var dids = this._participants.map(function (p) { return p.did; }).filter(Boolean);
+        if (!dids.length) return;
+        var base = lively.identity.did.baseUrl();
+        fetch(base + "/statuses?dids=" + encodeURIComponent(dids.join(",")), { credentials: "include" })
+          .then(function (res) { return res.ok ? res.json() : null; })
+          .then(function (result) {
+            if (!result || self._roomLeft) return;
+            self._memberStatuses = result.statuses || {};
+            self._renderMembers();
+          })
+          .catch(function () {});
       },
 
       // Stops every piece of session machinery (timers, signaling, peer
@@ -1500,6 +1542,7 @@ module("lively.identity.RoomView")
 
         var user = lively.identity.did.currentUser();
         var myDid = user ? user.did : null;
+        var statusColors = lively.identity.AmbientPresencePanel;
         var y = 44;
         this._participants.forEach(function (p) {
           var row = noDrag(new lively.morphic.Box(lively.rect(8, y, MEMBERS_W - 16, 40)));
@@ -1515,9 +1558,15 @@ module("lively.identity.RoomView")
           av.eventsAreIgnored = true;
           row.addMorph(av);
 
+          var statusInfo = self._memberStatuses[p.did];
+          var statusKey = (statusInfo && statusInfo.status) || "online";
+          var dotFill = statusKey === "idle" ? statusColors.STATUS_IDLE
+            : statusKey === "dnd" ? statusColors.STATUS_DND
+            : statusKey === "invisible" ? statusColors.STATUS_INVISIBLE
+            : ONLINE;
           var dot = noDrag(new lively.morphic.Morph());
           dot.setShape(new lively.morphic.Shapes.Ellipse(lively.rect(8 + AVATAR_MEMBER - 8, 6 + AVATAR_MEMBER - 8, 10, 10)));
-          dot.applyStyle({ fill: ONLINE, borderWidth: 2, borderColor: BG_SIDEBAR });
+          dot.applyStyle({ fill: dotFill, borderWidth: 2, borderColor: BG_SIDEBAR });
           dot.eventsAreIgnored = true;
           row.addMorph(dot);
 

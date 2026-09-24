@@ -168,6 +168,18 @@ var DDL =
   '  added_by     TEXT,' +
   '  added_at     TEXT NOT NULL,' +
   '  last_seen_at TEXT' +
+  ');\n' +
+  // Ambient presence status (Online/Idle/Do Not Disturb/Invisible) -- one
+  // row per did, upserted like postcard_reactions/item_stars above.
+  // Deliberately NOT part of the objects/envelope/CID-chain system: status
+  // changes on a timer (auto-revert) and can be toggled every few minutes,
+  // which would force a GET-then-PUT round trip and risk chain conflicts
+  // (prevCid racing a concurrent write) if it went through put() instead.
+  'CREATE TABLE IF NOT EXISTS user_status (' +
+  '  did        TEXT NOT NULL PRIMARY KEY,' +
+  '  status     TEXT NOT NULL,' +
+  '  expires_at TEXT,' +
+  '  updated_at TEXT NOT NULL' +
   ');';
 
 var _bootstrapped = false;
@@ -1619,6 +1631,68 @@ function getReactionsForObjId(objId, thenDo) {
   });
 }
 
+// ─── ambient presence status (Online/Idle/Do Not Disturb/Invisible) ───────
+// Upserted like postcard_reactions/item_stars above, not versioned through
+// put() -- see the user_status DDL comment for why.
+
+// status is one of 'online'|'idle'|'dnd'|'invisible'; expiresAt is an ISO
+// string or null (no expiry -- 'forever', or status is 'online').
+// Calls thenDo(err).
+function upsertUserStatus(did, status, expiresAt, thenDo) {
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'INSERT INTO user_status (did, status, expires_at, updated_at) VALUES ($1, $2, $3, $4)' +
+      ' ON CONFLICT (did) DO UPDATE SET status = EXCLUDED.status, expires_at = EXCLUDED.expires_at,' +
+      ' updated_at = EXCLUDED.updated_at',
+      [did, status, expiresAt || null, new Date().toISOString()],
+      function (err) { thenDo(err || null); }
+    );
+  });
+}
+
+// Raw read -- reports exactly what's stored, including a past expires_at.
+// Callers that need to present/self-heal an expired status (the /status
+// GET route) do that themselves so this function stays a plain read.
+// Calls thenDo(err, { status, expiresAt } | null) -- null means no row yet
+// (caller should treat that as the 'online' default).
+function getUserStatus(did, thenDo) {
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'SELECT status, expires_at FROM user_status WHERE did = $1',
+      [did],
+      function (err, result) {
+        if (err) return thenDo(err);
+        var row = result.rows[0];
+        thenDo(null, row ? { status: row.status, expiresAt: row.expires_at } : null);
+      }
+    );
+  });
+}
+
+// Batch read for room rosters / member lists. Calls thenDo(err,
+// { [did]: { status, expiresAt } }) -- dids with no row are simply absent
+// from the result (caller treats a missing entry as 'online').
+function getUserStatuses(dids, thenDo) {
+  if (!dids || !dids.length) return thenDo(null, {});
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'SELECT did, status, expires_at FROM user_status WHERE did = ANY($1)',
+      [dids],
+      function (err, result) {
+        if (err) return thenDo(err);
+        var byDid = {};
+        (result ? result.rows : []).forEach(function (row) {
+          byDid[row.did] = { status: row.status, expiresAt: row.expires_at };
+        });
+        thenDo(null, byDid);
+      }
+    );
+  });
+}
+
 // ─── inventory item stars (inventory.md §13) ───────────────────────────────
 // Simpler than postcard reactions above -- a star has no value to choose
 // (no emoji column), so a re-star from the same did is a plain no-op rather
@@ -2307,4 +2381,7 @@ module.exports = {
   listInstances:                 listInstances,
   addInstance:                   addInstance,
   removeInstance:                removeInstance,
+  upsertUserStatus:              upsertUserStatus,
+  getUserStatus:                 getUserStatus,
+  getUserStatuses:               getUserStatuses,
 };
