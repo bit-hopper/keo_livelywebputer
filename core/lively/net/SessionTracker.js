@@ -435,19 +435,11 @@ Object.extend(lively.net.SessionTracker, {
         },
 
         chatMessage: function(msg, session) {
+            // The dev-only Lively2LivelyChat UI this used to route into has
+            // been removed (superseded by lively.identity.DMChat's
+            // identity-based, E2EE chat) — still ack the protocol message
+            // so older/other clients sending it don't hang on a response.
             lively.log('Got chat message from %s: %s', msg.data.user, msg.data.message);
-            var chat = $morph('Lively2LivelyChat');
-            if (!chat) {
-                var spec = lively.BuildSpec('lively.net.tools.Lively2LivelyChat');
-                if (spec) {
-                    chat = spec.createMorph().openInWorldCenter().comeForward().targetMorph;
-                    chat.selectUser(msg.data.user);
-                }
-            }
-            if (chat) {
-                chat = chat.targetMorph || chat;
-                chat.addMessage(msg.data.message, false, msg.data.user);
-            }
             session.answer(msg, {message: 'chat message received', error: null});
         },
 

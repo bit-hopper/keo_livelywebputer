@@ -888,6 +888,69 @@ module('lively.identity.DMChat')
       // path, never themselves reconstructed from source; see this file's
       // header and CLAUDE.md's BuildSpec-closure-loss section) ───────────
 
+      // Tiled pink concentric-contour-rings background, ported from the
+      // now-removed lively.net.tools.Lively2LivelyChat's MessageList
+      // pattern (Lively2Lively.js's applyPattern) — that dev-only L2L chat
+      // tool was dropped in favor of this identity-based, E2EE chat, but
+      // its background texture was worth keeping for DMChat's own thread.
+      applyMessageListPattern: function (morph) {
+        (function () {
+          var ctx = morph.renderContext && morph.renderContext();
+          if (!ctx) return;
+          var node = ctx.shapeNode || ctx.morphNode;
+          if (!node) return;
+          // 340×255 tile holds 4 slice centers at staggered y-positions
+          // so adjacent columns never align horizontally when tiled
+          var tw = 340, th = 255;
+          var slices = [
+            { cx: 80,  cy: 68,  rb: 0.0 },
+            { cx: 258, cy: 96,  rb: 0.5 },
+            { cx: 88,  cy: 192, rb: 1.1 },
+            { cx: 254, cy: 174, rb: 0.3 }
+          ];
+          var ringDefs = [
+            { r: 13, p: [0.82,1.12,0.90,1.08,0.85,1.15,0.88,1.10], rot: 0.0, op: '0.72', sw: '2.0' },
+            { r: 27, p: [1.08,0.88,1.14,0.86,1.06,0.92,1.11,0.85], rot: 0.4, op: '0.62', sw: '1.8' },
+            { r: 41, p: [0.90,1.10,0.84,1.15,0.92,1.08,0.87,1.12], rot: 0.8, op: '0.52', sw: '1.6' },
+            { r: 55, p: [1.12,0.87,1.06,0.91,1.14,0.85,1.09,0.88], rot: 1.2, op: '0.42', sw: '1.5' },
+            { r: 67, p: [0.88,1.13,0.91,1.07,0.86,1.11,0.93,1.08], rot: 1.6, op: '0.33', sw: '1.3' },
+            { r: 77, p: [1.06,0.91,1.10,0.88,1.04,0.93,1.08,0.90], rot: 2.0, op: '0.22', sw: '1.2' }
+          ];
+          function ringPath(cx, cy, r, perturbs, rot) {
+            var N = perturbs.length, pts = [], i;
+            for (i = 0; i < N; i++) {
+              var a = (i / N) * 2 * Math.PI + rot;
+              pts.push([cx + Math.cos(a) * r * perturbs[i],
+                        cy + Math.sin(a) * r * perturbs[i]]);
+            }
+            var mids = pts.map(function (p, j) {
+              var q = pts[(j + 1) % N];
+              return [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+            });
+            var d = 'M' + mids[N - 1][0].toFixed(1) + ',' + mids[N - 1][1].toFixed(1);
+            for (i = 0; i < N; i++) {
+              d += ' Q' + pts[i][0].toFixed(1) + ',' + pts[i][1].toFixed(1) +
+                   ' ' + mids[i][0].toFixed(1) + ',' + mids[i][1].toFixed(1);
+            }
+            return d + 'Z';
+          }
+          var paths = '';
+          slices.forEach(function (s) {
+            ringDefs.forEach(function (ring) {
+              paths += '<path d="' + ringPath(s.cx, s.cy, ring.r, ring.p, ring.rot + s.rb) +
+                       '" fill="none" stroke="#F7C2D6"' +
+                       ' stroke-width="' + ring.sw + '" opacity="' + ring.op + '"/>';
+            });
+          });
+          var svg = '<svg xmlns="http://www.w3.org/2000/svg"' +
+                    ' width="' + tw + '" height="' + th + '">' + paths + '</svg>';
+          node.style.backgroundImage =
+              "url('data:image/svg+xml," + encodeURIComponent(svg) + "')";
+          node.style.backgroundRepeat = 'repeat';
+          node.style.backgroundSize = tw + 'px ' + th + 'px';
+        }).delay(0);
+      },
+
       createMessageBubble: function (text, isOwn, width, sentAt) {
         var NS = lively.identity.DMChat;
         var maxW = Math.floor(width * 0.72), pad = 10, textW = maxW - pad * 2;
@@ -1163,6 +1226,12 @@ module('lively.identity.DMChat')
           _ClipMode: { x: "hidden", y: "scroll" },
           droppingEnabled: false,
           draggingEnabled: false, grabbingEnabled: false,
+          onFromBuildSpecCreated: function onFromBuildSpecCreated() {
+            lively.identity.DMChat.applyMessageListPattern(this);
+          },
+          onLoad: function onLoad() {
+            lively.identity.DMChat.applyMessageListPattern(this);
+          },
         }, {
           // ── input row ──────────────────────────────────────────────────
           _Extent: lively.pt(352, 64),
