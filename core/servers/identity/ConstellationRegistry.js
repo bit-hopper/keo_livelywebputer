@@ -283,32 +283,94 @@ function exists(name, thenDo) {
   });
 }
 
-// Lists public constellations, newest first — backs the "browse public
-// constellations" affordance ConstellationsBrowser.js otherwise has no way
-// to fill (it previously only ever showed a localStorage-cached list of
+// '%'/'_' are ILIKE wildcards — escape them in free-text search input so a
+// literal percent/underscore in a constellation-name query doesn't act as a
+// wildcard. Same idiom as ObjectRepository.js's own _escapeLikePrefix
+// (duplicated rather than shared across modules, matching this file's
+// existing self-contained style).
+function _escapeLikePrefix(s) {
+  return String(s).replace(/[%_]/g, '\\$&');
+}
+
+// Lists public constellations — backs ConstellationsBrowser.js's Discover
+// tab (it previously only ever showed a localStorage-cached list of
 // constellations the current device had created or opened, so any public
 // constellation created elsewhere/by someone else never showed up there).
-// Calls thenDo(null, [{ name, did, createdAt, memberCount }, ...]).
+// opts: { limit, q, sort }
+//   q:    optional name-substring filter (ILIKE, case-insensitive).
+//   sort: 'recent' (default, created_at DESC) | 'popular' (member count
+//         DESC) | 'active' (live postcard count DESC — see the join below;
+//         only this sort computes/returns postcardCount, since the join
+//         backing it is not free and the other two sorts don't need it).
+// Calls thenDo(null, [{ name, did, createdAt, memberCount, postcardCount? }, ...]).
 function listPublic(opts, thenDo) {
   var limit = Math.min((opts && opts.limit) || 50, 200);
+  var q = (opts && opts.q) || null;
+  var sort = (opts && opts.sort) || 'recent';
   withDB(function(err, pool) {
     if (err) return thenDo(err);
+
+    var params = [];
+    var whereExtra = '';
+    if (q) {
+      params.push('%' + _escapeLikePrefix(q) + '%');
+      whereExtra = ' AND c.name ILIKE $' + params.length + ' ESCAPE \'\\\'';
+    }
+
+    var join = '';
+    var orderBy = 'c.created_at DESC';
+    var selectPostcardCount = '';
+    if (sort === 'popular') {
+      orderBy = 'jsonb_array_length(c.members::jsonb) DESC, c.created_at DESC';
+    } else if (sort === 'active') {
+      // Live postcard count per constellation — same "latest version per
+      // obj_id, exclude deleted/system-kind rows" shape as
+      // ObjectRepository.js's listPostcardsForConstellation, just
+      // aggregated (COUNT) instead of listed. Not a stored counter: this
+      // codebase's convention (see that function's own comments) is to
+      // compute activity live off the shared objects table rather than
+      // maintain a redundant counter column.
+      join =
+        ' LEFT JOIN (' +
+        '   SELECT (o.envelope ->> \'constellation\') AS name, COUNT(*) AS n FROM objects o' +
+        '   INNER JOIN (' +
+        '     SELECT obj_id, MAX(id) AS max_id FROM objects' +
+        '     WHERE type = \'postcard\' GROUP BY obj_id' +
+        '   ) latest ON o.id = latest.max_id' +
+        '   WHERE ((o.envelope #>> \'{state,deleted}\') IS NULL' +
+        '          OR (o.envelope #>> \'{state,deleted}\') <> \'true\')' +
+        '         AND ((o.envelope #>> \'{state,kind}\') IS NULL' +
+        '              OR (o.envelope #>> \'{state,kind}\') NOT IN' +
+        '                  (\'constellation-join-request\', \'room-join-request\', \'room-message\'))' +
+        '   GROUP BY 1' +
+        ' ) pc ON pc.name = c.name';
+      orderBy = 'COALESCE(pc.n, 0) DESC, c.created_at DESC';
+      selectPostcardCount = ', COALESCE(pc.n, 0) AS postcard_count';
+    }
+
+    params.push(limit);
+    var limitPh = '$' + params.length;
+
     pool.query(
-      'SELECT name, did, created_at, members FROM constellations' +
-      ' WHERE visibility = \'public\' ORDER BY created_at DESC LIMIT $1',
-      [limit],
+      'SELECT c.name, c.did, c.created_at, c.members' + selectPostcardCount +
+      ' FROM constellations c' + join +
+      ' WHERE c.visibility = \'public\'' + whereExtra +
+      ' ORDER BY ' + orderBy + ' LIMIT ' + limitPh,
+      params,
       function(err, result) {
         if (err) return thenDo(err);
         try {
           thenDo(null, (result.rows || []).map(function(row) {
             var members;
             try { members = JSON.parse(row.members); } catch (e) { members = []; }
-            return {
+            var out = {
               name: row.name,
               did: row.did,
               createdAt: row.created_at,
               memberCount: members.length
             };
+            if (sort === 'active') out.postcardCount = parseInt(row.postcard_count, 10) || 0;
+            return out;
           }));
         } catch (e) {
           thenDo(e);
@@ -583,22 +645,37 @@ function declineJoinRequest(name, did, thenDo) {
 // candidate row's JSON rather than trusting the substring match (a LIKE hit
 // on a truncated/adjacent did:jwk string is possible in principle).
 // Calls thenDo(null, [{ name, visibility, memberCount }, ...]).
-function listByController(did, thenDo) {
+// Every constellation `did` belongs to at all (member, moderator, or
+// creator) — backs ConstellationsBrowser.js's "My Constellations" (every
+// row) and "Co-Creator" (rows with role !== 'member') tabs from one query,
+// since a controller is always also a member (see addController's own
+// comment) and there is no separate "plain member" list otherwise. Members
+// is always the superset, so this LIKE-prefilters on that column alone and
+// re-verifies against a real JSON parse the same way the old
+// controller-only version of this function did; role is then derived by
+// also checking `controllers`/`created_by` on each surviving row, never
+// trusted from the LIKE match itself (a substring hit isn't proof of real
+// array membership — a DID could be a substring of another DID).
+// Calls thenDo(null, [{ name, visibility, memberCount, role }, ...]) where
+// role is 'creator' | 'moderator' | 'member'.
+function listByMembership(did, thenDo) {
   withDB(function(err, pool) {
     if (err) return thenDo(err);
-    pool.query('SELECT name, controllers, members, visibility FROM constellations WHERE controllers LIKE $1',
+    pool.query('SELECT name, controllers, members, visibility, created_by FROM constellations WHERE members LIKE $1',
       ['%' + did + '%'],
       function(err, result) {
         if (err) return thenDo(err);
         try {
-          var out = (result.rows || []).filter(function(row) {
-            var controllers;
-            try { controllers = JSON.parse(row.controllers); } catch (e) { return false; }
-            return controllers.indexOf(did) !== -1;
-          }).map(function(row) {
-            var members;
+          var out = [];
+          (result.rows || []).forEach(function(row) {
+            var members, controllers;
             try { members = JSON.parse(row.members); } catch (e) { members = []; }
-            return { name: row.name, visibility: row.visibility, memberCount: members.length };
+            if (members.indexOf(did) === -1) return;
+            try { controllers = JSON.parse(row.controllers); } catch (e) { controllers = []; }
+            var role = row.created_by === did ? 'creator'
+              : controllers.indexOf(did) !== -1 ? 'moderator'
+              : 'member';
+            out.push({ name: row.name, visibility: row.visibility, memberCount: members.length, role: role });
           });
           thenDo(null, out);
         } catch (e) {
@@ -1111,7 +1188,7 @@ module.exports = {
   listPendingJoinRequests: listPendingJoinRequests,
   approveJoinRequest: approveJoinRequest,
   declineJoinRequest: declineJoinRequest,
-  listByController: listByController,
+  listByMembership: listByMembership,
   createInvite: createInvite,
   getInviteStatus: getInviteStatus,
   approveInvite: approveInvite,

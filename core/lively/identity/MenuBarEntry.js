@@ -158,7 +158,7 @@ module("lively.identity.MenuBarEntry")
 
         openMyConstellations: function openMyConstellations() {
           lively.require("lively.identity.ConstellationsBrowser").toRun(function () {
-            lively.BuildSpec("lively.identity.ConstellationsBrowser").createMorph().openInWorldCenter();
+            lively.identity.ConstellationsBrowser.open();
           });
         },
 

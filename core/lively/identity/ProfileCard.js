@@ -171,7 +171,12 @@ module("lively.identity.ProfileCard")
         fetch('/@' + user.handle + '/constellations', { credentials: 'include' })
           .then(function (r) { return r.ok ? r.json() : { constellations: [] }; })
           .then(function (r) {
-            var list = r.constellations || [];
+            // /@:handle/constellations now returns every constellation the
+            // caller belongs to at all (My Constellations tab needs plain
+            // members too), tagged with `role` — only controllers may
+            // invite, so filter back down to creator/moderator rows here to
+            // keep this picker's original controller-only behavior.
+            var list = (r.constellations || []).filter(function (c) { return c.role !== 'member'; });
             if (!list.length) {
               $world.alert("You don't control any constellations to invite @" + (targetHandle || targetDid) + " to.");
               return;

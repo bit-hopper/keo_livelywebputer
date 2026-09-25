@@ -2760,17 +2760,18 @@ module.exports = function (route, app) {
     });
   });
 
-  // Constellations the caller controls — backs ProfileCard.js's "Invite to
-  // constellation" picker on a friend's nameplate menu (there's no other
-  // route that lists membership by DID; ConstellationsBrowser.js's own list
-  // is a localStorage-only "known constellations" convenience, not an
-  // authoritative membership query). Owner-only, same convention as
-  // /@:handle/friends above.
+  // Every constellation the caller belongs to (member, moderator, or
+  // creator — each row tagged with `role`) — backs ProfileCard.js's "Invite
+  // to constellation" picker on a friend's nameplate menu, and
+  // ConstellationsBrowser.js's "My Constellations"/"Co-Creator" tabs (the
+  // authoritative membership query; there is no other route that lists
+  // membership by DID). Owner-only, same convention as /@:handle/friends
+  // above.
   app.get("/@:handle/constellations", auth.requireAuth, function (req, res) {
     var handle = req.params.handle;
     if (req.identity.handle !== handle)
       return res.status(403).json({ error: "Forbidden: not your constellation list" });
-    constellationRegistry.listByController(req.identity.did, function (err, constellations) {
+    constellationRegistry.listByMembership(req.identity.did, function (err, constellations) {
       if (err) return res.status(500).json({ error: String(err) });
       res.json({ constellations: constellations });
     });
@@ -4169,14 +4170,18 @@ module.exports = function (route, app) {
   // the HTTP routes here and the Yjs sync socket (LiveDocSyncServer.js)
   // share exactly one source of truth for who can read/write a constellation.
 
-  // GET /c — public constellations directory. ConstellationsBrowser.js's
-  // "Known constellations" list was previously client-side-only
-  // (localStorage), so a public constellation created on another device or
-  // by another user never showed up there; this fills that gap. Distinct
+  // GET /c — public constellations directory, backing
+  // ConstellationsBrowser.js's Discover tab. ?q= filters by name substring;
+  // ?sort= is 'recent' (default) | 'popular' | 'active' — see
+  // ConstellationRegistry.listPublic for what each sort means. Distinct
   // path from /c/:name — no route-ordering conflict.
   app.get("/c", auth.optionalAuth, function (req, res) {
     var limit = parseInt(req.query.limit, 10);
-    constellationRegistry.listPublic({ limit: isNaN(limit) ? undefined : limit }, function (err, constellations) {
+    constellationRegistry.listPublic({
+      limit: isNaN(limit) ? undefined : limit,
+      q: req.query.q || undefined,
+      sort: req.query.sort || undefined,
+    }, function (err, constellations) {
       if (err) return res.status(500).json({ error: String(err) });
       res.json({ constellations: constellations });
     });

@@ -1,48 +1,37 @@
 /**
  * lively.identity.ConstellationsBrowser
  *
- * Floating window that closes the one real gap in constellation support:
- * nothing in this codebase built the signed payload POST /c/:name expects
- * (`{did, genesisObjId, genesisNonce, createdAt, creationSig}`), even
- * though the server route itself works
- * (ConstellationRegistry.js/IdentityServer.js). Every sibling identity tool
- * (Wallet, Mailbox, Worlds, Files, Profile) is a lively.BuildSpec window
- * opened from the menu bar, not a server-rendered page — this follows the
- * same convention (see WorldsBrowser.js, the closest template).
+ * Tabbed browser for constellations:
  *
- * Two sections:
- *   - Create: name + public/private toggle + "Create" button. Builds the
- *     genesis objId/nonce (same lively.identity.webKey.generateGenesisObjId
- *     helper post cards use), the did:web string, signs the creation
- *     payload with the device's soft signing key (same KEK-unwrap dance
- *     UserSpace.js/PostCardSerializer.js already use for envelope signing,
- *     but signing the bare payload directly and erroring rather than
- *     silently no-op'ing — creationSig is mandatory, unlike an envelope's
- *     optional sig), then POSTs it. On success, navigates into the new
- *     constellation's live space.
- *   - Constellations list: merges a client-side-only (localStorage) list of
- *     constellations created or opened from this browser (may include
- *     private ones you have access to) with the server's public directory
- *     (`GET /c` -> ConstellationRegistry.listPublic, tagged "· public" when
- *     not already in the local list), de-duplicated by name — plus a plain
- *     "open by name" field for one you didn't create yourself (e.g. joined
- *     via a direct link). Still no server-side "list my constellations
- *     (incl. private)" route — that needs real membership tracking, out of
- *     scope here.
+ *   My Constellations — every constellation the caller is a member of at
+ *                        all (GET /@:handle/constellations), including ones
+ *                        they merely joined, not just ones they created.
+ *   Co-Creator         — the subset of the above where the caller is a
+ *                        creator or moderator (role !== 'member'), badged
+ *                        the same green/yellow as ConstellationLounge.js's
+ *                        own member list.
+ *   Discover           — the public network directory (GET /c), with three
+ *                        sort sub-tabs: Popular (member count), Active
+ *                        (live postcard count), New (created_at).
  *
- * NOTE: every helper this spec's methods need lives ON the spec object
- * itself (this._foo), not as a free function in the enclosing .toRun()
- * closure — lively.BuildSpec method bodies are eval'd independently and do
- * NOT share that closure (confirmed live: a free `function _loadKnown(){}`
- * declared here throws "ReferenceError: _loadKnown is not defined" when
- * called from a spec method). WorldsBrowser.js's own methods are all
- * self-contained for the same reason.
+ * A persistent search box filters whichever tab is active — client-side
+ * substring filter over the cached membership list for the first two tabs,
+ * a real `?q=` round trip to GET /c for Discover. "+ Create" replaces the
+ * content pane with a small wizard (choice cards -> name form), the same
+ * "Create new" flow WorldsBrowser.js uses for its own Blank world/Wiki
+ * page/Template picker, rather than the old always-crammed small floating
+ * panel with name+visibility+button all visible at once. The wizard builds
+ * the signed genesis-objId creation payload IdentityServer.js's POST
+ * /c/:name requires (same crypto/signing logic this file always had,
+ * untouched by this redesign).
  *
- * Entry point (same pattern as every other BuildSpec browser here, e.g.
- * MenuBarEntry.js's openMyWorlds):
- *   lively.require("lively.identity.ConstellationsBrowser").toRun(function () {
- *     lively.BuildSpec("lively.identity.ConstellationsBrowser").createMorph().openInWorldCenter();
- *   });
+ * Rebuilt as a lively.morphic.Box.subclass rendering its content as plain
+ * DOM/CSS (rather than the previous lively.BuildSpec morphic-Text/Box
+ * tree), framed by a real classic lively.morphic.Window via openInWindow()
+ * — same convention PostCardMailbox.js/FilesBrowser.js/CalendarApp.js
+ * already moved to for their own "modern card/pill UI" redesigns.
+ *
+ * Entry point: lively.identity.ConstellationsBrowser.open()
  */
 
 module("lively.identity.ConstellationsBrowser")
@@ -50,307 +39,622 @@ module("lively.identity.ConstellationsBrowser")
     "lively.identity.DID",
     "lively.identity.WebKey",
     "lively.identity.WebAuthn",
-    "lively.persistence.BuildSpec",
     "lively.morphic.Complete",
   )
   .toRun(function () {
 
-    lively.BuildSpec("lively.identity.ConstellationsBrowser", {
-      _Extent: lively.pt(460, 460),
-      _BorderRadius: 8,
-      // Fill-frame/mat technique (see NewWikiPageDialog.js/ProfileCard.js):
-      // the window's own fill shows through as a colored margin around the
-      // gray content pane below and behind the title bar.
-      _Fill: Color.rgb(103, 58, 183),
-      className: "lively.morphic.Window",
-      contentOffset: lively.pt(3, 22),
-      draggingEnabled: true,
-      droppingEnabled: false,
-      layout: { adjustForNewBounds: true },
-      name: "ConstellationsBrowser",
-      submorphs: [
-        {
-          _Extent: lively.pt(454, 435),
-          _BorderColor: Color.rgb(95, 94, 95),
-          _BorderRadius: 4,
-          _Fill: Color.rgb(243, 243, 243),
-          _Position: lively.pt(3, 22),
-          className: "lively.morphic.Box",
-          layout: { adjustForNewBounds: true, resizeHeight: true, resizeWidth: true },
-          name: "constellationsBrowserContent",
-          submorphs: [],
-        },
+    // Modern content design system for the tab bar / search / cards /
+    // buttons / badges — injected once per world (idempotent, same guard
+    // idiom PostCardMailbox.js's _ensureMailboxContentStyle uses).
+    // Everything is scoped under `.cxb-root` (added to this morph's own
+    // shapeNode in _buildChrome) so it can't leak onto unrelated DOM
+    // elsewhere in the world.
+    function _ensureConstellationsBrowserStyle() {
+      var STYLE_ID = "constellations-browser-content-style";
+      if (document.getElementById(STYLE_ID)) return;
+      var styleEl = document.createElement("style");
+      styleEl.id = STYLE_ID;
+      styleEl.textContent = [
+        ".cxb-root {",
+        "  --cxb-bg: #fafafa; --cxb-surface: #ffffff;",
+        // Darker than the original tokens (#e4e4e7/#d4d4d8/#52525b/#a1a1aa) —
+        // the light-gray borders and secondary/tertiary text read as
+        // faint/washed-out against the white surface, especially at this
+        // panel's small (11-13px) font sizes. Bumped for legibility.
+        "  --cxb-border: #d8d8dd; --cxb-border-strong: #b0b0ba;",
+        "  --cxb-text: #18181b; --cxb-text-secondary: #3f3f46; --cxb-text-tertiary: #71717a;",
+        "  --cxb-accent: #673ab7; --cxb-accent-soft: #f3effc; --cxb-accent-soft-border: #d9cbf0;",
+        "  --cxb-danger: #e11d48; --cxb-danger-soft: #fff1f2; --cxb-danger-soft-border: #fecdd3;",
+        "  --cxb-creator: #2e7d32; --cxb-creator-soft: #e8f5e9;",
+        "  --cxb-mod: #8a6d00; --cxb-mod-soft: #fff8e1;",
+        "  --cxb-radius: 12px; --cxb-radius-sm: 8px; --cxb-radius-pill: 999px;",
+        "  --cxb-shadow-card: 0 1px 2px rgba(24,24,27,0.04), 0 1px 8px rgba(24,24,27,0.04);",
+        "  --cxb-shadow-card-hover: 0 2px 6px rgba(24,24,27,0.06), 0 4px 16px rgba(24,24,27,0.08);",
+        "  --cxb-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, Helvetica, Arial, sans-serif;",
+        // Baseline weight for anything that doesn't set its own — plain
+        // browser-default (400) text at these sizes/colors was part of the
+        // same faint/faded look; every element below that wants EXTRA
+        // emphasis still sets its own heavier font-weight and overrides this.
+        "  font-family: var(--cxb-font); font-weight: 500;",
+        "}",
+        ".cxb-content::-webkit-scrollbar { width: 9px; height: 9px; }",
+        ".cxb-content::-webkit-scrollbar-thumb { background: var(--cxb-border-strong); border-radius: 5px; border: 2px solid var(--cxb-bg); }",
+        ".cxb-content::-webkit-scrollbar-track { background: transparent; }",
+
+        ".cxb-tabbar { display: flex; align-items: center; gap: 2px; overflow-x: auto; scrollbar-width: none; height: 100%; }",
+        ".cxb-tabbar::-webkit-scrollbar { display: none; }",
+        ".cxb-tab { display: flex; align-items: center; gap: 4px; flex: none; border: none; background: transparent;",
+        "  cursor: pointer; font-size: 12px; font-weight: 500; color: var(--cxb-text-secondary);",
+        "  padding: 7px 9px; border-radius: var(--cxb-radius-pill); white-space: nowrap;",
+        "  font-family: var(--cxb-font); transition: background .15s, color .15s; }",
+        ".cxb-tab-icon { font-family: 'Material Symbols Rounded'; font-size: 15px; line-height: 1; }",
+        ".cxb-tab:hover { background: var(--cxb-bg); color: var(--cxb-text); }",
+        ".cxb-tab.active { background: var(--cxb-accent-soft); color: var(--cxb-accent); font-weight: 600; }",
+
+        ".cxb-subtab { border: 1px solid var(--cxb-border); background: var(--cxb-surface);",
+        "  color: var(--cxb-text-secondary); font-size: 11px; font-weight: 500; padding: 4px 10px;",
+        "  border-radius: var(--cxb-radius-pill); cursor: pointer; font-family: var(--cxb-font);",
+        "  margin-right: 6px; transition: background .15s, color .15s, border-color .15s; }",
+        ".cxb-subtab:hover { background: var(--cxb-bg); }",
+        ".cxb-subtab.active { background: var(--cxb-accent); color: #fff; border-color: var(--cxb-accent); }",
+
+        ".cxb-search { display: flex; align-items: center; gap: 8px; background: var(--cxb-bg);",
+        "  border-radius: var(--cxb-radius-sm); padding: 0 10px; flex: 1; }",
+        ".cxb-search-icon { font-family: 'Material Symbols Rounded'; font-size: 16px; color: var(--cxb-text-tertiary); }",
+        ".cxb-search input { flex: 1; border: none; background: transparent; outline: none;",
+        "  font-size: 12.5px; padding: 8px 0; color: var(--cxb-text); font-family: var(--cxb-font); }",
+        ".cxb-search input::placeholder { color: var(--cxb-text-tertiary); }",
+
+        ".cxb-card { background: var(--cxb-surface); border: 1px solid var(--cxb-border);",
+        "  border-radius: var(--cxb-radius); padding: 12px 14px; margin-bottom: 8px; position: relative;",
+        "  box-shadow: var(--cxb-shadow-card); transition: box-shadow .15s, border-color .15s; cursor: pointer; }",
+        ".cxb-card:hover { box-shadow: var(--cxb-shadow-card-hover); border-color: var(--cxb-border-strong); }",
+        ".cxb-card-name { font-weight: 600; font-size: 13px; color: var(--cxb-text); margin-bottom: 4px; }",
+        ".cxb-card-meta { display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--cxb-text-tertiary); }",
+        ".cxb-card-meta-icon { font-family: 'Material Symbols Rounded'; font-size: 13px; vertical-align: -2px; margin-right: 2px; }",
+
+        ".cxb-empty { display: flex; flex-direction: column; align-items: center; justify-content: center;",
+        "  gap: 8px; color: var(--cxb-text-tertiary); padding: 48px 16px; text-align: center; font-size: 12.5px; }",
+        ".cxb-empty-icon { font-family: 'Material Symbols Rounded'; font-size: 32px; color: var(--cxb-border-strong); }",
+        ".cxb-empty.danger { color: var(--cxb-danger); }",
+        ".cxb-empty.danger .cxb-empty-icon { color: var(--cxb-danger); }",
+
+        ".cxb-btn { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 500;",
+        "  padding: 5px 11px; cursor: pointer; border-radius: var(--cxb-radius-pill); border: 1px solid var(--cxb-border);",
+        "  background: var(--cxb-surface); color: var(--cxb-text-secondary); font-family: var(--cxb-font);",
+        "  transition: background .15s, border-color .15s, color .15s; white-space: nowrap; }",
+        ".cxb-btn:hover { background: var(--cxb-bg); }",
+        ".cxb-btn:disabled { opacity: .5; cursor: default; }",
+        ".cxb-btn-icon-glyph { font-family: 'Material Symbols Rounded'; font-size: 13px; line-height: 1; }",
+        ".cxb-btn-accent { border-color: var(--cxb-accent-soft-border); color: var(--cxb-accent); background: var(--cxb-accent-soft); }",
+        ".cxb-btn-accent:hover { background: var(--cxb-accent-soft-border); }",
+
+        ".cxb-badge { display: inline-block; padding: 2px 8px; font-size: 10px; font-weight: 600;",
+        "  border-radius: var(--cxb-radius-pill); background: var(--cxb-creator-soft); color: var(--cxb-creator); }",
+        ".cxb-badge-mod { background: var(--cxb-mod-soft); color: var(--cxb-mod); }",
+
+        // Full-pane create wizard (replaces _contentDiv, same idiom
+        // WorldsBrowser.js's showCreatePicker/showCreateForm use for "Create
+        // new world" — a back link + header over either a list of choice
+        // cards or a name form, instead of the old always-crammed small
+        // floating panel with name+visibility+button all visible at once).
+        ".cxb-create-back { display: inline-flex; align-items: center; gap: 2px; font-size: 12px;",
+        "  font-weight: 500; color: var(--cxb-accent); cursor: pointer; margin-bottom: 14px; }",
+        ".cxb-create-back:hover { text-decoration: underline; }",
+        ".cxb-create-header { font-size: 15px; font-weight: 700; color: var(--cxb-text); margin-bottom: 14px; }",
+        ".cxb-create-list { display: flex; flex-direction: column; gap: 8px; }",
+        ".cxb-create-row { display: flex; align-items: center; gap: 12px; background: var(--cxb-surface);",
+        "  border: 1px solid var(--cxb-border); border-radius: var(--cxb-radius); padding: 14px; cursor: pointer;",
+        "  box-shadow: var(--cxb-shadow-card); transition: box-shadow .15s, border-color .15s; }",
+        ".cxb-create-row:hover { box-shadow: var(--cxb-shadow-card-hover); border-color: var(--cxb-border-strong); }",
+        ".cxb-create-row-icon { font-family: 'Material Symbols Rounded'; font-size: 22px; color: var(--cxb-accent); flex: none; }",
+        ".cxb-create-row-title { font-size: 13px; font-weight: 600; color: var(--cxb-text); }",
+        ".cxb-create-row-subtitle { font-size: 11.5px; color: var(--cxb-text-tertiary); margin-top: 2px; }",
+        ".cxb-create-label { font-size: 11px; font-weight: 600; color: var(--cxb-text-secondary); margin-bottom: 6px; }",
+        ".cxb-create-name-input { width: 100%; box-sizing: border-box; font-size: 13px; padding: 9px 11px;",
+        "  border: 1px solid var(--cxb-border); border-radius: var(--cxb-radius-sm); font-family: var(--cxb-font);",
+        "  outline: none; margin-bottom: 14px; }",
+        ".cxb-create-name-input:focus { border-color: var(--cxb-accent); }",
+        ".cxb-create-submit-row { display: flex; align-items: center; gap: 12px; }",
+        ".cxb-create-status { font-size: 11px; color: var(--cxb-text-tertiary); }",
+        ".cxb-create-status.danger { color: var(--cxb-danger); }",
+      ].join("\n");
+      document.head.appendChild(styleEl);
+    }
+
+    // Two contrast/focus-ring bugs base_theme.css's default (light-chrome-
+    // tuned) rules leave unfixed on a saturated-color accent window — same
+    // fix DMChat.js's applyAccentChrome/PostCardMailbox.js's
+    // _ensureAccentChromeCss already apply for their own accents (see
+    // CLAUDE.md's applyStyle-DOM-sync gotcha for why this is a CSS class
+    // rather than a setFill/applyStyle call).
+    function _ensureAccentChromeCss() {
+      var STYLE_ID = "constellations-browser-accent-chrome-style";
+      if (document.getElementById(STYLE_ID)) return;
+      var styleEl = document.createElement("style");
+      styleEl.id = STYLE_ID;
+      styleEl.textContent = [
+        ".Window.cxb-accent-chrome { background-color: #673ab7 !important; }",
+        ".Window.cxb-accent-chrome .Text.window-title { color: #fff; }",
+        ".Window.cxb-accent-chrome.highlighted .Text.window-title { color: #fff; font-weight: bold; }",
+        ".Window.cxb-accent-chrome.highlighted { border: none !important; box-shadow: 0px 3px 10px rgba(40,20,70,0.35) !important; }",
+      ].join("\n");
+      document.head.appendChild(styleEl);
+    }
+
+    var ConstellationsBrowserClass = lively.morphic.Box.subclass("lively.identity.ConstellationsBrowser",
+
+    "serialization", {
+      doNotSerialize: [
+        "_contentDiv", "_tabBtns", "_subtabBtns", "_subtabWrap", "_searchInput", "_searchBarWrap",
+        "_createNameInput", "_createStatusEl", "_membership",
+        "_contentLoadStarted",
       ],
+    },
 
-      onFromBuildSpecCreated: function onFromBuildSpecCreated() {
-        this.targetMorph = this.get("constellationsBrowserContent");
-        var titleBar = this.makeTitleBar("My Constellations", this.getExtent().x);
-        this.titleBar = this.addMorph(titleBar);
+    "initialization", {
+
+      initialize: function ($super, bounds) {
+        $super(bounds);
+        this._activeTab = "mine";
+        this._discoverSort = "recent";
+        this._searchQuery = "";
         this._visibility = "public";
-        this._publicList = [];
-        this.buildUI();
-        this.renderKnown();
-        this.refreshPublicList();
+        this._inCreateFlow = false;
+        this._membership = null;
+        this._contentDiv = null;
+        this._tabBtns = {};
+        this._subtabBtns = {};
+        this._buildChrome();
+        // Guards prepareForNewRenderContext below against redundantly
+        // re-rendering once this constructor returns and open() attaches
+        // the new instance to the world — same mechanism/reason as
+        // PostCardMailbox.js's initialize/prepareForNewRenderContext pair.
+        this._contentLoadStarted = true;
+        this._switchTab("mine");
       },
 
-      buildUI: function buildUI() {
+      // $super(bounds) above (Morph.initialize) calls
+      // prepareForNewRenderContext the first time, before _activeTab exists
+      // yet — the guard below skips that call, leaving this constructor's
+      // own _buildChrome()/_switchTab() as the only build on fresh
+      // construction. On a world-reload restore, _activeTab already has its
+      // serialized value but none of the DOM _buildChrome built does, so it
+      // re-runs here instead. It also fires as an immediate same-turn
+      // duplicate of the constructor's own call (open() attaches this
+      // freshly-constructed morph to the world right after construction) —
+      // _contentLoadStarted (doNotSerialize'd) guards against double-firing
+      // the render in that case, same as PostCardMailbox.js.
+      prepareForNewRenderContext: function ($super, renderCtx) {
+        $super(renderCtx);
+        if (!this._activeTab) return;
+        var tab = this._activeTab;
+        this._tabBtns = {};
+        this._subtabBtns = {};
+        this._buildChrome();
+        if (this._contentLoadStarted) return;
+        this._contentLoadStarted = true;
+        this._switchTab(tab);
+      },
+
+      _buildChrome: function () {
         var self = this;
-        var content = this.get("constellationsBrowserContent");
-        if (!content) return;
-        content.removeAllMorphs();
+        _ensureConstellationsBrowserStyle();
+        this.setFill(Color.white);
+        this.setDroppingEnabled(false);
+        var shapeNode = this.renderContext().shapeNode;
+        shapeNode.innerHTML = ""; // idempotent: safe if this ever runs twice on one instance
+        shapeNode.classList.add("cxb-root");
 
-        var pad = 12;
-        var w = content.getExtent().x - pad * 2;
-        var y = pad;
-        var PINK = Color.rgb(240, 26, 105);
-        var GRAY = Color.rgb(140, 140, 140);
-
-        var header = new lively.morphic.Text(lively.rect(pad, y, w, 18), "Create a constellation");
-        header.applyStyle({ allowInput: false, fontSize: 13, fontWeight: "bold", textColor: Color.rgb(40, 40, 40), fill: null, borderWidth: 0, borderColor: null });
-        content.addMorph(header);
-        y += 26;
-
-        var nameInput = new lively.morphic.Text(lively.rect(pad, y, w - 90, 26), "");
-        nameInput.name = "nameInput";
-        nameInput.applyStyle({
-          allowInput: true, fontSize: 12, fill: Color.white, borderWidth: 1,
-          borderColor: Color.rgb(190, 190, 190), borderRadius: 4, padding: lively.rect(6, 5, 0, 0),
+        // ── tab bar ──
+        var tabBarWrap = document.createElement("div");
+        tabBarWrap.style.cssText = [
+          "position:absolute", "top:0", "left:0", "right:0", "height:44px",
+          "border-bottom:1px solid var(--cxb-border)", "background:var(--cxb-surface)",
+          "display:flex", "align-items:center",
+          "box-sizing:border-box", "padding:0 8px",
+        ].join(";");
+        var tabBar = document.createElement("div");
+        tabBar.className = "cxb-tabbar";
+        var tabs = [
+          { id: "mine",      label: "My Constellations", icon: "hub" },
+          { id: "coCreator", label: "Co-Creator",         icon: "verified" },
+          { id: "discover",  label: "Discover",           icon: "explore" },
+        ];
+        tabs.forEach(function (t) {
+          var btn = document.createElement("button");
+          btn.className = "cxb-tab";
+          var icon = document.createElement("span");
+          icon.className = "cxb-tab-icon";
+          icon.textContent = t.icon;
+          btn.appendChild(icon);
+          btn.appendChild(document.createTextNode(t.label));
+          btn.addEventListener("click", function () { self._switchTab(t.id); });
+          tabBar.appendChild(btn);
+          self._tabBtns[t.id] = btn;
         });
-        nameInput.beInputLine();
-        content.addMorph(nameInput);
-        this._nameInput = nameInput;
 
-        var visBtn = new lively.morphic.Text(lively.rect(pad + w - 84, y + 2, 84, 22), "Public ▾");
-        visBtn.applyStyle({ allowInput: false, fontSize: 12, textColor: PINK, fill: Color.rgb(255, 255, 255), borderWidth: 1, borderColor: Color.rgb(220, 220, 220), borderRadius: 4 });
-        visBtn.draggingEnabled = false;
-        visBtn.droppingEnabled = false;
-        visBtn.grabbingEnabled = false;
-        visBtn.renderContext().shapeNode.style.cursor = "pointer";
-        visBtn.onMouseOver = function () { visBtn.setFill(Color.rgb(250, 245, 248)); };
-        visBtn.onMouseOut  = function () { visBtn.setFill(Color.rgb(255, 255, 255)); };
-        visBtn.onMouseDown = function () {
-          self._visibility = self._visibility === "public" ? "private" : "public";
-          visBtn.setTextString(self._visibility === "public" ? "Public ▾" : "Private ▾");
-        };
-        content.addMorph(visBtn);
-        this._visBtn = visBtn;
-        y += 34;
+        // Right next to Discover, in the same scrolling tab row — not
+        // pushed off to the far right edge of the window (the previous
+        // space-between layout).
+        var createBtn = document.createElement("button");
+        createBtn.className = "cxb-btn cxb-btn-accent";
+        createBtn.style.marginLeft = "8px";
+        createBtn.innerHTML = "<span class=\"cxb-btn-icon-glyph\">add</span>Create";
+        createBtn.addEventListener("click", function () { self._showCreatePicker(); });
+        tabBar.appendChild(createBtn);
 
-        // Create — real pill button (fill/border/radius), hug-fit to its own
-        // measured text, hardcoded rather than measured inline (see the
-        // span.offsetWidth-returns-0-same-tick and padding/max-width gotchas
-        // now in CLAUDE.md — both bit this exact button).
-        var createLink = new lively.morphic.Text(lively.rect(pad, y, 70, 22), "Create");
-        createLink.applyStyle({
-          allowInput: false, fontSize: 13, fontWeight: "bold", textColor: PINK,
-          fill: Color.rgb(255, 240, 247), borderWidth: 1, borderColor: Color.rgb(240, 190, 210),
-          borderRadius: 5,
+        tabBarWrap.appendChild(tabBar);
+        shapeNode.appendChild(tabBarWrap);
+
+        // ── search bar ──
+        var searchBarWrap = document.createElement("div");
+        searchBarWrap.style.cssText = [
+          "position:absolute", "top:44px", "left:0", "right:0", "height:40px",
+          "background:var(--cxb-surface)", "border-bottom:1px solid var(--cxb-border)",
+          "display:flex", "align-items:center", "padding:0 12px", "box-sizing:border-box",
+        ].join(";");
+        var searchBar = document.createElement("div");
+        searchBar.className = "cxb-search";
+        var searchIcon = document.createElement("span");
+        searchIcon.className = "cxb-search-icon";
+        searchIcon.textContent = "search";
+        searchBar.appendChild(searchIcon);
+        var searchInput = document.createElement("input");
+        searchInput.type = "text";
+        searchInput.placeholder = "Search constellations…";
+        var searchDebounce = null;
+        searchInput.addEventListener("input", function () {
+          clearTimeout(searchDebounce);
+          searchDebounce = setTimeout(function () {
+            self._searchQuery = searchInput.value.trim();
+            self._reloadActiveTab();
+          }, 300);
         });
-        createLink.draggingEnabled = false;
-        createLink.droppingEnabled = false;
-        createLink.grabbingEnabled = false;
-        content.addMorph(createLink);
-        createLink.renderContext().shapeNode.style.cursor = "pointer";
-        createLink.onMouseOver = function () { createLink.setFill(Color.rgb(255, 224, 238)); };
-        createLink.onMouseOut  = function () { createLink.setFill(Color.rgb(255, 240, 247)); };
-        createLink.onMouseDown = function () { self.createConstellation(); };
+        searchBar.appendChild(searchInput);
+        searchBarWrap.appendChild(searchBar);
+        shapeNode.appendChild(searchBarWrap);
+        this._searchInput = searchInput;
+        this._searchBarWrap = searchBarWrap;
 
-        var statusX = createLink.bounds().right() + 10;
-        var statusText = new lively.morphic.Text(lively.rect(statusX, y + 3, pad + w - statusX, 18), "");
-        statusText.applyStyle({ allowInput: false, fontSize: 11, textColor: GRAY, fill: null, borderWidth: 0, borderColor: null });
-        content.addMorph(statusText);
-        this._statusText = statusText;
-        y += 32;
-
-        var div = new lively.morphic.Box(lively.rect(pad, y, w, 1));
-        div.applyStyle({ fill: Color.rgb(220, 220, 220), borderWidth: 0 });
-        content.addMorph(div);
-        y += 12;
-
-        var knownHeader = new lively.morphic.Text(lively.rect(pad, y, w, 18), "Constellations");
-        knownHeader.applyStyle({ allowInput: false, fontSize: 13, fontWeight: "bold", textColor: Color.rgb(40, 40, 40), fill: null, borderWidth: 0, borderColor: null });
-        content.addMorph(knownHeader);
-        y += 24;
-
-        var listH = content.getExtent().y - y - pad - 40;
-        var listBox = new lively.morphic.Box(lively.rect(pad, y, w, listH));
-        listBox.name = "knownList";
-        listBox.applyStyle({ fill: Color.white, clipMode: "auto", borderWidth: 1, borderColor: Color.rgb(220, 220, 220), borderRadius: 4 });
-        content.addMorph(listBox);
-        listBox.renderContext().shapeNode.style.overflowX = "hidden";
-        this._listBox = listBox;
-        y += listH + 10;
-
-        // Open — real pill button, built FIRST (right-anchored, fixed width —
-        // see the Create button's comment above for why this is a hardcoded
-        // width rather than a runtime measurement) so the input field beside
-        // it can be sized to fill exactly what's left.
-        var openLinkW = 58;
-        var openLink = new lively.morphic.Text(lively.rect(pad + w - openLinkW, y + 1, openLinkW, 22), "Open");
-        openLink.applyStyle({
-          allowInput: false, fontSize: 12, fontWeight: "bold", textColor: PINK,
-          fill: Color.rgb(255, 240, 247), borderWidth: 1, borderColor: Color.rgb(240, 190, 210),
-          borderRadius: 5,
+        // ── Discover-only sort sub-tabs — shown only while the Discover
+        // tab is active (see _switchTab), per-section rather than a single
+        // sort dropdown.
+        var subtabWrap = document.createElement("div");
+        subtabWrap.style.cssText = [
+          "position:absolute", "top:84px", "left:0", "right:0", "height:36px",
+          "background:var(--cxb-bg)", "border-bottom:1px solid var(--cxb-border)",
+          "display:none", "align-items:center", "padding:0 12px", "box-sizing:border-box",
+        ].join(";");
+        [["popular", "Popular"], ["active", "Active"], ["recent", "New"]].forEach(function (pair) {
+          var sb = document.createElement("button");
+          sb.className = "cxb-subtab" + (pair[0] === self._discoverSort ? " active" : "");
+          sb.textContent = pair[1];
+          sb.addEventListener("click", function () { self._switchDiscoverSort(pair[0]); });
+          subtabWrap.appendChild(sb);
+          self._subtabBtns[pair[0]] = sb;
         });
-        openLink.draggingEnabled = false;
-        openLink.droppingEnabled = false;
-        openLink.grabbingEnabled = false;
-        content.addMorph(openLink);
-        openLink.renderContext().shapeNode.style.cursor = "pointer";
-        openLink.onMouseOver = function () { openLink.setFill(Color.rgb(255, 224, 238)); };
-        openLink.onMouseOut  = function () { openLink.setFill(Color.rgb(255, 240, 247)); };
-        openLink.onMouseDown = function () {
-          var name = (self._openInput.textString || "").trim();
-          if (name) window.location.href = "/c/" + encodeURIComponent(name);
-        };
+        shapeNode.appendChild(subtabWrap);
+        this._subtabWrap = subtabWrap;
 
-        var openInputW = openLink.bounds().left() - pad - 10;
-        var openInput = new lively.morphic.Text(lively.rect(pad, y, openInputW, 24), "");
-        openInput.name = "openInput";
-        openInput.applyStyle({
-          allowInput: true, fontSize: 12, fill: Color.white, borderWidth: 1,
-          borderColor: Color.rgb(190, 190, 190), borderRadius: 4, padding: lively.rect(26, 4, 0, 0),
-        });
-        openInput.beInputLine();
-        content.addMorph(openInput);
-        this._openInput = openInput;
-
-        var openIcon = new lively.morphic.Text(lively.rect(pad + 6, y + 3, 16, 16), "link");
-        openIcon.applyStyle({
-          allowInput: false,
-          fontFamily: "'Material Symbols Rounded'",
-          fontSize: 12,
-          textColor: Color.rgb(150, 150, 150),
-          fill: null,
-          borderWidth: 0,
-          borderColor: null,
-        });
-        openIcon.eventsAreIgnored = true;
-        openIcon.draggingEnabled = false;
-        openIcon.droppingEnabled = false;
-        openIcon.grabbingEnabled = false;
-        content.addMorph(openIcon);
-        openIcon.renderContext().shapeNode.style.pointerEvents = "none";
+        // ── content area ──
+        var contentDiv = document.createElement("div");
+        contentDiv.className = "cxb-content";
+        contentDiv.style.cssText = [
+          "position:absolute", "left:0", "right:0", "bottom:0",
+          "overflow-y:auto", "padding:12px 16px", "box-sizing:border-box",
+          "font-family:var(--cxb-font)", "font-size:13px", "background:var(--cxb-bg)",
+        ].join(";");
+        shapeNode.appendChild(contentDiv);
+        this._contentDiv = contentDiv;
+        this._updateContentTop();
       },
 
-      setStatus: function setStatus(msg, isError) {
-        if (!this._statusText) return;
-        this._statusText.setTextString(msg || "");
-        this._statusText.setTextColor(isError ? Color.rgb(200, 50, 50) : Color.rgb(140, 140, 140));
+      // While the create wizard is showing, the search bar and (if it was
+      // visible) the Discover sort sub-tabs are hidden — both are
+      // irrelevant to "name a new constellation" and just add clutter —
+      // and the content pane starts right under the tab bar instead of
+      // below them.
+      _updateContentTop: function () {
+        if (this._inCreateFlow) { this._contentDiv.style.top = "44px"; return; }
+        this._contentDiv.style.top = (this._activeTab === "discover" ? 120 : 84) + "px";
       },
+    },
 
-      // ─── localStorage-backed "known constellations" list ──────────────────
+    "tabs", {
 
-      _knownStorageKey: function _knownStorageKey() {
-        return "lively.identity.knownConstellations";
-      },
-
-      _loadKnown: function _loadKnown() {
-        try { return JSON.parse(localStorage.getItem(this._knownStorageKey()) || "[]"); }
-        catch (e) { return []; }
-      },
-
-      _rememberKnown: function _rememberKnown(name) {
-        var known = this._loadKnown().filter(function (k) { return k.name !== name; });
-        known.unshift({ name: name, at: new Date().toISOString() });
-        try { localStorage.setItem(this._knownStorageKey(), JSON.stringify(known.slice(0, 30))); } catch (e) {}
-      },
-
-      // ─── server-backed public constellations directory ─────────────────────
-      // Fills the gap the localStorage-only list otherwise has: a public
-      // constellation created elsewhere, or by another user, never showed up
-      // here before GET /c existed (ConstellationRegistry.js's listPublic).
-
-      refreshPublicList: function refreshPublicList() {
+      _switchTab: function (tab) {
         var self = this;
+        this._activeTab = tab;
+        this._inCreateFlow = false;
+        if (this._searchBarWrap) this._searchBarWrap.style.display = "flex";
+        Object.keys(this._tabBtns).forEach(function (id) {
+          self._tabBtns[id].classList.toggle("active", id === tab);
+        });
+        // Fresh search per tab — a query typed into one tab silently
+        // carrying into an unrelated one would be more confusing than
+        // having to retype it (same convention PostCardMailbox.js uses).
+        this._searchQuery = "";
+        if (this._searchInput) this._searchInput.value = "";
+        this._subtabWrap.style.display = tab === "discover" ? "flex" : "none";
+        this._updateContentTop();
+        this._reloadActiveTab();
+      },
+
+      _switchDiscoverSort: function (sort) {
+        var self = this;
+        this._discoverSort = sort;
+        Object.keys(this._subtabBtns).forEach(function (id) {
+          self._subtabBtns[id].classList.toggle("active", id === sort);
+        });
+        this._renderDiscover();
+      },
+
+      _reloadActiveTab: function () {
+        if (this._activeTab === "mine") this._renderMine();
+        else if (this._activeTab === "coCreator") this._renderCoCreator();
+        else if (this._activeTab === "discover") this._renderDiscover();
+      },
+    },
+
+    "data fetching", {
+
+      // Loads (and caches) every constellation the caller belongs to —
+      // shared by the My Constellations and Co-Creator tabs, since both are
+      // just different filters over the same underlying list. Re-fetched
+      // after a successful create so a brand-new constellation appears
+      // immediately if the browser is ever left open across that.
+      _loadMembership: function (cb) {
+        var self = this;
+        if (this._membership) return cb(null, this._membership);
+        var user = lively.identity.did.currentUser();
+        if (!user) return cb(new Error("Not signed in."));
         var base = lively.identity.did.baseUrl();
         var xhr = new XMLHttpRequest();
-        xhr.open("GET", base + "/c", true);
+        xhr.open("GET", base + "/@" + encodeURIComponent(user.handle) + "/constellations", true);
         xhr.withCredentials = true;
-        xhr.setRequestHeader("Accept", "application/json");
         xhr.onload = function () {
-          if (xhr.status !== 200) return;
+          if (xhr.status !== 200) return cb(new Error("Failed to load (" + xhr.status + ")"));
           try {
             var data = JSON.parse(xhr.responseText);
-            self._publicList = data.constellations || [];
-          } catch (e) { return; }
-          self.renderKnown();
+            self._membership = data.constellations || [];
+            cb(null, self._membership);
+          } catch (e) { cb(e); }
         };
+        xhr.onerror = function () { cb(new Error("Network error")); };
         xhr.send();
       },
 
-      // Merges the locally-remembered list (created/opened from this device
-      // — may include private constellations the user has access to) with
-      // the server's public directory (self._publicList, populated by
-      // refreshPublicList), de-duplicated by name. Method name kept as
-      // renderKnown since it's still the "known constellations" list, just
-      // no longer localStorage-only.
-      renderKnown: function renderKnown() {
-        var listBox = this._listBox;
-        if (!listBox) return;
-        listBox.removeAllMorphs();
-        var known = this._loadKnown();
-        var knownNames = {};
-        known.forEach(function (k) { knownNames[k.name] = true; });
-        var publicOnly = (this._publicList || []).filter(function (c) { return !knownNames[c.name]; });
-        var rows = known.map(function (k) { return { name: k.name, isPublic: false }; })
-          .concat(publicOnly.map(function (c) { return { name: c.name, isPublic: true }; }));
-
-        var w = listBox.getExtent().x;
-        var PINK       = Color.rgb(240, 26, 105);
-        var PINK_HOVER = Color.rgb(190, 15, 82);
-        var GRAY       = Color.rgb(170, 170, 170);
-        var ROW_HOVER  = Color.rgb(237, 231, 246);
-
-        if (!rows.length) {
-          var none = new lively.morphic.Text(lively.rect(10, 10, w - 20, 20), "None yet — create one above.");
-          none.applyStyle({ allowInput: false, fontSize: 11, textColor: GRAY, fill: null, borderWidth: 0, borderColor: null });
-          listBox.addMorph(none);
-          return;
-        }
-
-        var rowH = 30;
-        var y = 4;
-        rows.forEach(function (k) {
-          var row = new lively.morphic.Box(lively.rect(0, y, w, rowH));
-          row.applyStyle({ fill: null, borderWidth: 0 });
-          row.draggingEnabled = false;
-          row.droppingEnabled = false;
-          row.grabbingEnabled = false;
-          row.onMouseOver = function () { row.setFill(ROW_HOVER); };
-          row.onMouseOut  = function () { row.setFill(null); };
-
-          var label = k.isPublic ? (k.name + "  ·  public") : k.name;
-          var nameText = new lively.morphic.Text(lively.rect(10, 6, w - 90, 18), label);
-          nameText.applyStyle({ allowInput: false, fontSize: 12, textColor: k.isPublic ? GRAY : Color.rgb(40, 40, 40), fill: null, borderWidth: 0, borderColor: null });
-          nameText.eventsAreIgnored = true;
-          nameText.draggingEnabled = false;
-          nameText.droppingEnabled = false;
-          nameText.grabbingEnabled = false;
-          row.addMorph(nameText);
-
-          var openLink = new lively.morphic.Text(lively.rect(w - 50, 6, 40, 18), "open");
-          openLink.applyStyle({ allowInput: false, fontSize: 12, textColor: PINK, fill: null, borderWidth: 0, borderColor: null });
-          openLink.draggingEnabled = false;
-          openLink.droppingEnabled = false;
-          openLink.grabbingEnabled = false;
-          openLink.renderContext().shapeNode.style.cursor = "pointer";
-          openLink._url = "/c/" + encodeURIComponent(k.name);
-          openLink.onMouseOver = function () { openLink.setTextColor(PINK_HOVER); };
-          openLink.onMouseOut  = function () { openLink.setTextColor(PINK); };
-          openLink.onMouseDown = function () { window.location.href = this._url; };
-          row.addMorph(openLink);
-
-          var sep = new lively.morphic.Box(lively.rect(10, rowH - 1, w - 20, 1));
-          sep.applyStyle({ fill: Color.rgb(228, 228, 228), borderWidth: 0 });
-          row.addMorph(sep);
-
-          listBox.addMorph(row);
-          y += rowH;
+      _renderMine: function () {
+        var self = this;
+        this._contentDiv.innerHTML = this._emptyHtml("hourglass_top", "Loading…");
+        this._loadMembership(function (err, list) {
+          if (err) return self._showError(err.message || "Could not load your constellations.");
+          if (self._activeTab !== "mine") return; // tab changed while in flight
+          self._renderConstellationList(self._filterBySearch(list), "hub", "You're not a member of any constellations yet.");
         });
       },
 
-      // ─── creation ────────────────────────────────────────────────────────
+      _renderCoCreator: function () {
+        var self = this;
+        this._contentDiv.innerHTML = this._emptyHtml("hourglass_top", "Loading…");
+        this._loadMembership(function (err, list) {
+          if (err) return self._showError(err.message || "Could not load your constellations.");
+          if (self._activeTab !== "coCreator") return;
+          var filtered = list.filter(function (c) { return c.role !== "member"; });
+          self._renderConstellationList(self._filterBySearch(filtered), "verified", "You're not a co-creator or moderator of any constellations yet.");
+        });
+      },
+
+      _filterBySearch: function (list) {
+        var q = this._searchQuery.toLowerCase();
+        if (!q) return list;
+        return list.filter(function (c) { return c.name.toLowerCase().indexOf(q) !== -1; });
+      },
+
+      _renderDiscover: function () {
+        var self = this;
+        this._contentDiv.innerHTML = this._emptyHtml("hourglass_top", "Loading…");
+        var base = lively.identity.did.baseUrl();
+        var url = base + "/c?limit=50&sort=" + encodeURIComponent(this._discoverSort);
+        if (this._searchQuery) url += "&q=" + encodeURIComponent(this._searchQuery);
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", url, true);
+        xhr.withCredentials = true;
+        xhr.onload = function () {
+          if (self._activeTab !== "discover") return;
+          if (xhr.status !== 200) return self._showError("Failed to load (" + xhr.status + ")");
+          try {
+            var data = JSON.parse(xhr.responseText);
+            self._renderConstellationList(data.constellations || [], "explore", "No public constellations found.");
+          } catch (e) { self._showError("Bad response from server."); }
+        };
+        xhr.onerror = function () { if (self._activeTab === "discover") self._showError("Network error"); };
+        xhr.send();
+      },
+
+      // Shared card renderer for all three tabs. `list` entries carry
+      // `role` (mine/coCreator tabs only) and/or `postcardCount` (discover,
+      // active sort only) — both are simply absent/undefined otherwise, so
+      // this one function covers every tab without a tab-specific branch.
+      _renderConstellationList: function (list, emptyIcon, emptyMsg) {
+        var self = this;
+        var content = this._contentDiv;
+        content.innerHTML = "";
+        if (!list.length) {
+          if (this._searchQuery) {
+            content.appendChild(this._emptyEl("search_off", "No constellations match your search."));
+          } else {
+            content.appendChild(this._emptyEl(emptyIcon, emptyMsg));
+          }
+          return;
+        }
+        list.forEach(function (c) {
+          var card = self._makeCard();
+
+          var name = document.createElement("div");
+          name.className = "cxb-card-name";
+          name.textContent = c.name;
+          card.appendChild(name);
+
+          if (c.role === "creator") {
+            var b = document.createElement("span");
+            b.className = "cxb-badge";
+            b.style.marginBottom = "6px";
+            b.textContent = "Co-creator";
+            card.insertBefore(b, name);
+            name.style.marginTop = "4px";
+          } else if (c.role === "moderator") {
+            var b2 = document.createElement("span");
+            b2.className = "cxb-badge cxb-badge-mod";
+            b2.style.marginBottom = "6px";
+            b2.textContent = "Moderator";
+            card.insertBefore(b2, name);
+            name.style.marginTop = "4px";
+          }
+
+          var meta = document.createElement("div");
+          meta.className = "cxb-card-meta";
+          var memberSpan = document.createElement("span");
+          memberSpan.innerHTML = "<span class=\"cxb-card-meta-icon\">group</span>" +
+            c.memberCount + " member" + (c.memberCount === 1 ? "" : "s");
+          meta.appendChild(memberSpan);
+          if (typeof c.postcardCount === "number") {
+            var pcSpan = document.createElement("span");
+            pcSpan.innerHTML = "<span class=\"cxb-card-meta-icon\">mail</span>" +
+              c.postcardCount + " postcard" + (c.postcardCount === 1 ? "" : "s");
+            meta.appendChild(pcSpan);
+          }
+          if (c.visibility === "private") {
+            var visSpan = document.createElement("span");
+            visSpan.innerHTML = "<span class=\"cxb-card-meta-icon\">lock</span>Private";
+            meta.appendChild(visSpan);
+          }
+          card.appendChild(meta);
+
+          card.addEventListener("click", function () {
+            window.location.href = "/c/" + encodeURIComponent(c.name);
+          });
+          content.appendChild(card);
+        });
+      },
+    },
+
+    "create wizard", {
+
+      // Step 1: a full-pane choice screen (two cards: Public / Private) —
+      // same "Create new" -> choice-cards -> name-form shape as
+      // WorldsBrowser.js's showCreatePicker/showCreateForm, in place of the
+      // old design's single small floating panel that showed the name
+      // field, both visibility buttons, and the Create button all at once.
+      _showCreatePicker: function () {
+        var self = this;
+        this._inCreateFlow = true;
+        this._searchBarWrap.style.display = "none";
+        this._subtabWrap.style.display = "none";
+        this._updateContentTop();
+
+        var content = this._contentDiv;
+        content.innerHTML = "";
+
+        var backLink = document.createElement("div");
+        backLink.className = "cxb-create-back";
+        backLink.textContent = "← Back";
+        backLink.addEventListener("click", function () { self._exitCreateFlow(); });
+        content.appendChild(backLink);
+
+        var header = document.createElement("div");
+        header.className = "cxb-create-header";
+        header.textContent = "Create new constellation";
+        content.appendChild(header);
+
+        var list = document.createElement("div");
+        list.className = "cxb-create-list";
+        content.appendChild(list);
+
+        [
+          { icon: "public", title: "Public", subtitle: "Anyone can find and join.", vis: "public" },
+          { icon: "lock", title: "Private", subtitle: "Only people you invite can join.", vis: "private" },
+        ].forEach(function (opt) {
+          var row = self._buildCreateChoiceRow(opt.icon, opt.title, opt.subtitle);
+          row.addEventListener("click", function () { self._showCreateForm(opt.vis); });
+          list.appendChild(row);
+        });
+      },
+
+      _buildCreateChoiceRow: function (icon, title, subtitle) {
+        var row = document.createElement("div");
+        row.className = "cxb-create-row";
+        row.innerHTML =
+          "<span class=\"cxb-create-row-icon\">" + icon + "</span>" +
+          "<div>" +
+            "<div class=\"cxb-create-row-title\">" + title + "</div>" +
+            "<div class=\"cxb-create-row-subtitle\">" + subtitle + "</div>" +
+          "</div>";
+        return row;
+      },
+
+      // Step 2: name form for the visibility chosen in step 1. The actual
+      // signed genesis-objId creation logic (createConstellation, in the
+      // 'creation' category below) is unchanged from before this redesign
+      // — this only rebuilds the surrounding chrome.
+      _showCreateForm: function (visibility) {
+        var self = this;
+        this._visibility = visibility;
+
+        var content = this._contentDiv;
+        content.innerHTML = "";
+
+        var backLink = document.createElement("div");
+        backLink.className = "cxb-create-back";
+        backLink.textContent = "← Back";
+        backLink.addEventListener("click", function () { self._showCreatePicker(); });
+        content.appendChild(backLink);
+
+        var header = document.createElement("div");
+        header.className = "cxb-create-header";
+        header.textContent = "New " + visibility + " constellation";
+        content.appendChild(header);
+
+        var label = document.createElement("div");
+        label.className = "cxb-create-label";
+        label.textContent = "Name";
+        content.appendChild(label);
+
+        var nameInput = document.createElement("input");
+        nameInput.type = "text";
+        nameInput.className = "cxb-create-name-input";
+        nameInput.placeholder = "lowercase-letters-digits-hyphens";
+        content.appendChild(nameInput);
+        this._createNameInput = nameInput;
+
+        var submitRow = document.createElement("div");
+        submitRow.className = "cxb-create-submit-row";
+
+        var createSubmitBtn = document.createElement("button");
+        createSubmitBtn.className = "cxb-btn cxb-btn-accent";
+        createSubmitBtn.textContent = "Create";
+        createSubmitBtn.addEventListener("click", function () { self.createConstellation(); });
+        submitRow.appendChild(createSubmitBtn);
+
+        var statusEl = document.createElement("span");
+        statusEl.className = "cxb-create-status";
+        submitRow.appendChild(statusEl);
+        this._createStatusEl = statusEl;
+
+        content.appendChild(submitRow);
+        nameInput.focus();
+      },
+
+      // Re-runs _switchTab for whichever tab was active before the wizard
+      // was opened — restores the search bar/sub-tabs/content-top chrome
+      // the wizard hid, and reloads that tab's list, in one step.
+      _exitCreateFlow: function () {
+        this._switchTab(this._activeTab);
+      },
+    },
+
+    "creation", {
 
       // did:web spec: a port in the host becomes %3A<port>, not a literal
       // ':' (colons already separate the method-specific-id's own segments).
@@ -408,18 +712,24 @@ module("lively.identity.ConstellationsBrowser")
         });
       },
 
+      _setCreateStatus: function (msg, isError) {
+        if (!this._createStatusEl) return;
+        this._createStatusEl.textContent = msg || "";
+        this._createStatusEl.classList.toggle("danger", !!isError);
+      },
+
       createConstellation: function createConstellation() {
         var self = this;
-        var name = (this._nameInput.textString || "").trim().toLowerCase();
+        var name = (this._createNameInput.value || "").trim().toLowerCase();
         if (!/^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/.test(name)) {
-          return this.setStatus("Invalid name — lowercase letters, digits, hyphens, 3-40 chars.", true);
+          return this._setCreateStatus("Invalid name — lowercase letters, digits, hyphens, 3-40 chars.", true);
         }
         var user = lively.identity.did.currentUser();
-        if (!user) return this.setStatus("Not signed in.", true);
+        if (!user) return this._setCreateStatus("Not signed in.", true);
 
-        this.setStatus("Generating…");
+        this._setCreateStatus("Generating…");
         lively.identity.webKey.generateGenesisObjId(user.did, function (err, gen) {
-          if (err) return self.setStatus("Error: " + err.message, true);
+          if (err) return self._setCreateStatus("Error: " + err.message, true);
 
           var did = self._didWebForConstellation(name);
           var createdAt = new Date().toISOString();
@@ -432,11 +742,11 @@ module("lively.identity.ConstellationsBrowser")
             createdAt: createdAt,
           };
 
-          self.setStatus("Signing… (confirm your passkey if prompted)");
+          self._setCreateStatus("Signing… (confirm your passkey if prompted)");
           self._signConstellationCreation(payload, function (err, creationSig) {
-            if (err) return self.setStatus("Signing failed: " + err.message, true);
+            if (err) return self._setCreateStatus("Signing failed: " + err.message, true);
 
-            self.setStatus("Creating…");
+            self._setCreateStatus("Creating…");
             var base = lively.identity.did.baseUrl();
             var xhr = new XMLHttpRequest();
             xhr.open("POST", base + "/c/" + encodeURIComponent(name), true);
@@ -444,8 +754,7 @@ module("lively.identity.ConstellationsBrowser")
             xhr.setRequestHeader("Content-Type", "application/json");
             xhr.onload = function () {
               if (xhr.status === 201) {
-                self._rememberKnown(name);
-                self.setStatus("Created — opening…");
+                self._setCreateStatus("Created — opening…");
                 window.location.href = "/c/" + encodeURIComponent(name);
                 return;
               }
@@ -454,9 +763,9 @@ module("lively.identity.ConstellationsBrowser")
                 var body = JSON.parse(xhr.responseText);
                 if (body && body.error) msg = body.error;
               } catch (e) {}
-              self.setStatus(msg, true);
+              self._setCreateStatus(msg, true);
             };
-            xhr.onerror = function () { self.setStatus("Network error", true); };
+            xhr.onerror = function () { self._setCreateStatus("Network error", true); };
             xhr.send(JSON.stringify({
               did: did,
               genesisObjId: gen.objId,
@@ -467,6 +776,61 @@ module("lively.identity.ConstellationsBrowser")
             }));
           });
         });
+      },
+    },
+
+    "helpers", {
+
+      _makeCard: function () {
+        var card = document.createElement("div");
+        card.className = "cxb-card";
+        return card;
+      },
+
+      _emptyHtml: function (icon, text, danger) {
+        return "<div class=\"cxb-empty" + (danger ? " danger" : "") + "\"><span class=\"cxb-empty-icon\">" + icon + "</span><div>" + text + "</div></div>";
+      },
+
+      _emptyEl: function (icon, text, danger) {
+        var el = document.createElement("div");
+        el.className = "cxb-empty" + (danger ? " danger" : "");
+        var i = document.createElement("span");
+        i.className = "cxb-empty-icon";
+        i.textContent = icon;
+        el.appendChild(i);
+        var t = document.createElement("div");
+        t.textContent = text;
+        el.appendChild(t);
+        return el;
+      },
+
+      _showError: function (msg) {
+        this._contentDiv.innerHTML = this._emptyHtml("error", msg, true);
+      },
+    }
+
+    ); // end subclass
+
+    // ── class-side entry point ───────────────────────────────────────────────
+
+    Object.extend(ConstellationsBrowserClass, {
+      open: function () {
+        var W = 480, H = 560;
+        var morph = new lively.identity.ConstellationsBrowser(lively.rect(0, 0, W, H));
+        morph.setName("ConstellationsBrowser");
+        // Real classic Window chrome (drag/resize/collapse/close, Material
+        // Symbols icon controls by default) rather than the previous
+        // BuildSpec-drawn title bar — same pattern as
+        // PostCardMailbox.js/CalendarApp.js's own open().
+        morph.openInWindow({
+          title: "My Constellations",
+          pos: lively.morphic.World.current().visibleBounds().center().subPt(lively.pt(W / 2, H / 2)),
+        });
+        var win = morph.getWindow();
+        _ensureAccentChromeCss();
+        win.addStyleClassName("cxb-accent-chrome");
+        win.comeForward();
+        return morph;
       },
     });
 
