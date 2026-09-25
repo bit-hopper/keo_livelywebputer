@@ -293,6 +293,23 @@ module('lively.identity.FileCrypto')
           .catch(function (e) { thenDo(e); });
       },
 
+      // DELETE a blob's bytes — same call FilesBrowser._deleteFile makes for
+      // a top-level file delete, factored out here too since moveFileInto
+      // Folder needs it to reclaim the original blob after re-encrypting the
+      // file's bytes under the folder's own dek.
+      _deleteBlob: function (handle, blobCid, thenDo) {
+        var base = lively.identity.did.baseUrl();
+        fetch(base + '/@' + handle + '/blobs/' + blobCid, {
+          method: 'DELETE',
+          credentials: 'include',
+        }).then(function (res) {
+          if (!res.ok) return res.json().then(function (b) {
+            throw new Error(b.error || ('Blob delete failed: ' + res.status));
+          });
+          thenDo(null);
+        }).catch(function (e) { thenDo(e); });
+      },
+
       _putEnvelope: function (handle, envelope, thenDo) {
         var base = lively.identity.did.baseUrl();
         fetch(base + '/@' + handle + '/' + envelope.objId, {
@@ -1034,22 +1051,13 @@ module('lively.identity.FileCrypto')
         });
       },
 
-      // fetchFolder (dek cache hit after the first call) -> blob fetch ->
-      // decrypt -> object URL, cached per blobCid same as objectUrlFor.
-      // fileEntry: one entry from fetchFolder's `files` array.
-      folderFileUrl: function (handle, folderObjId, fileEntry, thenDo) {
-        if (!this._urlCache) this._urlCache = {};
-        var cacheKey = 'folder-file:' + fileEntry.blobCid;
-        if (this._urlCache[cacheKey]) return thenDo(null, this._urlCache[cacheKey]);
-
+      // Decrypt a folder member's bytes back to plaintext, without wrapping
+      // them in an object URL — the shared decrypt path behind both
+      // folderFileUrl (below) and the flat-file<->folder move helpers.
+      // Calls thenDo(null, { bytes: Uint8Array, mime, name, size }).
+      _fetchFolderFileBytes: function (handle, folderObjId, fileEntry, thenDo) {
         var self = this;
         var c = lively.identity.crypto;
-
-        function withPlainBlob(plainBlob) {
-          var url = URL.createObjectURL(plainBlob);
-          self._urlCache[cacheKey] = url;
-          thenDo(null, url);
-        }
 
         self.fetchFolder(handle, folderObjId, function (err, folder) {
           if (err) return thenDo(err);
@@ -1059,7 +1067,9 @@ module('lively.identity.FileCrypto')
               if (err) return thenDo(err);
               self._decryptBlobChunked(response, folder.dek, function (err, plainBlob) {
                 if (err) return thenDo(err);
-                withPlainBlob(new Blob([plainBlob], { type: fileEntry.mime || 'application/octet-stream' }));
+                plainBlob.arrayBuffer().then(function (buf) {
+                  thenDo(null, { bytes: new Uint8Array(buf), mime: fileEntry.mime, name: fileEntry.name, size: fileEntry.size });
+                }).catch(function (e) { thenDo(e); });
               });
             });
             return;
@@ -1069,8 +1079,134 @@ module('lively.identity.FileCrypto')
             if (err) return thenDo(err);
             c.decryptBytes(cipherBytes, fileEntry.blobNonce, folder.dek, function (err, plainBytes) {
               if (err) return thenDo(err);
-              withPlainBlob(new Blob([plainBytes], { type: fileEntry.mime || 'application/octet-stream' }));
+              thenDo(null, { bytes: plainBytes, mime: fileEntry.mime, name: fileEntry.name, size: fileEntry.size });
             });
+          });
+        });
+      },
+
+      // fetchFolder (dek cache hit after the first call) -> blob fetch ->
+      // decrypt -> object URL, cached per blobCid same as objectUrlFor.
+      // fileEntry: one entry from fetchFolder's `files` array.
+      folderFileUrl: function (handle, folderObjId, fileEntry, thenDo) {
+        if (!this._urlCache) this._urlCache = {};
+        var cacheKey = 'folder-file:' + fileEntry.blobCid;
+        if (this._urlCache[cacheKey]) return thenDo(null, this._urlCache[cacheKey]);
+
+        var self = this;
+        self._fetchFolderFileBytes(handle, folderObjId, fileEntry, function (err, result) {
+          if (err) return thenDo(err);
+          var blob = new Blob([result.bytes], { type: result.mime || 'application/octet-stream' });
+          var url = URL.createObjectURL(blob);
+          self._urlCache[cacheKey] = url;
+          thenDo(null, url);
+        });
+      },
+
+      // Moves an existing flat file into a folder. There is no "attach
+      // existing blob" shortcut here — a flat file's blob is encrypted under
+      // its own standalone dek, a folder member's under the folder's fixed
+      // dek, and those never coincide — so this is a genuine decrypt +
+      // re-encrypt + reupload, then the original (now orphaned) blob is
+      // deleted to reclaim storage. fileEnvelope needs only .objId (to fetch
+      // and decrypt) and .blobCid (to delete afterward) — a caller chaining
+      // this after moveFileOutOfFolder can pass a minimal {objId, blobCid}
+      // rather than a full envelope. The original envelope itself can't be
+      // removed (append-only store, same limitation as _deleteFile) so it
+      // keeps listing with a now-gone blob, same as any other file delete.
+      // opts: { name } — override for the member's name, same as
+      // addFileToFolder. Calls thenDo(null, { id, folderObjId }).
+      moveFileIntoFolder: function (handle, fileEnvelope, folderObjId, opts, thenDo) {
+        if (typeof opts === 'function') { thenDo = opts; opts = {}; }
+        opts = opts || {};
+        var self = this;
+        self.fetchAndDecrypt(handle, fileEnvelope.objId, function (err, result) {
+          if (err) return thenDo(err);
+          var blob = new Blob([result.bytes], { type: result.mime || 'application/octet-stream' });
+          self.addFileToFolder(handle, folderObjId, blob, { name: opts.name || result.name }, function (err, added) {
+            if (err) return thenDo(err);
+            self._deleteBlob(handle, fileEnvelope.blobCid, function (deleteErr) {
+              if (deleteErr) console.warn('[FileCrypto] moveFileIntoFolder: could not delete original blob (non-fatal):', deleteErr.message);
+              thenDo(null, { id: added.id, folderObjId: folderObjId });
+            });
+          });
+        });
+      },
+
+      // Reverse of moveFileIntoFolder: decrypt a folder member's bytes and
+      // re-upload them as a brand-new standalone file envelope under a FRESH
+      // dek — never reuse the folder's own dek for a file living outside the
+      // folder, that would leak the container's shared secret past its own
+      // scope — then drop the member entry from the folder (the now-
+      // unreferenced blob is left in place, same accepted non-goal
+      // removeFileFromFolder's own comment already documents).
+      // fileEntry: one entry from fetchFolder's `files` array. opts:
+      // { visibility, name, onWaiting } — visibility defaults to 'private'
+      // (a folder member has no visibility of its own to inherit; it can
+      // never have been public in the first place).
+      // Calls thenDo(null, { objId, blobCid }).
+      moveFileOutOfFolder: function (handle, folderObjId, fileEntry, opts, thenDo) {
+        if (typeof opts === 'function') { thenDo = opts; opts = {}; }
+        opts = opts || {};
+        var self = this;
+        self._fetchFolderFileBytes(handle, folderObjId, fileEntry, function (err, result) {
+          if (err) return thenDo(err);
+          var blob = new Blob([result.bytes], { type: result.mime || 'application/octet-stream' });
+          self.encryptAndUpload(blob, {
+            visibility: opts.visibility || 'private',
+            name: opts.name || result.name,
+            onWaiting: opts.onWaiting,
+          }, function (err, uploaded) {
+            if (err) return thenDo(err);
+            self.removeFileFromFolder(handle, folderObjId, fileEntry.id, function (removeErr) {
+              if (removeErr) console.warn('[FileCrypto] moveFileOutOfFolder: could not remove folder member (non-fatal):', removeErr.message);
+              thenDo(null, { objId: uploaded.objId, blobCid: uploaded.blobCid });
+            });
+          });
+        });
+      },
+
+      // Decrypt a private/shared file envelope's small metadata payload only
+      // (no blob fetch) — for on-demand size display (FilesBrowser's "sort
+      // by size", which deliberately avoids doing this for every file on
+      // every open). A public file's metadata is already plaintext.
+      // Calls thenDo(null, { name, mime, size, blobCid, blobNonce, chunked }).
+      decryptFileEnvelopeMetadata: function (envelope, thenDo) {
+        var self = this;
+        var c = lively.identity.crypto;
+        var wa = lively.identity.webAuthn;
+        var user = lively.identity.did.currentUser();
+        if (!user) return thenDo(new Error('decryptFileEnvelopeMetadata: no identity session'));
+        if (envelope.visibility === 'public') return thenDo(null, envelope.record.payload);
+
+        c.computeCid(envelope.record.payload, function (err, expectedCid) {
+          if (err) return thenDo(err);
+          if (expectedCid !== envelope.record.cid) {
+            return thenDo(new Error('decryptFileEnvelopeMetadata: CID mismatch for objId=' + envelope.objId));
+          }
+
+          function withDek(cb) {
+            var isOwner = user.did === envelope.did;
+            if (isOwner) {
+              self._withKek(user, null, function (err, kek) {
+                if (err) return cb(err);
+                c.unwrapDek(envelope.record.wrappedDek, kek, cb);
+              });
+              return;
+            }
+            var myEntry = (envelope.record.recipients || []).find(function (r) { return r.did === user.did; });
+            if (!myEntry) return cb(new Error('decryptFileEnvelopeMetadata: no sealed DEK for current user'));
+            var ch = new Uint8Array(32);
+            crypto.getRandomValues(ch);
+            wa.deriveX25519KeyPair({ credentialId: user.credentialId, rpId: user.rpId, challenge: ch }, function (err, pair) {
+              if (err) return cb(err);
+              c.openSealedBox(myEntry.sealedDek, pair.publicKey, pair.privateKey, cb);
+            });
+          }
+
+          withDek(function (err, dek) {
+            if (err) return thenDo(err);
+            c.decryptPayload(envelope.record.payload, envelope.record.nonce, dek, thenDo);
           });
         });
       },
