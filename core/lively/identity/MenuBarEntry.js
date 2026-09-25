@@ -69,7 +69,7 @@ module("lively.identity.MenuBarEntry")
             ["Messages",           function () { self.openMessages(); }],
             ["My worlds",          function () { self.openMyWorlds(); }],
             ["My Constellations",  function () { self.openMyConstellations(); }],
-            ["Map",                function () { self.openMaps(); }],
+            ["Transit",            function () { self.openTransit(); }],
             ["Calendar",           function () { self.openCalendar(); }],
             ["Wallet",             function () { self.openWallet(); }],
             ["Mailbox",            function () { self.openMailbox(); }],
@@ -178,7 +178,7 @@ module("lively.identity.MenuBarEntry")
           });
         },
 
-        openMaps: function openMaps() {
+        openTransit: function openTransit() {
           lively.require("lively.transit.TransitMapApp").toRun(function () {
             lively.transit.TransitMapApp.open();
           });

@@ -43,7 +43,14 @@ module("lively.transit.TransitMapApp")
         var planner = lively.transit.DestinationPlanner.create(mapMorph, lively.pt(16, APP_H - 16));
         app.addMorph(planner);
 
-        app.openInWorld(optPos || lively.morphic.World.current().visibleBounds().center().subPt(lively.pt(APP_W / 2, APP_H / 2)));
+        // Real classic Window chrome (drag/resize/collapse/close, Material
+        // Symbols icon controls by default) rather than a bare floating box
+        // — same pattern as CalendarApp.js/FilesBrowser.js's open().
+        app.openInWindow({
+          title: "Transit",
+          pos: optPos || lively.morphic.World.current().visibleBounds().center().subPt(lively.pt(APP_W / 2, APP_H / 2)),
+        });
+        app.getWindow().comeForward();
         return app;
       },
     };
