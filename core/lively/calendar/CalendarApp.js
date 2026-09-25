@@ -30,6 +30,8 @@
 module("lively.calendar.CalendarApp")
   .requires(
     "lively.morphic.Core",
+    "lively.morphic.TextFormattingSupport",
+    "lively.morphic.TextFormattingToolbar",
     "lively.calendar.CalendarImport",
     "lively.identity.DID",
     "lively.identity.PostCardUtils",
@@ -74,6 +76,14 @@ module("lively.calendar.CalendarApp")
     var ACCENT_DARK = Color.rgb(209, 61, 112);
     var ACCENT_LIGHT = Color.rgb(255, 238, 244);
     var HOVER_BG = Color.rgb(245, 245, 248);
+
+    // Memos render in a deliberately neutral/muted style (not the PALETTE
+    // colors used for calendars/events) so they read as "to-do" rather
+    // than "scheduled" at a glance, alongside event chips in the same cell.
+    var MEMO_BG = Color.rgb(243, 244, 246);
+    var MEMO_BG_DONE = Color.rgb(236, 236, 238);
+    var MEMO_BORDER = Color.rgb(216, 216, 220);
+    var MEMO_ACCENT = Color.rgb(120, 120, 128);
 
     // ─── date helpers (module-scope, plain data in/out — no morphs) ────
 
@@ -253,7 +263,7 @@ module("lively.calendar.CalendarApp")
         // Connection to the global lively.identity.did singleton — Shop.js's
         // own doNotSerialize comment explains why that can't survive
         // serialization (produces broken stub registry entries).
-        doNotSerialize: ["_refs", "_popover", "_scrim", "_dialog", "friends", "_identityConnection"],
+        doNotSerialize: ["_refs", "_popover", "_scrim", "_dialog", "_chooser", "_searchDropdown", "_searchScrim", "_dlgEditingMemoId", "friends", "_identityConnection"],
       },
 
       "initialization",
@@ -280,6 +290,7 @@ module("lively.calendar.CalendarApp")
               { id: "manual", name: "My Events", color: PALETTE[0], visible: true, source: "manual" },
             ];
             this.events = [];
+            this.memos = [];
             this.currentDate = startOfDay(new Date());
             this.currentView = "month";
             this.nextId = 1;
@@ -507,6 +518,59 @@ module("lively.calendar.CalendarApp")
           var cal = this._calendarById(id);
           if (cal) cal.visible = !cal.visible;
         },
+
+        memosOnDay: function (d) {
+          return this.memos.filter(function (m) { return isSameDay(m.date, d); });
+        },
+
+        addManualMemo: function (data) {
+          var id = "memo-" + (this.nextId++);
+          this.memos.push({
+            id: id, date: startOfDay(data.date),
+            bodyMarkup: data.bodyMarkup || [], bodyText: data.bodyText || "",
+            tags: data.tags || [], done: false,
+          });
+          return id;
+        },
+
+        updateMemo: function (id, patch) {
+          var m = this._memoById(id);
+          if (m) Object.extend(m, patch);
+        },
+
+        _memoById: function (id) {
+          for (var i = 0; i < this.memos.length; i++) if (this.memos[i].id === id) return this.memos[i];
+          return null;
+        },
+
+        deleteMemo: function (id) {
+          this.memos = this.memos.filter(function (m) { return m.id !== id; });
+        },
+
+        toggleMemoDone: function (id) {
+          var m = this._memoById(id);
+          if (m) m.done = !m.done;
+        },
+
+        // Unified events+memos search, used by the header search field.
+        // Plain lowercase-substring match — the dataset here is small
+        // (a single user's own calendar, held entirely in memory), so
+        // there's no need for anything fancier.
+        searchAll: function (query) {
+          query = (query || "").trim().toLowerCase();
+          if (!query) return [];
+          var results = [];
+          this.visibleEvents().forEach(function (e) {
+            var hay = [e.title, e.location, e.description].join(" ").toLowerCase();
+            if (hay.indexOf(query) !== -1) results.push({ type: "event", date: e.start, item: e });
+          });
+          this.memos.forEach(function (m) {
+            var hay = [m.bodyText, (m.tags || []).join(" ")].join(" ").toLowerCase();
+            if (hay.indexOf(query) !== -1) results.push({ type: "memo", date: m.date, item: m });
+          });
+          results.sort(function (a, b) { return a.date - b.date; });
+          return results.slice(0, 8);
+        },
       },
 
       "navigation",
@@ -554,7 +618,13 @@ module("lively.calendar.CalendarApp")
           this._refs.sidebar.setPosition(lively.pt(0, HEADER_H));
           this._refs.mainArea.setPosition(lively.pt(SIDEBAR_W, HEADER_H));
           this._refs.mainArea.setExtent(lively.pt(w - SIDEBAR_W, h - HEADER_H));
-          this._refs.viewSwitcher.setPosition(lively.pt(w - 232, 14));
+          var switcherX = w - 232;
+          this._refs.viewSwitcher.setPosition(lively.pt(switcherX, 14));
+          // Search field sits between the fixed title box and the switcher,
+          // which itself moves with window width — clamp its width so it
+          // never overlaps the switcher on a narrower window.
+          this._refs.searchField.setExtent(lively.pt(Math.max(40, Math.min(300, switcherX - 16 - 628)), 30));
+          this._hideSearchResults();
 
           this._renderMain();
           this._renderSidebar();
@@ -584,6 +654,22 @@ module("lively.calendar.CalendarApp")
           var title = label(lively.rect(292, 18, 300, 24), "", { px: 16, bold: true });
           header.addMorph(title);
           this._refs.headerTitle = title;
+
+          // ─── search (events + memos) — sits in the free gap between the
+          // title label's own fixed-width box (ends x=592, regardless of
+          // actual title text length) and the view switcher (starts
+          // x=APP_W-232=948) ───
+          header.addMorph(iconGlyph(lively.rect(606, 19, 20, 22), "search", { px: 16, color: TEXT_MUTED }));
+          var searchField = textInput(lively.rect(628, 15, 300, 30), "");
+          searchField.applyStyle({ borderRadius: 15, padding: lively.rect(10, 7, 0, 0) });
+          header.addMorph(searchField);
+          this._refs.searchField = searchField;
+          var origSearchOnKeyUp = searchField.onKeyUp.bind(searchField);
+          searchField.onKeyUp = function (evt) {
+            var result = origSearchOnKeyUp(evt);
+            self._renderSearchResults();
+            return result;
+          };
 
           var switcher = box(lively.rect(APP_W - 232, 14, 216, 32), Color.rgb(248, 249, 250), { radius: 16, borderWidth: 1, borderColor: BORDER, clip: "hidden" });
           header.addMorph(switcher);
@@ -618,6 +704,62 @@ module("lively.calendar.CalendarApp")
         },
       },
 
+      "search",
+      {
+        _renderSearchResults: function () {
+          var self = this;
+          var query = (this._refs.searchField.textString || "").trim();
+          if (!query) { this._hideSearchResults(); return; }
+          var results = this.searchAll(query);
+          this._hideSearchResults();
+          if (!results.length) return;
+
+          var searchScrim = box(lively.rect(0, 0, this._w, this._h), Color.rgba(0, 0, 0, 0), { clickable: true });
+          searchScrim.onMouseUp = function (evt) { self._hideSearchResults(); evt.stop(); return true; };
+          this.addMorph(searchScrim);
+          this._searchScrim = searchScrim;
+
+          var fieldExtent = this._refs.searchField.getExtent();
+          var fieldPos = this.localize(this._refs.searchField.worldPoint(lively.pt(0, fieldExtent.y)));
+          var dw = Math.max(260, fieldExtent.x + 20);
+          var rowH = 34;
+          var dh = results.length * rowH + 8;
+          var dx = Math.min(Math.max(0, fieldPos.x - 10), this._w - dw - 8);
+          var dy = fieldPos.y + 6;
+
+          var dropdown = box(lively.rect(dx, dy, dw, dh), Color.white, { radius: 8, borderWidth: 1, borderColor: BORDER, clip: "auto", clickable: true });
+          this.addMorph(dropdown);
+          this._searchDropdown = dropdown;
+
+          results.forEach(function (r, i) {
+            var row = box(lively.rect(4, 4 + i * rowH, dw - 8, rowH - 2), null, { clickable: true, radius: 4 });
+            var isMemo = r.type === "memo";
+            row.addMorph(iconGlyph(lively.rect(6, (rowH - 2 - 16) / 2, 16, 16), isMemo ? "event_note" : "event", { px: 14, color: isMemo ? MEMO_ACCENT : self.colorForEvent(r.item) }));
+            var titleText = isMemo ? (r.item.bodyText || "(empty memo)") : r.item.title;
+            row.addMorph(label(lively.rect(28, 3, dw - 100, 15), titleText, { px: 10.5 }));
+            row.addMorph(label(lively.rect(28, 17, dw - 100, 13), fmtDayTitle(r.date), { px: 8.5, color: TEXT_MUTED }));
+            row.onMouseOver = function () { row.applyStyle({ fill: HOVER_BG }); };
+            row.onMouseOut = function () { row.applyStyle({ fill: null }); };
+            row.onMouseUp = function (evt) {
+              // Popover positioning reads anchorMorph.worldPoint(...), so it
+              // has to run BEFORE the dropdown (and this row) is torn down —
+              // hideSearchResults happens last, purely for cleanup.
+              self.goToDate(r.date);
+              if (isMemo) self._showMemoPopover(r.item, row);
+              else self._showEventPopover(r.item, row);
+              self._hideSearchResults();
+              evt.stop(); return true;
+            };
+            dropdown.addMorph(row);
+          });
+        },
+
+        _hideSearchResults: function () {
+          if (this._searchDropdown) { this._searchDropdown.remove(); this._searchDropdown = null; }
+          if (this._searchScrim) { this._searchScrim.remove(); this._searchScrim = null; }
+        },
+      },
+
       "chrome: sidebar",
       {
         _buildSidebar: function () {
@@ -630,7 +772,7 @@ module("lively.calendar.CalendarApp")
           sidebar.addMorph(rightLine);
           this._refs.sidebarRightLine = rightLine;
 
-          sidebar.addMorph(pillButton(lively.rect(16, 16, SIDEBAR_W - 32, 36), "+  Create", function () { self._openAddEventDialog(self.currentDate); },
+          sidebar.addMorph(pillButton(lively.rect(16, 16, SIDEBAR_W - 32, 36), "+  Create", function () { self._openCreateChooser(self.currentDate); },
             { fill: ACCENT, textColor: Color.white, radius: 18, borderWidth: 0, px: 13, bold: true, hoverFill: ACCENT_DARK }));
 
           sidebar.addMorph(pillButton(lively.rect(16, 60, SIDEBAR_W - 32, 30), "Import .ics / .vcs / .csv", function () { self._promptImportFile(); },
@@ -754,7 +896,7 @@ module("lively.calendar.CalendarApp")
             cell.addMorph(dayLbl);
             if (isSel) cell.applyStyle({ fill: ACCENT, radius: cellH / 2 });
             cell.onMouseUp = (function (day) {
-              return function (evt) { self.goToDate(day); evt.stop(); return true; };
+              return function (evt) { self.goToDate(day); self._openCreateChooser(day); evt.stop(); return true; };
             })(d);
             mini.addMorph(cell);
           }
@@ -831,17 +973,20 @@ module("lively.calendar.CalendarApp")
             // win over an event chip nested inside it — chip.onMouseUp would
             // never get a chance to run once cell calls evt.stop() first.
             // Cell hit-tests its own chip/"+N more" children itself instead,
-            // falling back to "empty day cell -> open add-event dialog".
+            // falling back to "empty day cell -> open create chooser".
             cell.onMouseUp = (function (day, cellRef) {
               return function (evt) {
                 var localPt = cellRef.localize(evt.getPosition());
                 var hitChip = cellRef.submorphs.find(function (m) { return m._calEvent && m.bounds().containsPoint(localPt); });
+                var hitMemoChip = !hitChip && cellRef.submorphs.find(function (m) { return m._calMemo && m.bounds().containsPoint(localPt); });
                 if (hitChip) {
                   self._showEventPopover(hitChip._calEvent, hitChip);
+                } else if (hitMemoChip) {
+                  self._showMemoPopover(hitMemoChip._calMemo, hitMemoChip);
                 } else {
                   var hitMore = cellRef.submorphs.find(function (m) { return m._calMoreDay && m.bounds().containsPoint(localPt); });
                   if (hitMore) { self.goToDate(hitMore._calMoreDay); self.setView("day"); }
-                  else { self._openAddEventDialog(day); }
+                  else { self._openCreateChooser(day); }
                 }
                 evt.stop();
                 return true;
@@ -860,16 +1005,26 @@ module("lively.calendar.CalendarApp")
             }
 
             var dayEvents = this.eventsOverlapping(d, addDays(d, 1));
+            var dayMemos = this.memosOnDay(d);
+            var dayItems = dayEvents.map(function (e) { return { type: "event", data: e }; })
+              .concat(dayMemos.map(function (m) { return { type: "memo", data: m }; }));
             var chipH = 16, chipY = 26;
             var maxChips = Math.max(1, Math.floor((rowH - chipY - 4) / chipH));
-            var shown = dayEvents.slice(0, maxChips - (dayEvents.length > maxChips ? 1 : 0));
-            shown.forEach(function (e, idx) {
-              var chip = self._makeEventChip(lively.rect(2, chipY + idx * chipH, colW - 4, chipH - 2), e, "month");
-              chip._calEvent = e; // read by cell.onMouseUp's manual hit-test above
-              cell.addMorph(chip);
+            var shown = dayItems.slice(0, maxChips - (dayItems.length > maxChips ? 1 : 0));
+            shown.forEach(function (it, idx) {
+              var rect = lively.rect(2, chipY + idx * chipH, colW - 4, chipH - 2);
+              if (it.type === "event") {
+                var chip = self._makeEventChip(rect, it.data, "month");
+                chip._calEvent = it.data; // read by cell.onMouseUp's manual hit-test above
+                cell.addMorph(chip);
+              } else {
+                var mchip = self._makeMemoChip(rect, it.data, "month");
+                mchip._calMemo = it.data; // read by cell.onMouseUp's manual hit-test above
+                cell.addMorph(mchip);
+              }
             });
-            if (dayEvents.length > shown.length) {
-              var more = label(lively.rect(2, chipY + shown.length * chipH, colW - 4, chipH), "+" + (dayEvents.length - shown.length) + " more", { px: 9.5, color: TEXT_MUTED });
+            if (dayItems.length > shown.length) {
+              var more = label(lively.rect(2, chipY + shown.length * chipH, colW - 4, chipH), "+" + (dayItems.length - shown.length) + " more", { px: 9.5, color: TEXT_MUTED });
               more.eventsAreIgnored = false;
               more.applyStyle({ handStyle: "pointer" });
               more._calMoreDay = d; // read by cell.onMouseUp's manual hit-test above
@@ -901,15 +1056,22 @@ module("lively.calendar.CalendarApp")
           });
           main.addMorph(box(lively.rect(0, headerH - 1, w, 1), BORDER));
 
-          // all-day row
-          var alldayEvents = days.map(function (d) { return self.eventsOverlapping(d, addDays(d, 1)).filter(function (e) { return e.allDay; }); });
-          var maxAllDay = Math.max(0, alldayEvents.reduce(function (m, arr) { return Math.max(m, arr.length); }, 0));
+          // all-day row — memos have no time component, so they render here
+          // alongside all-day events rather than in the timed hour grid.
+          var alldayItems = days.map(function (d) {
+            var evs = self.eventsOverlapping(d, addDays(d, 1)).filter(function (e) { return e.allDay; })
+              .map(function (e) { return { type: "event", data: e }; });
+            var memos = self.memosOnDay(d).map(function (m) { return { type: "memo", data: m }; });
+            return evs.concat(memos);
+          });
+          var maxAllDay = Math.max(0, alldayItems.reduce(function (m, arr) { return Math.max(m, arr.length); }, 0));
           var alldayH = maxAllDay ? maxAllDay * ALLDAY_ROW_H + 4 : 0;
           if (alldayH) {
-            alldayEvents.forEach(function (evs, i) {
+            alldayItems.forEach(function (items, i) {
               var x = TIME_GUTTER_W + i * colW;
-              evs.forEach(function (e, row) {
-                var chip = self._makeEventChip(lively.rect(x + 1, headerH + 2 + row * ALLDAY_ROW_H, colW - 2, ALLDAY_ROW_H - 2), e, "block");
+              items.forEach(function (it, row) {
+                var rect = lively.rect(x + 1, headerH + 2 + row * ALLDAY_ROW_H, colW - 2, ALLDAY_ROW_H - 2);
+                var chip = it.type === "event" ? self._makeEventChip(rect, it.data, "block") : self._makeMemoChip(rect, it.data, "block");
                 main.addMorph(chip);
               });
             });
@@ -939,7 +1101,7 @@ module("lively.calendar.CalendarApp")
             var x = TIME_GUTTER_W + i * colW;
             var dayCol = box(lively.rect(x, 0, colW, contentH), Color.rgba(0, 0, 0, 0), { clickable: true });
             dayCol.onMouseUp = (function (day) {
-              return function (evt) { self._hidePopover(); self._openAddEventDialog(day); evt.stop(); return true; };
+              return function (evt) { self._hidePopover(); self._openCreateChooser(day); evt.stop(); return true; };
             })(d);
             scrollBox.addMorph(dayCol);
           });
@@ -1073,6 +1235,109 @@ module("lively.calendar.CalendarApp")
         _hidePopover: function () {
           if (this._popover) { this._popover.remove(); this._popover = null; }
           if (this._scrim) { this._scrim.remove(); this._scrim = null; }
+        },
+      },
+
+      "memo chips + popover",
+      {
+        _makeMemoChip: function (rect, m, style) {
+          var self = this;
+          var chip;
+          var glyph = m.done ? "check_box" : "check_box_outline_blank";
+          var textColor = m.done ? TEXT_MUTED : TEXT_PRIMARY;
+          if (style === "block") {
+            chip = box(rect, m.done ? MEMO_BG_DONE : MEMO_BG, { radius: 3, clip: "hidden", clickable: true, borderWidth: 1, borderColor: MEMO_BORDER });
+            chip.addMorph(iconGlyph(lively.rect(4, rect.height / 2 - 7, 14, 14), glyph, { px: 13, color: MEMO_ACCENT }));
+            chip.addMorph(label(lively.rect(20, 2, rect.width - 24, rect.height - 4), m.bodyText || "", { px: 10, color: textColor }));
+          } else {
+            chip = box(rect, null, { radius: 3, clip: "hidden", clickable: true });
+            chip.addMorph(iconGlyph(lively.rect(1, rect.height / 2 - 6, 12, 12), glyph, { px: 11, color: MEMO_ACCENT }));
+            chip.addMorph(label(lively.rect(14, 0, rect.width - 16, rect.height), m.bodyText || "", { px: 9.5, color: textColor }));
+          }
+          chip.onMouseUp = function (evt) {
+            self._showMemoPopover(m, chip);
+            evt.stop();
+            return true;
+          };
+          return chip;
+        },
+
+        _showMemoPopover: function (m, anchorMorph) {
+          var self = this;
+          this._hidePopover();
+
+          var scrim = box(lively.rect(0, 0, this._w, this._h), Color.rgba(0, 0, 0, 0), { clickable: true });
+          scrim.onMouseUp = function (evt) { self._hidePopover(); evt.stop(); return true; };
+          this.addMorph(scrim);
+          this._scrim = scrim;
+
+          var pw = 280, bodyH = 80;
+          var hCalc = 40;
+          if (m.tags && m.tags.length) hCalc += 24;
+          hCalc += bodyH;
+          var ph = hCalc + 44;
+
+          var pos = this.localize(anchorMorph.worldPoint(lively.pt(0, anchorMorph.getExtent().y)));
+          var px = Math.min(Math.max(0, pos.x), this._w - pw - 8);
+          var py = Math.min(Math.max(HEADER_H, pos.y), this._h - ph - 8);
+
+          var pop = box(lively.rect(px, py, pw, ph), Color.white, { radius: 8, borderWidth: 1, borderColor: BORDER, clip: "hidden", clickable: true });
+          pop.addMorph(box(lively.rect(0, 0, 5, ph), MEMO_ACCENT));
+
+          var checkbox = box(lively.rect(16, 12, 18, 18), m.done ? MEMO_ACCENT : Color.white, { borderWidth: 1.5, borderColor: MEMO_ACCENT, radius: 3, clickable: true });
+          if (m.done) checkbox.addMorph(iconGlyph(lively.rect(0, -1, 18, 18), "check", { px: 14, color: Color.white }));
+          checkbox.onMouseUp = function (evt) {
+            self.toggleMemoDone(m.id);
+            self._showMemoPopover(self._memoById(m.id), anchorMorph);
+            self._renderMain();
+            evt.stop(); return true;
+          };
+          pop.addMorph(checkbox);
+
+          pop.addMorph(label(lively.rect(42, 12, pw - 90, 18), fmtDayTitle(m.date), { px: 11, bold: true, color: TEXT_MUTED }));
+          pop.addMorph(iconButton(lively.rect(pw - 32, 8, 24, 24), "close", function () { self._hidePopover(); }, { px: 16 }));
+
+          var fieldY = 40;
+          if (m.tags && m.tags.length) {
+            var tagsRow = box(lively.rect(16, fieldY, pw - 32, 20), null);
+            tagsRow.eventsAreIgnored = true;
+            var tx = 0;
+            m.tags.forEach(function (tag) {
+              var tw = Math.min(100, Math.max(30, 16 + tag.length * 6));
+              var pill = box(lively.rect(tx, 0, tw, 18), ACCENT_LIGHT, { radius: 9 });
+              pill.addMorph(label(lively.rect(6, 0, tw - 12, 18), tag, { px: 9, color: ACCENT }));
+              tagsRow.addMorph(pill);
+              tx += tw + 4;
+            });
+            pop.addMorph(tagsRow);
+            fieldY += 24;
+          }
+
+          var bodyPreview = new lively.morphic.Text(lively.rect(16, fieldY, pw - 32, bodyH));
+          bodyPreview.applyStyle({
+            fontSize: 10.5 * 0.75, borderWidth: 0, fill: null,
+            allowInput: false, selectable: false, clipMode: "auto",
+            whiteSpaceHandling: "normal", textColor: TEXT_PRIMARY,
+          });
+          noDrag(bodyPreview);
+          bodyPreview.eventsAreIgnored = true;
+          if (m.bodyMarkup && m.bodyMarkup.length) bodyPreview.setRichTextMarkup(m.bodyMarkup);
+          else bodyPreview.textString = m.bodyText || "";
+          pop.addMorph(bodyPreview);
+
+          pop.addMorph(pillButton(lively.rect(16, ph - 32, 70, 22), "Edit", function () {
+            self._hidePopover();
+            self._openMemoDialog(m.date, m);
+          }, { px: 10, radius: 4, fill: Color.white }));
+
+          pop.addMorph(pillButton(lively.rect(94, ph - 32, 80, 22), "Delete", function () {
+            self.deleteMemo(m.id);
+            self._hidePopover();
+            self._renderMain();
+          }, { px: 10, radius: 4, fill: Color.rgb(253, 236, 234), textColor: Color.rgb(197, 48, 48), borderWidth: 0 }));
+
+          this.addMorph(pop);
+          this._popover = pop;
         },
       },
 
@@ -1268,6 +1533,139 @@ module("lively.calendar.CalendarApp")
         _closeDialog: function () {
           if (this._dialog) { this._dialog.remove(); this._dialog = null; }
           if (this._scrim) { this._scrim.remove(); this._scrim = null; }
+        },
+      },
+
+      "create chooser",
+      {
+        // Shown from the "+ Create" button, a mini-calendar day click, and
+        // an empty Month/Week/Day cell click — asks Memo-or-Event before
+        // handing off to that content type's own dialog, prefilled with
+        // whichever day was clicked.
+        _openCreateChooser: function (prefillDate) {
+          var self = this;
+          this._hidePopover();
+          this._closeDialog();
+          this._closeChooser();
+
+          var scrim = box(lively.rect(0, 0, this._w, this._h), Color.rgba(0, 0, 0, 0.2), { clickable: true });
+          scrim.onMouseUp = function (evt) { self._closeChooser(); evt.stop(); return true; };
+          this.addMorph(scrim);
+          this._scrim = scrim;
+
+          var cw = 300, ch = 190;
+          var cx = (this._w - cw) / 2, cy = Math.max(8, (this._h - ch) / 2);
+          var chooser = box(lively.rect(cx, cy, cw, ch), Color.white, { radius: 10, borderWidth: 1, borderColor: BORDER, clip: "hidden", clickable: true });
+          this.addMorph(chooser);
+          this._chooser = chooser;
+
+          chooser.addMorph(label(lively.rect(20, 16, cw - 60, 22), "Create new…", { px: 14, bold: true }));
+          chooser.addMorph(iconButton(lively.rect(cw - 40, 12, 26, 26), "close", function () { self._closeChooser(); }, { px: 17 }));
+
+          var optW = cw - 40, optH = 56;
+
+          var memoOpt = box(lively.rect(20, 54, optW, optH), Color.white, { radius: 8, borderWidth: 1.5, borderColor: MEMO_BORDER, clickable: true });
+          memoOpt.addMorph(iconGlyph(lively.rect(14, (optH - 26) / 2, 26, 26), "event_note", { px: 22, color: MEMO_ACCENT }));
+          memoOpt.addMorph(label(lively.rect(50, (optH - 18) / 2, optW - 60, 18), "Memo", { px: 12.5, bold: true }));
+          memoOpt.onMouseOver = function () { memoOpt.applyStyle({ fill: MEMO_BG }); };
+          memoOpt.onMouseOut = function () { memoOpt.applyStyle({ fill: Color.white }); };
+          memoOpt.onMouseUp = function (evt) { self._closeChooser(); self._openMemoDialog(prefillDate); evt.stop(); return true; };
+          chooser.addMorph(memoOpt);
+
+          var eventOpt = box(lively.rect(20, 54 + optH + 12, optW, optH), Color.white, { radius: 8, borderWidth: 1.5, borderColor: BORDER, clickable: true });
+          eventOpt.addMorph(iconGlyph(lively.rect(14, (optH - 26) / 2, 26, 26), "event", { px: 22, color: ACCENT }));
+          eventOpt.addMorph(label(lively.rect(50, (optH - 18) / 2, optW - 60, 18), "Event", { px: 12.5, bold: true }));
+          eventOpt.onMouseOver = function () { eventOpt.applyStyle({ fill: ACCENT_LIGHT }); };
+          eventOpt.onMouseOut = function () { eventOpt.applyStyle({ fill: Color.white }); };
+          eventOpt.onMouseUp = function (evt) { self._closeChooser(); self._openAddEventDialog(prefillDate); evt.stop(); return true; };
+          chooser.addMorph(eventOpt);
+        },
+
+        _closeChooser: function () {
+          if (this._chooser) { this._chooser.remove(); this._chooser = null; }
+          if (this._scrim) { this._scrim.remove(); this._scrim = null; }
+        },
+      },
+
+      "add-memo dialog",
+      {
+        _openMemoDialog: function (prefillDate, existingMemo) {
+          var self = this;
+          this._hidePopover();
+          this._closeDialog();
+          this._closeChooser();
+
+          var scrim = box(lively.rect(0, 0, this._w, this._h), Color.rgba(0, 0, 0, 0.2), { clickable: true });
+          scrim.onMouseUp = function (evt) { self._closeDialog(); evt.stop(); return true; };
+          this.addMorph(scrim);
+          this._scrim = scrim;
+
+          var dw = 360, dh = 460;
+          var dlgY = Math.max(8, (this._h - dh) / 2);
+          var dlg = box(lively.rect((this._w - dw) / 2, dlgY, dw, dh), Color.white, { radius: 10, borderWidth: 1, borderColor: BORDER, clip: "auto", clickable: true });
+          this.addMorph(dlg);
+          this._dialog = dlg;
+          this._dlgEditingMemoId = existingMemo ? existingMemo.id : null;
+
+          dlg.addMorph(label(lively.rect(20, 16, dw - 60, 22), existingMemo ? "Edit memo" : "New memo", { px: 15, bold: true }));
+          dlg.addMorph(iconButton(lively.rect(dw - 40, 12, 26, 26), "close", function () { self._closeDialog(); }, { px: 17 }));
+
+          dlg.addMorph(label(lively.rect(20, 50, 60, 16), "Date", { px: 10, color: TEXT_MUTED }));
+          var dateField = textInput(lively.rect(20, 68, 130, 28), fmtYMD((existingMemo && existingMemo.date) || prefillDate || this.currentDate));
+          dlg.addMorph(dateField);
+          this._refs.memoDlgDate = dateField;
+
+          dlg.addMorph(label(lively.rect(20, 108, 80, 16), "Note", { px: 10, color: TEXT_MUTED }));
+          var bodyField = new lively.morphic.Text(lively.rect(20, 126, dw - 40, 220));
+          bodyField.applyStyle({
+            fontSize: 11 * 0.75, // real 11px — fontSize renders as pt, not px (see CLAUDE.md)
+            fill: Color.rgb(248, 249, 250),
+            borderWidth: 1, borderColor: BORDER, borderRadius: 4,
+            padding: lively.rect(8, 6, 0, 0),
+            textColor: TEXT_PRIMARY,
+            whiteSpaceHandling: "normal",
+            clipMode: "auto",
+          });
+          noDrag(bodyField);
+          // enableFormattingToolbar comes from lively.morphic.TextFormattingSupport
+          // (added directly onto Text's own prototype, not a subclass — see
+          // that file's header comment) and shows/hides the shared
+          // lively.morphic.TextFormattingToolbar singleton on focus/blur.
+          bodyField.enableFormattingToolbar && bodyField.enableFormattingToolbar();
+          if (existingMemo && existingMemo.bodyMarkup && existingMemo.bodyMarkup.length) bodyField.setRichTextMarkup(existingMemo.bodyMarkup);
+          else bodyField.textString = (existingMemo && existingMemo.bodyText) || "";
+          dlg.addMorph(bodyField);
+          this._refs.memoDlgBody = bodyField;
+
+          dlg.addMorph(label(lively.rect(20, 356, 200, 16), "Tags (comma-separated)", { px: 10, color: TEXT_MUTED }));
+          var tagsField = textInput(lively.rect(20, 374, dw - 40, 28), ((existingMemo && existingMemo.tags) || []).join(", "));
+          dlg.addMorph(tagsField);
+          this._refs.memoDlgTags = tagsField;
+
+          dlg.addMorph(pillButton(lively.rect(dw - 168, dh - 44, 76, 30), "Cancel", function () { self._closeDialog(); }, { fill: Color.white }));
+          dlg.addMorph(pillButton(lively.rect(dw - 86, dh - 44, 66, 30), "Save", function () { self._saveDialogMemo(); }, { fill: ACCENT, textColor: Color.white, borderWidth: 0 }));
+
+          bodyField.focus && bodyField.focus();
+        },
+
+        _saveDialogMemo: function () {
+          var r = this._refs;
+          var date = parseYMD(r.memoDlgDate.textString);
+          if (!date) { r.memoDlgDate.applyStyle({ borderColor: Color.red }); return; }
+
+          var bodyMarkup = r.memoDlgBody.getRichTextMarkup();
+          var bodyText = r.memoDlgBody.textString || "";
+          var tagsRaw = (r.memoDlgTags.textString || "").trim();
+          var tags = tagsRaw ? tagsRaw.split(",").map(function (t) { return t.trim(); }).filter(Boolean) : [];
+
+          if (this._dlgEditingMemoId) {
+            this.updateMemo(this._dlgEditingMemoId, { date: date, bodyMarkup: bodyMarkup, bodyText: bodyText, tags: tags });
+          } else {
+            this.addManualMemo({ date: date, bodyMarkup: bodyMarkup, bodyText: bodyText, tags: tags });
+          }
+          this._dlgEditingMemoId = null;
+          this._closeDialog();
+          this.goToDate(date);
         },
       },
 
