@@ -123,6 +123,18 @@ var DDL =
   '  hidden_at TEXT NOT NULL,' +
   '  PRIMARY KEY (did, obj_id)' +
   ');\n' +
+  // Mailbox "Collections" tab (PostcardDesignSpec-v2.md §6.2) -- a
+  // per-viewer save/bookmark of a postcard. collection_name is deliberately
+  // carried from v1 even though only one value ('Saved') is ever written or
+  // queried right now -- per §6.2, this lets a future UI add named/multiple
+  // collections without a migration. Never touches the envelope.
+  'CREATE TABLE IF NOT EXISTS postcard_collections (' +
+  '  did             TEXT NOT NULL,' +
+  '  collection_name TEXT NOT NULL DEFAULT \'Saved\',' +
+  '  obj_id          TEXT NOT NULL,' +
+  '  saved_at        TEXT NOT NULL,' +
+  '  PRIMARY KEY (did, collection_name, obj_id)' +
+  ');\n' +
   'CREATE TABLE IF NOT EXISTS part_aliases (' +
   '  did        TEXT NOT NULL,' +
   '  alias_name TEXT NOT NULL,' +
@@ -2111,6 +2123,105 @@ function getHiddenObjIdsForDid(did, thenDo) {
   });
 }
 
+// ─── mailbox "Collections" (save/bookmark, §6.2) ──────────────────────────────
+// v1 exposes exactly one collection, always the literal 'Saved' name -- the
+// route layer is expected to have already run _canReadEnvelope on objId
+// before calling saveToCollections (§6.2: "requires _canReadEnvelope on the
+// target ... you can only save something you can actually read"); this
+// function itself does no such check, same "trust the caller" split as the
+// rest of this file's per-relation tables.
+
+// Save (bookmark) objId into `did`'s 'Saved' collection -- idempotent, same
+// idiom as hidePostcardForDid above.
+// Calls thenDo(err).
+function saveToCollections(did, objId, thenDo) {
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'INSERT INTO postcard_collections (did, collection_name, obj_id, saved_at) VALUES ($1, $2, $3, $4)' +
+      ' ON CONFLICT (did, collection_name, obj_id) DO NOTHING',
+      [did, 'Saved', objId, new Date().toISOString()],
+      function (err) { thenDo(err || null); }
+    );
+  });
+}
+
+// Remove objId from `did`'s 'Saved' collection. Calls thenDo(err).
+function removeFromCollections(did, objId, thenDo) {
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'DELETE FROM postcard_collections WHERE did = $1 AND collection_name = $2 AND obj_id = $3',
+      [did, 'Saved', objId],
+      function (err) { thenDo(err || null); }
+    );
+  });
+}
+
+// List the current viewer's saved/bookmarked postcards, most-recently-saved
+// first (PostcardDesignSpec-v2.md Collections tab). opts: { limit, offset, q }
+// -- same q-filters-on-title shape as listPostcardsForUser, but ordered by
+// saved_at (when the bookmark was made) rather than the card's own id, and
+// offset-paginated like listInboxForHandle since this list is small and not
+// an append-only log. A deleted card (state.deleted) is silently excluded,
+// same as listPostcardsForUser -- the bookmark row itself is left in place
+// (no cascading delete), so it would reappear if the card were undeleted.
+// Author handle is deliberately NOT resolved here -- the DB layer never
+// calls handleRegistry; the route layer resolves did -> senderHandle.
+// Calls thenDo(null, { records: [{objId, did, state, created, constellation,
+// replyTo, visibility, savedAt}...], nextOffset: Number|null }).
+function listCollectionsForDid(did, opts, thenDo) {
+  var limit = (opts && opts.limit) || 20;
+  var offset = (opts && opts.offset) || 0;
+  var q = (opts && opts.q) || null;
+  var qLike = q ? '%' + _escapeLikePrefix(q) + '%' : null;
+
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+
+    var params = qLike ? [did, 'Saved', qLike] : [did, 'Saved'];
+    var limPh = params.length + 1;
+    var offPh = params.length + 2;
+
+    var sql =
+      'SELECT o.envelope, pc.saved_at FROM postcard_collections pc' +
+      ' INNER JOIN (' +
+      '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
+      '   WHERE type = \'postcard\'' +
+      '   GROUP BY obj_id' +
+      ' ) latest ON latest.obj_id = pc.obj_id' +
+      ' INNER JOIN objects o ON o.id = latest.max_id' +
+      ' WHERE pc.did = $1 AND pc.collection_name = $2' +
+      '   AND ((o.envelope #>> \'{state,deleted}\') IS NULL' +
+      '        OR (o.envelope #>> \'{state,deleted}\') <> \'true\')' +
+      (qLike ? '   AND (o.envelope #>> \'{state,title}\') ILIKE $3 ESCAPE \'\\\'' : '') +
+      ' ORDER BY pc.saved_at DESC' +
+      ' LIMIT $' + limPh + ' OFFSET $' + offPh;
+    params = params.concat([limit + 1, offset]);
+
+    pool.query(sql, params, function (err, result) {
+      if (err) return thenDo(err);
+      var rows = result.rows;
+      var hasMore = rows.length > limit;
+      if (hasMore) rows = rows.slice(0, limit);
+      var records = rows.map(function (r) {
+        var env = r.envelope;
+        return {
+          objId: env.objId,
+          did: env.did,
+          state: env.state || {},
+          created: env.created,
+          constellation: env.constellation || null,
+          replyTo: env.replyTo || null,
+          visibility: env.visibility || 'public',
+          savedAt: r.saved_at
+        };
+      });
+      thenDo(null, { records: records, nextOffset: hasMore ? offset + limit : null });
+    });
+  });
+}
+
 // ─── settings ─────────────────────────────────────────────────────────────────
 
 // Get the settings envelope for a DID. Returns null if none exists yet.
@@ -2362,6 +2473,9 @@ module.exports = {
   getReactionsForObjId:          getReactionsForObjId,
   hidePostcardForDid:            hidePostcardForDid,
   getHiddenObjIdsForDid:         getHiddenObjIdsForDid,
+  saveToCollections:             saveToCollections,
+  removeFromCollections:         removeFromCollections,
+  listCollectionsForDid:         listCollectionsForDid,
   setSentAtIfUnset:              setSentAtIfUnset,
   putInboxRecord:                putInboxRecord,
   listInboxForHandle:            listInboxForHandle,

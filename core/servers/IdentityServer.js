@@ -2330,6 +2330,60 @@ module.exports = function (route, app) {
     });
   });
 
+  // ─── mailbox Collections (save/bookmark) ────────────────────────────────────
+  // :handle must resolve to the caller's own DID, same ownership rule as
+  // mailbox hide above — a Collections list is personal, not a shared
+  // per-card thing. Saving/removing never touch the shared envelope.
+
+  app.get("/@:handle/collections", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your collections" });
+    var limit  = Math.min(parseInt(req.query.limit,  10) || 20, 100);
+    var offset = parseInt(req.query.offset, 10) || 0;
+    var q      = req.query.q || null;
+    objectRepo.listCollectionsForDid(req.identity.did, { limit: limit, offset: offset, q: q }, function (err, result) {
+      if (err) return res.status(500).json({ error: String(err) });
+      _resolveHandlesForDids(result.records.map(function (r) { return r.did; }), function (err2, didToHandle) {
+        if (err2) return res.status(500).json({ error: String(err2) });
+        result.records.forEach(function (r) { r.senderHandle = didToHandle[r.did] || null; });
+        res.json(result);
+      });
+    });
+  });
+
+  app.put("/@:handle/collections/:objId", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    var objId  = req.params.objId;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your collections" });
+    // §6.2: "requires _canReadEnvelope on the target ... you can only save
+    // something you can actually read" — same gate as PUT .../reactions and
+    // .../stars.
+    objectRepo.get(objId, function (err, envelope) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!envelope) return res.status(404).json({ error: "Object not found: " + objId });
+      if (!_canReadEnvelope(envelope, req.identity)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+      objectRepo.saveToCollections(req.identity.did, objId, function (err) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({ ok: true });
+      });
+    });
+  });
+
+  app.delete("/@:handle/collections/:objId", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    var objId  = req.params.objId;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your collections" });
+    objectRepo.removeFromCollections(req.identity.did, objId, function (err) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json({ ok: true });
+    });
+  });
+
   // POST /@:handle/inbox — deliver a post card reference to a recipient.
   // Checks the recipient's block list before writing.
   // Returns the byte-identical postal response for all failure causes (§2.3 anti-leak invariant).

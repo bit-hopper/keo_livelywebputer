@@ -242,6 +242,7 @@ module('lively.identity.PostCardMailbox')
           { id: 'returned',  label: 'Returned',      icon: 'assignment_return' },
           { id: 'blocked',   label: 'Blocked',       icon: 'block' },
           { id: 'own',       label: 'My Postcards',  icon: 'draft' },
+          { id: 'collections', label: 'Collections', icon: 'collections_bookmark' },
           { id: 'aliases',   label: 'Aliases',       icon: 'alternate_email' },
           { id: 'friends',   label: 'Friends',       icon: 'group' },
           { id: 'rss',       label: 'RSS',           icon: 'rss_feed' },
@@ -326,7 +327,7 @@ module('lively.identity.PostCardMailbox')
         // confusing than having to retype it.
         this._searchQuery = '';
         if (this._searchInput) this._searchInput.value = '';
-        var searchable = tab === 'received' || tab === 'delivered' || tab === 'returned' || tab === 'own';
+        var searchable = tab === 'received' || tab === 'delivered' || tab === 'returned' || tab === 'own' || tab === 'collections';
         if (this._searchBar) this._searchBar.style.display = searchable ? 'flex' : 'none';
 
         // The Map tab's Leaflet instance owns real DOM nodes inside
@@ -345,6 +346,7 @@ module('lively.identity.PostCardMailbox')
         if (tab === 'returned')  this._loadDeliveries('returned');
         if (tab === 'blocked')   this._loadBlocked();
         if (tab === 'own')       this._loadOwn();
+        if (tab === 'collections') this._loadCollections();
         if (tab === 'aliases')   this._loadAliases();
         if (tab === 'friends')   this._loadFriends();
         if (tab === 'rss')       this._loadRssFeeds();
@@ -359,6 +361,7 @@ module('lively.identity.PostCardMailbox')
         if (this._activeTab === 'delivered') this._loadDeliveries('delivered');
         if (this._activeTab === 'returned')  this._loadDeliveries('returned');
         if (this._activeTab === 'own')       this._loadOwn();
+        if (this._activeTab === 'collections') this._loadCollections();
       },
 
       // ── data fetching ─────────────────────────────────────────────────────
@@ -435,6 +438,53 @@ module('lively.identity.PostCardMailbox')
           self._renderOwnRecords(result.postcards || []);
         };
         xhr.onerror = function () { if (self._activeTab === 'own') self._showError('Network error'); };
+        xhr.send();
+      },
+
+      _loadCollections: function () {
+        var self   = this;
+        var handle = lively.identity.did.currentUser().handle;
+        var base   = lively.identity.did.baseUrl();
+        var xhr    = new XMLHttpRequest();
+        xhr.open('GET', base + '/@' + handle + '/collections?limit=30' + this._qParam());
+        xhr.withCredentials = true;
+        xhr.onload = function () {
+          // See _loadReceived's identical guard for why this is needed.
+          if (self._activeTab !== 'collections') return;
+          if (xhr.status !== 200) return self._showError('Could not load collections (' + xhr.status + ')');
+          var result;
+          try { result = JSON.parse(xhr.responseText); } catch (e) { return self._showError('Bad response'); }
+          self._renderCollectionsRecords(result.records || []);
+        };
+        xhr.onerror = function () { if (self._activeTab === 'collections') self._showError('Network error'); };
+        xhr.send();
+      },
+
+      // Saves (bookmarks) objId into the current user's Collections tab —
+      // called from the "Save to Collections" ⋯-menu item on
+      // Received/Delivered/Own rows (PostcardDesignSpec-v2.md §6.2). One-
+      // directional from those tabs (idempotent PUT, no "already saved"
+      // state tracked per-row); removal only happens from inside the
+      // Collections tab itself via _removeFromCollections.
+      _saveToCollections: function (objId, onDone) {
+        var handle = lively.identity.did.currentUser().handle;
+        var base   = lively.identity.did.baseUrl();
+        var xhr    = new XMLHttpRequest();
+        xhr.open('PUT', base + '/@' + handle + '/collections/' + encodeURIComponent(objId));
+        xhr.withCredentials = true;
+        xhr.onload = function () { if (onDone) onDone(xhr.status === 200); };
+        xhr.onerror = function () { if (onDone) onDone(false); };
+        xhr.send();
+      },
+
+      _removeFromCollections: function (objId, onDone) {
+        var handle = lively.identity.did.currentUser().handle;
+        var base   = lively.identity.did.baseUrl();
+        var xhr    = new XMLHttpRequest();
+        xhr.open('DELETE', base + '/@' + handle + '/collections/' + encodeURIComponent(objId));
+        xhr.withCredentials = true;
+        xhr.onload = function () { if (onDone) onDone(xhr.status === 200); };
+        xhr.onerror = function () { if (onDone) onDone(false); };
         xhr.send();
       },
 
@@ -934,6 +984,11 @@ module('lively.identity.PostCardMailbox')
           var buttons = [];
           buttons.push(self._makeMenuBtn(function (anchorBtn) {
             self._toggleRowMenu(anchorBtn, [
+              { label: '🔖 Save to Collections', onClick: function () {
+                self._saveToCollections(rec.objId, function (ok) {
+                  if (!ok) self._showError('Could not save to Collections');
+                });
+              } },
               { label: '🗑 Delete', danger: true, onClick: function () {
                 self._hideFromMailbox(rec.objId, function () { self._loadReceived(); });
               } },
@@ -950,6 +1005,63 @@ module('lively.identity.PostCardMailbox')
               // live-render path (audit F2, deliberately not fixed; see
               // postcard_audit.md). PostCardView shows an Edit button of its
               // own when the viewer turns out to be the card's owner.
+              lively.identity.PostCardView.open(rec.senderHandle, rec.objId);
+            }));
+          }
+          card.appendChild(self._makeActionsCluster(buttons));
+          content.appendChild(card);
+        });
+      },
+
+      _renderCollectionsRecords: function (records) {
+        var self    = this;
+        var content = this._contentDiv;
+        content.innerHTML = '';
+
+        if (!records.length) {
+          content.innerHTML = self._emptyHtml('collections_bookmark', 'No saved items yet.');
+          return;
+        }
+
+        records.forEach(function (rec) {
+          var card = self._makeCard();
+
+          var title = document.createElement('div');
+          title.style.cssText = 'font-weight:600;color:var(--pcm-text);margin-bottom:3px;padding-right:76px;';
+          title.textContent   = (rec.state && rec.state.title) || '(untitled)';
+          card.appendChild(title);
+
+          card.appendChild(self._makeIdentityRow('By: ', rec.senderHandle, rec.did));
+
+          // Same constellation-badge idiom as _renderReceivedRecords, minus
+          // the join-request/invite kinds — a saved card is never one of
+          // those (they're addressed at the viewer, not something you'd
+          // bookmark for later).
+          if (rec.constellation) {
+            var tag = document.createElement('div');
+            tag.className = 'pcm-badge';
+            tag.textContent = 'c/' + rec.constellation;
+            card.appendChild(tag);
+          }
+
+          var when = document.createElement('div');
+          when.style.cssText = 'color:var(--pcm-text-tertiary);font-size:11px;';
+          when.textContent   = 'Saved ' + self._formatDate(rec.savedAt);
+          card.appendChild(when);
+
+          var menuBtn = self._makeMenuBtn(function (anchorBtn) {
+            self._toggleRowMenu(anchorBtn, [
+              { label: '🔖 Remove from Collections', danger: true, onClick: function () {
+                self._removeFromCollections(rec.objId, function () { self._loadCollections(); });
+              } },
+            ]);
+          });
+
+          // Same audit-F4 guard as _renderReceivedRecords: no working
+          // /@:handle/... link without a resolved senderHandle.
+          var buttons = [menuBtn];
+          if (rec.senderHandle) {
+            buttons.push(self._makeInlineOpenBtn(function () {
               lively.identity.PostCardView.open(rec.senderHandle, rec.objId);
             }));
           }
@@ -1000,6 +1112,11 @@ module('lively.identity.PostCardMailbox')
           });
           var menuBtn = self._makeMenuBtn(function (anchorBtn) {
             self._toggleRowMenu(anchorBtn, [
+              { label: '🔖 Save to Collections', onClick: function () {
+                self._saveToCollections(rec.objId, function (ok) {
+                  if (!ok) self._showError('Could not save to Collections');
+                });
+              } },
               { label: '🗑 Delete', danger: true, onClick: function () {
                 self._hideFromMailbox(rec.objId, function () { self._loadDeliveries(status); });
               } },
@@ -1308,6 +1425,11 @@ module('lively.identity.PostCardMailbox')
 
           var menuBtn = self._makeMenuBtn(function (anchorBtn) {
             self._toggleRowMenu(anchorBtn, [
+              { label: '🔖 Save to Collections', onClick: function () {
+                self._saveToCollections(pc.objId, function (ok) {
+                  if (!ok) self._showError('Could not save to Collections');
+                });
+              } },
               { label: '🗑 Delete', danger: true, onClick: function () { self._deletePostcard(handle, pc); } },
             ]);
           });
