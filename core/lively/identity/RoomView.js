@@ -1552,6 +1552,21 @@ module("lively.identity.RoomView")
           self._membersBox.addMorph(row);
 
           var handle = p.handle || "unknown";
+          // The whole row opens the member's mini profile. Its children are all
+          // decorative (eventsAreIgnored), so nothing nested competes for the
+          // click. The closure is fine here: RoomView is a plain class, not a
+          // BuildSpec/addScript-reconstructed method. Skipped when the roster
+          // entry has no handle, since there's no profile to load.
+          if (p.handle) {
+            row.handStyle = "pointer";
+            row.onMouseUp = function (evt) {
+              lively.require("lively.identity.MiniProfileCard").toRun(function () {
+                lively.identity.MiniProfileCard.open(p.handle, p.did, row);
+              });
+              evt.stop();
+              return true;
+            };
+          }
           var av = noDrag(new lively.morphic.Image(lively.rect(8, 6, AVATAR_MEMBER, AVATAR_MEMBER)));
           av.applyStyle({ borderRadius: AVATAR_MEMBER / 2, borderWidth: 0, clipMode: "hidden" });
           av.setImageURL(lively.identity.postCardUtils.identiconDataUrl(handle, AVATAR_MEMBER));

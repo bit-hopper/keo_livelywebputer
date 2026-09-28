@@ -4189,11 +4189,11 @@ module("lively.identity.ConstellationLounge")
         // listed; its pill reads online while it is connected (present in
         // awareness like anyone else) and offline otherwise.
         y = this._renderMemberSection(w, y, "CO-CREATOR", [coCreator].filter(Boolean), handles,
-          null, null, null, true, true);
+          null, null, null, true);
         y = this._renderMemberSection(w, y, "BOTS", bots, handles,
-          null, null, null, false, true);
+          null, null, null, true);
         y = this._renderMemberSection(w, y, "MODERATORS", moderators, handles,
-          null, null, null, false, true);
+          null, null, null, true);
         this._renderMemberSection(w, y, "ACTIVE MEMBERS", plainMembers.filter(this._isOnline.bind(this)), handles, null, null, null);
         this._disableDragging(this._membersBox);
       },
@@ -4229,7 +4229,7 @@ module("lively.identity.ConstellationLounge")
         return { text: status, color: spec.color, bg: spec.bg };
       },
 
-      _renderMemberSection: function (w, y, label, dids, handles, badgeColor, badgeBg, badgeText, clickableHandle, statusBadge) {
+      _renderMemberSection: function (w, y, label, dids, handles, badgeColor, badgeBg, badgeText, statusBadge) {
         if (!dids.length) return y;
         var self = this;
         // The box's CSS padding (set in _buildChrome) doesn't actually
@@ -4271,7 +4271,11 @@ module("lively.identity.ConstellationLounge")
           nameT.setPosition(lively.pt(28, 4));
           nameT.setExtent(lively.pt(Math.max(30, nameW), 16));
           row.addMorph(nameT);
-          if (clickableHandle) self._wireHandleLink(nameT, did, handle);
+          // Every row opens the mini profile, bots included (a bot is added
+          // by handle, so it has a profile like anyone else). Only skipped
+          // when no handle resolved: the row then shows a truncated DID,
+          // which has no profile to load.
+          if (handles[did]) self._wireHandleLink(nameT, did, handle);
 
           if (pill) {
             var badge = new lively.morphic.Box(lively.rect(w2 - 66, 3, 62, 18));
