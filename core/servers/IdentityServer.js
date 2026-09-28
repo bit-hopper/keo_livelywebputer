@@ -1635,6 +1635,14 @@ module.exports = function (route, app) {
     });
   });
 
+  // This instance's own public host (PUBLIC_BASE_URL-aware, see
+  // canonicalOrigin), e.g. for the mini profile card's host row. Deliberately
+  // not under /@:handle/... (that prefix has a catch-all 404 in this file).
+  app.get("/instance/info", function (req, res) {
+    var origin = canonicalOrigin(req);
+    res.json({ origin: origin, host: origin.replace(/^https?:\/\//, "") });
+  });
+
   // Batch-resolves DIDs to handles — e.g. WikiView.js resolving
   // state.contributors/state.lastEditedBy for the author/contributor avatar
   // row. Can't fold this into the envelope response itself (GET
