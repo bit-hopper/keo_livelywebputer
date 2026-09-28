@@ -9,12 +9,11 @@
  * outside click, following the same shape as CalendarApp.js's
  * _showEventPopover/_hidePopover.
  *
- * Open: lively.identity.MiniProfileCard.open(handle, did, anchorMorph, homeHost)
+ * Open: lively.identity.MiniProfileCard.open(handle, did, anchorMorph)
  *
- * homeHost is optional. Nothing records a member's home instance yet, so
- * it defaults to this instance's own public host (GET /instance/info); a
- * caller that knows the member lives elsewhere can pass their host
- * (e.g. "anotherserver.com") to show that instead.
+ * The host row is the member's home instance, read from the "#home" service
+ * entry the server records in their DID document (see DidHome.js). It is
+ * left out when the document has none — never guessed.
  */
 
 module("lively.identity.MiniProfileCard")
@@ -96,26 +95,26 @@ module("lively.identity.MiniProfileCard")
     lively.identity.MiniProfileCard = {
       _scrim: null,
       _card: null,
-      _hostPromise: null,
 
       close: function () {
         if (this._card)  { this._card.remove();  this._card = null; }
         if (this._scrim) { this._scrim.remove(); this._scrim = null; }
       },
 
-      // This instance's own public host, fetched once per page. Resolves to
-      // null on failure so the host row is just left out.
-      _instanceHost: function () {
-        if (!this._hostPromise) {
-          this._hostPromise = fetch("/instance/info")
-            .then(function (res) { return res.ok ? res.json() : null; })
-            .then(function (info) { return (info && info.host) || null; })
-            .catch(function () { return null; });
+      // Home host (e.g. "tinylil.world") from a DID document's "#home"
+      // service entry, or null.
+      _homeHostOf: function (doc) {
+        var services = (doc && Array.isArray(doc.service)) ? doc.service : [];
+        for (var i = 0; i < services.length; i++) {
+          var s = services[i];
+          if (s && s.id === doc.id + "#home" && typeof s.serviceEndpoint === "string") {
+            return s.serviceEndpoint.replace(/^https?:\/\//, "").replace(/\/+$/, "") || null;
+          }
         }
-        return this._hostPromise;
+        return null;
       },
 
-      open: function (handle, did, anchorMorph, homeHost) {
+      open: function (handle, did, anchorMorph) {
         var self = this;
         this.close(); // only one popover open at a time
 
@@ -198,7 +197,9 @@ module("lively.identity.MiniProfileCard")
 
         var profileP = fetch("/@" + handle + "/profile", { credentials: "include" })
           .then(function (res) { return res.ok ? res.json() : null; });
-        var hostP = homeHost ? Promise.resolve(homeHost) : this._instanceHost();
+        var hostP = fetch("/@" + handle + "/did-document", { credentials: "include" })
+          .then(function (res) { return res.ok ? res.json() : null; })
+          .then(function (doc) { return self._homeHostOf(doc); });
 
         Promise.all([profileP, hostP.catch(function () { return null; })])
           .then(function (r) { return { env: r[0], host: r[1], failed: false }; },

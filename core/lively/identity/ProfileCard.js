@@ -103,11 +103,27 @@ module("lively.identity.ProfileCard")
               // never equals the session's registered handle — the DID is the
               // identity that always matches.
               if (user && env.did && user.did === env.did) self._isOwner = true;
-              var dp = (self._isOwner && user.document)
-                ? Promise.resolve(user.document)
-                : fetch("/@" + target + "/did-document", { credentials: "include" })
-                    .then(function (r) { return r.ok ? r.json() : null; })
-                    .catch(function () { return null; });
+              var fetchDoc = function () {
+                return fetch("/@" + target + "/did-document", { credentials: "include" })
+                  .then(function (r) { return r.ok ? r.json() : null; })
+                  .catch(function () { return null; });
+              };
+              var cached = self._isOwner && user.document;
+              var hasHome = function (d) {
+                return !!(d && Array.isArray(d.service) && d.service.some(function (s) { return s && s.id === d.id + "#home"; }));
+              };
+              // The owner's locally cached document can predate the server
+              // recording a "#home" entry: take just the service list from the
+              // server's copy in that case, keeping everything else as cached.
+              var dp = cached
+                ? (hasHome(cached) ? Promise.resolve(cached) : fetchDoc().then(function (srv) {
+                    if (!hasHome(srv)) return cached;
+                    var merged = {};
+                    Object.keys(cached).forEach(function (k) { merged[k] = cached[k]; });
+                    merged.service = srv.service;
+                    return merged;
+                  }))
+                : fetchDoc();
               var domainsP = fetch("/@" + target + "/domains", { credentials: "include" })
                 .then(function (r) { return r.ok ? r.json() : { domains: [] }; })
                 .then(function (r) { return r.domains || []; })
@@ -1328,14 +1344,23 @@ module("lively.identity.ProfileCard")
                         "Jul","Aug","Sep","Oct","Nov","Dec"];
           joinedStr = months[d.getMonth()] + " " + d.getDate() + ", " + d.getFullYear();
         }
-        var hostStr = (window.location.hostname) || "—";
+        // Home instance: the "#home" service entry the server records in the
+        // DID document (DidHome.js). Left out when absent, never guessed.
+        var hostStr = null;
+        ((didDoc && Array.isArray(didDoc.service)) ? didDoc.service : []).forEach(function (s) {
+          if (!hostStr && s && s.id === didDoc.id + "#home" && typeof s.serviceEndpoint === "string") {
+            hostStr = s.serviceEndpoint.replace(/^https?:\/\//, "").replace(/\/+$/, "") || null;
+          }
+        });
         y += 6;
         pane.addMorph(ico('calendar_today', contentX, y + 1, 12, 150, 150, 158));
         pane.addMorph(txt("Joined " + joinedStr, contentX + 18, y, cw - 18, 16, 10, 100, 100, 108, false)).applyStyle({ fixedWidth: false });
         y += 18;
-        pane.addMorph(ico('dns', contentX, y + 1, 12, 150, 150, 158));
-        pane.addMorph(txt("Hosted on " + hostStr, contentX + 18, y, cw - 18, 16, 10, 100, 100, 108, false)).applyStyle({ fixedWidth: false });
-        y += 18;
+        if (hostStr) {
+          pane.addMorph(ico('dns', contentX, y + 1, 12, 150, 150, 158));
+          pane.addMorph(txt("Hosted on " + hostStr, contentX + 18, y, cw - 18, 16, 10, 100, 100, 108, false)).applyStyle({ fixedWidth: false });
+          y += 18;
+        }
 
         var ph = pane.getExtent().y;
 

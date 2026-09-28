@@ -73,6 +73,7 @@ var friendRegistry = require("./identity/FriendRegistry");
 var dmMailbox = require("./identity/DMMailbox");
 var dmSignalingTokenStore = require("./support/dm-signaling-token-store");
 var cryptoVerify = require("./identity/CryptoVerify");
+var didHome = require("./identity/DidHome");
 var domainVerifier = require("./identity/DomainVerifier");
 var constellationSpace = require("./identity/ConstellationSpace");
 var wikiPermissions = require("./identity/WikiPermissions");
@@ -1285,6 +1286,14 @@ module.exports = function (route, app) {
             .json({ error: "Invalid didDocument JSON: " + e.message });
         }
 
+        // Record this instance as the member's home, server-side: the
+        // passkey was just verified against this instance's own rpID, and
+        // whatever `#home` entry the client sent is replaced (DidHome.js).
+        if (!didDoc || typeof didDoc !== "object") {
+          return res.status(400).json({ error: "Invalid didDocument" });
+        }
+        didDoc = didHome.withHomeService(didDoc, result.did, canonicalOrigin(req), null);
+
         handleRegistry.saveDIDDocument(result.did, didDoc, function (putErr) {
           if (putErr) {
             console.warn(
@@ -1578,6 +1587,12 @@ module.exports = function (route, app) {
         if (!doc)
           return res.status(404).json({ error: "No DID document stored for @" + handle });
 
+        // Accounts registered before home instances were recorded have no
+        // `#home` entry yet: this instance holds their document, so say so in
+        // the response (not persisted here — a public GET doesn't write; it's
+        // stored the next time the owner's document is PUT).
+        if (!didHome.hasHome(doc)) doc = didHome.withHomeService(doc, did, canonicalOrigin(req), null);
+
         res.json(doc);
       });
     });
@@ -1603,9 +1618,16 @@ module.exports = function (route, app) {
       if (req.identity.did !== did || doc.id !== did)
         return res.status(403).json({ error: "Forbidden: not your DID document" });
 
-      handleRegistry.saveDIDDocument(did, doc, function (saveErr) {
-        if (saveErr) return res.status(500).json({ error: String(saveErr) });
-        res.json({ ok: true });
+      // The client rebuilds and sends its whole document, so it can't be
+      // trusted for the `#home` entry: keep the one already stored (or record
+      // this instance if there is none yet), ignoring whatever it sent.
+      handleRegistry.getDIDDocument(did, function (getErr, stored) {
+        if (getErr) return res.status(500).json({ error: String(getErr) });
+        var toSave = didHome.withHomeService(doc, did, canonicalOrigin(req), stored);
+        handleRegistry.saveDIDDocument(did, toSave, function (saveErr) {
+          if (saveErr) return res.status(500).json({ error: String(saveErr) });
+          res.json({ ok: true });
+        });
       });
     });
   });
@@ -1633,14 +1655,6 @@ module.exports = function (route, app) {
         });
       });
     });
-  });
-
-  // This instance's own public host (PUBLIC_BASE_URL-aware, see
-  // canonicalOrigin), e.g. for the mini profile card's host row. Deliberately
-  // not under /@:handle/... (that prefix has a catch-all 404 in this file).
-  app.get("/instance/info", function (req, res) {
-    var origin = canonicalOrigin(req);
-    res.json({ origin: origin, host: origin.replace(/^https?:\/\//, "") });
   });
 
   // Batch-resolves DIDs to handles — e.g. WikiView.js resolving
