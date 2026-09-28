@@ -22,7 +22,13 @@ module("lively.identity.AmbientPresencePanel")
       PANEL_W: 340,
       PANEL_H: 52,
       ROOM_H: 100,
-      PANEL_BG:       Color.rgb(0x61, 0x11, 0x2B),   // #61112B
+      PANEL_BG:       Color.rgb(0xE8, 0x49, 0x7E),   // #E8497E
+      // Cam/mic/headset encode on/off state via icon color alone
+      // (_updateControls) — that loses contrast against the pink PANEL_BG,
+      // so those three sit on this black pill instead. The gear has no
+      // on/off state and stays directly on the pink panel with ICON_GEAR.
+      CONTROL_PILL_BG: Color.rgb(0x1A, 0x1A, 0x1E),
+      ICON_GEAR:      Color.rgb(0, 0, 0),
       TEXT_PRIMARY:   Color.rgb(242, 243, 245),
       TEXT_SECONDARY: Color.rgb(148, 155, 164),
       ICON_DEFAULT:   Color.rgb(181, 186, 193),
@@ -63,14 +69,6 @@ module("lively.identity.AmbientPresencePanel")
         "8h":  8 * 60 * 60 * 1000,
         "24h": 24 * 60 * 60 * 1000,
         "3d":  3 * 24 * 60 * 60 * 1000,
-      },
-
-      makeEllipse: function (rect, fill, borderWidth, borderColor) {
-        var m = new lively.morphic.Morph();
-        m.setShape(new lively.morphic.Shapes.Ellipse(rect));
-        m.applyStyle({ fill: fill, borderWidth: borderWidth || 0,
-          borderColor: borderColor || null });
-        return m;
       },
 
       // Icon glyphs render through the vendored Material Symbols Rounded
@@ -166,14 +164,9 @@ module("lively.identity.AmbientPresencePanel")
         this._mainRow = row;
 
         this._avatarMorph = new lively.morphic.Image(lively.rect(10, 10, 32, 32));
-        this._avatarMorph.applyStyle({ borderRadius: 16, borderWidth: 0, clipMode: "hidden" });
+        this._avatarMorph.applyStyle({ borderRadius: 16, borderWidth: 2,
+          borderColor: Color.rgb(255, 255, 255), clipMode: "hidden" });
         row.addMorph(this._avatarMorph);
-
-        this._badgeBase = NS.makeEllipse(lively.rect(30, 30, 14, 14), NS.STATUS_ONLINE, 2, NS.PANEL_BG);
-        row.addMorph(this._badgeBase);
-        this._badgeBite = NS.makeEllipse(lively.rect(27, 27, 9, 9), NS.PANEL_BG, 0, null);
-        this._badgeBite.setVisible(false);
-        row.addMorph(this._badgeBite);
 
         // fontSize is in pt, not px (see makeIconButton's comment) — 9pt/8.25pt
         // render at the actual-target 12px/11px, with box heights generous
@@ -185,27 +178,48 @@ module("lively.identity.AmbientPresencePanel")
         row.addMorph(this._nameMorph);
 
         this._statusMorph = new lively.morphic.Text(lively.rect(50, 27, 140, 16));
-        this._statusMorph.applyStyle({ fontSize: 8.25, fontWeight: "600", textColor: NS.TEXT_SECONDARY,
+        this._statusMorph.applyStyle({ fontSize: 8.25, fontWeight: "600", textColor: Color.rgb(0, 0, 0),
           fill: null, borderWidth: 0, allowInput: false, selectable: false,
           clipMode: "hidden", whiteSpaceHandling: "pre" });
         row.addMorph(this._statusMorph);
 
-        this._camBtn = NS.makeIconButton(lively.rect(200, 12, 28, 28), "videocam", "toggleCamera");
+        // Black pill behind cam/mic/headset (see CONTROL_PILL_BG above) —
+        // added before those three buttons so it paints underneath them.
+        this._controlPill = new lively.morphic.Box(lively.rect(183, 8, 108, 36));
+        this._controlPill.applyStyle({ fill: NS.CONTROL_PILL_BG, borderWidth: 0, borderRadius: 18 });
+        this._controlPill.draggingEnabled = false;
+        this._controlPill.droppingEnabled = false;
+        this._controlPill.grabbingEnabled = false;
+        this._controlPill.eventsAreIgnored = true;
+        row.addMorph(this._controlPill);
+
+        this._camBtn = NS.makeIconButton(lively.rect(189, 12, 28, 28), "videocam", "toggleCamera");
         row.addMorph(this._camBtn);
 
-        this._micBtn = NS.makeIconButton(lively.rect(234, 12, 28, 28), "mic", "toggleMic");
+        this._micBtn = NS.makeIconButton(lively.rect(223, 12, 28, 28), "mic", "toggleMic");
         row.addMorph(this._micBtn);
 
-        this._headsetBtn = NS.makeIconButton(lively.rect(268, 12, 28, 28), "headset_mic", "toggleDeafen");
+        this._headsetBtn = NS.makeIconButton(lively.rect(257, 12, 28, 28), "headset_mic", "toggleDeafen");
         row.addMorph(this._headsetBtn);
 
+        // makeIconButton's default borderColor/padding assume the button sits
+        // directly on PANEL_BG with a ~20px-tall glyph; inside the pill the
+        // border needs to blend with CONTROL_PILL_BG instead, and the
+        // padding renders Material Symbols glyphs ~4px too low (confirmed
+        // live via getBoundingClientRect — real glyph line height is ~24px,
+        // not 20px) — dropping it centers the glyph exactly on the pill.
+        [this._camBtn, this._micBtn, this._headsetBtn].forEach(function (btn) {
+          btn.applyStyle({ borderColor: NS.CONTROL_PILL_BG, padding: lively.Rectangle.inset(0, 0, 0, 0) });
+        });
+
         this._gearBtn = NS.makeIconButton(lively.rect(302, 12, 28, 28), "settings", "openSettings");
+        this._gearBtn.applyStyle({ textColor: NS.ICON_GEAR, padding: lively.Rectangle.inset(0, 0, 0, 0) });
         row.addMorph(this._gearBtn);
 
         // Transparent click target covering the avatar+badge (their rects
         // overlap each other, so a handler on either individually would eat
         // clicks meant for the other) — added last so it paints on top.
-        this._badgeGlyph = null;
+        this._badgeDot = null;
         this._statusHitArea = new lively.morphic.Box(lively.rect(10, 10, 32, 34));
         this._statusHitArea.applyStyle({ fill: null, borderWidth: 0, handStyle: "pointer" });
         this._statusHitArea.draggingEnabled = false;
@@ -443,55 +457,44 @@ module("lively.identity.AmbientPresencePanel")
         lively.identity.AmbientPresencePanel._toggleStatusMenu();
       },
 
-      // Lazily creates the small glyph badge used for Do Not Disturb/
-      // Invisible (do_not_disturb_on/radio_button_unchecked already read as
-      // self-contained circular icons, unlike the plain ellipse+crescent
-      // trick _badgeBase/_badgeBite use for Online/Idle) — sized/positioned
-      // to roughly the same footprint as _badgeBase. Visual fit (padding,
-      // exact glyph centering) hasn't been verified against the live DOM
-      // yet — check with getComputedStyle before considering this pixel-
-      // perfect, per this file's own fontSize-is-points/shapeNode-padding
-      // gotchas.
-      _ensureBadgeGlyph: function _ensureBadgeGlyph() {
-        if (this._badgeGlyph) return;
-        var NS = lively.identity.AmbientPresencePanel;
-        var g = new lively.morphic.Text(lively.rect(29, 29, 16, 16));
-        g.applyStyle({
-          fontFamily: "'Material Symbols Rounded'",
-          fontSize: 7.5,
-          fill: NS.PANEL_BG, borderRadius: 8, borderWidth: 2, borderColor: NS.PANEL_BG,
-          align: "center", padding: lively.Rectangle.inset(0, 3, 0, 0),
-          allowInput: false, selectable: false, clipMode: "hidden", whiteSpaceHandling: "pre",
-        });
-        g.eventsAreIgnored = true;
-        g.setVisible(false);
-        this._mainRow.addMorph(g);
-        this._badgeGlyph = g;
+      // Lazily creates the status badge — a plain solid-color circle, not a
+      // Material Symbols glyph. An icon glyph (tried first) reads as a faint
+      // ring rather than a bold shape at this badge's tiny render size
+      // (confirmed live, all four states: barely visible against the pink
+      // panel) — a flat color fill has no such legibility floor, so every
+      // status just fills this one circle in its own color instead. 12x12
+      // at (31,31), matching the footprint worked out for the icon version.
+      _ensureBadgeDot: function _ensureBadgeDot() {
+        if (this._badgeDot) return;
+        var d = new lively.morphic.Box(lively.rect(31, 31, 12, 12));
+        d.applyStyle({ fill: Color.rgb(255, 255, 255), borderRadius: 6,
+          borderWidth: 2, borderColor: Color.rgb(255, 255, 255) });
+        d.draggingEnabled = false; d.droppingEnabled = false; d.grabbingEnabled = false;
+        d.eventsAreIgnored = true;
+        d.setVisible(false);
+        this._mainRow.addMorph(d);
+        this._badgeDot = d;
       },
 
-      // Paints an explicitly-chosen status (Online/Idle/Do Not Disturb/
-      // Invisible). Online/Idle reuse the existing _badgeBase ellipse +
-      // _badgeBite crescent-cutout trick unchanged; DND/Invisible swap to
-      // the glyph badge above instead (simpler than compositing a minus/
-      // ring shape onto the plain ellipse).
+      // Shared by _paintStatus (explicit picks) and _updateStatus (tab-
+      // visibility auto-idle) — every status just fills the badge dot in
+      // its own color (STATUS_ONLINE/STATUS_IDLE/STATUS_DND/STATUS_INVISIBLE).
+      _paintBadge: function _paintBadge(status) {
+        var NS = lively.identity.AmbientPresencePanel;
+        var color = status === "dnd" ? NS.STATUS_DND
+          : status === "invisible" ? NS.STATUS_INVISIBLE
+          : status === "idle" ? NS.STATUS_IDLE : NS.STATUS_ONLINE;
+        this._ensureBadgeDot();
+        this._badgeDot.applyStyle({ fill: color });
+        this._badgeDot.setVisible(true);
+      },
+
+      // Paints an explicitly-chosen status (Online/Idle/Do Not Disturb/Invisible).
       _paintStatus: function _paintStatus(status) {
         var NS = lively.identity.AmbientPresencePanel;
         var meta = NS.STATUS_META[status] || NS.STATUS_META.online;
         this._statusMorph.textString = meta.label;
-        if (status === "dnd" || status === "invisible") {
-          this._badgeBase.setVisible(false);
-          this._badgeBite.setVisible(false);
-          this._ensureBadgeGlyph();
-          this._badgeGlyph.textString = meta.icon;
-          this._badgeGlyph.applyStyle({ textColor: status === "dnd" ? NS.STATUS_DND : NS.STATUS_INVISIBLE });
-          this._badgeGlyph.setVisible(true);
-        } else {
-          var idle = status === "idle";
-          this._badgeBase.setVisible(true);
-          this._badgeBase.applyStyle({ fill: idle ? NS.STATUS_IDLE : NS.STATUS_ONLINE });
-          this._badgeBite.setVisible(idle);
-          if (this._badgeGlyph) this._badgeGlyph.setVisible(false);
-        }
+        this._paintBadge(status);
       },
 
       // Tab-visibility-based auto-idle — the original, purely cosmetic
@@ -505,8 +508,7 @@ module("lively.identity.AmbientPresencePanel")
         if (NS._explicitStatusSet) return;
         var idle = typeof document !== "undefined" && document.hidden;
         this._statusMorph.textString = idle ? "Idle" : "Online";
-        this._badgeBase.applyStyle({ fill: idle ? NS.STATUS_IDLE : NS.STATUS_ONLINE });
-        this._badgeBite.setVisible(!!idle);
+        this._paintBadge(idle ? "idle" : "online");
       },
 
       update: function update() {
