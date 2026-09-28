@@ -481,7 +481,7 @@ module("lively.identity.ConstellationLounge")
           navX: GUTTER, navY: reelY + cardH + 6,
           threadX: GUTTER, threadY: threadY, threadW: threadW, threadH: threadH,
           spacesX: rightColX, spacesY: spacesY, spacesW: quickInfoW, spacesH: threadBottom - spacesY,
-          membersX: membersX, membersY: TOP, membersW: MEMBERS_W, membersH: Math.max(120, H - TOP),
+          membersX: membersX, membersY: TOP, membersW: MEMBERS_W, membersH: Math.max(120, threadBottom - TOP),
           createBtnX: createBtnX, createBtnY: TOP, createBtnFits: createBtnFits,
         };
 
