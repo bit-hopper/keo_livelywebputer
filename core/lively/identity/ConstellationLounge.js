@@ -164,11 +164,18 @@ module("lively.identity.ConstellationLounge")
 
     // "Sort by" placeholder dropdown, sitting in the gap between the
     // postcard's top-right corner and the search box's left edge.
-    var SORT_W = 110, SORT_H = SEARCH_H;   // same height as the search box, same row
+    // 132: "Goosed 🪿" measures ~86px in bold 12pt (plain-page measurement, not
+    // yet confirmed in the live world); the button label gets SORT_W - 34 minus
+    // the 8px shapeNode padding.
+    var SORT_W = 132, SORT_H = SEARCH_H;   // same height as the search box, same row
     var SORT_ITEM_H = 32;
     var SORT_OPTIONS = ["Stellar", "New", "Hyphy", "Goosed"];
     // Feed route's ?sort= value per option. New has none (newest first).
     var SORT_PARAMS = { Stellar: "starred", Goosed: "goosed", Hyphy: "hyphy" };
+    // Flavor emoji shown after each option's name (display only — the option
+    // name itself stays the key for SORT_PARAMS / _sortSelection).
+    var SORT_EMOJI = { Stellar: "⭐", New: "🫧", Hyphy: "🔥", Goosed: "🪿" };
+    function sortDisplay(option) { return option + " " + SORT_EMOJI[option]; }
 
     // "+ Postcard" — opens a new PostCardEditor compose window, preset to
     // post into this constellation. Sits left of the members list, top
@@ -858,7 +865,7 @@ module("lively.identity.ConstellationLounge")
         box.setFill(Color.white);
         box.applyStyle({ borderWidth: 1, borderColor: Color.rgb(232, 73, 126), borderRadius: 10 });   // COMMENT_ACCENT (#e8497e)
 
-        var label = lively.morphic.Text.makeLabel(this._sortSelection, {
+        var label = lively.morphic.Text.makeLabel(sortDisplay(this._sortSelection), {
           fontSize: 12, fontWeight: "bold", textColor: Color.rgb(30, 30, 30), fixedWidth: true, fixedHeight: true,
         });
         // Centered in the space left of the chevron. A Text morph pins its
@@ -926,7 +933,7 @@ module("lively.identity.ConstellationLounge")
 
         SORT_OPTIONS.forEach(function (option, i) {
           var isSelected = option === self._sortSelection;
-          var row = lively.morphic.Text.makeLabel(option, {
+          var row = lively.morphic.Text.makeLabel(sortDisplay(option), {
             fontSize: 12,
             fontWeight: isSelected ? "bold" : "normal",
             textColor: isSelected ? Color.rgb(20, 20, 20) : Color.rgb(90, 90, 90),
@@ -960,7 +967,7 @@ module("lively.identity.ConstellationLounge")
       _selectSortOption: function (option) {
         var changed = option !== this._sortSelection;
         this._sortSelection = option;
-        if (this._sortByLabel) this._sortByLabel.setTextString(option);
+        if (this._sortByLabel) this._sortByLabel.setTextString(sortDisplay(option));
         this._closeSortByDropdown();
         if (changed) this._fetchFeed(this._feedQuery);
       },
