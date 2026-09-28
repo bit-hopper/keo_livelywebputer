@@ -4577,6 +4577,96 @@ module.exports = function (route, app) {
     });
   });
 
+  // Bots and member removal, opened from ConstellationSettingsDialog.js's
+  // "Members & Bots" tab. Kept
+  // right beside the /controllers routes above (same file, same ordering
+  // discipline) rather than in a separate subserver.
+  //
+  // Bots are a labeling list (see ConstellationRegistry.js's `bots` column)
+  // of accounts shown under their own section; controllers (creator +
+  // moderators) may add/remove them, by an existing account's handle.
+  app.post("/c/:name/bots", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var handle = req.body && req.body.handle;
+    if (!handle || typeof handle !== "string") {
+      return res.status(400).json({ error: "handle is required" });
+    }
+    handle = handle.trim().replace(/^@/, "");
+    if (!handle) return res.status(400).json({ error: "handle is required" });
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.isController(constellation, req.identity.did)) {
+        return res.status(403).json({ error: "Forbidden: controllers only" });
+      }
+      handleRegistry.resolve(handle, function (err2, did) {
+        if (err2) return res.status(500).json({ error: String(err2) });
+        if (!did) return res.status(404).json({ error: "Handle not found: @" + handle });
+        if (did === constellation.createdBy) {
+          return res.status(400).json({ error: "The creator can't be a bot" });
+        }
+        if (constellation.bots.indexOf(did) !== -1) {
+          return res.status(400).json({ error: "@" + handle + " is already a bot here" });
+        }
+        constellationRegistry.addBot(name, did, function (err3) {
+          if (err3) return res.status(500).json({ error: String(err3) });
+          res.json({ ok: true, did: did, handle: handle });
+        });
+      });
+    });
+  });
+
+  app.delete("/c/:name/bots/:did", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var did = req.params.did;
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.isController(constellation, req.identity.did)) {
+        return res.status(403).json({ error: "Forbidden: controllers only" });
+      }
+      constellationRegistry.removeBot(name, did, function (err2) {
+        if (err2) return res.status(500).json({ error: String(err2) });
+        res.json({ ok: true });
+      });
+    });
+  });
+
+  // Removes someone from the constellation. Controllers (creator +
+  // moderators) may remove plain members; only the creator may remove a
+  // moderator (which also drops the moderator role, see
+  // ConstellationRegistry.removeMember). The creator can't be removed and a
+  // caller can't remove themself. No ban: a removed person can send a fresh
+  // join request.
+  app.delete("/c/:name/members/:did", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var did = req.params.did;
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      var callerDid = req.identity.did;
+      if (!constellationRegistry.isController(constellation, callerDid)) {
+        return res.status(403).json({ error: "Forbidden: controllers only" });
+      }
+      if (did === constellation.createdBy) {
+        return res.status(400).json({ error: "Cannot remove the creator" });
+      }
+      if (did === callerDid) {
+        return res.status(400).json({ error: "Cannot remove yourself" });
+      }
+      if (constellation.members.indexOf(did) === -1 && constellation.controllers.indexOf(did) === -1) {
+        return res.status(404).json({ error: "Not a member" });
+      }
+      if (constellationRegistry.isController(constellation, did) && callerDid !== constellation.createdBy) {
+        return res.status(403).json({ error: "Forbidden: only the creator can remove a moderator" });
+      }
+      constellationRegistry.removeMember(name, did, function (err2) {
+        if (err2) return res.status(500).json({ error: String(err2) });
+        res.json({ ok: true });
+      });
+    });
+  });
+
   // Controller-only event creation and editing, opened from
   // ConstellationLounge.js's event-card edit/add icons (EditEventDialog.js).
   // Body: { title, startsAt (ISO string with UTC offset), location }.

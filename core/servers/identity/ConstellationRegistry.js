@@ -566,6 +566,64 @@ function removeController(name, did, thenDo) {
   });
 }
 
+// Adds `did` to the `bots` labeling list (surfaced under its own section in
+// ConstellationLounge.js's member list). Controller-only, enforced by the
+// caller (IdentityServer.js's POST /c/:name/bots). Deliberately doesn't
+// touch members/controllers — the list is independent of both (see the
+// schema comment above). Calls thenDo(err).
+function addBot(name, did, thenDo) {
+  withDB(function(err, pool) {
+    if (err) return thenDo(err);
+    get(name, function(err, constellation) {
+      if (err) return thenDo(err);
+      if (!constellation) return thenDo(new Error('Constellation not found: ' + name));
+      if (constellation.bots.indexOf(did) !== -1) return thenDo(null);
+      var bots = constellation.bots.concat([did]);
+      pool.query('UPDATE constellations SET bots = $1 WHERE name = $2',
+        [JSON.stringify(bots), name],
+        function(err) { thenDo(err || null); });
+    });
+  });
+}
+
+// Calls thenDo(err). Controller-only, enforced by the caller.
+function removeBot(name, did, thenDo) {
+  withDB(function(err, pool) {
+    if (err) return thenDo(err);
+    get(name, function(err, constellation) {
+      if (err) return thenDo(err);
+      if (!constellation) return thenDo(new Error('Constellation not found: ' + name));
+      var bots = constellation.bots.filter(function (d) { return d !== did; });
+      pool.query('UPDATE constellations SET bots = $1 WHERE name = $2',
+        [JSON.stringify(bots), name],
+        function(err) { thenDo(err || null); });
+    });
+  });
+}
+
+// Removes `did` from a constellation entirely: drops it from members AND
+// controllers in one UPDATE (a controller is always also a member, see
+// addController's comment, so removing only one array would leave a
+// dangling moderator or a member who still holds the role). Who may remove
+// whom is enforced by the caller (IdentityServer.js's DELETE
+// /c/:name/members/:did), not here. The person's join_requests row, if any,
+// is left alone — requestJoin upserts it back to 'pending' on a re-request.
+// Calls thenDo(err).
+function removeMember(name, did, thenDo) {
+  withDB(function(err, pool) {
+    if (err) return thenDo(err);
+    get(name, function(err, constellation) {
+      if (err) return thenDo(err);
+      if (!constellation) return thenDo(new Error('Constellation not found: ' + name));
+      var members = constellation.members.filter(function (d) { return d !== did; });
+      var controllers = constellation.controllers.filter(function (d) { return d !== did; });
+      pool.query('UPDATE constellations SET members = $1, controllers = $2 WHERE name = $3',
+        [JSON.stringify(members), JSON.stringify(controllers), name],
+        function(err) { thenDo(err || null); });
+    });
+  });
+}
+
 // Upserts a pending request — a re-request after a decline resets status to
 // pending rather than leaving the old decline in place. Calls thenDo(err).
 function requestJoin(name, did, thenDo) {
@@ -1183,6 +1241,9 @@ module.exports = {
   updateProfile: updateProfile,
   addController: addController,
   removeController: removeController,
+  addBot: addBot,
+  removeBot: removeBot,
+  removeMember: removeMember,
   requestJoin: requestJoin,
   getJoinRequestStatus: getJoinRequestStatus,
   listPendingJoinRequests: listPendingJoinRequests,

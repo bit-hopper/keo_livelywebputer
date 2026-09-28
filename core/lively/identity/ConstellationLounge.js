@@ -342,6 +342,10 @@ module("lively.identity.ConstellationLounge")
           self._isController = !!data.isController;
           self._quickInfo = data.quickInfo || {};
           self._renderQuickInfo();
+          // Membership/roles/bots may have changed (manage dialog, settings
+          // dialog) — the member list reads the same quick info.
+          self._renderMemberList();
+          self._layout();
         };
         xhr.send();
       },
@@ -2371,11 +2375,11 @@ module("lively.identity.ConstellationLounge")
       // gated by the gear button above and re-checked server-side on every
       // write route it uses). Re-loads quick info on save so the panel
       // reflects the new avatar/banner immediately.
-      _openConstellationSettings: function () {
+      _openConstellationSettings: function (tab) {
         var self = this;
         lively.identity.ConstellationSettingsDialog.open(this._name, this._quickInfo, function () {
           self._refreshQuickInfo();
-        });
+        }, tab);
       },
 
       // Member-only RSVP to the event card's Going/Maybe/Can't-go row
@@ -4172,19 +4176,53 @@ module("lively.identity.ConstellationLounge")
         var w = this._membersBox.getExtent().x;
 
         var y = 4;
+        // Co-creator, bots and moderators already sit under their own
+        // section header, so their pill shows live status instead of
+        // repeating the role. A bot on the constellation's list is always
+        // listed; its pill reads online while it is connected (present in
+        // awareness like anyone else) and offline otherwise.
         y = this._renderMemberSection(w, y, "CO-CREATOR", [coCreator].filter(Boolean), handles,
-          Color.rgb(46, 125, 50), Color.rgb(232, 245, 233), "co-creator", true);
+          null, null, null, true, true);
         y = this._renderMemberSection(w, y, "BOTS", bots, handles,
-          Color.rgb(69, 90, 100), Color.rgb(236, 239, 241), "bot");
+          null, null, null, false, true);
         y = this._renderMemberSection(w, y, "MODERATORS", moderators, handles,
-          Color.rgb(138, 109, 0), Color.rgb(255, 248, 225), "moderator");
+          null, null, null, false, true);
         this._renderMemberSection(w, y, "ACTIVE MEMBERS", plainMembers.filter(this._isOnline.bind(this)), handles, null, null, null);
         this._disableDragging(this._membersBox);
       },
 
-      _isOnline: function (did) { return !!this._presenceByDid[did]; },
+      // Present in awareness and not hiding. An invisible member appears
+      // offline to everyone, including themself: their row is dropped like
+      // anyone else's who isn't connected.
+      _isOnline: function (did) {
+        var status = this._presenceByDid[did];
+        return !!status && status !== "invisible";
+      },
 
-      _renderMemberSection: function (w, y, label, dids, handles, badgeColor, badgeBg, badgeText, clickableHandle) {
+      _statusDotColor: function (did) {
+        var panel = lively.identity.AmbientPresencePanel;
+        var status = this._presenceByDid[did];
+        if (!panel) return Color.rgb(67, 160, 71);
+        return status === "idle" ? panel.STATUS_IDLE
+          : status === "dnd" ? panel.STATUS_DND
+          : Color.rgb(67, 160, 71);
+      },
+
+      // Pill contents for a member's live status. Offline covers both "not
+      // connected" and "invisible" (_isOnline is false for both).
+      _statusBadgeInfo: function (did) {
+        var status = this._presenceByDid[did];
+        if (!this._isOnline(did)) status = "offline";
+        var spec = {
+          online:    { color: Color.rgb(46, 125, 50),  bg: Color.rgb(232, 245, 233) },
+          idle:      { color: Color.rgb(138, 109, 0),  bg: Color.rgb(255, 243, 205) },
+          dnd:       { color: Color.rgb(198, 40, 40),  bg: Color.rgb(253, 232, 232) },
+          offline:   { color: Color.rgb(120, 120, 120), bg: Color.rgb(240, 240, 240) },
+        }[status] || { color: Color.rgb(46, 125, 50), bg: Color.rgb(232, 245, 233) };
+        return { text: status, color: spec.color, bg: spec.bg };
+      },
+
+      _renderMemberSection: function (w, y, label, dids, handles, badgeColor, badgeBg, badgeText, clickableHandle, statusBadge) {
         if (!dids.length) return y;
         var self = this;
         // The box's CSS padding (set in _buildChrome) doesn't actually
@@ -4219,25 +4257,28 @@ module("lively.identity.ConstellationLounge")
           avatar.applyStyle({ borderRadius: 11, borderWidth: 0, clipMode: "hidden" });
           row.addMorph(avatar);
 
-          var nameW = badgeColor ? (w2 - 30 - 70) : (self._isOnline(did) ? (w2 - 30 - 12) : (w2 - 30));
+          var pill = statusBadge ? self._statusBadgeInfo(did)
+            : (badgeColor ? { text: badgeText, color: badgeColor, bg: badgeBg } : null);
+          var nameW = pill ? (w2 - 30 - 70) : (self._isOnline(did) ? (w2 - 30 - 12) : (w2 - 30));
           var nameT = lively.morphic.Text.makeLabel("@" + handle, { fontSize: 12 });
           nameT.setPosition(lively.pt(28, 4));
           nameT.setExtent(lively.pt(Math.max(30, nameW), 16));
           row.addMorph(nameT);
           if (clickableHandle) self._wireHandleLink(nameT, did, handle);
 
-          if (badgeColor) {
+          if (pill) {
             var badge = new lively.morphic.Box(lively.rect(w2 - 66, 3, 62, 18));
-            badge.setFill(badgeBg);
+            badge.setFill(pill.bg);
             badge.applyStyle({ borderWidth: 0, borderRadius: 9 });
-            var badgeT = lively.morphic.Text.makeLabel(badgeText, { fontSize: 9, textColor: badgeColor });
-            badgeT.setPosition(lively.pt(6, 3));
+            var badgeT = lively.morphic.Text.makeLabel(pill.text, {
+              fontSize: 9, textColor: pill.color, fixedWidth: true, fixedHeight: true, align: "center" });
+            badgeT.setPosition(lively.pt(6, 1));
             badgeT.setExtent(lively.pt(52, 12));
             badge.addMorph(badgeT);
             row.addMorph(badge);
           } else if (self._isOnline(did)) {
             var dot = new lively.morphic.Box(lively.rect(w2 - 14, 8, 8, 8));
-            dot.setFill(Color.rgb(67, 160, 71));
+            dot.setFill(self._statusDotColor(did));
             dot.applyStyle({ borderWidth: 0, borderRadius: 4 });
             row.addMorph(dot);
           }
@@ -4301,8 +4342,24 @@ module("lively.identity.ConstellationLounge")
             lively.identity.did, "identityChanged", self, "_publishPresence");
           lively.identity.did.restoreSession(function () { self._publishPresence(); });
 
+          // Follow the ambient presence panel's status picker / auto-idle
+          // (AmbientPresencePanel._broadcastStatus) so the change reaches
+          // everyone's member list without waiting on any poll. The lounge
+          // is a page-lifetime controller with no teardown hook, so this
+          // is installed once, not removed.
+          if (typeof window !== "undefined" && !self._statusListenerInstalled) {
+            self._statusListenerInstalled = true;
+            window.addEventListener("lively-presence-status", function () { self._publishPresence(); });
+          }
+
           var awareness = self.wsProvider.awareness;
           awareness.on("change", function () { self._onAwarenessChange(); });
+          // _publishPresence above ran BEFORE this listener existed, so the
+          // local state it set never fired a "change" the lounge saw — a
+          // member alone in the constellation never appeared in their own
+          // (or anyone's) Active Members until some other client's state
+          // changed. Sync once now from whatever awareness already holds.
+          self._onAwarenessChange();
         };
         tokenXhr.onerror = function () {};
         tokenXhr.send();
@@ -4311,20 +4368,50 @@ module("lively.identity.ConstellationLounge")
       _publishPresence: function () {
         if (!this.wsProvider) return;
         var user = lively.identity.did.currentUser();
+        var panel = lively.identity.AmbientPresencePanel;
         this.wsProvider.awareness.setLocalStateField("presence", {
           did: user && user.did,
           handle: (user && user.handle) || "anonymous",
+          // Online / idle / dnd / invisible, from the ambient presence panel.
+          status: (panel && panel.getEffectiveStatus) ? panel.getEffectiveStatus() : "online",
+          explicit: !!(panel && panel.isStatusExplicit && panel.isStatusExplicit()),
         });
+      },
+
+      // One account can have several awareness clients (other tabs, other
+      // devices, a tab still running older code that publishes no status).
+      // An explicit pick wins over the default / auto-idle, and among
+      // several explicit picks the most restrictive one wins, so a stray
+      // default-online client can never un-hide an Invisible user. With no
+      // explicit pick anywhere, any active (online) client beats a hidden
+      // tab that auto-idled.
+      _resolveClientStatus: function (clients) {
+        var RANK = { online: 0, idle: 1, dnd: 2, invisible: 3 };
+        var explicit = clients.filter(function (c) { return c.explicit; });
+        if (explicit.length) {
+          return explicit.reduce(function (best, c) {
+            return (RANK[c.status] || 0) > (RANK[best] || 0) ? c.status : best;
+          }, explicit[0].status);
+        }
+        return clients.some(function (c) { return c.status === "online"; }) ? "online" : clients[0].status;
       },
 
       _onAwarenessChange: function () {
         if (!this.wsProvider) return;
         var states = this.wsProvider.awareness.getStates();
-        var byDid = {};
+        var clientsByDid = {};
         states.forEach(function (state) {
           var presence = state && state.presence;
-          if (presence && presence.did) byDid[presence.did] = true;
+          if (!presence || !presence.did) return;
+          // A client that predates the status field publishes none and
+          // counts as a default (non-explicit) online.
+          (clientsByDid[presence.did] = clientsByDid[presence.did] || []).push({
+            status: presence.status || "online",
+            explicit: !!presence.explicit,
+          });
         });
+        var byDid = {};
+        for (var did in clientsByDid) byDid[did] = this._resolveClientStatus(clientsByDid[did]);
         this._presenceByDid = byDid;
         this._renderMemberList();
       },
@@ -4381,6 +4468,12 @@ module("lively.identity.ConstellationLounge")
         items.push(["Open wiki", function () {
           window.location.href = "/c/" + encodeURIComponent(self._displayName()) + "/wiki";
         }]);
+
+        // Straight to the settings dialog's "Members & Bots" tab (the same
+        // dialog the Quick Info panel's gear opens).
+        if (this._isController) {
+          items.push(["Manage members & bots…", function () { self._openConstellationSettings("members"); }]);
+        }
 
         var pos = entry.worldPoint(lively.pt(0, entry.getExtent().y));
         lively.morphic.Menu.openAt(pos, "c/" + this._displayName(), items);

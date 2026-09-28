@@ -487,6 +487,7 @@ module("lively.identity.AmbientPresencePanel")
         this._ensureBadgeDot();
         this._badgeDot.applyStyle({ fill: color });
         this._badgeDot.setVisible(true);
+        NS._broadcastStatus(status);
       },
 
       // Paints an explicitly-chosen status (Online/Idle/Do Not Disturb/Invisible).
@@ -819,6 +820,7 @@ module("lively.identity.AmbientPresencePanel")
         this._status = null;
         this._statusExpiresAt = null;
         this._explicitStatusSet = false;
+        this._lastBroadcastKey = null;
         if (!this._panel) return;
         if (this._panel._visibilityHandler && typeof document !== "undefined") {
           document.removeEventListener("visibilitychange", this._panel._visibilityHandler);
@@ -846,6 +848,37 @@ module("lively.identity.AmbientPresencePanel")
 
       isInvisible: function isInvisible() {
         return this._status === "invisible";
+      },
+
+      // The status the badge is actually showing: an explicit pick wins,
+      // otherwise the tab-visibility auto-idle (see the panel's _updateStatus).
+      getEffectiveStatus: function getEffectiveStatus() {
+        if (this._explicitStatusSet && this._status) return this._status;
+        return (typeof document !== "undefined" && document.hidden) ? "idle" : "online";
+      },
+
+      // True when the effective status came from a real pick (or the server
+      // says so), false for the untouched default / tab-visibility auto-idle.
+      // Published next to the status so a viewer can tell a deliberate
+      // Invisible/DND pick apart from a stray default-online tab of the same
+      // account.
+      isStatusExplicit: function isStatusExplicit() {
+        return !!(this._explicitStatusSet && this._status);
+      },
+
+      // Called from the panel's _paintBadge (every explicit pick, server
+      // reconcile, auto-revert and auto-idle ends up there) so anything that
+      // publishes presence elsewhere (ConstellationLounge's member list) can
+      // follow along without depending on this module. Only fires on a real
+      // change, since _paintBadge also runs on every panel update().
+      _lastBroadcastKey: null,
+      _broadcastStatus: function _broadcastStatus(status) {
+        var key = status + "|" + (this.isStatusExplicit() ? "explicit" : "auto");
+        if (key === this._lastBroadcastKey) return;
+        this._lastBroadcastKey = key;
+        if (typeof window !== "undefined" && typeof CustomEvent === "function") {
+          window.dispatchEvent(new CustomEvent("lively-presence-status", { detail: { status: status } }));
+        }
       },
 
       // Shared read/write-merge helpers for the "lively.identity.presenceState"

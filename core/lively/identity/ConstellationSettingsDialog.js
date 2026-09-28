@@ -1,10 +1,19 @@
 /**
  * lively.identity.ConstellationSettingsDialog
  *
- * Avatar/banner/domain settings for a constellation, opened from the
- * settings gear on ConstellationLounge.js's Quick Info panel (rendered only
- * for a controller — this dialog is only ever reached by one, but every
- * write route it calls re-checks isController server-side regardless).
+ * Settings for a constellation, opened from the settings gear on
+ * ConstellationLounge.js's Quick Info panel (rendered only for a controller —
+ * this dialog is only ever reached by one, but every write route it calls
+ * re-checks isController server-side regardless).
+ *
+ * Two tabs (pill buttons, same look as ProfileCard.js's edit tabs; switching
+ * rebuilds the pane, so the General tab's unsaved fields are snapshotted
+ * first):
+ *   - General: avatar, banner, description, custom domain, with a Save button.
+ *   - Members & Bots: join requests (approve/decline), moderators (creator
+ *     adds/demotes/removes), bots (controllers add/remove by handle) and
+ *     members (controllers remove). Every action here applies immediately
+ *     through its own route — this tab has no Save.
  *
  * Avatar/banner use the same crop-then-upload flow as ProfileCard.js
  * (lively.identity.imageCropper, extracted from there so both dialogs share
@@ -20,7 +29,9 @@
  * all (DomainVerifier.js's verifyDomainClaimDns), so it's the only method
  * that makes sense here.
  *
- * Open: lively.identity.ConstellationSettingsDialog.open(name, quickInfo, onSaved)
+ * Open: lively.identity.ConstellationSettingsDialog.open(name, quickInfo, onSaved, tab)
+ *   tab: "general" (default) or "members". onSaved also runs after any
+ *   Members & Bots change, so the lounge can refresh its member list.
  */
 
 module("lively.identity.ConstellationSettingsDialog")
@@ -83,6 +94,10 @@ module("lively.identity.ConstellationSettingsDialog")
         this._bannerUrl = "";
         this._description = "";
         this._domains = [];
+        this._members = [];
+        this._bots = [];
+        this._requests = [];
+        this._tab = "general";
         this._onSaved = null;
       },
 
@@ -92,7 +107,8 @@ module("lively.identity.ConstellationSettingsDialog")
       // (avatarUrl/bannerUrl are already known from the quickInfo the caller
       // already had) before the first render, so the domain section isn't
       // stuck on "no domains yet" for a moment on every open.
-      load: function load(name, quickInfo, onSaved) {
+      load: function load(name, quickInfo, onSaved, tab) {
+        this._tab = tab === "members" ? "members" : "general";
         this._constellationName = name;
         this._avatarUrl = (quickInfo && quickInfo.avatarUrl) || "";
         this._description = (quickInfo && quickInfo.description) || "";
@@ -100,6 +116,8 @@ module("lively.identity.ConstellationSettingsDialog")
         this._constellationDid = (quickInfo && quickInfo.did) || "";
         this._createdBy = (quickInfo && quickInfo.createdBy) || null;
         this._controllers = (quickInfo && quickInfo.controllers) || [];
+        this._members = (quickInfo && quickInfo.members) || [];
+        this._bots = (quickInfo && quickInfo.bots) || [];
         this._memberHandles = (quickInfo && quickInfo.memberHandles) || {};
         var me = lively.identity.did.currentUser();
         this._isCreator = !!(me && me.did && me.did === this._createdBy);
@@ -107,6 +125,7 @@ module("lively.identity.ConstellationSettingsDialog")
         this.setTitle("Settings — c/" + name);
         this._render();
         this._reloadDomains();
+        this._reloadRequests();
       },
 
       _reloadDomains: function _reloadDomains() {
@@ -121,11 +140,11 @@ module("lively.identity.ConstellationSettingsDialog")
           .catch(function () { /* leave whatever list was already shown */ });
       },
 
-      // Re-fetches controllers/memberHandles after an add/remove — the
-      // dialog only ever gets a one-time snapshot of quickInfo from its
+      // Re-fetches the member/moderator/bot lists and handles after a change
+      // — the dialog only ever gets a one-time snapshot of quickInfo from its
       // opener (ConstellationLounge.js), so this is the only way its own
-      // controllers list picks up a change made inside itself.
-      _reloadControllers: function _reloadControllers() {
+      // lists pick up a change made inside itself.
+      _reloadRoster: function _reloadRoster() {
         var self = this;
         var base = lively.identity.did.baseUrl();
         fetch(base + "/c/" + encodeURIComponent(this._constellationName) + "/space-token", { credentials: "include" })
@@ -134,10 +153,27 @@ module("lively.identity.ConstellationSettingsDialog")
             var qi = (body && body.quickInfo) || {};
             self._createdBy = qi.createdBy || self._createdBy;
             self._controllers = qi.controllers || [];
+            self._members = qi.members || [];
+            self._bots = qi.bots || [];
             self._memberHandles = qi.memberHandles || {};
             self._render();
           })
           .catch(function () { /* leave whatever list was already shown */ });
+      },
+
+      // Pending join requests (controllers only — the route 403s otherwise,
+      // in which case the list just stays empty).
+      _reloadRequests: function _reloadRequests() {
+        var self = this;
+        var base = lively.identity.did.baseUrl();
+        fetch(base + "/c/" + encodeURIComponent(this._constellationName) + "/join-requests", { credentials: "include" })
+          .then(function (res) { return res.ok ? res.json() : null; })
+          .then(function (body) {
+            if (!body) return;
+            self._requests = body.requests || [];
+            self._render();
+          })
+          .catch(function () {});
       },
 
       // ─── render ─────────────────────────────────────────────────────────────
@@ -194,6 +230,8 @@ module("lively.identity.ConstellationSettingsDialog")
             fontSize: 11, textColor: palette.text, borderWidth: 1 });
           btn.setAppearanceStylingMode(false);
           btn.setBorderStylingMode(false);
+          btn._textColor = palette.text;   // written to the DOM in _render's post-pass
+          if (btn.label && btn.label.setTextColor) btn.label.setTextColor(palette.text);
           btn.onMouseOver = function () { btn.applyStyle({ fill: palette.hoverFill }); };
           btn.onMouseOut = function () { btn.applyStyle({ fill: palette.fill }); };
           return btn;
@@ -259,6 +297,106 @@ module("lively.identity.ConstellationSettingsDialog")
           if (str.length <= head + tail + 1) return str;
           return str.slice(0, head) + "…" + str.slice(-tail);
         }
+
+        var tab = this._tab || "general";
+        // Active tab pill takes the window frame's own color (the BuildSpec's
+        // _Fill), not ProfileCard's pink, so the tabs read as part of this
+        // dialog's chrome.
+        var FRAME = this.getFill() || Color.rgb(251, 86, 213);
+
+        // ── Tab row — same pill shape as ProfileCard.js's edit tabs. Each
+        // tab is a full pane rebuild (only one tab's fields exist at a time),
+        // so _switchTab snapshots the General fields first. Label color is
+        // recorded on the button (_textColor) and written to the DOM in the
+        // post-pass at the end of _render, since applyStyle's textColor never
+        // reaches a Button's label (CLAUDE.md).
+        function addTabButton(label, tabName, x, w) {
+          var isActive = tab === tabName;
+          var tb = new lively.morphic.Button(lively.rect(x, y, w, 28), label);
+          tb.applyStyle({
+            fill: isActive ? FRAME : Color.rgb(255, 255, 255),
+            borderColor: isActive ? FRAME : Color.rgb(222, 222, 228),
+            borderRadius: 14, fontSize: 11, borderWidth: 1,
+          });
+          tb.setAppearanceStylingMode(false);
+          tb.setBorderStylingMode(false);
+          tb._textColor = isActive ? Color.white : Color.rgb(90, 90, 98);
+          if (tb.label && tb.label.setTextColor) tb.label.setTextColor(tb._textColor);
+          tb._targetTab = tabName;
+          tb.addScript(function doAction() {
+            var win = this.owner && this.owner.owner;
+            if (win) win._switchTab(this._targetTab);
+          });
+          lively.bindings.connect(tb, "fire", tb, "doAction");
+          content.addMorph(tb);
+        }
+        y = 14;
+        addTabButton("General", "general", MARGIN, 110);
+        addTabButton("Members & Bots", "members", MARGIN + 118, 150);
+        y += 28 + 22;
+
+        // ── Members & Bots helpers ───────────────────────────────────────────
+        var ACT_W = 84, ACT_GAP = 8, ROW_H = 30;
+
+        function nameFor(did, handle) {
+          var h = handle || self._memberHandles[did];
+          if (h) return "@" + h;
+          return truncateMiddle(did, 14, 8);
+        }
+
+        function noteText(str) {
+          var lbl = new lively.morphic.Text(lively.rect(MARGIN, y, ew, 16), str);
+          lbl.applyStyle({ allowInput: false, fontSize: 10,
+            textColor: Color.rgb(160, 160, 160), fill: null, borderWidth: 0 });
+          content.addMorph(lbl);
+          y += 22;
+        }
+
+        // One generic handler: the button carries what to call and on whom
+        // (_action/_did/_handle), so the addScript body only references
+        // `this` — no closure over anything in this method.
+        function actionButton(x, rowY, label, variant, action, did, handle) {
+          var btn = styledButton(lively.rect(x, rowY, ACT_W, 24), label, variant);
+          btn._action = action;
+          btn._did = did;
+          btn._handle = handle;
+          btn._label0 = label;
+          btn.addScript(function doAction() {
+            var win = this.owner && this.owner.owner;
+            if (!win || !win[this._action]) return;
+            this.setLabel("…");
+            this.setActive(false);
+            win[this._action](this._did, this._handle, this);
+          });
+          lively.bindings.connect(btn, "fire", btn, "doAction");
+          content.addMorph(btn);
+        }
+
+        // A name row with up to two right-aligned buttons (rightmost first):
+        // buttons = [{ label, variant, action }, ...].
+        function personRow(did, handle, tag, buttons) {
+          var btnsW = buttons.length * (ACT_W + ACT_GAP);
+          var text = nameFor(did, handle) + (tag ? "  —  " + tag : "");
+          var lbl = new lively.morphic.Text(lively.rect(MARGIN, y + 3, ew - btnsW, 20), text);
+          lbl.applyStyle({ allowInput: false, fontSize: 12, clipMode: "hidden",
+            textColor: Color.rgb(60, 60, 60), fill: null, borderWidth: 0 });
+          content.addMorph(lbl);
+          buttons.forEach(function (b, i) {
+            actionButton(MARGIN + ew - ACT_W - i * (ACT_W + ACT_GAP), y, b.label, b.variant, b.action, did, handle);
+          });
+          y += ROW_H;
+        }
+
+        // Handle input + Add button on one row; the Add action reads the
+        // field itself by name.
+        function addRow(fieldName, prompt, action) {
+          fieldLabel(prompt);
+          textField(fieldName, "");
+          actionButton(MARGIN + ew - ACT_W, y + 2, "Add", "default", action, null, null);
+          y += 36;
+        }
+
+        if (tab === "general") {
 
         // ── Avatar ──────────────────────────────────────────────────────────
         sectionLabel("Avatar");
@@ -446,70 +584,6 @@ module("lively.identity.ConstellationSettingsDialog")
         }
         divider();
 
-        // ── Controllers (moderators) ─────────────────────────────────────────
-        // Creator-only to add/remove — a moderator being able to promote
-        // further moderators isn't the model this codebase uses (createdBy
-        // is the sole co-creator, ConstellationDesignSpec.md §4.1). Every
-        // other controller still SEES this list (read-only) when they open
-        // settings, same as they can see avatar/banner/domain state even
-        // though only they-as-controller can edit those.
-        sectionLabel("Controllers");
-        this._controllers.forEach(function (did) {
-          var isCreator = did === self._createdBy;
-          var handle = self._memberHandles[did];
-          var label = (handle ? "@" + handle : truncateMiddle(did, 14, 8)) +
-            "  —  " + (isCreator ? "Creator" : "Moderator");
-          var rowM = new lively.morphic.Text(lively.rect(MARGIN, y, ew - BTN_W - GAP, 20), label);
-          rowM.applyStyle({ allowInput: false, fontSize: 12, clipMode: "hidden",
-            textColor: isCreator ? Color.rgb(20, 110, 20) : Color.rgb(60, 60, 60),
-            fill: null, borderWidth: 0 });
-          content.addMorph(rowM);
-          if (self._isCreator && !isCreator) {
-            var rmCtrlBtn = styledButton(lively.rect(MARGIN + ew - BTN_W, y - 2, BTN_W, 24), "Remove", "danger");
-            rmCtrlBtn._did = did;
-            rmCtrlBtn.addScript(function doAction() {
-              var win = this.owner && this.owner.owner;
-              if (!win) return;
-              this.setLabel("…");
-              this.setActive(false);
-              win._removeController(this._did);
-            });
-            lively.bindings.connect(rmCtrlBtn, "fire", rmCtrlBtn, "doAction");
-            content.addMorph(rmCtrlBtn);
-          }
-          y += 24;
-        });
-
-        if (this._isCreator) {
-          y += 8;
-          fieldLabel("Add a controller (handle, e.g. @friend)");
-          textField("csdNewController", "");
-          var addCtrlBtn = styledButton(lively.rect(MARGIN + inputW + GAP, y, BTN_W, 28), "Add");
-          addCtrlBtn.addScript(function doAction() {
-            var win = this.owner && this.owner.owner;
-            if (!win) return;
-            var pane = win.get("settingsContent");
-            var inp = pane && pane.get("csdNewController");
-            var handle = inp && inp.textString && inp.textString.trim().replace(/^@/, "");
-            if (!handle) { alert("Enter a handle first."); return; }
-            this.setLabel("…");
-            this.setActive(false);
-            win._addController(handle, this);
-          });
-          lively.bindings.connect(addCtrlBtn, "fire", addCtrlBtn, "doAction");
-          content.addMorph(addCtrlBtn);
-          y += 36;
-        } else {
-          var onlyCreatorM = new lively.morphic.Text(lively.rect(MARGIN, y, ew, 16),
-            "Only the creator can add or remove controllers.");
-          onlyCreatorM.applyStyle({ allowInput: false, fontSize: 10,
-            textColor: Color.rgb(160, 160, 160),
-            fill: null, borderWidth: 0 });
-          content.addMorph(onlyCreatorM);
-          y += 22;
-        }
-        divider();
-
         // ── Save ─────────────────────────────────────────────────────────────
         // No separate Cancel button — the window's own title-bar close (X)
         // already discards unsaved changes, same as closing any other
@@ -524,6 +598,84 @@ module("lively.identity.ConstellationSettingsDialog")
         content.addMorph(saveBtn);
         y += 30 + 18;
 
+        } else {
+
+        // ── Members & Bots tab ───────────────────────────────────────────────
+        // Every button here applies immediately through its own route, so
+        // this tab has no Save. Bots/members/join requests: controllers
+        // (creator + moderators); adding/removing moderators: creator only —
+        // the routes enforce the same rules.
+        var createdBy = this._createdBy;
+        var controllers = this._controllers;
+        var bots = this._bots;
+        var isCreator = this._isCreator;
+
+        // ── Join requests
+        sectionLabel("Join requests" + (this._requests.length ? " (" + this._requests.length + ")" : ""));
+        if (!this._requests.length) noteText("No pending requests.");
+        this._requests.forEach(function (r) {
+          var when = "";
+          try { when = new Date(r.requestedAt).toLocaleDateString(); } catch (e) {}
+          personRow(r.did, r.handle, when ? "requested " + when : "", [
+            { label: "Approve", variant: "success", action: "_approveRequest" },
+            { label: "Decline", variant: "danger",  action: "_declineRequest" },
+          ]);
+        });
+        divider();
+
+        // ── Moderators
+        sectionLabel("Moderators");
+        var moderators = controllers.filter(function (d) { return d !== createdBy; });
+        if (createdBy) personRow(createdBy, null, "Creator", []);
+        if (!moderators.length) noteText("No moderators yet.");
+        moderators.forEach(function (did) {
+          personRow(did, null, "Moderator", isCreator ? [
+            { label: "Remove", variant: "danger", action: "_removeMember" },
+            { label: "Demote", variant: "default", action: "_demote" },
+          ] : []);
+        });
+        if (isCreator) {
+          addRow("csdNewModerator", "Add a moderator (handle, e.g. @friend)", "_addModeratorFromField");
+        } else {
+          noteText("Only the creator can add or remove moderators.");
+        }
+        divider();
+
+        // ── Bots
+        sectionLabel("Bots");
+        if (!bots.length) noteText("No bots yet.");
+        bots.forEach(function (did) {
+          personRow(did, null, "", [{ label: "Remove", variant: "danger", action: "_removeBot" }]);
+        });
+        addRow("csdNewBot", "Add a bot (handle of an existing account)", "_addBotFromField");
+        divider();
+
+        // ── Members (plain members only — moderators/creator are above)
+        sectionLabel("Members");
+        var plain = this._members.filter(function (d) {
+          return d !== createdBy && controllers.indexOf(d) === -1 && bots.indexOf(d) === -1;
+        });
+        if (!plain.length) noteText("No other members.");
+        plain.forEach(function (did) {
+          personRow(did, null, "", [{ label: "Remove", variant: "danger", action: "_removeMember" }]);
+        });
+        y += 12;
+
+        }
+
+        // Post-pass: applyStyle's textColor never reaches a Button's label
+        // (it stays the default green — confirmed via getComputedStyle), so
+        // write each styled button's recorded color to its rendered label.
+        content.submorphs.forEach(function (m) {
+          if (!m._textColor || !m.label) return;
+          try {
+            var ln = m.label.renderContext().shapeNode;
+            var c = m._textColor.toString();
+            ln.style.color = c;
+            Array.prototype.forEach.call(ln.querySelectorAll("div, span"), function (n) { n.style.color = c; });
+          } catch (e) {}
+        });
+
         // Grow the window (never shrink it) if the just-rendered content
         // needs more room than it currently has — e.g. after adding a
         // controller/domain row. Content itself is no longer resized here
@@ -533,13 +685,16 @@ module("lively.identity.ConstellationSettingsDialog")
         // resize the USER does by dragging the window's own resize handle.
         // A plain, unconditional "shrink window to fit content" here (the
         // original code) fought that: _render() re-runs on its own after
-        // any async reload (_reloadDomains/_reloadControllers), and that
+        // any async reload (_reloadDomains/_reloadRoster), and that
         // later call would silently snap a user's manual resize straight
         // back down to content-fit size the moment any such reload
         // completed — confirmed live, a window enlarged by 200x200 reverted
         // to its tight-fit size like the resize had never happened, well
         // before the user did anything else.
+        // The Members tab can be arbitrarily long, so cap how far it grows the
+        // window (the content pane scrolls beyond that).
         var neededHeight = y + (this.contentOffset ? this.contentOffset.y : 22) + 6;
+        if (tab === "members") neededHeight = Math.min(660, neededHeight);
         if (neededHeight > this.getExtent().y) {
           this.setExtent(lively.pt(this.getExtent().x, neededHeight));
         }
@@ -580,26 +735,112 @@ module("lively.identity.ConstellationSettingsDialog")
           .catch(function (err) { alert("Could not remove domain: " + err.message); self._reloadDomains(); });
       },
 
-      _addController: function _addController(handle, btn) {
+      // ── tabs ──
+
+      // General's fields only exist while that tab is showing (each tab is a
+      // full pane rebuild), so copy them into the dialog's own state before
+      // leaving — otherwise unsaved avatar/banner/description edits vanish.
+      _snapshotGeneral: function _snapshotGeneral() {
+        var pane = this.get("settingsContent");
+        if (!pane) return;
+        var av = pane.get("csdAvatarUrl"), bn = pane.get("csdBannerUrl"), ds = pane.get("csdDescription");
+        if (av) this._avatarUrl = av.textString || "";
+        if (bn) this._bannerUrl = bn.textString || "";
+        if (ds) this._description = ds.textString || "";
+      },
+
+      _switchTab: function _switchTab(tab) {
+        if (tab === this._tab) return;
+        if (this._tab === "general") this._snapshotGeneral();
+        this._tab = tab;
+        this._render();
+      },
+
+      // ── Members & Bots actions ── (button handlers call (did, handle, btn))
+
+      // Shared fetch: on success reload the roster (and requests) and tell the
+      // lounge so its member list refreshes; on failure show the server's
+      // message and put the button back.
+      _mutate: function _mutate(method, path, body, errPrefix, btn) {
         var self = this;
         var base = lively.identity.did.baseUrl();
-        fetch(base + "/c/" + encodeURIComponent(this._constellationName) + "/controllers", {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ handle: handle }),
-        })
+        var opts = { method: method, credentials: "include" };
+        if (body) {
+          opts.headers = { "Content-Type": "application/json" };
+          opts.body = JSON.stringify(body);
+        }
+        return fetch(base + "/c/" + encodeURIComponent(this._constellationName) + path, opts)
           .then(function (res) {
-            return res.json().then(function (body) {
-              if (!res.ok) throw new Error(body.error || ("HTTP " + res.status));
-              self._reloadControllers();
+            return res.json().then(function (b) {
+              if (!res.ok) throw new Error(b.error || ("HTTP " + res.status));
+              return b;
             });
           })
+          .then(function () {
+            self._reloadRoster();
+            self._reloadRequests();
+            self._onSaved();
+          })
           .catch(function (err) {
-            alert("Could not add controller: " + err.message);
-            btn.setLabel("Add");
-            btn.setActive(true);
+            alert(errPrefix + ": " + err.message);
+            if (btn && btn._label0) { btn.setLabel(btn._label0); btn.setActive(true); }
+            self._reloadRoster();
+            self._reloadRequests();
           });
+      },
+
+      _approveRequest: function _approveRequest(did, handle, btn) {
+        this._mutate("PUT", "/join-requests/" + encodeURIComponent(did),
+          { action: "approve" }, "Could not approve", btn);
+      },
+
+      _declineRequest: function _declineRequest(did, handle, btn) {
+        this._mutate("PUT", "/join-requests/" + encodeURIComponent(did),
+          { action: "decline" }, "Could not decline", btn);
+      },
+
+      _demote: function _demote(did, handle, btn) {
+        this._mutate("DELETE", "/controllers/" + encodeURIComponent(did), null, "Could not demote", btn);
+      },
+
+      _removeBot: function _removeBot(did, handle, btn) {
+        this._mutate("DELETE", "/bots/" + encodeURIComponent(did), null, "Could not remove bot", btn);
+      },
+
+      // Confirms first — removal drops the person's membership (and any
+      // moderator role) immediately.
+      _removeMember: function _removeMember(did, handle, btn) {
+        var self = this;
+        var h = handle || (this._memberHandles || {})[did];
+        $world.confirm("Remove " + (h ? "@" + h : "this member") + " from c/" + this._constellationName + "?", function (ok) {
+          if (!ok) {
+            if (btn && btn._label0) { btn.setLabel(btn._label0); btn.setActive(true); }
+            return;
+          }
+          self._mutate("DELETE", "/members/" + encodeURIComponent(did), null, "Could not remove member", btn);
+        });
+      },
+
+      // Reads the named handle field; restores the button if it's empty.
+      _fieldHandle: function _fieldHandle(fieldName, btn) {
+        var inp = this.get("settingsContent").get(fieldName);
+        var handle = inp && inp.textString && inp.textString.trim().replace(/^@/, "");
+        if (!handle) {
+          alert("Enter a handle first.");
+          if (btn && btn._label0) { btn.setLabel(btn._label0); btn.setActive(true); }
+          return null;
+        }
+        return handle;
+      },
+
+      _addModeratorFromField: function _addModeratorFromField(did, handle, btn) {
+        var h = this._fieldHandle("csdNewModerator", btn);
+        if (h) this._mutate("POST", "/controllers", { handle: h }, "Could not add moderator", btn);
+      },
+
+      _addBotFromField: function _addBotFromField(did, handle, btn) {
+        var h = this._fieldHandle("csdNewBot", btn);
+        if (h) this._mutate("POST", "/bots", { handle: h }, "Could not add bot", btn);
       },
 
       // Same clipboard approach as Wallet.js's own _copyToClipboard, adapted
@@ -623,22 +864,6 @@ module("lively.identity.ConstellationSettingsDialog")
           try { document.execCommand("copy"); copied(); } catch (e) { btn.setActive(true); }
           document.body.removeChild(ta);
         }
-      },
-
-      _removeController: function _removeController(did) {
-        var self = this;
-        var base = lively.identity.did.baseUrl();
-        fetch(base + "/c/" + encodeURIComponent(this._constellationName) + "/controllers/" + encodeURIComponent(did), {
-          method: "DELETE",
-          credentials: "include",
-        })
-          .then(function (res) {
-            return res.json().then(function (body) {
-              if (!res.ok) throw new Error(body.error || ("HTTP " + res.status));
-              self._reloadControllers();
-            });
-          })
-          .catch(function (err) { alert("Could not remove controller: " + err.message); self._reloadControllers(); });
       },
 
       _save: function _save(btn) {
@@ -672,10 +897,10 @@ module("lively.identity.ConstellationSettingsDialog")
     });
 
     lively.identity.ConstellationSettingsDialog = {
-      open: function (name, quickInfo, onSaved) {
+      open: function (name, quickInfo, onSaved, tab) {
         var win = lively.BuildSpec("lively.identity.ConstellationSettingsDialog").createMorph();
         win.openInWorldCenter();
-        win.load(name, quickInfo, onSaved);
+        win.load(name, quickInfo, onSaved, tab);
         return win;
       },
     };
