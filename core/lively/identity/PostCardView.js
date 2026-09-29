@@ -749,6 +749,43 @@ module("lively.identity.PostCardView")
             .catch(function () {}); // network error — keep the identicon fallback
         },
 
+        // Builds this._contentEl's HTML from a ProseMirror snapshot. Default
+        // (_previewMode false, every caller except ConstellationLounge's
+        // reel): unchanged plain natural document order, same as always.
+        // Opt-in (_previewMode true): reorders via
+        // postCardUtils.buildPreviewSplit into the "Reddit-like" media-
+        // forward shape (lead excerpt -> media -> rest) — falls back to the
+        // exact same unsplit render if the doc has no media at all. Called
+        // from both places that used to assign _contentEl.innerHTML
+        // directly (the public branch below, and _decryptAndRenderContent's
+        // post-decrypt render) so preview mode applies consistently to
+        // public and decrypted-private content alike.
+        _renderContentHtml: function (snapshot) {
+          var U = lively.identity.postCardUtils;
+          if (!snapshot) { this._contentEl.innerHTML = ""; return; }
+          if (!this._previewMode) {
+            this._contentEl.innerHTML = U.snapshotToHtml(snapshot);
+            return;
+          }
+          var split = U.buildPreviewSplit(snapshot.content, {});
+          if (!split.hasMedia) {
+            this._contentEl.innerHTML = U.snapshotToHtml(snapshot);
+            return;
+          }
+          var parts = [];
+          if (split.leadExcerpt) {
+            parts.push('<div class="lively-postcard-preview-lead">' + U.escapeHtml(split.leadExcerpt) + '</div>');
+          }
+          parts.push('<div class="lively-postcard-preview-media">' + split.mediaHtml + '</div>');
+          if (split.restHtml) {
+            // Unclamped here (no -rest-clamped modifier) — this card grows
+            // to fit its content (ConstellationLounge's _fitCardToContent),
+            // it doesn't need PostCardFeed's fixed-max-height fade-clip.
+            parts.push('<div class="lively-postcard-preview-rest">' + split.restHtml + '</div>');
+          }
+          this._contentEl.innerHTML = parts.join('');
+        },
+
         _renderContentArea: function (envelope) {
           var self = this;
           if (envelope.visibility === "public") {
@@ -760,9 +797,7 @@ module("lively.identity.PostCardView")
             // saved before this format existed) keep using `snapshot`.
             var snapshot = payload &&
               (payload.format === "prosemirror-doc-v1" ? payload.doc : payload.snapshot);
-            this._contentEl.innerHTML = snapshot
-              ? lively.identity.postCardUtils.snapshotToHtml(snapshot)
-              : "";
+            this._renderContentHtml(snapshot);
             // BUG FIX: embedded Lively parts used to render as a permanent
             // "[Embedded Part: <objId>]" text stub here — nothing ever
             // turned the placeholder into the live morph it references.
@@ -838,7 +873,7 @@ module("lively.identity.PostCardView")
               return;
             }
 
-            self._contentEl.innerHTML = lively.identity.postCardUtils.snapshotToHtml(snapshot);
+            self._renderContentHtml(snapshot);
             lively.identity.postCardUtils.hydrateEmbeddedParts(self._contentEl);
             lively.identity.postCardUtils.hydrateAttachments(
               self._contentEl, self._handle, (payload && payload.attachments) || [],
@@ -1286,6 +1321,10 @@ module("lively.identity.PostCardView")
       // options.envelope    -> render immediately, skip the fetch
       // options.cid         -> view a specific historical version
       // options.bounds      -> override the default postcard-shaped extent
+      // options.previewMode -> opt-in media-forward content reordering (see
+      //   _renderContentHtml) — default false, so every existing caller
+      //   keeps rendering in plain natural document order unchanged.
+      //   ConstellationLounge.js's reel is the only caller that passes this.
       open: function (handle, objId, options) {
         var opts = options || {};
         var view = new lively.identity.PostCardView(
@@ -1295,6 +1334,7 @@ module("lively.identity.PostCardView")
         view._objId = objId;
         view._cid = opts.cid || null;
         view._envelope = opts.envelope || null;
+        view._previewMode = !!opts.previewMode;
         if (opts.target) {
           opts.target.addMorph(view);
           view._setup();

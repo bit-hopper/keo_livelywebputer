@@ -182,7 +182,7 @@ module('lively.identity.PostCardSerializer')
         // Step 3: Extract title from first block unless explicitly set
         var title = params.title;
         if (!title && snapshot && snapshot.content && snapshot.content.length) {
-          title = self._extractFirstBlockText(snapshot.content[0]);
+          title = self._extractTitleFromBlocks(snapshot.content);
         }
 
         var payload = {
@@ -341,7 +341,7 @@ module('lively.identity.PostCardSerializer')
 
         var title = params.title;
         if (!title && doc.content && doc.content.length) {
-          title = self._extractFirstBlockText(doc.content[0]);
+          title = self._extractTitleFromBlocks(doc.content);
         }
 
         c.computeCid(payload, function (err, cid) {
@@ -853,6 +853,26 @@ module('lively.identity.PostCardSerializer')
           if (child.content) return child.content.map(function(c) { return c.text || ''; }).join('');
           return '';
         }).join('').trim().slice(0, 200);
+      },
+
+      // Title auto-extraction (§10.5) only ever tried content[0] — if the
+      // very first block is itself a bare media node (an image/video as the
+      // first thing typed, no text), _extractFirstBlockText(content[0])
+      // returns '' and the title silently falls back to "(untitled)" even
+      // though the doc has real text further down. Scan forward for the
+      // first block that actually yields non-empty text instead. Public/
+      // private plaintext paths only (serializeToEnvelope,
+      // serializePlainToEnvelope) — the encrypted path deliberately never
+      // auto-extracts a title at all (state.title is clear-text
+      // server-readable metadata; see that path's own comment), so this
+      // helper is never called from there and shouldn't be.
+      _extractTitleFromBlocks: function (content) {
+        if (!content || !content.length) return '';
+        for (var i = 0; i < content.length; i++) {
+          var text = this._extractFirstBlockText(content[i]);
+          if (text) return text;
+        }
+        return '';
       },
 
     });

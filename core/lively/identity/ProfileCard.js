@@ -1171,6 +1171,7 @@ module("lively.identity.ProfileCard")
           // recipient (private, encrypted to them). Signed-in visitors on
           // someone else's card only — no point postcarding yourself.
           var viewer = lively.identity.did.currentUser();
+          var nextX = btnX + btnW + 8; // bumped past pcBtn below if it renders
           if (!self._isOwner && viewer) {
             var pcSize = btnH;
             var pcBtn = new lively.morphic.Text(
@@ -1202,7 +1203,38 @@ module("lively.identity.ProfileCard")
             });
             pane.addMorph(pcBtn);
             pcBtn.renderContext().morphNode.title = 'Send @' + handle + ' a postcard';
+            nextX = btnX + btnW + 8 + pcSize + 8;
           }
+
+          // Postcard feed button — unconditionally visible (browsing a
+          // public feed needs no auth, unlike sending one above): opens
+          // PostCardFeed for this handle. This is the feature's own real
+          // entry point — PostCardFeed existed with no reachable UI path
+          // anywhere in the app before this.
+          var feedSize = btnH;
+          var feedBtn = new lively.morphic.Text(
+            lively.rect(nextX, btnY, feedSize, feedSize), 'dynamic_feed');
+          feedBtn.draggingEnabled = false;
+          feedBtn.droppingEnabled = false;
+          feedBtn.grabbingEnabled = false;
+          feedBtn.applyStyle({ fill: Color.rgb(80, 80, 90),
+            borderRadius: feedSize / 2, borderWidth: 0,
+            fontFamily: "'Material Symbols Rounded'", fontSize: 13.5,
+            textColor: Color.white, align: 'center',
+            padding: lively.rect(0, 1, 0, 0),
+            allowInput: false, selectable: false, clipMode: 'hidden',
+            whiteSpaceHandling: 'pre', handStyle: 'pointer' });
+          feedBtn._handle = handle;
+          feedBtn.addScript(function onMouseUp(evt) {
+            var toHandle = this._handle;
+            lively.require("lively.identity.PostCardFeed").toRun(function () {
+              lively.identity.PostCardFeed.open(toHandle);
+            });
+            evt.stop();
+            return true;
+          });
+          pane.addMorph(feedBtn);
+          feedBtn.renderContext().morphNode.title = "View @" + handle + "’s postcards";
         })();
 
 

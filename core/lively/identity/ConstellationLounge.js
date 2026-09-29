@@ -3257,8 +3257,18 @@ module("lively.identity.ConstellationLounge")
           self._resolveHandle(envelope.did, function (handle) {
             if (box._cardRenderToken !== token) return;
             var opts = { target: box, envelope: envelope, bounds: lively.rect(0, 0, box.getExtent().x, box.getExtent().y) };
-            if (envelope.type === "wikipage") lively.identity.WikiView.open(handle, objId, opts);
-            else lively.identity.PostCardView.open(handle, objId, opts);
+            if (envelope.type === "wikipage") {
+              lively.identity.WikiView.open(handle, objId, opts);
+            } else {
+              // previewMode: this reel is the one place a postcard renders
+              // as a compact "browse many" preview rather than being opened
+              // directly — reorder its content media-forward (see
+              // PostCardView._renderContentHtml). Every other
+              // PostCardView.open call site in the app keeps natural
+              // document order (opt-in flag, default false).
+              opts.previewMode = true;
+              lively.identity.PostCardView.open(handle, objId, opts);
+            }
             if (box === self._frontCardBox) {
               // Content may still be laying out / decrypting right after
               // open(), so re-measure a couple of times.

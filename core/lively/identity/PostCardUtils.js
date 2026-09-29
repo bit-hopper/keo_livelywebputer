@@ -25,6 +25,8 @@ module('lively.identity.PostCardUtils')
       identiconDataUrl:    identiconDataUrl,
       truncateDid:         truncateDid,
       truncateAddress:     truncateAddress,
+      excerptText:         excerptText,
+      buildPreviewSplit:   buildPreviewSplit,
       encodeLocation:      encodeLocation,
       sanitizeLocationCode: sanitizeLocationCode,
       hydrateEmbeddedParts: hydrateEmbeddedParts,
@@ -108,7 +110,21 @@ module('lively.identity.PostCardUtils')
         '.lively-code-cell-output.lively-code-cell-output-empty{color:#999;font-style:italic;}' +
         '.lively-code-cell-output pre{margin:0 0 6px 0;white-space:pre-wrap;word-break:break-word;}' +
         '.lively-code-cell-output pre.lively-code-cell-stderr{color:#c33;}' +
-        '.lively-code-cell-output img{max-width:100%;display:block;margin:4px 0;}';
+        '.lively-code-cell-output img{max-width:100%;display:block;margin:4px 0;}' +
+        // Media-forward ("Reddit-like") preview wrappers — see
+        // buildPreviewSplit above. Shared by PostCardFeed's row rendering
+        // and PostCardView's opt-in previewMode. -rest is unclamped by
+        // default (a card that grows to fit its content, like
+        // ConstellationLounge's reel via _fitCardToContent, should show all
+        // of it) — -rest-clamped is an opt-in modifier PostCardFeed adds
+        // for its own fixed-max-height row, since that context has no
+        // "just grow taller" option.
+        '.lively-postcard-preview-lead{font-size:11px;color:#666;margin:2px 0 4px;}' +
+        '.lively-postcard-preview-media{margin:2px 0 4px;}' +
+        '.lively-postcard-preview-rest{font-size:11.5px;color:#333;}' +
+        '.lively-postcard-preview-rest.lively-postcard-preview-rest-clamped{max-height:140px;overflow:hidden;' +
+        '-webkit-mask-image:linear-gradient(#000 70%, transparent 100%);' +
+        'mask-image:linear-gradient(#000 70%, transparent 100%);}';
       document.head.appendChild(styleEl);
     }
 
@@ -239,6 +255,112 @@ module('lively.identity.PostCardUtils')
         imgs.map(function (img) {
           return '<div class="lively-media-cell">' + imageTagHtml(img, '', false) + '</div>';
         }).join('') + '</div>';
+    }
+
+    // Recursively concatenates plain text out of a ProseMirror node tree —
+    // deeper than PostCardSerializer.js's private _extractFirstBlockText
+    // (which only looks one level down), needed here because "the rest of
+    // the body" in a preview can include list_item/blockquote-wrapped
+    // paragraphs, not just a single top-level one.
+    function _plainTextOfNode(node) {
+      if (!node) return '';
+      if (node.type === 'text') return node.text || '';
+      if (!node.content) return '';
+      return node.content.map(_plainTextOfNode).join(' ');
+    }
+
+    // buildPreviewSplit(docContent, opts) — walks a ProseMirror doc's
+    // top-level block array (the same shape blocksToHtml/snapshotToHtml
+    // already consume) and splits it into a short leading text excerpt, the
+    // first media block (promoted to appear early even if it means cutting
+    // remaining pre-media text — media always shows if the doc has any),
+    // and whatever comes after. Used by PostCardFeed's row rendering and
+    // PostCardView's opt-in preview mode (ConstellationLounge's reel) to
+    // build a "Reddit-like" media-forward preview instead of showing
+    // content in plain document order. Reuses blocksToHtml/
+    // imageOnlyParagraph for actual HTML generation — no second renderer,
+    // no duplicated per-node-type logic (image/video/gallery/attachment-
+    // placeholder rendering all come along for free).
+    //
+    // opts.leadBudget (default 140): char budget for the lead excerpt.
+    // opts.restBudget (default 400): char budget for the "rest" segment,
+    // enforced at whole-block granularity only (never a mid-block string
+    // cut, which could produce broken HTML) — a single verbose trailing
+    // block can run a bit over this; callers that need a hard visual cap
+    // (e.g. PostCardFeed's fixed-max-height row) apply their own CSS
+    // clamp/fade on top of this.
+    //
+    // Returns { hasMedia, leadExcerpt, mediaHtml, restHtml, restTruncated }.
+    // hasMedia:false means the doc has no image/video content at all —
+    // callers should ignore leadExcerpt/mediaHtml/restHtml entirely and
+    // fall back to their own plain/unsplit rendering in that case.
+    function buildPreviewSplit(docContent, opts) {
+      opts = opts || {};
+      var leadBudget = opts.leadBudget || 140;
+      var restBudget = opts.restBudget || 400;
+      var nodes = docContent || [];
+
+      var leadPlain = '';
+      var mediaNodes = [];
+      var hasMedia = false;
+      var i = 0;
+
+      for (; i < nodes.length; i++) {
+        var node = nodes[i];
+        var imgs = imageOnlyParagraph(node);
+        var isBareMedia = !imgs && node && (node.type === 'image' || node.type === 'video' || node.type === 'audio');
+        if (imgs || isBareMedia) {
+          hasMedia = true;
+          if (imgs) {
+            // Merge the maximal *consecutive* run of image-only paragraphs,
+            // mirroring blocksToHtml's own pending/flush merge exactly (so
+            // the eventual render goes through the same 4-per-gallery
+            // chunking via galleryHtml).
+            while (i < nodes.length && imageOnlyParagraph(nodes[i])) { mediaNodes.push(nodes[i]); i++; }
+          } else {
+            // A bare top-level image/video/audio node — blocksToHtml never
+            // merges these with neighbors either, so neither do we.
+            mediaNodes.push(node);
+            i++;
+          }
+          break;
+        }
+        // Once leadBudget is exceeded we keep *scanning* for media (per the
+        // "media always gets promoted" rule) — we just stop *appending* to
+        // leadPlain, via this guard.
+        if (leadPlain.length < leadBudget) {
+          var text = _plainTextOfNode(node);
+          if (text) leadPlain += (leadPlain ? ' ' : '') + text;
+        }
+      }
+
+      // "Rest" is whatever whole blocks come after the media run, capped by
+      // restBudget at block granularity only.
+      var restNodes = [];
+      var restPlainLen = 0;
+      var restTruncated = false;
+      for (; i < nodes.length; i++) {
+        var rNode = nodes[i];
+        var rLen = _plainTextOfNode(rNode).length;
+        if (restNodes.length > 0 && restPlainLen + rLen > restBudget) {
+          restTruncated = true;
+          break;
+        }
+        restNodes.push(rNode);
+        restPlainLen += rLen;
+        if (restPlainLen > restBudget) {
+          restTruncated = (i + 1 < nodes.length);
+          break;
+        }
+      }
+
+      return {
+        hasMedia: hasMedia,
+        leadExcerpt: excerptText(leadPlain, leadBudget),
+        mediaHtml: hasMedia ? blocksToHtml(mediaNodes) : '',
+        restHtml: blocksToHtml(restNodes),
+        restTruncated: restTruncated,
+      };
     }
 
     function imageTagHtml(node, extraClass, decorative) {
@@ -748,6 +870,25 @@ module('lively.identity.PostCardUtils')
     function truncateAddress(addr) {
       var s = String(addr || '');
       return s.length > 12 ? s.slice(0, 6) + '…' + s.slice(-4) : s;
+    }
+
+    // Head-truncate (not middle-truncate, unlike truncateDid/truncateAddress
+    // above) arbitrary prose to maxChars, word-boundary-aware, ellipsis-
+    // suffixed — for rendering a short preview *snippet* of body text, not
+    // an opaque identifier. Differs from PostCardSerializer.js's private
+    // _extractFirstBlockText: that's a save-time, single-block (content[0]
+    // only), no-ellipsis, hard 200-char slice used only to derive
+    // envelope.state.title. This is a render-time, exported,
+    // multi-block-aggregate-input helper for body preview text (see
+    // buildPreviewSplit below).
+    function excerptText(text, maxChars) {
+      var s = String(text || '').replace(/\s+/g, ' ').trim();
+      maxChars = maxChars || 140;
+      if (s.length <= maxChars) return s;
+      var cut = s.slice(0, maxChars);
+      var lastSpace = cut.lastIndexOf(' ');
+      if (lastSpace > maxChars * 0.6) cut = cut.slice(0, lastSpace); // avoid an ugly mid-word cut when reasonable
+      return cut.replace(/[,;:.\-–—]+$/, '') + '…';
     }
 
     function escapeHtml(str) {
