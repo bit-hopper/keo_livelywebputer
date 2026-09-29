@@ -1616,8 +1616,8 @@ module("lively.identity.ConstellationLounge")
         }
         if (this._isActiveRoom(room)) return { text: "Open", color: ROOM_GREEN, clickable: true };
         if (room.iJoined) return { text: "Drift away", color: ROOM_ACCENT, clickable: true };
-        if (room.access !== "request") return { text: "Enter", color: ROOM_GREEN, clickable: true };
-        if (room.myAccessStatus === "approved") return { text: "Enter", color: ROOM_GREEN, clickable: true, icon: "check_circle" };
+        if (room.access !== "request") return { text: "Join", color: ROOM_GREEN, clickable: true };
+        if (room.myAccessStatus === "approved") return { text: "Join", color: ROOM_GREEN, clickable: true, icon: "check_circle" };
         if (room.myAccessStatus === "pending") return { text: "Request pending…", color: GREY, clickable: false };
         if (room.myAccessStatus === "declined") return { text: "Declined — click to re-request", color: MUTED_RED, clickable: true };
         return { text: "Request to join", color: ROOM_ACCENT, clickable: true };
