@@ -726,6 +726,7 @@ module("lively.identity.ConstellationLounge")
       // closures work here (see CLAUDE.md's BuildSpec-closure-loss gotcha,
       // which does NOT apply to this class).
       _wireHandleLink: function (t, did, handle) {
+        var self = this; // the lounge controller, for its own _isController — see MiniProfileCard.open's opts
         var PINK = Color.rgb(0xCC, 0x00, 0x57);       // ProfileCard.js's own window-frame color
         var PINK_HOVER = Color.rgb(0xE0, 0x4A, 0x86);
         t.applyStyle({ textColor: PINK, handStyle: "pointer" });
@@ -743,7 +744,10 @@ module("lively.identity.ConstellationLounge")
         t.onMouseOut  = function () { t.applyStyle({ textColor: PINK }); };
         t.onMouseUp = function (evt) {
           lively.require("lively.identity.MiniProfileCard").toRun(function () {
-            lively.identity.MiniProfileCard.open(handle, did, t);
+            lively.identity.MiniProfileCard.open(handle, did, t, {
+              roomContext: true,
+              isController: !!self._isController,
+            });
           });
           evt.stop();
           return true;

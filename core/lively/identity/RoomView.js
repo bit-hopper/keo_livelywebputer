@@ -1751,7 +1751,10 @@ module("lively.identity.RoomView")
             row.handStyle = "pointer";
             row.onMouseUp = function (evt) {
               lively.require("lively.identity.MiniProfileCard").toRun(function () {
-                lively.identity.MiniProfileCard.open(p.handle, p.did, row);
+                lively.identity.MiniProfileCard.open(p.handle, p.did, row, {
+                  roomContext: true,
+                  isController: !!self._isController,
+                });
               });
               evt.stop();
               return true;

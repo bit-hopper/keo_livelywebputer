@@ -9,7 +9,9 @@
  * outside click, following the same shape as CalendarApp.js's
  * _showEventPopover/_hidePopover.
  *
- * Open: lively.identity.MiniProfileCard.open(handle, did, anchor)
+ * Open: lively.identity.MiniProfileCard.open(handle, did, anchor, opts)
+ * opts is optional: { roomContext, isController } — see open()'s own doc
+ * comment below for what these gate (the mod-view shield badge).
  *
  * anchor is either a morph (its worldPoint()/getExtent() position the
  * popover just below it, as every morph-based call site does) or a plain
@@ -35,7 +37,12 @@ module("lively.identity.MiniProfileCard")
     var CLOSE_HOVER_RED = Color.rgb(224, 66, 66); // base_theme.css's .Button.WindowControl.close:hover
     var CARD_W = 260;
     var LOADING_H = 92; // provisional height until the profile has loaded
-    var HEAD_W = CARD_W - 64 - 34; // name/handle column: right of the avatar, left of the close button
+    var CLOSE = 22, CLOSE_GLYPH_PX = 13;
+    var MENU = 22, MENU_GLYPH_PX = 14; // "more_vert" reads a touch smaller than "close" at equal box size, bumped up 1px
+    var TOPRIGHT_GAP = 4;
+    var CLOSE_X = CARD_W - 8 - CLOSE;             // 230
+    var MENU_X = CLOSE_X - TOPRIGHT_GAP - MENU;   // 204 — left of the close button
+    var HEAD_W = MENU_X - TOPRIGHT_GAP - 64; // name/handle column: right of the avatar, left of the menu+close buttons
     var NAME_MAX = 20, HANDLE_MAX = 24, HOST_MAX = 30, BIO_MAX = 100;
     var ROW_H = 20, ROW_GAP = 2, ICON_NUDGE = 2, BIO_LINE_H = 17, BIO_CHARS_PER_LINE = 34, BIO_MAX_LINES = 3;
 
@@ -126,9 +133,19 @@ module("lively.identity.MiniProfileCard")
       // world coordinates (WikiView.js's DOM-anchored chips: there's no
       // morph to point at, so the caller computes the world position
       // itself via its own worldPoint()).
-      open: function (handle, did, anchor) {
+      //
+      // opts is optional: { roomContext, isController }. roomContext marks
+      // this popover as opened from a cluster/room (ConstellationLounge.js/
+      // RoomView.js), as opposed to e.g. a wiki page. The mod-view shield
+      // badge only shows when roomContext AND isController (the *viewer's*
+      // own moderator/controller status, not the viewed person's) are both
+      // true. Callers that omit opts (WikiView.js) get no shield, same as
+      // before this param existed.
+      open: function (handle, did, anchor, opts) {
         var self = this;
         this.close(); // only one popover open at a time
+        var roomContext = !!(opts && opts.roomContext);
+        var isController = !!(opts && opts.isController);
 
         var W = window.innerWidth, H = window.innerHeight;
         // World coordinates equal page/document coordinates (Core.js's
@@ -190,9 +207,8 @@ module("lively.identity.MiniProfileCard")
         // .Button.WindowControl.close: circle backdrop, "close" glyph, red
         // circle + white glyph on hover) — same fontSize*0.75/padding-inset
         // icon-button idiom as ConstellationLounge.js's editBtn.
-        var CLOSE = 22, CLOSE_GLYPH_PX = 13;
         var CLOSE_FILL = Color.rgb(240, 240, 240);
-        var closeX = new lively.morphic.Text(lively.rect(CARD_W - 8 - CLOSE, 8, CLOSE, CLOSE), "close");
+        var closeX = new lively.morphic.Text(lively.rect(CLOSE_X, 8, CLOSE, CLOSE), "close");
         closeX.applyStyle({
           fontFamily: "'Material Symbols Rounded'",
           fontSize: CLOSE_GLYPH_PX * 0.75,
@@ -212,6 +228,48 @@ module("lively.identity.MiniProfileCard")
         closeX.onMouseOut  = function () { closeX.applyStyle({ fill: CLOSE_FILL, textColor: TEXT_MUTED }); };
         closeX.onMouseUp = function (evt) { self.close(); evt.stop(); return true; };
         card.addMorph(closeX);
+
+        // Overflow menu — placeholder for now (single non-functional item),
+        // shown on every mini profile regardless of where it was opened
+        // from. Same circle-backdrop icon-button idiom as closeX above, but
+        // a neutral hover color (not close's red) so the two read as
+        // distinct actions. Toggle-dance (onMouseDown flags whether OUR
+        // menu was the one open at mousedown; onMouseUp checks that flag
+        // and just closes instead of reopening) copied from ProfileCard.js's
+        // own more_vert button, which needs it for the same reason: a click
+        // that closes an open menu (by landing on the scrim) still reaches
+        // this button's onMouseUp right after, which would otherwise
+        // instantly reopen it.
+        var MENU_FILL = Color.rgb(240, 240, 240);
+        var MENU_HOVER = Color.rgb(224, 224, 224);
+        var menuBtn = new lively.morphic.Text(lively.rect(MENU_X, 8, MENU, MENU), "more_vert");
+        menuBtn.applyStyle({
+          fontFamily: "'Material Symbols Rounded'",
+          fontSize: MENU_GLYPH_PX * 0.75,
+          textColor: TEXT_MUTED,
+          fill: MENU_FILL,
+          borderRadius: MENU / 2,
+          borderWidth: 0,
+          align: "center",
+          padding: lively.Rectangle.inset(0, 3, 0, 0),
+          allowInput: false, selectable: false, clipMode: "hidden",
+          whiteSpaceHandling: "pre", handStyle: "pointer",
+        });
+        noDrag(menuBtn);
+        menuBtn.onMouseOver = function () { menuBtn.applyStyle({ fill: MENU_HOVER }); };
+        menuBtn.onMouseOut  = function () { menuBtn.applyStyle({ fill: MENU_FILL }); };
+        menuBtn.onMouseDown = function () {
+          menuBtn._wasMenuOpen = !!(menuBtn._openMenu && $world.currentMenu === menuBtn._openMenu);
+        };
+        menuBtn.onMouseUp = function (evt) {
+          if (menuBtn._wasMenuOpen) { menuBtn._wasMenuOpen = false; menuBtn._openMenu = null; evt.stop(); return true; }
+          var pos = menuBtn.worldPoint(lively.pt(0, menuBtn.getExtent().y));
+          menuBtn._openMenu = lively.morphic.Menu.openAt(pos, "@" + trunc(handle, HANDLE_MAX),
+            [["More options coming soon", function () {}]]);
+          evt.stop();
+          return true;
+        };
+        card.addMorph(menuBtn);
 
         $world.addMorph(card);
         // Soft drop shadow, same idiom/values as the other floating panels
@@ -244,6 +302,7 @@ module("lively.identity.MiniProfileCard")
               bioFallback: res.env ? "No bio yet." : "Could not load profile.",
               wantY: wantY,
               scrollY: scrollY,
+              showModIcon: roomContext && isController,
             });
           });
       },
@@ -269,11 +328,37 @@ module("lively.identity.MiniProfileCard")
           y += ROW_H + ROW_GAP;
         }
 
+        // Shield/mod-view badge shares this row slot with the host line
+        // (rowY captured before either renders) so it lands "aligned with
+        // the host name" whether or not this particular person actually
+        // has host data to show.
+        var rowY = y;
+        var SHIELD = 18;
         if (d.host) {
+          var hostLabelW = contentW - 22 - (d.showModIcon ? SHIELD + 6 : 0);
           card.addMorph(icon(lively.rect(14, y - ICON_NUDGE, 18, ROW_H), "dns", 14, TEXT_MUTED));
-          card.addMorph(label(lively.rect(36, y, contentW - 22, ROW_H), trunc(d.host, HOST_MAX),
+          card.addMorph(label(lively.rect(36, y, hostLabelW, ROW_H), trunc(d.host, HOST_MAX),
             { px: 11, color: TEXT_MUTED }));
           y += ROW_H + ROW_GAP;
+        }
+
+        if (d.showModIcon) {
+          var shield = new lively.morphic.Text(
+            lively.rect(14 + contentW - SHIELD, rowY - ICON_NUDGE, SHIELD, ROW_H), "shield_person");
+          shield.applyStyle({
+            fontFamily: "'Material Symbols Rounded'", fontSize: 15 * 0.75,
+            textColor: PINK, fill: null, borderWidth: 0, align: "center",
+            allowInput: false, selectable: false, clipMode: "hidden",
+            whiteSpaceHandling: "pre", handStyle: "pointer",
+          });
+          noDrag(shield);
+          shield.onMouseUp = function (evt) {
+            self._openModPlaceholderWindow(d.handle);
+            evt.stop();
+            return true;
+          };
+          card.addMorph(shield);
+          if (!d.host) { y = rowY + ROW_H + ROW_GAP; } // reserve the row even with no host text
         }
 
         var bioText = d.bio ? trunc(d.bio, BIO_MAX) : d.bioFallback;
@@ -354,6 +439,21 @@ module("lively.identity.MiniProfileCard")
         viewBtn.addMorph(viewIcon);
 
         return y + 24;
+      },
+
+      // Placeholder for the real moderator-view UI — proves the shield
+      // icon's wiring works. Programmatic Window constructor (not a
+      // declarative BuildSpec submorph), so contentOffset is applied
+      // automatically and there's no title-bar-overlap gotcha to work
+      // around here.
+      _openModPlaceholderWindow: function (handle) {
+        var body = new lively.morphic.Box(lively.rect(0, 0, 240, 70));
+        body.applyStyle({ fill: Color.rgb(250, 250, 252), borderWidth: 0 });
+        var msg = label(lively.rect(14, 14, 212, 42), "Coming soon.", { px: 12, color: Color.rgb(90, 90, 90), wrap: true });
+        body.addMorph(msg);
+        var win = new lively.morphic.Window(body, "Moderator View — @" + handle);
+        $world.addMorph(win);
+        win.comeForward();
       },
     };
 
