@@ -9,7 +9,14 @@
  * outside click, following the same shape as CalendarApp.js's
  * _showEventPopover/_hidePopover.
  *
- * Open: lively.identity.MiniProfileCard.open(handle, did, anchorMorph)
+ * Open: lively.identity.MiniProfileCard.open(handle, did, anchor)
+ *
+ * anchor is either a morph (its worldPoint()/getExtent() position the
+ * popover just below it, as every morph-based call site does) or a plain
+ * lively.pt(x, y) already in world coordinates, for callers with no morph
+ * to point at — e.g. WikiView.js's raw-DOM avatar/handle chips, which
+ * compute the world position themselves via their own owner morph's
+ * worldPoint().
  *
  * The host row is the member's home instance, read from the "#home" service
  * entry the server records in their DID document (see DidHome.js). It is
@@ -114,13 +121,28 @@ module("lively.identity.MiniProfileCard")
         return null;
       },
 
-      open: function (handle, did, anchorMorph) {
+      // anchor is either a morph (worldPoint()/getExtent(), as every
+      // existing call site passes) or a plain lively.pt(x, y) already in
+      // world coordinates (WikiView.js's DOM-anchored chips: there's no
+      // morph to point at, so the caller computes the world position
+      // itself via its own worldPoint()).
+      open: function (handle, did, anchor) {
         var self = this;
         this.close(); // only one popover open at a time
 
         var W = window.innerWidth, H = window.innerHeight;
+        // World coordinates equal page/document coordinates (Core.js's
+        // worldPoint composes the owner-chain transform, independent of
+        // scroll) — but the viewport clamp bounds below are naturally
+        // viewport-relative, so they need the current scroll offset added
+        // to stay correct when the world is taller than the viewport and
+        // the page has scrolled (see WikiView.js's _growWorldToFit). Zero
+        // for every existing non-scrolling call site, so this is a no-op
+        // there.
+        var scrollX = (document.scrollingElement && document.scrollingElement.scrollLeft) || 0;
+        var scrollY = (document.scrollingElement && document.scrollingElement.scrollTop) || 0;
 
-        var scrim = new lively.morphic.Box(lively.rect(0, 0, W, H));
+        var scrim = new lively.morphic.Box(lively.rect(scrollX, scrollY, W, H));
         scrim.applyStyle({ fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
         noDrag(scrim);
         scrim.onMouseUp = function (evt) { self.close(); evt.stop(); return true; };
@@ -130,10 +152,12 @@ module("lively.identity.MiniProfileCard")
         // anchorMorph lives directly in $world (same coordinate space, no
         // owner transform to account for) in every current call site, so
         // its worldPoint() is usable as-is for the card's own position.
-        var anchorPos = anchorMorph.worldPoint(lively.pt(0, anchorMorph.getExtent().y));
-        var px = Math.min(Math.max(8, anchorPos.x), W - CARD_W - 8);
-        var wantY = Math.max(8, anchorPos.y + 4);
-        var py = Math.min(wantY, H - LOADING_H - 8);
+        var anchorPos = (typeof anchor.worldPoint === "function")
+          ? anchor.worldPoint(lively.pt(0, anchor.getExtent().y))
+          : anchor;
+        var px = Math.min(Math.max(8 + scrollX, anchorPos.x), scrollX + W - CARD_W - 8);
+        var wantY = Math.max(8 + scrollY, anchorPos.y + 4);
+        var py = Math.min(wantY, scrollY + H - LOADING_H - 8);
 
         var card = new lively.morphic.Box(lively.rect(px, py, CARD_W, LOADING_H));
         card.applyStyle({ fill: Color.white, borderRadius: 10, borderWidth: 1, borderColor: PINK, clipMode: "visible" });
@@ -219,6 +243,7 @@ module("lively.identity.MiniProfileCard")
               bio: res.env ? (payload.bio || "").trim() : null,
               bioFallback: res.env ? "No bio yet." : "Could not load profile.",
               wantY: wantY,
+              scrollY: scrollY,
             });
           });
       },
@@ -263,9 +288,10 @@ module("lively.identity.MiniProfileCard")
 
         // The taller card may no longer fit below the anchor: pull it up.
         var H = window.innerHeight;
+        var scrollY = d.scrollY || 0;
         var pos = card.getPosition();
-        var newY = Math.min(d.wantY, H - cardH - 8);
-        if (newY !== pos.y) card.setPosition(lively.pt(pos.x, Math.max(8, newY)));
+        var newY = Math.min(d.wantY, scrollY + H - cardH - 8);
+        if (newY !== pos.y) card.setPosition(lively.pt(pos.x, Math.max(8 + scrollY, newY)));
       },
 
       // Returns the y of the button's bottom edge.

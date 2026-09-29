@@ -357,7 +357,7 @@ module("lively.identity.WikiView")
         // Contributors entry. Falls back to an identicon immediately, then
         // swaps in the real avatar if the handle's profile has one —
         // mirrors _loadAvatarInto's own fallback-then-upgrade pattern.
-        _buildPersonChip: function (handle, size) {
+        _buildPersonChip: function (handle, did, size) {
           var chip = document.createElement("span");
           chip.style.cssText = "display:inline-flex;align-items:center;gap:3px;";
           var img = document.createElement("img");
@@ -365,7 +365,37 @@ module("lively.identity.WikiView")
           img.title = "@" + handle;
           chip.appendChild(img);
           this._loadAvatarInto(img, handle);
+          this._wireProfileClick(chip, handle, did);
           return { el: chip, imgEl: img };
+        },
+
+        // Opens lively.identity.MiniProfileCard anchored just below a raw
+        // DOM element (the top-bar avatar/handle, or an Author/Contributors
+        // chip) — none of those are morphs, unlike every other
+        // MiniProfileCard call site (ConstellationLounge.js/RoomView.js),
+        // so the anchor world-position is computed here instead of handed
+        // to a morph's own worldPoint(). The delta between the element's
+        // and this view's own shapeNode's bounding rects gives a point
+        // local to this morph; this.worldPoint() then turns that into a
+        // real world position, which is scroll-safe on its own (Core.js's
+        // worldPoint composes the owner-chain transform, not the viewport)
+        // — MiniProfileCard.open's own clamp math handles the current
+        // scroll offset from there. See MiniProfileCard.js's file header
+        // for the plain-point anchor shape this relies on.
+        _wireProfileClick: function (el, handle, did) {
+          if (!handle || !did) return; // nothing to open a profile for
+          var self = this;
+          el.style.cursor = "pointer";
+          el.addEventListener("click", function (evt) {
+            evt.stopPropagation();
+            var elRect = el.getBoundingClientRect();
+            var shapeRect = self.renderContext().shapeNode.getBoundingClientRect();
+            var localPt = lively.pt(elRect.left - shapeRect.left, elRect.bottom - shapeRect.top);
+            var worldPos = self.worldPoint(localPt);
+            lively.require("lively.identity.MiniProfileCard").toRun(function () {
+              lively.identity.MiniProfileCard.open(handle, did, worldPos);
+            });
+          });
         },
       },
 
@@ -586,7 +616,10 @@ module("lively.identity.WikiView")
             if (didToHandle[envelope.did] && self._handleEl) {
               self._handleEl.textContent = "@" + didToHandle[envelope.did];
             }
-            self._renderAuthorRow(envelope.did, didToHandle[envelope.did] || self._handle);
+            var topBarHandle = didToHandle[envelope.did] || self._handle;
+            self._wireProfileClick(self._avatarImgEl, topBarHandle, envelope.did);
+            self._wireProfileClick(self._handleEl, topBarHandle, envelope.did);
+            self._renderAuthorRow(envelope.did, topBarHandle);
             self._renderContributorsRow(contributorDids, didToHandle);
             self._verify(envelope, lastEditedBy ? (didToHandle[lastEditedBy] || null) : null);
           });
@@ -604,7 +637,7 @@ module("lively.identity.WikiView")
             this._authorRowEl.appendChild(unknown);
             return;
           }
-          var chip = this._buildPersonChip(handle, 18);
+          var chip = this._buildPersonChip(handle, did, 18);
           var handleText = document.createElement("span");
           handleText.textContent = "@" + handle;
           chip.el.appendChild(handleText);
@@ -624,7 +657,7 @@ module("lively.identity.WikiView")
           contributorDids.forEach(function (did, i) {
             var handle = didToHandle[did];
             if (!handle) return;
-            var chip = this._buildPersonChip(handle, 18);
+            var chip = this._buildPersonChip(handle, did, 18);
             chip.imgEl.style.marginLeft = i === 0 ? "0" : "-6px";
             stack.appendChild(chip.el);
           }, this);
