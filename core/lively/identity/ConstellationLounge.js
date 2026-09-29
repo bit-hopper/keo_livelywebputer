@@ -215,6 +215,15 @@ module("lively.identity.ConstellationLounge")
     // feature rather than reusing the postcard-compose color.
     var ROOM_ACCENT = Color.rgb(79, 11, 67);
     var ROOM_GREEN = Color.rgb(46, 160, 90);
+    // "Clusters" panel-title pill (groups icon + label, same green as
+    // ROOM_GREEN) — same icon-Text-plus-label-Text idiom as _buildPillButton,
+    // but simpler: the icon's own position is fixed at construction time
+    // (only the label's width is measured live), so it's baked straight
+    // into the constructor rect rather than set afterward (CLAUDE.md:
+    // setPosition right after addMorph can desync a morph's render tree).
+    var CLUSTERS_TITLE_PILL_H = 26;
+    var CLUSTERS_TITLE_ICON_BOX = 18, CLUSTERS_TITLE_ICON_PX = 14;
+    var CLUSTERS_TITLE_PAD = 10, CLUSTERS_TITLE_GAP = 5;
     // How often an open lounge re-asks for room presence (see _startRoomsPoll).
     var ROOMS_POLL_MS = 8000;
     var NEW_ROOM_BTN_H = 28;
@@ -1112,11 +1121,9 @@ module("lively.identity.ConstellationLounge")
         var w = boxW >= MIN_QUICK_INFO_W ? boxW : QUICK_INFO_W;
         var PAD = 14;
 
-        var title = lively.morphic.Text.makeLabel("Rooms", {
-          fontSize: 14, fontWeight: "600", textColor: Color.rgb(30, 30, 30),
-        });
-        title.setPosition(lively.pt(PAD, 16));
-        this._spacesBox.addMorph(title);
+        var titlePill = this._buildClustersTitlePill(PAD, 13);
+        this._spacesBox.addMorph(titlePill);
+        this._fitClustersTitlePill(titlePill);
 
         var newRoomBtn = this._buildNewRoomButton();
         this._spacesBox.addMorph(newRoomBtn);
@@ -1131,7 +1138,7 @@ module("lively.identity.ConstellationLounge")
         var TOP_ROW_H = 46;
         var y = TOP_ROW_H;
         if (!this._rooms.length) {
-          var empty = lively.morphic.Text.makeLabel("No rooms yet.", { fontSize: 12, textColor: Color.gray });
+          var empty = lively.morphic.Text.makeLabel("No clusters yet.", { fontSize: 12, textColor: Color.gray });
           empty.setPosition(lively.pt(PAD, y));
           this._spacesBox.addMorph(empty);
         } else {
@@ -1159,6 +1166,87 @@ module("lively.identity.ConstellationLounge")
         }
       },
 
+      // "Clusters" panel-title pill: a fixed-size groups icon (position
+      // baked into its own constructor rect, since it never moves) plus a
+      // label Text sized to its own live-measured width (Box built oversized,
+      // then shrunk — same idiom as _buildNewRoomButton just below).
+      _buildClustersTitlePill: function (x, y) {
+        var H = CLUSTERS_TITLE_PILL_H, ICON_BOX = CLUSTERS_TITLE_ICON_BOX, ICON_PX = CLUSTERS_TITLE_ICON_PX;
+        var box = new lively.morphic.Box(lively.rect(x, y, 130, H));
+        box.setFill(ROOM_GREEN);
+        box.applyStyle({ borderWidth: 0, borderRadius: H / 2 });
+        noDrag(box);
+
+        // Icon idiom from _buildPillButton's glyph: fixed-rect Text (so
+        // align:'center' isn't a no-op), vertical centering via top padding,
+        // fontSize in pt (px * 0.75).
+        var icon = new lively.morphic.Text(lively.rect(CLUSTERS_TITLE_PAD, (H - ICON_BOX) / 2, ICON_BOX, ICON_BOX));
+        icon.textString = "groups";
+        icon.applyStyle({
+          fontFamily: "'Material Symbols Rounded'",
+          fontSize: ICON_PX * 0.75,
+          textColor: Color.rgb(255, 255, 255),
+          fill: null,
+          borderWidth: 0,
+          align: "center",
+          padding: lively.Rectangle.inset(0, Math.round((ICON_BOX - ICON_PX) / 2), 0, 0),
+          allowInput: false,
+          selectable: false,
+          clipMode: "hidden",
+          whiteSpaceHandling: "pre",
+        });
+        noDrag(icon);
+        icon.eventsAreIgnored = true;
+        box.addMorph(icon);
+
+        var label = lively.morphic.Text.makeLabel("Clusters", {
+          fontSize: 13, fontWeight: "700", textColor: Color.rgb(255, 255, 255),
+        });
+        label.setExtent(lively.pt(140, 18));
+        label.applyStyle({ borderWidth: 0 });
+        noDrag(label);
+        label.eventsAreIgnored = true;
+        box.addMorph(label);
+        box._clustersLabel = label;
+
+        return box;
+      },
+
+      // Must run after the box is in the world (live-measured label width).
+      // Only the label's extent/position and the box's own width change —
+      // the box's x/y and the icon's rect were already final at construction.
+      _fitClustersTitlePill: function (box) {
+        var label = box._clustersLabel;
+        if (!label) return;
+        var H = CLUSTERS_TITLE_PILL_H, ICON_BOX = CLUSTERS_TITLE_ICON_BOX;
+        var PAD = CLUSTERS_TITLE_PAD, GAP = CLUSTERS_TITLE_GAP;
+        var LINE_H = 18, TEXT_PAD = 4;
+        var labelX = PAD + ICON_BOX + GAP;
+        var labelW = this._realTextWidth(label);
+        var boxW = Math.ceil(labelX + labelW + PAD);
+
+        label.setExtent(lively.pt(labelW + TEXT_PAD * 2, LINE_H));
+        label.setPosition(lively.pt(labelX - TEXT_PAD, (H - LINE_H) / 2));
+        box.setExtent(lively.pt(boxW, H));
+
+        // Vertical centering correction — same "read the live gap
+        // above/below the glyph, nudge by half the difference" idiom as
+        // _fitNewRoomButton, since the shapeNode's own fixed top/bottom
+        // padding isn't accounted for by the position formula above.
+        var boxNode = box.renderContext().shapeNode;
+        var labelSpan = label.renderContext().shapeNode.querySelector("span");
+        if (boxNode && labelSpan) {
+          var boxRect = boxNode.getBoundingClientRect();
+          var spanRect = labelSpan.getBoundingClientRect();
+          var topGap = spanRect.top - boxRect.top;
+          var bottomGap = boxRect.bottom - spanRect.bottom;
+          var correction = (topGap - bottomGap) / 2;
+          if (Math.abs(correction) > 0.25) {
+            label.setPosition(lively.pt(labelX - TEXT_PAD, label.getPosition().y - correction));
+          }
+        }
+      },
+
       // Built oversized, then shrunk to hug its own label — same idiom as
       // _buildCreatePostcardButton/_fitCreatePostcardButton, reusing this
       // file's shared _realTextWidth helper rather than duplicating the
@@ -1169,7 +1257,7 @@ module("lively.identity.ConstellationLounge")
         box.setFill(ROOM_GREEN);
         box.applyStyle({ borderWidth: 0, borderRadius: NEW_ROOM_BTN_H / 2 });
 
-        var label = lively.morphic.Text.makeLabel("New Room", {
+        var label = lively.morphic.Text.makeLabel("New Cluster", {
           fontSize: 12.5, fontWeight: "700", textColor: Color.rgb(255, 255, 255),
         });
         label.setExtent(lively.pt(140, 18));
@@ -1482,7 +1570,7 @@ module("lively.identity.ConstellationLounge")
           // Marker the card's own onMouseDown hit-tests for below -- see
           // the capture-phase comment on card.onMouseDown.
           gearBtn._isRoomSettingsGear = true;
-          gearBtn.toolTip = "Room settings";
+          gearBtn.toolTip = "Cluster settings";
           gearBtn.onMouseOver = function () { gearBtn.applyStyle({ fill: Color.rgb(238, 238, 238) }); };
           gearBtn.onMouseOut = function () { gearBtn.applyStyle({ fill: Color.rgba(255, 255, 255, 0.92) }); };
           gearBtn.onMouseUp = function (evt) {
@@ -1549,7 +1637,7 @@ module("lively.identity.ConstellationLounge")
         xhr.withCredentials = true;
         xhr.setRequestHeader("Accept", "application/json");
         xhr.onload = function () {
-          if (xhr.status !== 200) return self._showError("Failed to load rooms (" + xhr.status + ")");
+          if (xhr.status !== 200) return self._showError("Failed to load clusters (" + xhr.status + ")");
           var data;
           try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
           // Polled (see _startRoomsPoll), so an unchanged answer must not
@@ -1568,7 +1656,7 @@ module("lively.identity.ConstellationLounge")
           self._renderSpaces();
           if (node) node.scrollTop = savedScrollTop;
         };
-        xhr.onerror = function () { self._showError("Network error loading rooms"); };
+        xhr.onerror = function () { self._showError("Network error loading clusters"); };
         xhr.send();
       },
 
@@ -1660,12 +1748,12 @@ module("lively.identity.ConstellationLounge")
             type: "doc",
             content: [{
               type: "paragraph",
-              content: [{ type: "text", text: "@" + lively.identity.did.displayHandle() + " wants to join the \"" + room.name + "\" room in c/" + self._name + "." }],
+              content: [{ type: "text", text: "@" + lively.identity.did.displayHandle() + " wants to join the \"" + room.name + "\" cluster in c/" + self._name + "." }],
             }],
           };
           lively.identity.postCardSerializer.serializePlainToEnvelope({
             doc: doc,
-            title: "Room join request: " + room.name + " (c/" + self._name + ")",
+            title: "Cluster join request: " + room.name + " (c/" + self._name + ")",
             titleExplicit: true,
             constellation: self._name,
             visibility: "public",
@@ -1687,13 +1775,13 @@ module("lively.identity.ConstellationLounge")
               postXhr.setRequestHeader("Content-Type", "application/json");
               postXhr.onload = function () {
                 if (postXhr.status !== 201) {
-                  var msg = "Room join request failed (" + postXhr.status + ")";
+                  var msg = "Cluster join request failed (" + postXhr.status + ")";
                   try { var b = JSON.parse(postXhr.responseText); if (b.error) msg = b.error; } catch (e) {}
                   return self._showError(msg);
                 }
                 self._fetchRooms();
               };
-              postXhr.onerror = function () { self._showError("Network error sending room join request"); };
+              postXhr.onerror = function () { self._showError("Network error sending cluster join request"); };
               postXhr.send(JSON.stringify({ objId: envelope.objId }));
             };
             putXhr.onerror = function () { self._showError("Network error saving join request card"); };
@@ -1722,13 +1810,13 @@ module("lively.identity.ConstellationLounge")
             xhr.setRequestHeader("Content-Type", "application/json");
             xhr.onload = function () {
               if (xhr.status !== 201) {
-                var msg = "Could not create room (" + xhr.status + ")";
+                var msg = "Could not create cluster (" + xhr.status + ")";
                 try { var b = JSON.parse(xhr.responseText); if (b.error) msg = b.error; } catch (e) {}
                 return self._showError(msg);
               }
               self._fetchRooms();
             };
-            xhr.onerror = function () { self._showError("Network error creating room"); };
+            xhr.onerror = function () { self._showError("Network error creating cluster"); };
             xhr.send(JSON.stringify(fields));
           },
         };

@@ -85,7 +85,7 @@ module('lively.identity.NewRoomDialog')
           name: 'NameLabel',
           sourceModule: 'lively.morphic.TextCore',
           submorphs: [],
-          textString: 'Room Name',
+          textString: 'Cluster Name',
         }, {
           _BorderColor: Color.rgb(203, 203, 203),
           _BorderRadius: 3.75,
@@ -123,7 +123,7 @@ module('lively.identity.NewRoomDialog')
           name: 'ToggleLabel',
           sourceModule: 'lively.morphic.TextCore',
           submorphs: [],
-          textString: 'Room Type (optional)',
+          textString: 'Cluster Type (optional)',
         }, {
           // Camera/video chip -- toggles independently of the voice chip.
           _BorderColor: Color.rgb(180, 180, 180),
@@ -527,7 +527,7 @@ module('lively.identity.NewRoomDialog')
 
         onSubmit: function onSubmit() {
           var name = this.get('NameText').textString.trim();
-          if (!name) { this.setStatus('Room name is required', true); return; }
+          if (!name) { this.setStatus('Cluster name is required', true); return; }
 
           var activity = this.get('ActivityText').textString.trim();
           var fields = {
@@ -539,7 +539,7 @@ module('lively.identity.NewRoomDialog')
           if (cb) cb(fields);
         },
       }],
-      titleBar: 'New Room',
+      titleBar: 'New Cluster',
       connectionRebuilder: function connectionRebuilder() {
         lively.bindings.connect(this, 'remove', this.get('NewRoomDialogPane'), 'onRemove', {});
       },

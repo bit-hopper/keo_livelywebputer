@@ -261,13 +261,13 @@ module("lively.identity.RoomView")
           if (xhr.status !== 200) {
             return self._showFatalError(
               xhr.status === 404
-                ? "This room doesn't exist, or you don't have access to it."
-                : "Failed to load room (" + xhr.status + ")"
+                ? "This cluster doesn't exist, or you don't have access to it."
+                : "Failed to load cluster (" + xhr.status + ")"
             );
           }
           var data;
           try { data = JSON.parse(xhr.responseText); }
-          catch (e) { return self._showFatalError("Bad room response"); }
+          catch (e) { return self._showFatalError("Bad cluster response"); }
           if (self._roomLeft) return; // left (or switched rooms) while this was in flight
           self._room = data.room;
           self._isController = !!data.isController;
@@ -276,7 +276,7 @@ module("lively.identity.RoomView")
           // registration (which may have to end the current call first) happens here.
           lively.identity.RoomView._register(self, function () { self._start(); });
         };
-        xhr.onerror = function () { self._showFatalError("Network error loading room"); };
+        xhr.onerror = function () { self._showFatalError("Network error loading cluster"); };
         xhr.send();
       },
 
@@ -456,7 +456,7 @@ module("lively.identity.RoomView")
           Math.max(0, Math.round((vb.height - TOTAL_H) / 2)));
         // Window first, children after: several builders below measure their
         // own rendered DOM, which only exists once the morph is in the world.
-        this._win = root.openInWindow({ title: (this._room && this._room.name) || "Room", pos: pos });
+        this._win = root.openInWindow({ title: (this._room && this._room.name) || "Cluster", pos: pos });
 
         this._computeOrigin();
         this._buildHeader();
@@ -851,7 +851,7 @@ module("lively.identity.RoomView")
             handStyle: "pointer",
           });
           noDrag(gearBtn);
-          gearBtn.toolTip = "Room settings";
+          gearBtn.toolTip = "Cluster settings";
           gearBtn.onMouseOver = function () { gearBtn.applyStyle({ fill: Color.rgba(255, 255, 255, 0.16) }); };
           gearBtn.onMouseOut = function () { gearBtn.applyStyle({ fill: Color.rgba(255, 255, 255, 0.08) }); };
           gearBtn.onMouseUp = function (evt) {
@@ -887,7 +887,7 @@ module("lively.identity.RoomView")
               (self._headerBox.submorphs || []).slice().forEach(function (m) { m.remove(); });
               self._headerBox.remove();
               self._buildHeader();
-              if (self._win) self._win.setTitle(self._room.name || "Room");
+              if (self._win) self._win.setTitle(self._room.name || "Cluster");
             };
             xhr.onerror = function () {};
             xhr.send();
@@ -921,7 +921,7 @@ module("lively.identity.RoomView")
         this._viewRoot.addMorph(panel);
         this._roomsPanelBox = panel;
 
-        var heading = noDrag(lively.morphic.Text.makeLabel("ROOMS", {
+        var heading = noDrag(lively.morphic.Text.makeLabel("CLUSTERS", {
           fontSize: 11, fontWeight: "700", textColor: TEXT_MUTED,
         }));
         heading.eventsAreIgnored = true;
@@ -1150,7 +1150,7 @@ module("lively.identity.RoomView")
         pill.addMorph(input);
         this._inputM = input;
 
-        var placeholder = lively.morphic.Text.makeLabel("Message #" + (this._room.name || "room"), {
+        var placeholder = lively.morphic.Text.makeLabel("Message #" + (this._room.name || "cluster"), {
           fontSize: 13, textColor: TEXT_FAINT,
         });
         placeholder.setExtent(lively.pt(CHAT_W - 32 - 72, 24));

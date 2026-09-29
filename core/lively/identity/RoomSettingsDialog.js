@@ -54,7 +54,7 @@ module("lively.identity.RoomSettingsDialog")
       droppingEnabled: false,
       layout: { adjustForNewBounds: true },
       name: "RoomSettingsDialog",
-      titleBar: "Room Settings",
+      titleBar: "Cluster Settings",
       submorphs: [
         {
           _BorderColor: Color.rgb(95, 94, 95),
@@ -103,7 +103,7 @@ module("lively.identity.RoomSettingsDialog")
         this._isVoice = !!room.isVoice;
         this._activity = room.activity || "";
         this._onDone = onDone || function () {};
-        this.setTitle("Room Settings — " + this._roomName);
+        this.setTitle("Cluster Settings — " + this._roomName);
         this._render();
       },
 
@@ -238,14 +238,14 @@ module("lively.identity.RoomSettingsDialog")
         divider();
 
         // ── Room Type ───────────────────────────────────────────────────────
-        sectionLabel("Room Type (optional)");
+        sectionLabel("Cluster Type (optional)");
         iconChip(MARGIN, "videocam", "Video", this._isVideo, function () { self._toggleVideo(); });
         iconChip(MARGIN + 94, "headset", "Voice", this._isVoice, function () { self._toggleVoice(); });
         // Chat is derived, not stored: lit exactly when neither video nor
         // voice is on (a text-only room); clicking it clears both.
         iconChip(MARGIN + 188, "chat", "Chat", !this._isVideo && !this._isVoice, function () { self._selectChatOnly(); });
         y += 32;
-        fieldLabel("Chat is a plain text room (neither video nor voice). Video always includes voice.");
+        fieldLabel("Chat is a plain text cluster (neither video nor voice). Video always includes voice.");
         divider();
 
         // ── Active Participants Nickname ──────────────────────────────────
@@ -259,7 +259,7 @@ module("lively.identity.RoomSettingsDialog")
 
         // ── Header image ───────────────────────────────────────────────────
         sectionLabel("Header image");
-        fieldLabel("Shown at the top of the room card — try uploading a GIF!");
+        fieldLabel("Shown at the top of the cluster card — try uploading a GIF!");
         textField("rsdHeaderUrl", this._headerUrl);
         var upBtn = styledButton(lively.rect(MARGIN + inputW + GAP, y, BTN_W, 28), "Upload…");
         upBtn._fieldName = "rsdHeaderUrl";
@@ -339,12 +339,12 @@ module("lively.identity.RoomSettingsDialog")
         content.addMorph(reqBtn);
         y += 30;
         fieldLabel(this._access === "open"
-          ? "Any constellation member can join by clicking the room."
+          ? "Any constellation member can join by clicking the cluster."
           : "Members must be approved by a controller before joining.");
         divider();
 
         // ── Pin ─────────────────────────────────────────────────────────────
-        sectionLabel("Pin this room");
+        sectionLabel("Pin this cluster");
         var CHK = 20;
         var chk = new lively.morphic.Box(lively.rect(MARGIN, y, CHK, CHK));
         chk.applyStyle({
@@ -356,7 +356,7 @@ module("lively.identity.RoomSettingsDialog")
         chk.renderContext().shapeNode.style.cursor = "pointer";
         content.addMorph(chk);
         var pinLbl = new lively.morphic.Text(lively.rect(MARGIN + CHK + 8, y, ew - CHK - 8, 20),
-          "Pinned rooms show first for everyone in this constellation.");
+          "Pinned clusters show first for everyone in this constellation.");
         pinLbl.applyStyle({ allowInput: false, fontSize: 11.5, clipMode: "hidden",
           textColor: Color.rgb(70, 70, 70), fill: null, borderWidth: 0 });
         pinLbl.onMouseDown = function () { self._togglePinned(); };
@@ -367,7 +367,7 @@ module("lively.identity.RoomSettingsDialog")
 
         // ── Danger zone ─────────────────────────────────────────────────────
         sectionLabel("Danger zone");
-        var archiveBtn = styledButton(lively.rect(MARGIN, y, 160, 30), "Archive Room", "danger");
+        var archiveBtn = styledButton(lively.rect(MARGIN, y, 160, 30), "Archive Cluster", "danger");
         archiveBtn.addScript(function doAction() {
           var win = this.owner && this.owner.owner;
           if (win) win._archive(this);
@@ -375,7 +375,7 @@ module("lively.identity.RoomSettingsDialog")
         lively.bindings.connect(archiveBtn, "fire", archiveBtn, "doAction");
         content.addMorph(archiveBtn);
         y += 30;
-        fieldLabel("Removes this room from the list. Nothing is deleted — it can be restored later.");
+        fieldLabel("Removes this cluster from the list. Nothing is deleted — it can be restored later.");
         y += 4;
         var deleteBtn = styledButton(lively.rect(MARGIN, y, 220, 24), "Permanently delete instead", "danger");
         deleteBtn.addScript(function doAction() {
@@ -467,7 +467,7 @@ module("lively.identity.RoomSettingsDialog")
         var name = ((nameField && nameField.textString) || "").trim();
         var headerUrl = ((headerField && headerField.textString) || "").trim();
         var activity = ((activityField && activityField.textString) || "").trim();
-        if (!name) { alert("Room name can't be empty."); return; }
+        if (!name) { alert("Cluster name can't be empty."); return; }
         btn.setLabel("Saving…");
         btn.setActive(false);
         var base = lively.identity.did.baseUrl();
@@ -491,7 +491,7 @@ module("lively.identity.RoomSettingsDialog")
             self.remove();
           })
           .catch(function (err) {
-            alert("Could not save room settings: " + err.message);
+            alert("Could not save cluster settings: " + err.message);
             btn.setLabel("Save");
             btn.setActive(true);
           });
@@ -502,7 +502,7 @@ module("lively.identity.RoomSettingsDialog")
       _archive: function _archive(btn) {
         var self = this;
         $world.confirm(
-          "Archive \"" + this._roomName + "\"? It'll disappear from the room list, but nothing is deleted.",
+          "Archive \"" + this._roomName + "\"? It'll disappear from the cluster list, but nothing is deleted.",
           function (ok) {
             if (!ok) return;
             btn.setLabel("Archiving…");
@@ -523,8 +523,8 @@ module("lively.identity.RoomSettingsDialog")
                 self.remove();
               })
               .catch(function (err) {
-                alert("Could not archive room: " + err.message);
-                btn.setLabel("Archive Room");
+                alert("Could not archive cluster: " + err.message);
+                btn.setLabel("Archive Cluster");
                 btn.setActive(true);
               });
           }
@@ -561,7 +561,7 @@ module("lively.identity.RoomSettingsDialog")
                     self.remove();
                   })
                   .catch(function (err) {
-                    alert("Could not delete room: " + err.message);
+                    alert("Could not delete cluster: " + err.message);
                     btn.setLabel("Permanently delete instead");
                     btn.setActive(true);
                   });

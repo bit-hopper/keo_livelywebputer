@@ -318,7 +318,7 @@ module("lively.identity.AmbientPresencePanel")
         block.addMorph(chip);
 
         var title = new lively.morphic.Text(lively.rect(54, 6, 200, 18));
-        title.textString = "Room Connected";
+        title.textString = "Cluster Connected";
         title.applyStyle({
           fontSize: 9.75, fontWeight: "bold", textColor: NS.STATUS_ONLINE,
           fill: null, borderWidth: 0, allowInput: false, selectable: false,
@@ -337,7 +337,7 @@ module("lively.identity.AmbientPresencePanel")
         // Clicking the room name brings the room window forward (expanding it if
         // minimized, rebuilding it if it was closed) — the window is only a view
         // over the call, which keeps running either way.
-        label.toolTip = "Show room window";
+        label.toolTip = "Show cluster window";
         label.onMouseDown = function (evt) {
           if (typeof room.onShowRequested === "function") room.onShowRequested();
           evt.stop();
