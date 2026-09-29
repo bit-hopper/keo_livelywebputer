@@ -228,14 +228,35 @@ module('lively.identity.PostCardEditor')
 
     'chrome', {
 
+      // Total height of the two-row formatting toolbar (Row A: marks + font
+      // controls; Row B: block-level commands — Location/status/Send/Save
+      // live in a separate floating cluster, not in the toolbar, see
+      // _buildFloatingActions). Kept as a named constant since pmDiv's own
+      // top offset has to stay in sync with it (see _buildChrome/pmDiv below).
+      _TOOLBAR_HEIGHT: 70,
+
+      // Reserved bottom padding on pmDiv so real content never renders
+      // underneath the floating action cluster (which hovers over the
+      // content area rather than reserving its own docked strip).
+      _FLOATING_ACTIONS_CLEARANCE: 72,
+
       _buildChrome: function () {
         var self = this;
         this.setFill(Color.white);
 
         var shapeNode = this.renderContext().shapeNode;
         shapeNode.innerHTML = ''; // idempotent: safe if _setup() ever runs twice on one instance
-        shapeNode.style.borderRadius = '8px';
-        shapeNode.style.boxShadow = '0 4px 12px rgba(0,0,0,0.18)';
+        shapeNode.style.borderRadius = '10px';
+        shapeNode.style.boxShadow = '0 4px 14px rgba(0,0,0,0.16)';
+        // Rounded corners are otherwise decorative-shadow-only: toolbarDiv/
+        // pmDiv are flush square rectangles exactly covering shapeNode's own
+        // edges, so without clipping them to this radius the content
+        // underneath still renders square. The link-preview popup
+        // (_buildLinkPreview) is the one absolutely-positioned child that
+        // could theoretically clip here if it ever rendered flush against an
+        // edge — in practice it's positioned just below a link inside the
+        // padded content area, well clear of the outer edge.
+        shapeNode.style.overflow = 'hidden';
 
         // Toolbar as a plain DOM div — keeping it out of Lively's morph hierarchy
         // prevents Lively from grabbing the toolbar as an independent draggable morph.
@@ -247,26 +268,15 @@ module('lively.identity.PostCardEditor')
           'top:0',
           'left:0',
           'right:0',
-          'height:64px',
-          'background:#f0f0f5',
-          'border-bottom:1px solid #ccc',
+          'height:' + this._TOOLBAR_HEIGHT + 'px',
+          'background:#fff',
+          'border-bottom:1px solid #eee',
           'box-sizing:border-box',
           'overflow:hidden',
         ].join(';');
         shapeNode.appendChild(toolbarDiv);
         this._toolbarDiv = toolbarDiv;
         this._buildToolbar(toolbarDiv);
-
-        // Footer: card-level actions — History leftmost, Save/visibility/Send
-        // on the right.
-        var footerDiv = document.createElement('div');
-        footerDiv.style.cssText = [
-          'position:absolute', 'left:0', 'right:0', 'bottom:0', 'height:36px',
-          'background:#f0f0f5', 'border-top:1px solid #ccc', 'box-sizing:border-box',
-        ].join(';');
-        shapeNode.appendChild(footerDiv);
-        this._footerDiv = footerDiv;
-        this._buildFooter(footerDiv);
 
         this._buildLinkPreview(shapeNode);
 
@@ -284,12 +294,12 @@ module('lively.identity.PostCardEditor')
         pmDiv.className = 'lively-postcard-editor-container selectable';
         pmDiv.style.cssText = [
           'position:absolute',
-          'top:64px',
+          'top:' + this._TOOLBAR_HEIGHT + 'px',
           'left:0',
           'right:0',
-          'bottom:36px',
+          'bottom:0',
           'overflow-y:auto',
-          'padding:16px 20px',
+          'padding:16px 20px ' + this._FLOATING_ACTIONS_CLEARANCE + 'px 20px',
           'box-sizing:border-box',
           'font-family:sans-serif',
           'font-size:14px',
@@ -298,6 +308,12 @@ module('lively.identity.PostCardEditor')
         ].join(';');
         shapeNode.appendChild(pmDiv);
         this._pmContainer = pmDiv;
+
+        // Floating action cluster (Location/status/Send/Save) — appended
+        // after pmDiv so it paints on top in source order, hovering over
+        // the bottom-right of the content area (see the reserved bottom
+        // padding on pmDiv just above).
+        this._buildFloatingActions(shapeNode);
 
         if (!document.getElementById('lively-postcard-editor-style')) {
           var styleEl = document.createElement('style');
@@ -328,7 +344,58 @@ module('lively.identity.PostCardEditor')
             '.lively-embed-overlay{position:absolute;top:2px;right:2px;display:flex;gap:4px;z-index:10;}' +
             '.lively-embed-overlay button{font-size:10px;padding:2px 6px;cursor:pointer;' +
             'border:1px solid #ccc;border-radius:3px;background:#fff;}' +
-            '.lively-embed-overlay button.lively-embed-remove-btn{border-color:#c33;color:#c33;}';
+            '.lively-embed-overlay button.lively-embed-remove-btn{border-color:#c33;color:#c33;}' +
+            // ── modern chrome (pce = PostCardEditor): action pills, icon
+            // buttons, restyled inputs — one accent (#E31361) reused
+            // everywhere so the whole editor reads as one system. See also
+            // PostCardEditorClass._ensureAccentChromeCss for the matching
+            // window-title-bar accent (same hex).
+            '.pce-icon-btn{flex:0 0 auto;display:flex;align-items:center;justify-content:center;' +
+            'width:28px;height:28px;padding:0;box-sizing:border-box;border:none;border-radius:50%;' +
+            'background:transparent;color:#555;cursor:pointer;transition:background .15s,color .15s;}' +
+            '.pce-icon-btn.pce-icon-btn-glyph{font-family:"Material Symbols Rounded";font-size:17px;line-height:1;}' +
+            '.pce-icon-btn:hover{background:#f0f0f5;color:#222;}' +
+            '.pce-icon-btn.pce-active{background:#fde6ee;color:#E31361;}' +
+            '.pce-icon-btn.pce-active:hover{background:#fbd0e0;}' +
+            '.pce-pill-btn{flex:0 0 auto;display:flex;align-items:center;gap:4px;height:26px;' +
+            'padding:0 10px;box-sizing:border-box;font-size:12px;font-family:sans-serif;' +
+            'font-weight:600;border-radius:13px;cursor:pointer;transition:background .15s,' +
+            'border-color .15s,color .15s;}' +
+            '.pce-pill-btn .pce-pill-glyph{font-family:"Material Symbols Rounded";font-size:15px;' +
+            'line-height:1;font-weight:400;}' +
+            '.pce-pill-neutral{background:#fff;border:1px solid #ddd;color:#444;}' +
+            '.pce-pill-neutral:hover{background:#f6f6f9;}' +
+            '.pce-pill-accent-soft{background:#fde6ee;border:1px solid #f6b8cf;color:#c8105a;}' +
+            '.pce-pill-accent-soft:hover{background:#fbd0e0;}' +
+            '.pce-pill-solid{background:#E31361;border:1px solid #E31361;color:#fff;}' +
+            '.pce-pill-solid:hover{background:#c90f54;}' +
+            '.pce-status-text{flex:0 0 auto;font-size:10px;color:#999;font-family:sans-serif;' +
+            'pointer-events:none;max-width:110px;overflow:hidden;text-overflow:ellipsis;' +
+            'white-space:nowrap;}' +
+            '.pce-input-control{flex:0 0 auto;height:26px;box-sizing:border-box;border:1px solid #ddd;' +
+            'border-radius:8px;background:#fff;cursor:pointer;font-size:11px;}' +
+            '.pce-input-control:hover{border-color:#ccc;}' +
+            '.pce-input-control:focus{border-color:#E31361;outline:none;}' +
+            // Floating action cluster — a small rounded, shadowed capsule
+            // hovering over the bottom-right of the content area (Notion-
+            // style), not a docked footer strip. Needs its own border since
+            // it sits on the same white as the content beneath it.
+            '.pce-floating-actions{position:absolute;right:14px;bottom:14px;display:flex;' +
+            'align-items:center;gap:8px;background:#fff;border:1px solid #eee;border-radius:20px;' +
+            'padding:6px 10px;box-shadow:0 4px 14px rgba(0,0,0,0.16);z-index:5;}' +
+            // Content area's own scrollbar (the only scrollbar left in the
+            // editor now that the toolbar rows no longer scroll) — tinted to
+            // match the accent instead of a plain OS-gray bar. Webkit
+            // pseudo-elements for Chrome/Edge, scrollbar-color/-width as the
+            // standard-CSS fallback (Firefox).
+            '.lively-postcard-editor-container{scrollbar-color:#f6b8cf transparent;' +
+            'scrollbar-width:thin;}' +
+            '.lively-postcard-editor-container::-webkit-scrollbar{width:10px;}' +
+            '.lively-postcard-editor-container::-webkit-scrollbar-track{background:transparent;}' +
+            '.lively-postcard-editor-container::-webkit-scrollbar-thumb{background:#f6b8cf;' +
+            'border-radius:6px;border:2px solid transparent;background-clip:padding-box;}' +
+            '.lively-postcard-editor-container::-webkit-scrollbar-thumb:hover{background:#E31361;' +
+            'background-clip:padding-box;}';
           document.head.appendChild(styleEl);
         }
 
@@ -342,49 +409,60 @@ module('lively.identity.PostCardEditor')
         });
       },
 
-      // Two evenly-balanced formatting rows (13 items each). Card-level
-      // actions (History/Save/visibility/Send) live in the footer bar
-      // instead (_buildFooter) — History is leftmost there per request.
+      // Two formatting rows, each a plain strip of icon-only circular
+      // buttons (Material Symbols Rounded glyphs — see CLAUDE.md's icon
+      // convention). Card-level actions (Location/status/Send/Save) live in
+      // a separate floating pill cluster over the content area instead
+      // (_buildFloatingActions, called from _buildChrome) — keeping them
+      // out of here is what lets both rows comfortably fit their own
+      // content at the window's normal width with no scrollbar: Row A's 9
+      // marks + 4 font/color controls measure ~465px and Row B's 14 blocks
+      // measure ~445px, both well under the ~650-660px available.
       _buildToolbar: function (toolbarDiv) {
         var self = this;
 
         // Row A: character-level formatting — marks, headings, colors, fonts.
         var markDefs = [
-          { label: 'B',    title: 'Bold',              cmd: 'toggleMark', markType: 'bold' },
-          { label: 'I',    title: 'Italic',             cmd: 'toggleMark', markType: 'italic' },
-          { label: 'U',    title: 'Underline',          cmd: 'toggleMark', markType: 'underline' },
-          { label: 'S',    title: 'Strikethrough',      cmd: 'toggleMark', markType: 'strike' },
-          { label: 'x²',   title: 'Superscript',        cmd: 'toggleMark', markType: 'superscript' },
-          { label: 'x₂',   title: 'Subscript',          cmd: 'toggleMark', markType: 'subscript' },
-          { label: '`',    title: 'Inline code',        cmd: 'toggleMark', markType: 'code' },
-          { label: 'H1',   title: 'Heading 1',          cmd: 'setBlockType', nodeType: 'heading', attrs: { level: 1 } },
-          { label: 'H2',   title: 'Heading 2',          cmd: 'setBlockType', nodeType: 'heading', attrs: { level: 2 } },
+          { icon: 'format_bold',       title: 'Bold',              cmd: 'toggleMark', markType: 'bold' },
+          { icon: 'format_italic',     title: 'Italic',            cmd: 'toggleMark', markType: 'italic' },
+          { icon: 'format_underlined', title: 'Underline',         cmd: 'toggleMark', markType: 'underline' },
+          { icon: 'strikethrough_s',   title: 'Strikethrough',     cmd: 'toggleMark', markType: 'strike' },
+          { icon: 'superscript',       title: 'Superscript',       cmd: 'toggleMark', markType: 'superscript' },
+          { icon: 'subscript',         title: 'Subscript',         cmd: 'toggleMark', markType: 'subscript' },
+          { icon: 'code',              title: 'Inline code',       cmd: 'toggleMark', markType: 'code' },
+          { icon: 'format_h1',         title: 'Heading 1',         cmd: 'setBlockType', nodeType: 'heading', attrs: { level: 1 } },
+          { icon: 'format_h2',         title: 'Heading 2',         cmd: 'setBlockType', nodeType: 'heading', attrs: { level: 2 } },
         ];
 
         // Row B: block structure, alignment, and insert commands.
         var blockDefs = [
-          { label: '•',    title: 'Bullet list',        cmd: 'wrapInList',   nodeType: 'bullet_list' },
-          { label: '1.',   title: 'Ordered list',       cmd: 'wrapInList',   nodeType: 'ordered_list' },
-          { label: '❝',    title: 'Blockquote',         cmd: 'wrapIn',       nodeType: 'blockquote' },
-          { label: '</>',  title: 'Code block',         cmd: 'setBlockType', nodeType: 'code_block', attrs: {} },
-          { label: '≡',    title: 'Cycle alignment (left/center/right/justify)', cmd: 'cycleAlign' },
-          { label: '→|',   title: 'Indent',             cmd: 'indent' },
-          { label: '|←',   title: 'Outdent',            cmd: 'outdent' },
-          { label: '✕',    title: 'Clear formatting',   cmd: 'clearFormatting' },
-          { label: '🔗',   title: 'Insert/remove link', cmd: 'link' },
-          { label: '📎',   title: 'Insert attachment',  cmd: 'attachment' },
-          { label: '🧩',   title: 'Insert part',        cmd: 'insertPart' },
-          { label: '👁',   title: 'Preview (toggle)',   cmd: 'preview' },
-          { label: '∑',    title: 'Math inline',        cmd: 'insertMath', mathType: 'inline' },
-          { label: '∑²',   title: 'Math display',       cmd: 'insertMath', mathType: 'display' },
+          { icon: 'format_list_bulleted',   title: 'Bullet list',        cmd: 'wrapInList',   nodeType: 'bullet_list' },
+          { icon: 'format_list_numbered',   title: 'Ordered list',       cmd: 'wrapInList',   nodeType: 'ordered_list' },
+          { icon: 'format_quote',           title: 'Blockquote',         cmd: 'wrapIn',       nodeType: 'blockquote' },
+          { icon: 'code_blocks',            title: 'Code block',         cmd: 'setBlockType', nodeType: 'code_block', attrs: {} },
+          { icon: 'format_align_left',      title: 'Cycle alignment (left/center/right/justify)', cmd: 'cycleAlign' },
+          { icon: 'format_indent_increase', title: 'Indent',             cmd: 'indent' },
+          { icon: 'format_indent_decrease', title: 'Outdent',            cmd: 'outdent' },
+          { icon: 'format_clear',           title: 'Clear formatting',   cmd: 'clearFormatting' },
+          { icon: 'link',                   title: 'Insert/remove link', cmd: 'link' },
+          { icon: 'attach_file',            title: 'Insert attachment',  cmd: 'attachment' },
+          { icon: 'extension',              title: 'Insert part',        cmd: 'insertPart' },
+          { icon: 'visibility',             title: 'Preview (toggle)',   cmd: 'preview' },
+          { icon: 'functions',              title: 'Math inline',        cmd: 'insertMath', mathType: 'inline' },
+          { icon: 'calculate',              title: 'Math display',      cmd: 'insertMath', mathType: 'display' },
         ];
 
-        function buildRow(top) {
+        // Plain full-width row, no scrolling — both rows' content comfortably
+        // fits the toolbar's available width at the window's normal size (see
+        // comment above), so overflow:hidden is just a safety net for an
+        // unusually narrow resize (silent clip, never a scrollbar) rather
+        // than something expected to actually engage in normal use.
+        function buildRow(top, height) {
           var row = document.createElement('div');
           row.style.cssText = [
-            'position:absolute', 'top:' + top + 'px', 'left:6px', 'right:6px', 'height:26px',
-            'display:flex', 'align-items:center', 'gap:6px', 'padding:0 2px',
-            'overflow-x:auto', 'overflow-y:hidden', 'white-space:nowrap',
+            'position:absolute', 'top:' + top + 'px', 'left:6px', 'right:6px', 'height:' + height + 'px',
+            'display:flex', 'align-items:center', 'justify-content:space-between', 'gap:4px', 'padding:0 2px',
+            'overflow:hidden', 'white-space:nowrap',
           ].join(';');
           toolbarDiv.appendChild(row);
           return row;
@@ -394,21 +472,10 @@ module('lively.identity.PostCardEditor')
 
         function addButtons(row, defs) {
           defs.forEach(function (btnDef) {
-            var w = btnDef.label.length > 1 ? 32 : 24;
             var btn = document.createElement('button');
-            btn.textContent = btnDef.label;
+            btn.className = 'pce-icon-btn pce-icon-btn-glyph';
+            btn.textContent = btnDef.icon;
             btn.title = btnDef.title;
-            btn.style.cssText = [
-              'flex:0 0 auto',
-              'width:' + w + 'px',
-              'height:24px',
-              'padding:0',
-              'font-size:12px',
-              'cursor:pointer',
-              'border:1px solid #ccc',
-              'border-radius:3px',
-              'background:#fff',
-            ].join(';');
             btn.addEventListener('mousedown', function (e) {
               e.preventDefault();
               e.stopPropagation();
@@ -421,7 +488,8 @@ module('lively.identity.PostCardEditor')
           });
         }
 
-        var rowA = buildRow(2);
+        var ROW_H = 30;
+        var rowA = buildRow(3, ROW_H);
         addButtons(rowA, markDefs);
         this._textColorInput = this._buildColorInput('textColor', 'Text color', '#000000');
         rowA.appendChild(this._textColorInput);
@@ -432,7 +500,7 @@ module('lively.identity.PostCardEditor')
         this._fontSizeInput = this._buildFontSizeInput();
         rowA.appendChild(this._fontSizeInput);
 
-        var rowB = buildRow(32);
+        var rowB = buildRow(3 + ROW_H + 3, ROW_H);
         addButtons(rowB, blockDefs);
       },
 
@@ -442,9 +510,10 @@ module('lively.identity.PostCardEditor')
         var self = this;
         var input = document.createElement('input');
         input.type = 'color';
+        input.className = 'pce-input-control';
         input.title = title;
         input.value = fallback;
-        input.style.cssText = 'flex:0 0 auto;width:26px;height:24px;padding:0;border:1px solid #ccc;border-radius:3px;cursor:pointer;';
+        input.style.cssText = 'width:26px;padding:0;';
         ['mousedown', 'click'].forEach(function (t) {
           input.addEventListener(t, function (e) { e.stopPropagation(); });
         });
@@ -472,11 +541,9 @@ module('lively.identity.PostCardEditor')
           ['Georgia, serif', 'Georgia'],
         ];
         var select = document.createElement('select');
+        select.className = 'pce-input-control';
         select.title = 'Font family';
-        select.style.cssText = [
-          'flex:0 0 auto', 'height:24px', 'font-size:11px', 'cursor:pointer',
-          'border:1px solid #ccc', 'border-radius:3px', 'background:#fff',
-        ].join(';');
+        select.style.cssText = 'padding:0 4px;';
         options.forEach(function (opt) {
           var optionEl = document.createElement('option');
           optionEl.value = opt[0];
@@ -507,12 +574,12 @@ module('lively.identity.PostCardEditor')
         var self = this;
         var input = document.createElement('input');
         input.type = 'number';
+        input.className = 'pce-input-control';
         input.title = 'Font size (px)';
         input.placeholder = '14';
         input.min = '6';
         input.max = '128';
-        input.style.cssText = 'flex:0 0 auto;width:44px;height:24px;padding:0 2px;font-size:11px;' +
-          'border:1px solid #ccc;border-radius:3px;background:#fff;';
+        input.style.cssText = 'width:44px;padding:0 4px;';
         ['mousedown', 'click'].forEach(function (t) {
           input.addEventListener(t, function (e) { e.stopPropagation(); });
         });
@@ -536,51 +603,69 @@ module('lively.identity.PostCardEditor')
         return input;
       },
 
-      // Footer bar: card-level actions, bottom-right (moved out of the
-      // formatting toolbar so it reads as a distinct "card" action group).
-      _buildFooter: function (footerDiv) {
+      // Card-level actions — a floating pill cluster hovering over the
+      // bottom-right of the content area (not a docked footer strip; see
+      // _buildChrome, which appends this straight to shapeNode after pmDiv
+      // so it paints on top, and reserves bottom padding on pmDiv so real
+      // content never renders underneath it). Left to right: Location,
+      // status, Send, Save (Save rightmost = strongest visual weight,
+      // matching the old footer's own right-anchored emphasis).
+      _buildFloatingActions: function (shapeNode) {
         var self = this;
 
-        var statusSpan = document.createElement('span');
-        statusSpan.style.cssText = 'position:absolute;top:7px;right:196px;font-size:10px;color:#888;pointer-events:none;';
-        footerDiv.appendChild(statusSpan);
-        this._statusEl = statusSpan;
-
-        var saveBtn = document.createElement('button');
-        saveBtn.textContent = 'Save';
-        saveBtn.title = 'Save now';
-        saveBtn.style.cssText = 'position:absolute;top:6px;right:80px;width:48px;height:24px;padding:0;font-size:12px;cursor:pointer;border:1px solid #E31361;border-radius:3px;background:#fde6ee;';
-        saveBtn.addEventListener('mousedown', function (e) {
-          e.preventDefault(); e.stopPropagation();
-          self._saveNow();
-        });
-        footerDiv.appendChild(saveBtn);
-
-        // Visibility (Public/Private) is now chosen as the first step of the
-        // Send flow itself (_renderVisibilityStep) rather than pre-set here.
-        var sendBtn = document.createElement('button');
-        sendBtn.textContent = 'Send';
-        sendBtn.title = 'Send to a handle';
-        sendBtn.style.cssText = 'position:absolute;top:6px;right:136px;width:52px;height:24px;padding:0;font-size:12px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
-        sendBtn.addEventListener('mousedown', function (e) {
-          e.preventDefault(); e.stopPropagation();
-          self._promptAndSend();
-        });
-        footerDiv.appendChild(sendBtn);
+        var actionsDiv = document.createElement('div');
+        actionsDiv.className = 'pce-floating-actions';
+        shapeNode.appendChild(actionsDiv);
+        this._floatingActionsDiv = actionsDiv;
 
         // Opt-in coarse location tag (~5.5km cell, never more precise —
         // see PostCardUtils.js's encodeLocation) — click attaches your
         // current location, click again (once attached) to remove it.
         var locationBtn = document.createElement('button');
-        locationBtn.style.cssText = 'position:absolute;top:6px;right:290px;width:110px;height:24px;padding:0;font-size:11px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
+        locationBtn.className = 'pce-pill-btn pce-pill-neutral';
         locationBtn.addEventListener('mousedown', function (e) {
           e.preventDefault(); e.stopPropagation();
           if (self._locationCode) self._removeLocation();
           else self._promptAttachLocation();
         });
-        footerDiv.appendChild(locationBtn);
+        actionsDiv.appendChild(locationBtn);
         this._locationBtn = locationBtn;
         this._updateLocationBtn();
+
+        var statusSpan = document.createElement('span');
+        statusSpan.className = 'pce-status-text';
+        actionsDiv.appendChild(statusSpan);
+        this._statusEl = statusSpan;
+
+        // Visibility (Public/Private) is now chosen as the first step of the
+        // Send flow itself (_renderVisibilityStep) rather than pre-set here.
+        var sendBtn = document.createElement('button');
+        sendBtn.className = 'pce-pill-btn pce-pill-solid'; // solid: the more consequential, rarer "final" action
+        sendBtn.title = 'Send to a handle';
+        var sendIcon = document.createElement('span');
+        sendIcon.className = 'pce-pill-glyph';
+        sendIcon.textContent = 'send';
+        sendBtn.appendChild(sendIcon);
+        sendBtn.appendChild(document.createTextNode('Send'));
+        sendBtn.addEventListener('mousedown', function (e) {
+          e.preventDefault(); e.stopPropagation();
+          self._promptAndSend();
+        });
+        actionsDiv.appendChild(sendBtn);
+
+        var saveBtn = document.createElement('button');
+        saveBtn.className = 'pce-pill-btn pce-pill-accent-soft'; // soft: frequent, lower-stakes than Send
+        saveBtn.title = 'Save now';
+        var saveIcon = document.createElement('span');
+        saveIcon.className = 'pce-pill-glyph';
+        saveIcon.textContent = 'save';
+        saveBtn.appendChild(saveIcon);
+        saveBtn.appendChild(document.createTextNode('Save'));
+        saveBtn.addEventListener('mousedown', function (e) {
+          e.preventDefault(); e.stopPropagation();
+          self._saveNow();
+        });
+        actionsDiv.appendChild(saveBtn);
       },
 
       // Reflects the current selection's formatting into the toolbar: active
@@ -613,8 +698,7 @@ module('lively.identity.PostCardEditor')
 
         (this._toggleButtons || []).forEach(function (entry) {
           var active = !!markOfType(entry.markType);
-          entry.btn.style.background = active ? '#dbe9ff' : '#fff';
-          entry.btn.style.borderColor = active ? '#58c' : '#ccc';
+          entry.btn.classList.toggle('pce-active', active);
         });
 
         if (this._textColorInput) {
@@ -656,12 +740,17 @@ module('lively.identity.PostCardEditor')
       _updateLocationBtn: function () {
         if (!this._locationBtn) return;
         var has = !!this._locationCode;
-        this._locationBtn.textContent = has ? ('📍 ' + this._locationCode) : '📍 Add location';
+        this._locationBtn.innerHTML = '';
+        var icon = document.createElement('span');
+        icon.className = 'pce-pill-glyph';
+        icon.textContent = has ? 'location_on' : 'add_location';
+        this._locationBtn.appendChild(icon);
+        this._locationBtn.appendChild(document.createTextNode(has ? this._locationCode : 'Add location'));
         this._locationBtn.title = has
           ? 'Location tag: ' + this._locationCode + ' (click to remove)'
           : 'Tag this card with your current coarse location (~5.5km, never more precise)';
-        this._locationBtn.style.background = has ? '#eef' : '#fff';
-        this._locationBtn.style.borderColor = has ? '#55c' : '#ccc';
+        this._locationBtn.classList.toggle('pce-pill-accent-soft', has);
+        this._locationBtn.classList.toggle('pce-pill-neutral', !has);
       },
 
       // Captures the device's current position and immediately floors it to
@@ -1417,7 +1506,10 @@ module('lively.identity.PostCardEditor')
           label.textContent = 'Read-only — shared by @' + (this._handle || '');
           this._toolbarDiv.appendChild(label);
         }
-        if (this._footerDiv) this._footerDiv.style.display = 'none';
+        // The floating action cluster is a sibling of toolbarDiv/pmDiv under
+        // shapeNode now (not nested inside toolbarDiv), so it isn't wiped by
+        // the innerHTML='' above and must be hidden explicitly.
+        if (this._floatingActionsDiv) this._floatingActionsDiv.style.display = 'none';
         if (this._pmContainer) {
           this._pmContainer.style.top = '28px';
           this._pmContainer.style.bottom = '0';
@@ -3350,6 +3442,30 @@ module('lively.identity.PostCardEditor')
 
     });
 
+    // ─── window chrome accent ────────────────────────────────────────────────────
+    // Module-scope (not a class method) — same placement/idiom as
+    // PostCardMailbox.js's own _ensureAccentChromeCss/DMChat.js's
+    // applyAccentChrome: a scoped, idempotency-guarded <style> injection plus
+    // win.addStyleClassName(...), recolors the classic Window's title bar via
+    // its own background (base_theme.css leaves `.Window .TitleBar` itself
+    // transparent so the Window's fill shows through as the "mat frame").
+    // Reuses this file's own established pink (#E31361/#fde6ee, already on
+    // the Save/Send pills above) so the whole editor — chrome plus toolbar —
+    // reads as one consistent accent, not two competing colors.
+    function _ensureAccentChromeCss() {
+      var STYLE_ID = 'postcard-editor-accent-chrome-style';
+      if (document.getElementById(STYLE_ID)) return;
+      var styleEl = document.createElement('style');
+      styleEl.id = STYLE_ID;
+      styleEl.textContent = [
+        '.Window.pce-accent-chrome { background-color: #E31361 !important; border-radius: 12px !important; }',
+        '.Window.pce-accent-chrome .Text.window-title { color: #fff; }',
+        '.Window.pce-accent-chrome.highlighted .Text.window-title { color: #fff; font-weight: bold; }',
+        '.Window.pce-accent-chrome.highlighted { border: none !important; box-shadow: 0px 3px 10px rgba(120,10,50,0.35) !important; }',
+      ].join('\n');
+      document.head.appendChild(styleEl);
+    }
+
     // ─── class-side entry points ─────────────────────────────────────────────────
     // Object.extend adds these as class methods (not instance methods).
     // 'class-side' is not a magic keyword in Lively's Object.subclass —
@@ -3367,6 +3483,8 @@ module('lively.identity.PostCardEditor')
       _openInCenteredWindow: function (editor, title) {
         var win = editor.openInWindow({ title: title });
         if (win) {
+          _ensureAccentChromeCss();
+          win.addStyleClassName('pce-accent-chrome');
           win.align(win.bounds().center(), lively.morphic.World.current().visibleBounds().center());
           win.bringToFront();
         }
