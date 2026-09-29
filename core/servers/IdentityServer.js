@@ -79,6 +79,7 @@ var constellationSpace = require("./identity/ConstellationSpace");
 var wikiPermissions = require("./identity/WikiPermissions");
 var plusCode = require("./identity/PlusCode");
 var roomPresence = require("./identity/RoomPresence");
+var roomEphemeralMessages = require("./identity/RoomEphemeralMessages");
 
 // ─── home-world bootstrap helpers ─────────────────────────────────────────────
 
@@ -1203,6 +1204,9 @@ module.exports = function (route, app) {
   // Prunes stale room presence (a client that vanished without an explicit
   // leave call) — see RoomPresence.js's own header comment.
   roomPresence.startSweeping();
+  // Ages out ephemeral rooms' message buffers when running without Redis —
+  // see RoomEphemeralMessages.js's own header comment.
+  roomEphemeralMessages.startSweeping();
 
   // ─── mobile gate ────────────────────────────────────────────────────────────
   // A phone visitor landing on anything other than /start.html (or
@@ -5150,7 +5154,7 @@ module.exports = function (route, app) {
               out.push({
                 id: room.id, name: room.name, isVideo: room.isVideo, isVoice: room.isVoice,
                 access: room.access, activity: room.activity, createdBy: room.createdBy, createdAt: room.createdAt,
-                headerUrl: room.headerUrl, pinned: room.pinned,
+                headerUrl: room.headerUrl, pinned: room.pinned, ephemeral: room.ephemeral,
                 participantCount: live.count, participants: live.seedDids,
                 iJoined: viewerDid ? roster.some(function (p) { return p.did === viewerDid; }) : false,
                 myAccessStatus: room.access === "request" ? (status || null) : null,
@@ -5190,17 +5194,18 @@ module.exports = function (route, app) {
       }
       // A video room always carries audio: never store video without voice.
       var newIsVideo = !!body.isVideo, newIsVoice = !!body.isVoice || newIsVideo;
+      var newEphemeral = !!body.ephemeral;
       constellationRegistry.createRoom({
         constellation: name, name: roomName,
         isVideo: newIsVideo, isVoice: newIsVoice,
-        access: access, activity: activity, createdBy: req.identity.did
+        access: access, activity: activity, createdBy: req.identity.did, ephemeral: newEphemeral
       }, function (err, roomId) {
         if (err) return res.status(500).json({ error: String(err) });
         res.status(201).json({
           room: {
             id: roomId, name: roomName, isVideo: newIsVideo, isVoice: newIsVoice,
             access: access, activity: activity, createdBy: req.identity.did, createdAt: new Date().toISOString(),
-            headerUrl: null, pinned: false,
+            headerUrl: null, pinned: false, ephemeral: newEphemeral,
             participantCount: 0, participants: [], iJoined: false, myAccessStatus: null, canManage: true
           }
         });
@@ -5236,6 +5241,7 @@ module.exports = function (route, app) {
         var isVoice = typeof body.isVoice === "boolean" ? body.isVoice : room.isVoice;
         // A video room always carries audio (also fixes legacy video-only rows on save).
         if (isVideo) isVoice = true;
+        var ephemeral = typeof body.ephemeral === "boolean" ? body.ephemeral : room.ephemeral;
         var activity;
         if (body.activity === null) {
           activity = null;
@@ -5246,14 +5252,14 @@ module.exports = function (route, app) {
         }
         constellationRegistry.updateRoom({
           id: roomId, constellation: name, name: roomName, access: access, headerUrl: headerUrl, pinned: pinned,
-          isVideo: isVideo, isVoice: isVoice, activity: activity
+          isVideo: isVideo, isVoice: isVoice, activity: activity, ephemeral: ephemeral
         }, function (err, ok) {
           if (err) return res.status(500).json({ error: String(err) });
           if (!ok) return res.status(404).json({ error: "Room not found" });
           res.json({
             room: {
               id: roomId, name: roomName, access: access, headerUrl: headerUrl, pinned: pinned,
-              isVideo: isVideo, isVoice: isVoice, activity: activity
+              isVideo: isVideo, isVoice: isVoice, activity: activity, ephemeral: ephemeral
             }
           });
         });
@@ -5522,6 +5528,30 @@ module.exports = function (route, app) {
         constellationRegistry.canJoinRoom(constellation, room, req.identity.did, function (err, allowed) {
           if (err) return res.status(500).json({ error: String(err) });
           if (!allowed) return res.status(403).json({ error: "Forbidden: join not permitted for this room" });
+
+          if (room.ephemeral) {
+            // Zero scrollback: a viewer only ever sees messages created
+            // after their own joinedAt (see RoomPresence.js). No presence
+            // entry (hasn't POSTed .../presence yet) means "just arrived" —
+            // nothing to show yet either.
+            roomPresence.getEntry(roomId, req.identity.did).then(function (entry) {
+              var sinceTs = entry ? entry.joinedAt : Date.now();
+              return roomEphemeralMessages.listSince(roomId, sinceTs, limit);
+            }).then(function (msgs) {
+              // Already newest-first (roomEphemeralMessages.listSince), same
+              // order the persistent path below returns — RoomView.js's
+              // _loadMessages reverses it client-side either way.
+              var messages = msgs.map(function (m) {
+                return { objId: m.did + ":" + m.created, did: m.did, handle: m.handle, text: m.text, created: m.created };
+              });
+              res.json({ messages: messages, cursor: null });
+            }).catch(function (e) {
+              console.error("[IdentityServer] ephemeral messages fetch failed for room " + roomId + ":", e && e.message);
+              res.status(503).json({ error: "Messages temporarily unavailable" });
+            });
+            return;
+          }
+
           objectRepo.listMessagesForRoom(roomId, { limit: limit, cursor: cursor }, function (err, result) {
             if (err) return res.status(500).json({ error: String(err) });
             var dids = result.postcards.map(function (m) { return m.did; });
@@ -5544,11 +5574,46 @@ module.exports = function (route, app) {
     });
   });
 
+  // Full-content search over a persistent room's message history — the chat
+  // panel's search input (RoomView.js), enabled only when !room.ephemeral
+  // (an ephemeral room has nothing durable to search, same reasoning as
+  // ObjectRepository.searchRoomMessages's own header comment). Same
+  // auth/canJoinRoom gate as the plain messages GET route above.
+  app.get("/c/:name/rooms/:roomId/messages/search", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var roomId = parseInt(req.params.roomId, 10);
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      constellationRegistry.getRoom(roomId, function (err, room) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!room || room.constellation !== name) return res.status(404).json({ error: "Room not found" });
+        constellationRegistry.canJoinRoom(constellation, room, req.identity.did, function (err, allowed) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (!allowed) return res.status(403).json({ error: "Forbidden: join not permitted for this room" });
+          if (room.ephemeral) return res.json({ results: [] });
+
+          objectRepo.searchRoomMessages(roomId, req.query.q, function (err, results) {
+            if (err) return res.status(500).json({ error: String(err) });
+            var dids = results.map(function (m) { return m.did; });
+            _resolveHandlesForDids(dids, function (err, didToHandle) {
+              if (err) return res.status(500).json({ error: String(err) });
+              res.json({
+                results: results.map(function (m) {
+                  return { objId: m.objId, did: m.did, handle: didToHandle[m.did] || null, text: m.text, created: m.created };
+                })
+              });
+            });
+          });
+        });
+      });
+    });
+  });
+
   app.post("/c/:name/rooms/:roomId/messages", auth.requireAuth, function (req, res) {
     var name = req.params.name;
     var roomId = parseInt(req.params.roomId, 10);
-    var objId = req.body && req.body.objId;
-    if (!objId) return res.status(400).json({ error: "Missing required field: objId" });
+    var body = req.body || {};
 
     constellationRegistry.get(name, function (err, constellation) {
       if (err) return res.status(500).json({ error: String(err) });
@@ -5559,6 +5624,26 @@ module.exports = function (route, app) {
         constellationRegistry.canJoinRoom(constellation, room, req.identity.did, function (err, allowed) {
           if (err) return res.status(500).json({ error: String(err) });
           if (!allowed) return res.status(403).json({ error: "Forbidden: join not permitted for this room" });
+
+          if (room.ephemeral) {
+            // Not a signed postcard — trusted via the same authenticated
+            // session as presence, not a signature. See
+            // RoomEphemeralMessages.js's own header comment.
+            var text = typeof body.text === "string" ? body.text.trim().slice(0, 4000) : "";
+            if (!text) return res.status(400).json({ error: "Missing required field: text" });
+            roomEphemeralMessages.append(roomId, {
+              did: req.identity.did, handle: req.identity.handle || null, text: text, created: Date.now(),
+            }).then(function () {
+              res.status(201).json({ ok: true });
+            }).catch(function (e) {
+              console.error("[IdentityServer] ephemeral message append failed for room " + roomId + ":", e && e.message);
+              res.status(503).json({ error: "Messages temporarily unavailable" });
+            });
+            return;
+          }
+
+          var objId = body.objId;
+          if (!objId) return res.status(400).json({ error: "Missing required field: objId" });
 
           objectRepo.get(objId, function (err, envelope) {
             if (err) return res.status(500).json({ error: String(err) });

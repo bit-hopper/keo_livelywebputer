@@ -202,7 +202,14 @@ var DDL =
   // deleteRoom's hard delete below.
   'ALTER TABLE rooms ADD COLUMN IF NOT EXISTS header_url TEXT;\n' +
   'ALTER TABLE rooms ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT false;\n' +
-  'ALTER TABLE rooms ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP DEFAULT NULL;';
+  'ALTER TABLE rooms ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP DEFAULT NULL;\n' +
+  // Message retention toggle (RoomSettingsDialog.js's "Message retention"
+  // section, NewRoomDialog.js at creation time). false (the default,
+  // matching every pre-existing room) is today's unchanged behavior:
+  // messages are signed postcards, durably stored, searchable. true routes
+  // sends through room-ephemeral-messages-redis.js instead — never written
+  // here, never searchable, gone shortly after the room empties out.
+  'ALTER TABLE rooms ADD COLUMN IF NOT EXISTS ephemeral BOOLEAN NOT NULL DEFAULT false;';
 
 var _bootstrapped = false;
 
@@ -1002,7 +1009,7 @@ function getRsvpEventsForUser(did, thenDo) {
 // check in this file). Live presence (who's currently in a room) is NOT
 // tracked here — see RoomPresence.js.
 
-// fields: { constellation, name, isVideo, isVoice, access, activity, createdBy }
+// fields: { constellation, name, isVideo, isVoice, access, activity, createdBy, ephemeral }
 // access: 'open' | 'request'. activity: an optional short creator-picked
 // label (e.g. "Jamming", "Reading" — see NewRoomDialog.js's activity chips)
 // describing what active participants are doing, shown on the room card
@@ -1012,8 +1019,8 @@ function createRoom(fields, thenDo) {
   withDB(function(err, pool) {
     if (err) return thenDo(err);
     pool.query(
-      'INSERT INTO rooms (constellation, name, is_video, is_voice, access, activity, created_by, created_at)' +
-      ' VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id',
+      'INSERT INTO rooms (constellation, name, is_video, is_voice, access, activity, created_by, created_at, ephemeral)' +
+      ' VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id',
       [
         fields.constellation,
         fields.name,
@@ -1022,7 +1029,8 @@ function createRoom(fields, thenDo) {
         fields.access === 'request' ? 'request' : 'open',
         fields.activity || null,
         fields.createdBy,
-        new Date().toISOString()
+        new Date().toISOString(),
+        !!fields.ephemeral
       ],
       function(err, result) { thenDo(err || null, result && result.rows[0] ? result.rows[0].id : null); }
     );
@@ -1042,7 +1050,8 @@ function _rowToRoom(row) {
     createdAt: row.created_at,
     headerUrl: row.header_url || null,
     pinned: !!row.pinned,
-    archivedAt: row.archived_at || null
+    archivedAt: row.archived_at || null,
+    ephemeral: !!row.ephemeral
   };
 }
 
@@ -1080,7 +1089,7 @@ function getRoom(roomId, thenDo) {
 // caller (IdentityServer.js's PUT /c/:name/rooms/:roomId), not here, same
 // division of responsibility as every other write in this file.
 // fields: { id, constellation, name, access, headerUrl, pinned, isVideo,
-// isVoice, activity }. Calls
+// isVoice, activity, ephemeral }. Calls
 // thenDo(null, true|false) — false means no row matched (bad id/mismatched
 // constellation), same shape as updateEvent.
 function updateRoom(fields, thenDo) {
@@ -1088,8 +1097,8 @@ function updateRoom(fields, thenDo) {
     if (err) return thenDo(err);
     pool.query(
       'UPDATE rooms SET name = $1, access = $2, header_url = $3, pinned = $4,' +
-      ' is_video = $5, is_voice = $6, activity = $7' +
-      ' WHERE id = $8 AND constellation = $9',
+      ' is_video = $5, is_voice = $6, activity = $7, ephemeral = $8' +
+      ' WHERE id = $9 AND constellation = $10',
       [
         fields.name,
         fields.access === 'request' ? 'request' : 'open',
@@ -1098,6 +1107,7 @@ function updateRoom(fields, thenDo) {
         !!fields.isVideo,
         !!fields.isVoice,
         fields.activity || null,
+        !!fields.ephemeral,
         fields.id,
         fields.constellation
       ],

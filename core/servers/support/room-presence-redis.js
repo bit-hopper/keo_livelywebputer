@@ -12,7 +12,7 @@
 // it through Redis makes every worker see the same room.
 //
 // Shape: one Redis HASH per room, `lk:room:{roomId}:presence`, field = DID,
-// value = JSON {handle, lastSeen}. There is deliberately no separate
+// value = JSON {handle, lastSeen, joinedAt}. There is deliberately no separate
 // per-entry Redis TTL: freshness is judged on read against `lastSeen`
 // (HEARTBEAT_TIMEOUT_MS, same 75s the in-memory version used), and any stale
 // entry a read trips over is HDEL'd on the spot. The whole key also carries
@@ -21,6 +21,14 @@
 // missing DELETE can't: a tab that just vanished simply stops touching, and
 // falls out of the roster ~75s later -- no sweep timer needed, so this
 // module has no background work at all.
+//
+// joinedAt: set once per session, not refreshed on every heartbeat -- touch()
+// reads the existing entry first and keeps its joinedAt as long as it's
+// still fresh (an ongoing session), only resetting it to now() on a genuine
+// first join or a reconnect after going stale. Used by
+// room-ephemeral-messages-redis.js's caller (IdentityServer.js's messages
+// GET route) to give a joining viewer zero scrollback -- they only ever see
+// messages created after their own joinedAt.
 //
 // Clock: `lastSeen` is written and compared with each process's own
 // Date.now(). Workers on one machine share a clock; across machines a skew
@@ -40,13 +48,33 @@ function presenceKey(roomId) { return 'lk:room:{' + roomId + '}:presence'; }
 // client's immediate refresh) is guaranteed to see the entry.
 exports.touch = function (roomId, did, handle) {
   var key = presenceKey(roomId);
-  return redisClient.getClient().pipeline()
-    .hset(key, did, JSON.stringify({ handle: handle || null, lastSeen: Date.now() }))
-    .expire(key, KEY_TTL_S)
-    .exec()
-    .then(function (results) {
-      for (var i = 0; i < results.length; i++) if (results[i][0]) throw results[i][0];
-    });
+  var client = redisClient.getClient();
+  return client.hget(key, did).then(function (existingRaw) {
+    var now = Date.now();
+    var existing = null;
+    if (existingRaw) { try { existing = JSON.parse(existingRaw); } catch (e) { existing = null; } }
+    var joinedAt = (existing && now - existing.lastSeen <= HEARTBEAT_TIMEOUT_MS) ? existing.joinedAt : now;
+    return client.pipeline()
+      .hset(key, did, JSON.stringify({ handle: handle || null, lastSeen: now, joinedAt: joinedAt }))
+      .expire(key, KEY_TTL_S)
+      .exec();
+  }).then(function (results) {
+    for (var i = 0; i < results.length; i++) if (results[i][0]) throw results[i][0];
+  });
+};
+
+// {handle, lastSeen, joinedAt} for one DID's current session, or null if
+// they're not present at all, or their entry has gone stale (past
+// HEARTBEAT_TIMEOUT_MS -- treated as "not really here" even though a lazy
+// roster() read hasn't HDEL'd it yet).
+exports.getEntry = function (roomId, did) {
+  return redisClient.getClient().hget(presenceKey(roomId), did).then(function (raw) {
+    if (!raw) return null;
+    var entry;
+    try { entry = JSON.parse(raw); } catch (e) { return null; }
+    if (!entry || Date.now() - entry.lastSeen > HEARTBEAT_TIMEOUT_MS) return null;
+    return entry;
+  });
 };
 
 exports.leave = function (roomId, did) {

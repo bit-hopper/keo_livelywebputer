@@ -87,6 +87,7 @@ module("lively.identity.RoomSettingsDialog")
         this._isVideo = false;
         this._isVoice = false;
         this._activity = "";
+        this._ephemeral = false;
         this._onDone = function () {};
       },
 
@@ -102,6 +103,7 @@ module("lively.identity.RoomSettingsDialog")
         this._isVideo = !!room.isVideo;
         this._isVoice = !!room.isVoice;
         this._activity = room.activity || "";
+        this._ephemeral = !!room.ephemeral;
         this._onDone = onDone || function () {};
         this.setTitle("Cluster Settings — " + this._roomName);
         this._render();
@@ -343,6 +345,30 @@ module("lively.identity.RoomSettingsDialog")
           : "Members must be approved by a controller before joining.");
         divider();
 
+        // ── Message retention ───────────────────────────────────────────────
+        sectionLabel("Message retention");
+        var persistentBtn = styledButton(lively.rect(MARGIN, y, 200, 30), "Persistent",
+          !this._ephemeral ? "success" : "default");
+        persistentBtn.addScript(function doAction() {
+          var win = this.owner && this.owner.owner;
+          if (win) win._setRetention(false);
+        });
+        lively.bindings.connect(persistentBtn, "fire", persistentBtn, "doAction");
+        content.addMorph(persistentBtn);
+        var ephemeralBtn = styledButton(lively.rect(MARGIN + 210, y, 200, 30), "Ephemeral",
+          this._ephemeral ? "success" : "default");
+        ephemeralBtn.addScript(function doAction() {
+          var win = this.owner && this.owner.owner;
+          if (win) win._setRetention(true);
+        });
+        lively.bindings.connect(ephemeralBtn, "fire", ephemeralBtn, "doAction");
+        content.addMorph(ephemeralBtn);
+        y += 30;
+        fieldLabel(this._ephemeral
+          ? "Messages aren't saved. Joining shows nothing sent before you joined, and the chat disappears once everyone leaves."
+          : "Messages are saved and searchable — the normal cluster chat history.");
+        divider();
+
         // ── Pin ─────────────────────────────────────────────────────────────
         sectionLabel("Pin this cluster");
         var CHK = 20;
@@ -427,6 +453,12 @@ module("lively.identity.RoomSettingsDialog")
         this._render();
       },
 
+      _setRetention: function _setRetention(ephemeral) {
+        this._captureFieldEdits();
+        this._ephemeral = ephemeral;
+        this._render();
+      },
+
       _togglePinned: function _togglePinned() {
         this._captureFieldEdits();
         this._pinned = !this._pinned;
@@ -478,6 +510,7 @@ module("lively.identity.RoomSettingsDialog")
           body: JSON.stringify({
             name: name, access: this._access, headerUrl: headerUrl || null, pinned: this._pinned,
             isVideo: this._isVideo, isVoice: this._isVoice, activity: activity || null,
+            ephemeral: this._ephemeral,
           }),
         })
           .then(function (res) {

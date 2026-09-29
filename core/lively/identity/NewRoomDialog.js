@@ -10,8 +10,8 @@
  * openInWorldCenter().comeForward()).
  *
  * The dialog itself never touches storage — it only collects and validates
- * { name, isVideo, isVoice, access, activity } and hands them to the
- * caller's onCreate callback, which POSTs to /c/:name/rooms (see
+ * { name, isVideo, isVoice, access, activity, ephemeral } and hands them to
+ * the caller's onCreate callback, which POSTs to /c/:name/rooms (see
  * ConstellationLounge.js's _openNewRoom).
  *
  * The video/voice toggles are two independent chips (not a radio group,
@@ -49,7 +49,7 @@ module('lively.identity.NewRoomDialog')
 
     lively.BuildSpec('lively.identity.NewRoomDialog', {
       _BorderRadius: 7,
-      _Extent: lively.pt(380.0, 324.0),
+      _Extent: lively.pt(380.0, 380.0),
       _Fill: Color.rgb(88, 101, 242),
       className: 'lively.morphic.Window',
       name: 'NewRoomDialog',
@@ -57,11 +57,11 @@ module('lively.identity.NewRoomDialog')
       contentOffset: lively.pt(3.0, 22.0),
       draggingEnabled: true,
       layout: { adjustForNewBounds: true },
-      minExtent: lively.pt(380.0, 324.0),
+      minExtent: lively.pt(380.0, 380.0),
       submorphs: [{
         _BorderColor: Color.rgb(95, 94, 95),
         _BorderRadius: 4,
-        _Extent: lively.pt(374.0, 296.0),
+        _Extent: lively.pt(374.0, 352.0),
         _Fill: Color.rgb(243, 243, 243),
         _Position: lively.pt(3.0, 23.0),
         className: 'lively.morphic.Box',
@@ -370,11 +370,70 @@ module('lively.identity.NewRoomDialog')
             });
           },
         }, {
-          _Extent: lively.pt(354.0, 18.0),
+          _Extent: lively.pt(200.0, 16.0),
           _FontFamily: 'Arial, sans-serif',
           _FontSize: 11,
           _Padding: lively.rect(4, 3, 0, 0),
           _Position: lively.pt(10.0, 236.0),
+          _InputAllowed: false,
+          allowInput: false,
+          className: 'lively.morphic.Text',
+          droppingEnabled: false,
+          fixedWidth: true,
+          grabbingEnabled: false,
+          name: 'RetentionLabel',
+          sourceModule: 'lively.morphic.TextCore',
+          submorphs: [],
+          textString: 'Message Retention',
+        }, {
+          // 2-way radio: 'persistent' (default) vs 'ephemeral' -- see selectRetention.
+          _BorderColor: Color.rgb(180, 180, 180),
+          _BorderRadius: 5,
+          _BorderWidth: 1,
+          _Extent: lively.pt(170.0, 24.0),
+          _Position: lively.pt(10.0, 258.0),
+          className: 'lively.morphic.Button',
+          doNotCopyProperties: [],
+          doNotSerialize: [],
+          isPressed: false,
+          label: 'Persistent',
+          name: 'PersistentButton',
+          sourceModule: 'lively.morphic.Widgets',
+          submorphs: [],
+          toggle: false,
+          value: false,
+          connectionRebuilder: function connectionRebuilder() {
+            lively.bindings.connect(this, 'fire', this.get('NewRoomDialogPane'), 'selectRetention', {
+              converter: function() { return false; }
+            });
+          },
+        }, {
+          _BorderColor: Color.rgb(180, 180, 180),
+          _BorderRadius: 5,
+          _BorderWidth: 1,
+          _Extent: lively.pt(170.0, 24.0),
+          _Position: lively.pt(194.0, 258.0),
+          className: 'lively.morphic.Button',
+          doNotCopyProperties: [],
+          doNotSerialize: [],
+          isPressed: false,
+          label: 'Ephemeral',
+          name: 'EphemeralButton',
+          sourceModule: 'lively.morphic.Widgets',
+          submorphs: [],
+          toggle: false,
+          value: false,
+          connectionRebuilder: function connectionRebuilder() {
+            lively.bindings.connect(this, 'fire', this.get('NewRoomDialogPane'), 'selectRetention', {
+              converter: function() { return true; }
+            });
+          },
+        }, {
+          _Extent: lively.pt(354.0, 18.0),
+          _FontFamily: 'Arial, sans-serif',
+          _FontSize: 11,
+          _Padding: lively.rect(4, 3, 0, 0),
+          _Position: lively.pt(10.0, 292.0),
           _InputAllowed: false,
           allowInput: false,
           className: 'lively.morphic.Text',
@@ -391,7 +450,7 @@ module('lively.identity.NewRoomDialog')
           _BorderRadius: 5,
           _BorderWidth: 1,
           _Extent: lively.pt(80.0, 24.0),
-          _Position: lively.pt(204.0, 262.0),
+          _Position: lively.pt(204.0, 318.0),
           className: 'lively.morphic.Button',
           doNotCopyProperties: [],
           doNotSerialize: [],
@@ -411,7 +470,7 @@ module('lively.identity.NewRoomDialog')
           _BorderWidth: 1.184,
           _Extent: lively.pt(80.0, 24.0),
           _Fill: Color.rgb(231, 233, 254),
-          _Position: lively.pt(288.0, 262.0),
+          _Position: lively.pt(288.0, 318.0),
           className: 'lively.morphic.Button',
           doNotCopyProperties: [],
           doNotSerialize: [],
@@ -443,6 +502,7 @@ module('lively.identity.NewRoomDialog')
           this.paintToggle('VideoToggleChip', 'VideoIcon', 'VideoLabel', false);
           this.paintTypeToggles();
           this.selectAccess('open');
+          this.selectRetention(false);
           this.setStatus('');
         },
 
@@ -523,6 +583,26 @@ module('lively.identity.NewRoomDialog')
           }, this);
         },
 
+        // ─── message retention ─────────────────────────────────────────────────
+        // Same manual-radio idiom as selectAccess above. Persistent (default,
+        // matching the server's own column default): messages are signed,
+        // durably stored, searchable. Ephemeral: relayed live only, never
+        // stored, zero scrollback for anyone who joins after a message was
+        // sent — see RoomSettingsDialog.js's own Message Retention section
+        // for the fuller explanation shown there.
+
+        selectRetention: function selectRetention(ephemeral) {
+          this._ephemeral = ephemeral;
+          var selectedFill = Color.rgb(224, 227, 254), selectedBorder = Color.rgb(88, 101, 242);
+          var normalFill = Color.rgb(243, 243, 243), normalBorder = Color.rgb(180, 180, 180);
+          [['PersistentButton', false], ['EphemeralButton', true]].forEach(function(pair) {
+            var btn = this.get(pair[0]);
+            var isSelected = pair[1] === ephemeral;
+            btn.setFill(isSelected ? selectedFill : normalFill);
+            btn.setBorderColor(isSelected ? selectedBorder : normalBorder);
+          }, this);
+        },
+
         // ─── submit ──────────────────────────────────────────────────────────────
 
         onSubmit: function onSubmit() {
@@ -532,7 +612,7 @@ module('lively.identity.NewRoomDialog')
           var activity = this.get('ActivityText').textString.trim();
           var fields = {
             name: name, isVideo: this._isVideo, isVoice: this._isVoice, access: this._access,
-            activity: activity || null,
+            activity: activity || null, ephemeral: this._ephemeral,
           };
           var cb = this._onCreateCallback;
           this.owner.remove();

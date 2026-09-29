@@ -1193,6 +1193,53 @@ function listMessagesForRoom(roomId, opts, thenDo) {
   });
 }
 
+// Full-content search across a persistent room's message history — only
+// meaningful for room.ephemeral === false rooms (an ephemeral room's
+// messages never reach this table at all, see RoomEphemeralMessages.js;
+// IdentityServer.js's search route short-circuits to [] before calling this
+// for an ephemeral room). Unlike searchWikiPages below, a room message's
+// entire text lives in state.title (listMessagesForRoom's own comment: "a
+// short chat line, capped at 200 chars") — no separate body/snapshot to walk,
+// so this is a plain ILIKE substring match, same idiom as
+// listPostcardsForUser's own q filter. Calls thenDo(null, [{ objId, did,
+// text, created }, ...]), newest match first. Empty/missing query returns []
+// without touching the DB.
+function searchRoomMessages(roomId, query, thenDo) {
+  var q = (query || '').trim();
+  if (!q) return thenDo(null, []);
+  var qLike = '%' + _escapeLikePrefix(q) + '%';
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'SELECT o.envelope, o.obj_id FROM objects o' +
+      ' INNER JOIN (' +
+      '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
+      '   WHERE type = \'postcard\'' +
+      '         AND (envelope #>> \'{state,kind}\') = \'room-message\'' +
+      '         AND (envelope #>> \'{state,roomId}\') = $1' +
+      '   GROUP BY obj_id' +
+      ' ) latest ON o.id = latest.max_id' +
+      ' WHERE ((o.envelope #>> \'{state,deleted}\') IS NULL' +
+      '        OR (o.envelope #>> \'{state,deleted}\') <> \'true\')' +
+      '   AND (o.envelope #>> \'{state,title}\') ILIKE $2 ESCAPE \'\\\'' +
+      ' ORDER BY o.id DESC LIMIT 50',
+      [roomId, qLike],
+      function (err, result) {
+        if (err) return thenDo(err);
+        thenDo(null, (result.rows || []).map(function (r) {
+          var env = r.envelope;
+          return {
+            objId: r.obj_id,
+            did: env.did,
+            text: (env.state && env.state.title) || '',
+            created: env.created,
+          };
+        }));
+      }
+    );
+  });
+}
+
 // Looks up a wiki page's objId by name within a constellation (a wiki page
 // is a type: 'wikipage' envelope, addressed by state.wikiName). Used by
 // GET /c/:name/wiki/:pageName to resolve a human-friendly page name to the
@@ -2608,6 +2655,7 @@ module.exports = {
   listPostcardsForUser:          listPostcardsForUser,
   listPostcardsForConstellation: listPostcardsForConstellation,
   listMessagesForRoom:           listMessagesForRoom,
+  searchRoomMessages:            searchRoomMessages,
   getWikiPageObjId:              getWikiPageObjId,
   listWikiPages:                 listWikiPages,
   getWikiPageObjIdForUser:       getWikiPageObjIdForUser,

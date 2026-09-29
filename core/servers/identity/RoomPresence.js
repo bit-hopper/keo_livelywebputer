@@ -37,16 +37,30 @@ var redisStore = USE_REDIS ? require('../support/room-presence-redis') : null;
 
 // -- in-memory backing -------------------------------------------------------
 
-// roomId -> { did -> { handle, lastSeen } }
+// roomId -> { did -> { handle, lastSeen, joinedAt } }
 var _rooms = {};
 
+// joinedAt is set once per session: kept from the existing entry as long as
+// it's still fresh (an ongoing heartbeat), reset to now() on a genuine first
+// join or a reconnect after going stale -- same rule room-presence-redis.js's
+// touch() applies, so ephemeral-room "zero scrollback" behaves the same in
+// both backings.
 function touchLocal(roomId, did, handle) {
   if (!_rooms[roomId]) _rooms[roomId] = {};
-  _rooms[roomId][did] = { handle: handle || null, lastSeen: Date.now() };
+  var existing = _rooms[roomId][did];
+  var now = Date.now();
+  var joinedAt = (existing && now - existing.lastSeen <= HEARTBEAT_TIMEOUT_MS) ? existing.joinedAt : now;
+  _rooms[roomId][did] = { handle: handle || null, lastSeen: now, joinedAt: joinedAt };
 }
 
 function leaveLocal(roomId, did) {
   if (_rooms[roomId]) delete _rooms[roomId][did];
+}
+
+function getEntryLocal(roomId, did) {
+  var entry = (_rooms[roomId] || {})[did];
+  if (!entry || Date.now() - entry.lastSeen > HEARTBEAT_TIMEOUT_MS) return null;
+  return entry;
 }
 
 // [{did, handle}, ...], insertion order.
@@ -93,6 +107,15 @@ function roster(roomId) {
   return Promise.resolve(rosterLocal(roomId));
 }
 
+// {handle, lastSeen, joinedAt} for one DID's current session, or null if
+// they're not present. Used by IdentityServer.js's ephemeral-room messages
+// GET route to know how far back a viewer's own "since I joined" window
+// starts -- see RoomEphemeralMessages.js.
+function getEntry(roomId, did) {
+  if (USE_REDIS) return redisStore.getEntry(roomId, did);
+  return Promise.resolve(getEntryLocal(roomId, did));
+}
+
 // Only meaningful in memory mode: Redis mode prunes on read instead.
 function startSweeping() {
   if (USE_REDIS) return;
@@ -103,6 +126,7 @@ module.exports = {
   touch: touch,
   leave: leave,
   roster: roster,
+  getEntry: getEntry,
   sweep: sweep,
   startSweeping: startSweeping
 };

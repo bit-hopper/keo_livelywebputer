@@ -182,6 +182,9 @@ module("lively.identity.RoomView")
         this._memberStatuses = {}; // did -> {status, expiresAt}, refined async by _fetchMemberStatuses
         this._messages = [];      // [{objId, did, handle, text, created}], real (see "chat" category)
         this._messagePollTimer = null;
+        this._searchActive = false; // persistent rooms only — see _toggleSearch/_performSearch
+        this._searchQuery = "";
+        this._searchResults = null;
         this._sendingMessage = false;
         this._mediaPicker = null; // lazily created by _getMediaPicker on first emoji/GIF button click
         this._heartbeatTimer = null;
@@ -763,14 +766,21 @@ module("lively.identity.RoomView")
 
         var ICON = 18, ICON_GAP = 6;
         var icons = [];
-        if (this._room.isVideo) icons.push("videocam");
-        if (this._room.isVoice) icons.push("headset");
-        if (!this._room.isVideo && !this._room.isVoice) icons.push("chat");
+        var room = this._room;
+        if (room.isVideo) icons.push("videocam");
+        if (room.isVoice) icons.push("headset");
+        if (!room.isVideo && !room.isVoice) icons.push("chat");
         var ix = 16;
         var textW = nameM.renderContext().shapeNode.querySelector("span");
         ix += (textW ? textW.offsetWidth : 100) + 12;
         icons.forEach(function (glyph) {
-          var g = noDrag(lively.morphic.Text.makeLabel(glyph, { fontSize: 11, textColor: TEXT_MUTED }));
+          // Pink for an ephemeral room's chat glyph — same COMMENT_ACCENT
+          // used everywhere else in this app for the ephemeral/pink accent,
+          // see ConstellationLounge.js's room-card icons.
+          var isEphemeralChat = glyph === "chat" && room.ephemeral;
+          var g = noDrag(lively.morphic.Text.makeLabel(glyph, {
+            fontSize: 11, textColor: isEphemeralChat ? Color.rgb(232, 73, 126) : TEXT_MUTED,
+          }));
           g.applyStyle({ fontFamily: "'Material Symbols Rounded'", borderWidth: 0 });
           g.eventsAreIgnored = true;
           g.setExtent(lively.pt(ICON, ICON));
@@ -824,6 +834,46 @@ module("lively.identity.RoomView")
         leaveLabel.setExtent(lively.pt(leaveBtnW, 22));
         leaveBtn.onMouseDown = function () { self.leave(); };
 
+        // Search — persistent rooms only (an ephemeral room's messages are
+        // never stored, so there's nothing to search; see
+        // ObjectRepository.searchRoomMessages's own header comment). Same
+        // icon-button idiom as the gear button just below, sitting
+        // immediately left of it (or of Drift away, if this viewer has no
+        // gear button to manage the room).
+        var rightEdge = TOTAL_W - 16 - leaveBtnW;
+        if (this._room && !this._room.ephemeral) {
+          var SEARCH_BTN = 26, SEARCH_GLYPH_PX = 18;
+          var searchBtn = new lively.morphic.Text(lively.rect(rightEdge - 10 - SEARCH_BTN, 9, SEARCH_BTN, SEARCH_BTN));
+          searchBtn.textString = "search";
+          searchBtn.applyStyle({
+            fontFamily: "'Material Symbols Rounded'",
+            fontSize: SEARCH_GLYPH_PX * 0.75,
+            textColor: this._searchActive ? Color.white : TEXT_MUTED,
+            fill: this._searchActive ? Color.rgba(232, 73, 126, 0.5) : Color.rgba(255, 255, 255, 0.08),
+            borderRadius: SEARCH_BTN / 2,
+            borderWidth: 1,
+            borderColor: Color.rgba(255, 255, 255, 0.16),
+            align: "center",
+            padding: lively.Rectangle.inset(0, Math.round((SEARCH_BTN - SEARCH_GLYPH_PX) / 2), 0, 0),
+            allowInput: false,
+            selectable: false,
+            clipMode: "hidden",
+            whiteSpaceHandling: "pre",
+            handStyle: "pointer",
+          });
+          noDrag(searchBtn);
+          searchBtn.toolTip = "Search messages";
+          searchBtn.onMouseOver = function () { if (!self._searchActive) searchBtn.applyStyle({ fill: Color.rgba(255, 255, 255, 0.16) }); };
+          searchBtn.onMouseOut = function () { if (!self._searchActive) searchBtn.applyStyle({ fill: Color.rgba(255, 255, 255, 0.08) }); };
+          searchBtn.onMouseUp = function (evt) {
+            self._toggleSearch();
+            evt.stop();
+            return true;
+          };
+          header.addMorph(searchBtn);
+          rightEdge -= (10 + SEARCH_BTN);
+        }
+
         // Settings gear -- creator-or-controller only (this._room.canManage,
         // computed server-side by canManageRoom, IdentityServer.js), same
         // icon-button idiom as the room card's own gear
@@ -832,7 +882,7 @@ module("lively.identity.RoomView")
         // header box itself has no competing onMouseDown of its own.
         if (this._room && this._room.canManage) {
           var GEAR = 26, GEAR_GLYPH_PX = 18;
-          var gearBtn = new lively.morphic.Text(lively.rect(TOTAL_W - 16 - leaveBtnW - 10 - GEAR, 9, GEAR, GEAR));
+          var gearBtn = new lively.morphic.Text(lively.rect(rightEdge - 10 - GEAR, 9, GEAR, GEAR));
           gearBtn.textString = "settings";
           gearBtn.applyStyle({
             fontFamily: "'Material Symbols Rounded'",
@@ -992,8 +1042,13 @@ module("lively.identity.RoomView")
           row.addMorph(nameM);
           var tix = rowW - 10 - typeIconsW;
           typeIcons.forEach(function (glyph) {
+            // Pink for an ephemeral room's chat glyph, same as the Lounge's
+            // room cards and this window's own header — except on the
+            // current (highlighted) row, where white stays for contrast
+            // against the accent-colored background.
+            var isEphemeralChat = glyph === "chat" && room.ephemeral && !isCurrent;
             var g = noDrag(lively.morphic.Text.makeLabel(glyph, {
-              fontSize: 11, textColor: isCurrent ? Color.white : TEXT_MUTED,
+              fontSize: 11, textColor: isCurrent ? Color.white : (isEphemeralChat ? Color.rgb(232, 73, 126) : TEXT_MUTED),
             }));
             g.applyStyle({ fontFamily: "'Material Symbols Rounded'", borderWidth: 0 });
             g.eventsAreIgnored = true;
@@ -1078,6 +1133,7 @@ module("lively.identity.RoomView")
       // this._messages by objId (new ones only) so a poll tick doesn't
       // clobber whatever the user is mid-scrolling.
       _loadMessages: function () {
+        if (this._searchActive) return; // search results own the list box until closed — see _toggleSearch
         var self = this;
         var base = lively.identity.did.baseUrl();
         var xhr = new XMLHttpRequest();
@@ -1322,6 +1378,8 @@ module("lively.identity.RoomView")
         if (!user) return;
         this._sendingMessage = true;
 
+        if (this._room && this._room.ephemeral) return this._sendEphemeralText(text);
+
         var self = this;
         var doc = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: text }] }] };
         lively.identity.postCardSerializer.serializePlainToEnvelope({
@@ -1353,6 +1411,28 @@ module("lively.identity.RoomView")
           xhr.onerror = function () { self._onSendMessageFailed(text, new Error("network error")); };
           xhr.send(JSON.stringify(envelope));
         });
+      },
+
+      // Ephemeral-room counterpart to _sendText — no ProseMirror doc, no
+      // signing, no PUT to /@handle/objId: a single lightweight POST of
+      // plain text, since these messages are never signed postcards (see
+      // RoomEphemeralMessages.js's own header comment). This also makes
+      // ephemeral sends noticeably snappier than persistent ones (no
+      // WebAuthn round trip).
+      _sendEphemeralText: function (text) {
+        var self = this;
+        var base = lively.identity.did.baseUrl();
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", base + "/c/" + encodeURIComponent(this._name) + "/rooms/" + this._roomId + "/messages", true);
+        xhr.withCredentials = true;
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.onload = function () {
+          self._sendingMessage = false;
+          if (xhr.status !== 201) return self._onSendMessageFailed(text, new Error("send failed (" + xhr.status + ")"));
+          self._loadMessages();
+        };
+        xhr.onerror = function () { self._onSendMessageFailed(text, new Error("network error")); };
+        xhr.send(JSON.stringify({ text: text }));
       },
 
       // Restores the typed text into the input on failure — losing a
@@ -1434,6 +1514,83 @@ module("lively.identity.RoomView")
         return h + ":" + (m < 10 ? "0" : "") + m + " " + ampm;
       },
 
+      // Persistent rooms only — the header's search icon button toggles
+      // this. Opening pauses live polling (_loadMessages's own guard) so a
+      // poll tick can't clobber the search results mid-view; closing drops
+      // the results and lets polling resume (the very next tick just
+      // re-fetches the live tail, no explicit re-fetch needed here).
+      _toggleSearch: function () {
+        this._searchActive = !this._searchActive;
+        if (!this._searchActive) {
+          this._searchResults = null;
+          this._searchQuery = "";
+        }
+        if (this._headerBox) this._headerBox.remove();
+        this._buildHeader(); // repaints the search button's own active/inactive style
+        this._renderMessages();
+      },
+
+      _performSearch: function (q) {
+        var self = this;
+        this._searchQuery = q;
+        if (!q) { this._searchResults = []; this._renderMessages(); return; }
+        var base = lively.identity.did.baseUrl();
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", base + "/c/" + encodeURIComponent(this._name) + "/rooms/" + this._roomId +
+          "/messages/search?q=" + encodeURIComponent(q), true);
+        xhr.withCredentials = true;
+        xhr.setRequestHeader("Accept", "application/json");
+        xhr.onload = function () {
+          if (xhr.status !== 200) return;
+          var data;
+          try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
+          if (!self._searchActive || self._searchQuery !== q) return; // stale response — search was closed or re-typed since
+          self._searchResults = data.results || [];
+          self._renderMessages();
+        };
+        xhr.send();
+      },
+
+      // Drawn as the first thing inside _msgListBox when _searchActive —
+      // same input-pill styling as the compose box at the bottom
+      // (_buildChatPanel), just smaller. Returns the y a caller should
+      // start rendering results/messages from.
+      _renderSearchBar: function (y) {
+        var self = this;
+        var PAD = 16;
+        var barH = 34;
+        var pill = noDrag(new lively.morphic.Box(lively.rect(PAD, y, self._chatW - PAD * 2, barH)));
+        pill.applyStyle({ fill: BG_INPUT, borderWidth: 0, borderRadius: 8 });
+        self._msgListBox.addMorph(pill);
+
+        var input = noDrag(new lively.morphic.Text(lively.rect(12, 5, self._chatW - PAD * 2 - 24 - 32, 24)));
+        input.beInputLine({
+          fontSize: 13, fontFamily: "Helvetica", textColor: TEXT_PRIMARY,
+          fill: null, borderWidth: 0, whiteSpaceHandling: "pre",
+        });
+        input.textString = this._searchQuery || "";
+        pill.addMorph(input);
+        input.onKeyDown = function (evt) {
+          if (evt.getKeyCode && evt.getKeyCode() === 13) {
+            self._performSearch((this.textString || "").trim());
+            evt.stop();
+            return true;
+          }
+        };
+        input.focus();
+
+        var closeBtn = noDrag(lively.morphic.Text.makeLabel("close", {
+          fontSize: 15, textColor: TEXT_MUTED,
+        }));
+        closeBtn.applyStyle({ fontFamily: "'Material Symbols Rounded'", borderWidth: 0, fill: null, handStyle: "pointer" });
+        closeBtn.setExtent(lively.pt(20, 20));
+        closeBtn.setPosition(lively.pt((self._chatW - PAD * 2) - 32, 7));
+        closeBtn.onMouseUp = function (evt) { self._toggleSearch(); evt.stop(); return true; };
+        pill.addMorph(closeBtn);
+
+        return y + barH + 14;
+      },
+
       _renderMessages: function () {
         if (!this._msgListBox) return; // window closed — showView re-renders from this._messages
         var self = this;
@@ -1441,7 +1598,19 @@ module("lively.identity.RoomView")
 
         var PAD = 16, ROW_GAP = 14;
         var y = 12;
-        this._messages.forEach(function (msg) {
+        if (this._searchActive) y = this._renderSearchBar(y);
+        var list = this._searchActive ? (this._searchResults || []) : this._messages;
+        if (this._searchActive && !list.length) {
+          var empty = noDrag(lively.morphic.Text.makeLabel(
+            this._searchQuery ? "No messages found." : "Type to search this cluster's message history.",
+            { fontSize: 13, textColor: TEXT_MUTED }
+          ));
+          empty.eventsAreIgnored = true;
+          empty.setExtent(lively.pt(self._chatW - PAD * 2, 20));
+          empty.setPosition(lively.pt(PAD, y));
+          self._msgListBox.addMorph(empty);
+        }
+        list.forEach(function (msg) {
           var av = noDrag(new lively.morphic.Image(lively.rect(PAD, y, AVATAR_MSG, AVATAR_MSG)));
           av.applyStyle({ borderRadius: AVATAR_MSG / 2, borderWidth: 0, clipMode: "hidden" });
           av.setImageURL(lively.identity.postCardUtils.identiconDataUrl(msg.handle || msg.did || "unknown", AVATAR_MSG));
@@ -1522,7 +1691,10 @@ module("lively.identity.RoomView")
         });
 
         var scrollNode = this._msgListBox.renderContext().shapeNode;
-        scrollNode.scrollTop = scrollNode.scrollHeight;
+        // Search mode: stay pinned to the top (the search bar + newest
+        // match) rather than the live-chat convention of scrolling to the
+        // newest message at the bottom.
+        scrollNode.scrollTop = this._searchActive ? 0 : scrollNode.scrollHeight;
       },
 
     },

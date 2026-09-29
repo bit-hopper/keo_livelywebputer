@@ -1403,7 +1403,10 @@ module("lively.identity.ConstellationLounge")
 
         // Camera/headset/chat type icons — static indicators on the card
         // itself (the creator toggles these in the New Room dialog, not
-        // here), right-aligned on the name's own row.
+        // here), right-aligned on the name's own row. The chat glyph tints
+        // pink (COMMENT_ACCENT) for an ephemeral room, so retention mode
+        // reads at a glance without opening settings — see
+        // RoomSettingsDialog.js's Message Retention section.
         var ICON = 22, ICON_GAP = 6;
         var icons = [];
         if (room.isVideo) icons.push("videocam");
@@ -1412,11 +1415,17 @@ module("lively.identity.ConstellationLounge")
         var totalIconsW = icons.length ? icons.length * ICON + (icons.length - 1) * ICON_GAP : 0;
         var ix = w - PAD - totalIconsW;
         icons.forEach(function (glyph) {
+          var isEphemeralChat = glyph === "chat" && room.ephemeral;
           var chip = noDrag(new lively.morphic.Box(lively.rect(ix, nameY, ICON, ICON)));
-          chip.applyStyle({ fill: Color.rgb(243, 243, 243), borderWidth: 0, borderRadius: ICON / 2 });
+          chip.applyStyle({
+            fill: isEphemeralChat ? Color.rgb(252, 231, 238) : Color.rgb(243, 243, 243),
+            borderWidth: 0, borderRadius: ICON / 2,
+          });
           chip.eventsAreIgnored = true;
           card.addMorph(chip);
-          var g = lively.morphic.Text.makeLabel(glyph, { fontSize: 12, textColor: Color.rgb(90, 90, 90) });
+          var g = lively.morphic.Text.makeLabel(glyph, {
+            fontSize: 12, textColor: isEphemeralChat ? Color.rgb(232, 73, 126) : Color.rgb(90, 90, 90),
+          });
           g.applyStyle({ fontFamily: "'Material Symbols Rounded'", borderWidth: 0 });
           g.eventsAreIgnored = true;
           g.setExtent(lively.pt(18, 16));
