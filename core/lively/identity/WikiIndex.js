@@ -601,6 +601,15 @@ module("lively.identity.WikiIndex")
         header.eventsAreIgnored = true;
         box.addMorph(header);
 
+        // Not a draggable part: all three flags (see CLAUDE.md, drag/
+        // drop/grab section) so the panel doesn't get picked up by a
+        // click-drag the way a plain Box otherwise defaults to.
+        [box, header].forEach(function (m) {
+          m.draggingEnabled = false;
+          m.droppingEnabled = false;
+          m.grabbingEnabled = false;
+        });
+
         box._itemMorphs = [];
         return box;
       },
@@ -902,6 +911,9 @@ module("lively.identity.WikiIndex")
             fontSize: 12, textColor: Color.rgb(170, 170, 170),
           });
           empty.setPosition(lively.pt(PANEL_PAD, y));
+          empty.draggingEnabled = false;
+          empty.droppingEnabled = false;
+          empty.grabbingEnabled = false;
           box.addMorph(empty);
           box._itemMorphs.push(empty);
           y += 22;
@@ -919,6 +931,9 @@ module("lively.identity.WikiIndex")
             });
             label.renderContext().shapeNode.style.cursor = "pointer";
             label.onMouseDown = function () { self._selectCategory(g.category); };
+            label.draggingEnabled = false;
+            label.droppingEnabled = false;
+            label.grabbingEnabled = false;
             box.addMorph(label);
             box._itemMorphs.push(label);
             y += CATEGORY_LABEL_H + 6;
@@ -959,6 +974,9 @@ module("lively.identity.WikiIndex")
         });
         pill.renderContext().shapeNode.style.cursor = "pointer";
         pill.onMouseDown = function () { self._selectTag(category, tag); };
+        pill.draggingEnabled = false;
+        pill.droppingEnabled = false;
+        pill.grabbingEnabled = false;
         return pill;
       },
 
@@ -1000,6 +1018,9 @@ module("lively.identity.WikiIndex")
           fill: null, borderWidth: 0, borderColor: null,
         });
         label.eventsAreIgnored = true;
+        label.draggingEnabled = false;
+        label.droppingEnabled = false;
+        label.grabbingEnabled = false;
         pill.addMorph(label);
 
         var innerDiv = label.renderContext().shapeNode.querySelector("div");
