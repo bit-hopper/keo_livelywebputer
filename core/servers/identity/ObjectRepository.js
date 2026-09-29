@@ -1373,6 +1373,135 @@ function listWikiPagesForUser(did, thenDo) {
   });
 }
 
+// Recursively flattens a ProseMirror doc node tree to plain text, for
+// full-content wiki search below — deeper than WikiSerializer.js's own
+// client-side _extractFirstBlockText (first-block-only, used only for
+// title fallback at save time), since a search needs the whole document.
+function _plainTextOfPmNode(node) {
+  if (!node) return '';
+  if (node.text) return node.text;
+  if (!node.content || !node.content.length) return '';
+  return node.content.map(_plainTextOfPmNode).join(' ');
+}
+
+// Builds a short "…context around the match…" snippet from a plain-text
+// body, centered on the first case-insensitive occurrence of the search
+// query. Falls back to a plain leading slice when there's no body match
+// (title-only match) so callers always get something to show.
+function _snippetAround(bodyText, query, matchIndex) {
+  var SNIPPET_BEFORE = 40, SNIPPET_AFTER = 90;
+  if (matchIndex < 0) return bodyText.slice(0, SNIPPET_AFTER).trim();
+  var start = Math.max(0, matchIndex - SNIPPET_BEFORE);
+  var end = Math.min(bodyText.length, matchIndex + query.length + SNIPPET_AFTER);
+  var snippet = bodyText.slice(start, end).trim();
+  if (start > 0) snippet = '…' + snippet;
+  if (end < bodyText.length) snippet = snippet + '…';
+  return snippet;
+}
+
+// Shared match/rank/snippet step for searchWikiPages/searchWikiPagesForUser
+// below — both run the same query shape (latest version per obj_id, plus
+// the snapshot column listWikiPages/listWikiPagesForUser don't need), just
+// scoped differently, so the actual text-matching logic lives here once.
+// Wiki content is stored as a ProseMirror JSON snapshot, not Markdown/plain
+// text (WikiSerializer.js), so this walks the tree via _plainTextOfPmNode
+// rather than substring-matching the raw stored JSON, which would
+// false-positive on node-type names/attribute values instead of visible
+// text.
+function _matchWikiSearchRows(rows, q) {
+  var qLower = q.toLowerCase();
+  var results = [];
+  rows.forEach(function (r) {
+    var title = r.title || '';
+    var bodyText = _plainTextOfPmNode(r.snapshot);
+    var titleMatch = title.toLowerCase().indexOf(qLower) !== -1;
+    var bodyIndex = bodyText.toLowerCase().indexOf(qLower);
+    if (!titleMatch && bodyIndex === -1) return;
+    results.push({
+      objId: r.obj_id,
+      wikiName: r.wiki_name,
+      title: title || r.wiki_name || '',
+      category: r.category || null,
+      snippet: _snippetAround(bodyText, q, bodyIndex),
+      titleMatch: titleMatch,
+    });
+  });
+  results.sort(function (a, b) {
+    if (a.titleMatch !== b.titleMatch) return a.titleMatch ? -1 : 1;
+    return (a.wikiName || '').localeCompare(b.wikiName || '');
+  });
+  return results;
+}
+
+// Full-content search across every wiki page in a constellation — unlike
+// listWikiPages (metadata only), this also pulls each page's rendered
+// snapshot and matches against both title and body plain text (see
+// _matchWikiSearchRows). Calls thenDo(null, [{ objId, wikiName, title,
+// category, snippet, titleMatch }, ...]), title-matches first, then
+// alphabetically by wikiName. Empty/missing query returns [] without
+// touching the DB.
+function searchWikiPages(constellation, query, thenDo) {
+  var q = (query || '').trim();
+  if (!q) return thenDo(null, []);
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'SELECT o.obj_id,' +
+      '       o.envelope #>> \'{state,wikiName}\' AS wiki_name,' +
+      '       o.envelope #>> \'{state,title}\' AS title,' +
+      '       o.envelope #>> \'{state,category}\' AS category,' +
+      '       o.envelope #> \'{record,payload,snapshot}\' AS snapshot' +
+      ' FROM objects o' +
+      ' INNER JOIN (' +
+      '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
+      '   WHERE type = \'wikipage\'' +
+      '         AND (envelope ->> \'constellation\') = $1' +
+      '   GROUP BY obj_id' +
+      ' ) latest ON o.id = latest.max_id' +
+      ' WHERE ((o.envelope #>> \'{state,deleted}\') IS NULL' +
+      '        OR (o.envelope #>> \'{state,deleted}\') <> \'true\')',
+      [constellation],
+      function (err, result) {
+        if (err) return thenDo(err);
+        thenDo(null, _matchWikiSearchRows(result.rows || [], q));
+      }
+    );
+  });
+}
+
+// Personal-wiki counterpart to searchWikiPages — same match/snippet logic,
+// scoped to a did's own (non-constellation) wiki pages, mirroring how
+// listWikiPagesForUser scopes listWikiPages.
+function searchWikiPagesForUser(did, query, thenDo) {
+  var q = (query || '').trim();
+  if (!q) return thenDo(null, []);
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'SELECT o.obj_id,' +
+      '       o.envelope #>> \'{state,wikiName}\' AS wiki_name,' +
+      '       o.envelope #>> \'{state,title}\' AS title,' +
+      '       o.envelope #>> \'{state,category}\' AS category,' +
+      '       o.envelope #> \'{record,payload,snapshot}\' AS snapshot' +
+      ' FROM objects o' +
+      ' INNER JOIN (' +
+      '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
+      '   WHERE type = \'wikipage\'' +
+      '         AND did = $1' +
+      '         AND (envelope ->> \'constellation\') IS NULL' +
+      '   GROUP BY obj_id' +
+      ' ) latest ON o.id = latest.max_id' +
+      ' WHERE ((o.envelope #>> \'{state,deleted}\') IS NULL' +
+      '        OR (o.envelope #>> \'{state,deleted}\') <> \'true\')',
+      [did],
+      function (err, result) {
+        if (err) return thenDo(err);
+        thenDo(null, _matchWikiSearchRows(result.rows || [], q));
+      }
+    );
+  });
+}
+
 // Escapes SQL LIKE/ILIKE wildcards (% and _) in a string that's about to be
 // used as a LIKE prefix — Plus Codes' own alphabet ('23456789CFGHJMPQRVWX'
 // plus '+'/'0') never contains either character, but a caller-supplied
@@ -2483,6 +2612,8 @@ module.exports = {
   listWikiPages:                 listWikiPages,
   getWikiPageObjIdForUser:       getWikiPageObjIdForUser,
   listWikiPagesForUser:          listWikiPagesForUser,
+  searchWikiPages:               searchWikiPages,
+  searchWikiPagesForUser:        searchWikiPagesForUser,
   listPostcardsNearby:           listPostcardsNearby,
   listRepliesForPostcard:        listRepliesForPostcard,
   upsertReaction:                upsertReaction,

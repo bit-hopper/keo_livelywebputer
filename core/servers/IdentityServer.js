@@ -2276,6 +2276,23 @@ module.exports = function (route, app) {
     });
   });
 
+  // Personal-wiki counterpart to /c/:constellation/wiki/search above — must
+  // be registered here, BEFORE /@:handle/wiki/:pageName just below, same
+  // route-ordering reason (same segment count, :pageName would otherwise
+  // swallow "search" as a page name).
+  app.get("/@:handle/wiki/search", auth.optionalAuth, function (req, res) {
+    var handle = req.params.handle;
+    handleRegistry.resolve(handle, function (err, did) {
+      if (err)  return res.status(500).json({ error: String(err) });
+      if (!did) return res.status(404).json({ error: "Handle not found: @" + handle });
+
+      objectRepo.searchWikiPagesForUser(did, req.query.q, function (err, results) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({ results: results });
+      });
+    });
+  });
+
   // Resolve a personal wiki page by human-friendly name — same "name ->
   // objId lookup only" job as /c/:constellation/wiki/:pageName above, reusing
   // the exact same /@handle/:objId read path once resolved.
@@ -5750,6 +5767,29 @@ module.exports = function (route, app) {
           return res.send(buildWikiIndexPage(constellation, pages));
         }
         res.json({ pages: pages });
+      });
+    });
+  });
+
+  // Full-content search across every wiki page in a constellation (title +
+  // body, not just wikiName) — WikiIndex.js's centered search bar. Must be
+  // registered here, BEFORE /c/:constellation/wiki/:pageName just below:
+  // both routes have the same segment count, and :pageName would otherwise
+  // swallow "search" as if it were a page name (same same-file
+  // registration-order discipline every other named sub-route under
+  // /c/:constellation already follows, per this file's routing notes).
+  app.get("/c/:constellation/wiki/search", auth.optionalAuth, function (req, res) {
+    var name = req.params.constellation;
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      if (!constellationRegistry.canRead(constellation, req.identity ? req.identity.did : null)) {
+        return res.status(404).json({ error: "Constellation not found: " + name });
+      }
+
+      objectRepo.searchWikiPages(name, req.query.q, function (err, results) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({ results: results });
       });
     });
   });

@@ -573,6 +573,50 @@ module("lively.identity.WikiView")
           // BUG FIX: see PostCardView.js's _renderContentArea — same fix.
           lively.identity.postCardUtils.hydrateEmbeddedParts(this._contentEl);
           lively.identity.postCardUtils.hydrateCodeCells(this._contentEl);
+          if (this._highlightQuery) this._applyHighlight(this._highlightQuery);
+        },
+
+        // Wraps every case-insensitive occurrence of `query` in this page's
+        // just-rendered content with a <mark>, and scrolls the first one
+        // into view — the counterpart to WikiIndex.js's content-search
+        // dropdown (opts.highlightQuery, see open() above). No highlight/
+        // find-in-page utility exists anywhere else in the app layer to
+        // reuse (only Ace's own internal editor-search text-marker, which
+        // only works against its own <textarea> sessions, not arbitrary
+        // rendered HTML), so this walks the live DOM text nodes directly.
+        // Collects every text node up front before mutating any of them,
+        // since replacing a node mid-walk would otherwise disturb the
+        // TreeWalker's own traversal.
+        _applyHighlight: function (query) {
+          if (!this._contentEl || !query) return;
+          var qLower = query.toLowerCase();
+          var walker = document.createTreeWalker(this._contentEl, NodeFilter.SHOW_TEXT, null, false);
+          var textNodes = [];
+          var n;
+          while ((n = walker.nextNode())) textNodes.push(n);
+
+          textNodes.forEach(function (node) {
+            var text = node.nodeValue;
+            var lower = text.toLowerCase();
+            if (lower.indexOf(qLower) === -1) return;
+
+            var frag = document.createDocumentFragment();
+            var pos = 0, idx;
+            while ((idx = lower.indexOf(qLower, pos)) !== -1) {
+              if (idx > pos) frag.appendChild(document.createTextNode(text.slice(pos, idx)));
+              var mark = document.createElement("mark");
+              mark.className = "wiki-search-highlight";
+              mark.style.cssText = "background:#fff3a0;color:inherit;border-radius:2px;";
+              mark.textContent = text.slice(idx, idx + query.length);
+              frag.appendChild(mark);
+              pos = idx + query.length;
+            }
+            if (pos < text.length) frag.appendChild(document.createTextNode(text.slice(pos)));
+            node.parentNode.replaceChild(frag, node);
+          });
+
+          var first = this._contentEl.querySelector("mark.wiki-search-highlight");
+          if (first) first.scrollIntoView({ behavior: "smooth", block: "center" });
         },
 
         // Public: every heading actually rendered in this page's content,
@@ -977,6 +1021,9 @@ module("lively.identity.WikiView")
       // internally (default: true when standalone, false when embedded via
       // options.target)
       // options.onHeightChanged(view, height) -> fired after each auto resize
+      // options.highlightQuery -> wrap+scroll to every occurrence of this
+      // term in the rendered content once it's loaded (WikiIndex.js's
+      // content-search dropdown), see _renderContentArea/_applyHighlight
       open: function (handle, objId, options) {
         var opts = options || {};
         var view = new lively.identity.WikiView(
@@ -988,6 +1035,7 @@ module("lively.identity.WikiView")
         view._cid = opts.cid || null;
         view._envelope = opts.envelope || null;
         view._onEdit = opts.onEdit || null;
+        view._highlightQuery = opts.highlightQuery || null;
         // Embedded views (opts.target) keep their fixed box unless the
         // caller opts in; a standalone page view is the whole document, so
         // it grows by default.

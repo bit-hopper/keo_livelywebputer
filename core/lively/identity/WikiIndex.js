@@ -46,7 +46,14 @@ module("lively.identity.WikiIndex")
     // became a 34px pill instead of a ~25px text label.
     var HEADER_H = 62;
     var GRID_TOP_GAP = 24;     // gap between the header row and the card grid
-    var SEARCH_W = 280, SEARCH_H = 34;
+    var HEADER_ROW_H = 34;      // height of the back-row's sort-by/new-page controls
+    // The centered, full-content wiki search bar (replaces the old
+    // top-right title-only filter box) — sits on its own row, between the
+    // header row and the card grid, see _layout/_buildContentSearchBar.
+    var SEARCH_BAR_W = 520, SEARCH_BAR_H = 44;
+    var SEARCH_DEBOUNCE_MS = 250;
+    var RESULT_ROW_H = 58;      // one search-result dropdown row
+    var RESULTS_MAX = 8;
     // NEW_BTN_W is only the pre-measurement fallback: the "+ New wiki page"
     // pill's real width is measured from its label (_buildPill) and stored
     // in this._newBtnW, which _layout reads.
@@ -55,8 +62,8 @@ module("lively.identity.WikiIndex")
     // and its blue "Wiki" pill) and their hover shades.
     var PILL_PINK = Color.rgb(232, 73, 126), PILL_PINK_HOVER = Color.rgb(212, 56, 108);
     var PILL_BLUE = Color.rgb(37, 99, 235),  PILL_BLUE_HOVER = Color.rgb(29, 78, 216);
-    var SORT_W = 150, SORT_H = SEARCH_H;   // same row/height as the search box, sits to its left
-    var SORT_GAP = 10;          // gap between the sort-by button and the search box
+    var SORT_W = 150, SORT_H = HEADER_ROW_H;   // same row/height as the header controls
+    var SORT_GAP = 10;          // gap between the sort-by button and the "+ New wiki page" pill
     var SORT_ITEM_H = 30;
     var SORT_OPTIONS = [
       { key: "modified", label: "last modified" },
@@ -107,8 +114,11 @@ module("lively.identity.WikiIndex")
         this._scope = null;
         this._pages = [];
         this._pagesFiltered = [];
-        this._filterQuery = "";
         this._canWrite = false;
+        this._searchBar = null;
+        this._searchDropdown = null;
+        this._searchDebounceTimer = null;
+        this._searchRequestId = 0;
         this._quickInfo = null;
         this._cardMorphs = [];
         this._didHandleCache = {};
@@ -275,8 +285,8 @@ module("lively.identity.WikiIndex")
         this._sortByBox = this._buildSortByButton();
         $world.addMorph(this._sortByBox);
 
-        this._searchBox = this._buildSearchField();
-        $world.addMorph(this._searchBox);
+        this._searchBar = this._buildContentSearchBar();
+        $world.addMorph(this._searchBar);
 
         var self = this;
         // Blue counterpart of ConstellationLounge.js's pink "+ Postcard".
@@ -393,16 +403,45 @@ module("lively.identity.WikiIndex")
         return btn;
       },
 
-      _buildSearchField: function () {
+      // The centered, full-content wiki search bar — searches every wiki
+      // page's actual body text (not just wikiName/title, unlike the old
+      // top-right box this replaces) via GET .../wiki/search, and shows
+      // live results in a dropdown as the user types (see
+      // _queueContentSearch/_runContentSearch/_renderSearchResults below).
+      _buildContentSearchBar: function () {
         var self = this;
-        var box = new lively.morphic.Box(lively.rect(0, 0, SEARCH_W, SEARCH_H));
+        var box = new lively.morphic.Box(lively.rect(0, 0, SEARCH_BAR_W, SEARCH_BAR_H));
         box.setFill(Color.white);
-        box.applyStyle({ borderWidth: 1, borderColor: Color.rgb(200, 200, 200), borderRadius: 17 });
+        box.applyStyle({ borderWidth: 1, borderColor: Color.rgb(210, 210, 210), borderRadius: SEARCH_BAR_H / 2 });
 
-        var fieldRect = lively.rect(14, 6, SEARCH_W - 28, SEARCH_H - 12);
+        // Vertically centered by position, not by spanning the full bar
+        // height with align:'center' — that only centers horizontally
+        // (CLAUDE.md's Text-centering notes; confirmed live here too, the
+        // full-height box rendered the glyph pinned near the top with a
+        // large gap below, not centered). 20 is the glyph's own designed
+        // render size at fontSize 15pt (fontSize * 4/3, same icon-sizing
+        // rule CLAUDE.md documents), so a 20-tall box positioned at
+        // (SEARCH_BAR_H - 20) / 2 centers it.
+        var ICON_SIZE = 20;
+        var icon = lively.morphic.Text.makeLabel("search", {
+          fontFamily: "'Material Symbols Rounded'", fontSize: 15,
+          textColor: Color.rgb(150, 150, 150), fixedWidth: true, fixedHeight: true,
+        });
+        // -4: the formula's y lands the glyph 4px low relative to the bar's
+        // true center — confirmed by comparing the rendered glyph span's
+        // own getBoundingClientRect() against the bar's, same live-measure-
+        // and-correct idiom CLAUDE.md's Text-centering notes describe (the
+        // box's own render padding isn't perfectly symmetric top/bottom).
+        icon.setPosition(lively.pt(18, Math.round((SEARCH_BAR_H - ICON_SIZE) / 2) - 4));
+        icon.setExtent(lively.pt(ICON_SIZE, ICON_SIZE));
+        icon.applyStyle({ borderWidth: 0 });
+        icon.eventsAreIgnored = true;
+        box.addMorph(icon);
 
-        var placeholder = lively.morphic.Text.makeLabel("Search wiki pages…", {
-          fontSize: 12, textColor: Color.rgb(170, 170, 170),
+        var fieldRect = lively.rect(46, 8, SEARCH_BAR_W - 46 - 16, SEARCH_BAR_H - 16);
+
+        var placeholder = lively.morphic.Text.makeLabel("Search this wiki…", {
+          fontSize: 13, textColor: Color.rgb(170, 170, 170),
         });
         placeholder.setPosition(fieldRect.topLeft());
         placeholder.setExtent(fieldRect.extent());
@@ -411,33 +450,258 @@ module("lively.identity.WikiIndex")
         this._searchPlaceholder = placeholder;
 
         var field = new lively.morphic.Text(fieldRect, "");
-        field.applyStyle({ allowInput: true, fontSize: 12, fill: null, borderWidth: 0 });
+        field.applyStyle({ allowInput: true, fontSize: 13, fill: null, borderWidth: 0 });
         field.beInputLine();
         var superKeyDown = field.onKeyDown;
         field.onKeyDown = function (evt) {
           var result = superKeyDown.call(this, evt);
           // The keystroke that produced this event hasn't necessarily landed
-          // in field.textString yet at this point (confirmed live: reading
-          // it synchronously here always lagged one character behind, e.g.
-          // typing "zzz-no-match" filtered/rendered as "zzz-no-matc") — defer
-          // to the next tick so the character insertion has actually landed.
+          // in field.textString yet at this point (confirmed live on the
+          // old field this replaces — reading it synchronously here always
+          // lagged one character behind) — defer to the next tick.
           setTimeout(function () {
-            self._searchPlaceholder.setVisible(!field.textString);
-            self._filterQuery = field.textString || "";
-            self._renderPages();
+            var q = field.textString || "";
+            self._searchPlaceholder.setVisible(!q);
+            self._queueContentSearch(q);
           }, 0);
           return result;
         };
         box.addMorph(field);
         this._searchField = field;
 
+        // A plain Box/Text defaults to draggable, droppable, AND grabbable
+        // (CLAUDE.md) — without this, dragging inside the bar (e.g. to
+        // select text, or just clicking and moving slightly) picks up and
+        // moves the whole search bar instead. Every visible child needs
+        // this individually, not just the container.
+        [box, icon, placeholder, field].forEach(function (m) {
+          m.draggingEnabled = false;
+          m.droppingEnabled = false;
+          m.grabbingEnabled = false;
+        });
+
         return box;
       },
 
-      // Sits immediately left of the search box, same row/height — shows
-      // the current sort selection and toggles _sortByDropdown (see the
-      // "sort by" category below) on click. Same rounded-pill styling as
-      // _buildSearchField above rather than ConstellationLounge.js's
+      // Debounces keystrokes into one round trip per pause instead of
+      // firing a request per character, and closes the dropdown outright
+      // for an empty query rather than asking the server.
+      _queueContentSearch: function (query) {
+        var self = this;
+        clearTimeout(this._searchDebounceTimer);
+        var q = (query || "").trim();
+        if (!q) {
+          this._closeSearchDropdown();
+          return;
+        }
+        this._searchDebounceTimer = setTimeout(function () {
+          self._runContentSearch(q);
+        }, SEARCH_DEBOUNCE_MS);
+      },
+
+      _runContentSearch: function (query) {
+        var self = this;
+        var base = lively.identity.did.baseUrl();
+        var url = this._scope.kind === "personal"
+          ? base + "/@" + encodeURIComponent(this._scope.handle) + "/wiki/search?q=" + encodeURIComponent(query)
+          : base + "/c/" + encodeURIComponent(this._scope.name) + "/wiki/search?q=" + encodeURIComponent(query);
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", url, true);
+        xhr.withCredentials = true;
+        xhr.setRequestHeader("Accept", "application/json");
+        // A slower-arriving earlier request must not clobber a
+        // faster-arriving later one's results once the user has kept
+        // typing past it — stamp and check the request that's actually
+        // still current when the response comes back.
+        var requestId = ++this._searchRequestId;
+        xhr.onload = function () {
+          if (requestId !== self._searchRequestId || xhr.status !== 200) return;
+          var data;
+          try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
+          self._renderSearchResults(data.results || [], query);
+        };
+        xhr.send();
+      },
+
+      _renderSearchResults: function (results, query) {
+        this._closeSearchDropdown();
+        var self = this;
+        var rows = results.slice(0, RESULTS_MAX);
+        var dropdown = new lively.morphic.Box(
+          lively.rect(0, 0, SEARCH_BAR_W, rows.length ? rows.length * RESULT_ROW_H + 8 : 40),
+        );
+        dropdown.setFill(Color.white);
+        dropdown.applyStyle({ borderWidth: 1, borderColor: Color.rgb(210, 210, 210), borderRadius: 10 });
+        dropdown.draggingEnabled = false;
+        dropdown.droppingEnabled = false;
+        dropdown.grabbingEnabled = false;
+
+        if (!rows.length) {
+          var empty = lively.morphic.Text.makeLabel("No wiki pages match “" + query + "”.", {
+            fontSize: 12, textColor: Color.gray,
+          });
+          empty.setPosition(lively.pt(16, 12));
+          empty.eventsAreIgnored = true;
+          empty.draggingEnabled = false;
+          empty.droppingEnabled = false;
+          empty.grabbingEnabled = false;
+          dropdown.addMorph(empty);
+        } else {
+          rows.forEach(function (result, i) {
+            var row = self._buildSearchResultRow(result, query, i === rows.length - 1);
+            row.setPosition(lively.pt(0, 4 + i * RESULT_ROW_H));
+            dropdown.addMorph(row);
+          });
+        }
+
+        $world.addMorph(dropdown);
+        var barPos = this._searchBar.getPosition();
+        dropdown.setPosition(lively.pt(barPos.x, barPos.y + SEARCH_BAR_H + 6));
+        dropdown.bringToFront();
+        this._searchDropdown = dropdown;
+      },
+
+      _closeSearchDropdown: function () {
+        if (!this._searchDropdown) return;
+        this._searchDropdown.remove();
+        this._searchDropdown = null;
+      },
+
+      // One row in the search-results dropdown: a bold title, a small
+      // category chip, and a snippet with the matched term set off in a
+      // bold accent color. Both the chip and the snippet's pre/match/post
+      // runs are sized via canvas text measurement (same pre-DOM-insertion
+      // technique _buildPill above uses to size a pill from its label)
+      // rather than this file's usual "measure the live DOM" idiom —
+      // there's nothing to hug-fit here, just runs that must sit
+      // edge-to-edge with no gap/overlap, and canvas measurement doesn't
+      // require the morph to already be in $world.
+      _buildSearchResultRow: function (result, query, isLast) {
+        var self = this;
+        var row = new lively.morphic.Box(lively.rect(0, 0, SEARCH_BAR_W, RESULT_ROW_H));
+        row.setFill(Color.white);
+        row.applyStyle({ borderWidth: 0 });
+        if (!isLast) {
+          row.renderContext().shapeNode.style.borderBottom = "1px solid " + Color.rgb(230, 230, 230).toString();
+        }
+        row.renderContext().shapeNode.style.cursor = "pointer";
+        row.onMouseOver = function () { row.setFill(Color.rgb(247, 248, 250)); };
+        row.onMouseOut = function () { row.setFill(Color.white); };
+        row.onMouseDown = function () {
+          self._closeSearchDropdown();
+          self._openPage(result, { highlightQuery: query });
+        };
+
+        var chip = this._buildResultCategoryChip(result.category);
+        chip.setPosition(lively.pt(SEARCH_BAR_W - 14 - chip.getExtent().x, 10));
+        row.addMorph(chip);
+
+        var titleAvailW = chip.getPosition().x - 14 - 14;
+        var titleText = this._truncateToWidth(result.title || result.wikiName || "(untitled)", "700", 13, titleAvailW);
+        var title = lively.morphic.Text.makeLabel(titleText, {
+          fontSize: 13, fontWeight: "700", textColor: Color.rgb(30, 30, 30),
+          fixedWidth: true, fixedHeight: true,
+        });
+        title.setPosition(lively.pt(14, 8));
+        title.setExtent(lively.pt(titleAvailW, 18));
+        title.eventsAreIgnored = true;
+        row.addMorph(title);
+
+        var snippetClip = new lively.morphic.Box(lively.rect(14, 32, SEARCH_BAR_W - 28, 18));
+        snippetClip.applyStyle({ fill: null, borderWidth: 0, clipMode: "hidden" });
+        snippetClip.eventsAreIgnored = true;
+        row.addMorph(snippetClip);
+        this._layoutSnippetRuns(snippetClip, result.snippet || "", query);
+
+        [row, chip, title, snippetClip].forEach(function (m) {
+          m.draggingEnabled = false;
+          m.droppingEnabled = false;
+          m.grabbingEnabled = false;
+        });
+        return row;
+      },
+
+      _buildResultCategoryChip: function (category) {
+        var label = category || "General";
+        var fontPx = 10 * 4 / 3; // fontSize is points, not px — CLAUDE.md
+        var ctx = document.createElement("canvas").getContext("2d");
+        ctx.font = "600 " + fontPx + "px Helvetica";
+        var textW = Math.ceil(ctx.measureText(label).width);
+        var H = 18, padX = 8;
+        var chip = new lively.morphic.Box(lively.rect(0, 0, textW + padX * 2, H));
+        chip.applyStyle({ fill: Color.rgb(235, 235, 240), borderWidth: 0, borderRadius: H / 2 });
+        var text = lively.morphic.Text.makeLabel(label, {
+          fontSize: 10, fontWeight: "600", textColor: Color.rgb(90, 90, 90),
+          fixedWidth: true, fixedHeight: true,
+        });
+        text.setPosition(lively.pt(padX, 0));
+        text.setExtent(lively.pt(textW + 4, H));
+        text.applyStyle({ borderWidth: 0 });
+        text.eventsAreIgnored = true;
+        chip.addMorph(text);
+        return chip;
+      },
+
+      // Trims `text` with a trailing "…" so it renders within availW at the
+      // given fontSize (points, not px — CLAUDE.md; the canvas font string
+      // below converts via *4/3) and weight, measured via canvas rather
+      // than the live DOM (see _buildSearchResultRow's header comment).
+      _truncateToWidth: function (text, weight, fontSize, availW) {
+        var fontPx = fontSize * 4 / 3;
+        var ctx = document.createElement("canvas").getContext("2d");
+        ctx.font = weight + " " + fontPx + "px Helvetica";
+        if (ctx.measureText(text).width <= availW) return text;
+        var lo = 0, hi = text.length;
+        while (lo < hi) {
+          var mid = Math.ceil((lo + hi) / 2);
+          if (ctx.measureText(text.slice(0, mid) + "…").width <= availW) lo = mid;
+          else hi = mid - 1;
+        }
+        return text.slice(0, lo) + "…";
+      },
+
+      // Splits `snippet` into pre/match/post around the first
+      // case-insensitive occurrence of `query` and lays the three out as
+      // adjacent Text morphs (the match run bold + accent-colored) inside
+      // `container`, which clips overflow — a snippet wider than the row
+      // is simply cut off at its right edge rather than pre-truncated,
+      // same as any other overflow-hidden text row.
+      _layoutSnippetRuns: function (container, snippet, query) {
+        var idx = query ? snippet.toLowerCase().indexOf(query.toLowerCase()) : -1;
+        var fontPx = 12 * 4 / 3;
+        var ctx = document.createElement("canvas").getContext("2d");
+        var x = 0;
+
+        function addRun(text, bold) {
+          if (!text) return;
+          ctx.font = (bold ? "700 " : "400 ") + fontPx + "px Helvetica";
+          var w = Math.ceil(ctx.measureText(text).width);
+          var run = lively.morphic.Text.makeLabel(text, {
+            fontSize: 12, fontWeight: bold ? "700" : "400",
+            textColor: bold ? Color.rgb(37, 99, 235) : Color.rgb(120, 120, 120),
+            fixedWidth: true, fixedHeight: true, whiteSpaceHandling: "pre",
+          });
+          run.setPosition(lively.pt(x, 0));
+          run.setExtent(lively.pt(w + 6, 18));
+          run.applyStyle({ borderWidth: 0 });
+          run.eventsAreIgnored = true;
+          container.addMorph(run);
+          x += w;
+        }
+
+        if (idx === -1) {
+          addRun(snippet, false);
+        } else {
+          addRun(snippet.slice(0, idx), false);
+          addRun(snippet.slice(idx, idx + query.length), true);
+          addRun(snippet.slice(idx + query.length), false);
+        }
+      },
+
+      // Sits immediately left of the "+ New wiki page" pill, same row/height
+      // — shows the current sort selection and toggles _sortByDropdown (see
+      // the "sort by" category below) on click. Same rounded-pill styling as
+      // _buildContentSearchBar above rather than ConstellationLounge.js's
       // pink-accented placeholder version of this button, since this one
       // actually re-sorts the grid instead of just remembering a label.
       _buildSortByButton: function () {
@@ -541,11 +805,13 @@ module("lively.identity.WikiIndex")
         return btn;
       },
 
-      // Deliberately separate from the top-of-page _searchField/_buildSearchField
-      // above — that one filters the topic grid; this one searches for a
-      // page to jump to from inside the sidebar while a page is already
-      // open (where the grid + its own search box may be scrolled out of
-      // view). Same beInputLine()-based technique, see _buildSearchField.
+      // Deliberately separate from the centered top-of-page _searchField/
+      // _buildContentSearchBar above — that one does a full-content server
+      // search across every page; this one is a quick client-side
+      // wikiName filter for jumping to a page from inside the sidebar
+      // while a page is already open (where the top bar may be scrolled
+      // out of view). Same beInputLine()-based technique, see
+      // _buildContentSearchBar.
       _buildSidebarSearchField: function () {
         var self = this;
         var w = SIDEBAR_W - SIDEBAR_PAD * 2 - SIDEBAR_TOOLROW_H - 8;
@@ -570,7 +836,7 @@ module("lively.identity.WikiIndex")
         var superKeyDown = field.onKeyDown;
         field.onKeyDown = function (evt) {
           var result = superKeyDown.call(this, evt);
-          // Same one-tick defer as _buildSearchField above — reading
+          // Same one-tick defer as _buildContentSearchBar above — reading
           // field.textString synchronously here lags a character behind.
           setTimeout(function () {
             placeholder.setVisible(!field.textString);
@@ -621,19 +887,36 @@ module("lively.identity.WikiIndex")
       _layout: function () {
         var W = this._pageW();
 
-        // Sits BACK_BTN_LIFT px above the header row (the search row and
-        // title stay at TOP) — leaves ~20px clear under the menu bar.
+        // Sits BACK_BTN_LIFT px above the sort/new-page header row (the
+        // title stays at TOP + 38) — leaves ~20px clear under the menu
+        // bar. The centered search bar below is vertically aligned with
+        // this pill's own row, not the sort/new row.
         this._backBtn.setPosition(lively.pt(SIDE_MARGIN, TOP - BACK_BTN_LIFT));
         this._titleLabel.setPosition(lively.pt(SIDE_MARGIN, TOP + 38));
 
         var newBtnW = this._newBtnW || NEW_BTN_W;
-        var searchX = W - SIDE_MARGIN - newBtnW - 12 - SEARCH_W;
-        this._searchBox.setPosition(lively.pt(searchX, TOP));
-        this._newBtn.setPosition(lively.pt(W - SIDE_MARGIN - newBtnW, TOP + (SEARCH_H - NEW_BTN_H) / 2));
+        this._newBtn.setPosition(lively.pt(W - SIDE_MARGIN - newBtnW, TOP + (HEADER_ROW_H - NEW_BTN_H) / 2));
 
-        var sortX = searchX - SORT_GAP - SORT_W;
+        var sortX = W - SIDE_MARGIN - newBtnW - SORT_GAP - SORT_W;
         this._sortByBox.setPosition(lively.pt(sortX, TOP));
         if (this._sortByDropdown) this._sortByDropdown.setPosition(lively.pt(sortX, TOP + SORT_H + 4));
+
+        // The centered full-content search bar shares the back pill's row
+        // (vertically centered against it) rather than sitting on its own
+        // row below the title — fixed-width like every other control in
+        // this header (SORT_W/NEW_BTN_W/SIDEBAR_W never resize on window
+        // resize either), just re-centered horizontally. Centered within
+        // the space between the back pill and the sort-by pill, not the
+        // full page width — centering on W alone would (and, confirmed
+        // live, did) overlap the sort-by/new-page controls on the right
+        // once this row got crowded.
+        var backBtnW = this._backBtn.getExtent().x;
+        var leftBound = SIDE_MARGIN + backBtnW + 24;
+        var rightBound = sortX - 24;
+        var barX = leftBound + Math.round((rightBound - leftBound - SEARCH_BAR_W) / 2);
+        var barY = (TOP - BACK_BTN_LIFT) + Math.round((HEADER_ROW_H - SEARCH_BAR_H) / 2);
+        this._searchBar.setPosition(lively.pt(barX, barY));
+        if (this._searchDropdown) this._searchDropdown.setPosition(lively.pt(barX, barY + SEARCH_BAR_H + 6));
 
         var gridY = TOP + HEADER_H + GRID_TOP_GAP;
         this._gridY = gridY;
@@ -1073,7 +1356,6 @@ module("lively.identity.WikiIndex")
         (this._cardMorphs || []).forEach(function (m) { m.remove(); });
         this._cardMorphs = [];
 
-        var q = (this._filterQuery || "").toLowerCase();
         var pages = this._pages;
         if (this._categoryFilter) {
           pages = pages.filter(function (p) { return p.category === self._categoryFilter; });
@@ -1081,17 +1363,13 @@ module("lively.identity.WikiIndex")
         if (this._tagFilter) {
           pages = pages.filter(function (p) { return (p.tags || []).indexOf(self._tagFilter) !== -1; });
         }
-        if (q) {
-          pages = pages.filter(function (p) { return (p.wikiName || "").toLowerCase().indexOf(q) !== -1; });
-        }
         pages = this._sortPages(pages);
         this._pagesFiltered = pages;
 
         if (!pages.length) {
           var emptyMsg = "No wiki pages yet.";
           if (this._pages.length) {
-            if (q) emptyMsg = "No wiki pages match “" + this._filterQuery + "”.";
-            else if (this._tagFilter) emptyMsg = "No wiki pages tagged “" + this._tagFilter + "”.";
+            if (this._tagFilter) emptyMsg = "No wiki pages tagged “" + this._tagFilter + "”.";
             else if (this._categoryFilter) emptyMsg = "No wiki pages in “" + this._categoryFilter + "”.";
           }
           var empty = lively.morphic.Text.makeLabel(emptyMsg, { fontSize: 13, textColor: Color.gray });
@@ -1210,13 +1488,17 @@ module("lively.identity.WikiIndex")
       // synchronously in that case (see WikiView.js's _setup), which both
       // saves a redundant fetch and means getOutline() below already has
       // real content to read the instant open() returns.
-      _openPage: function (page) {
+      // extraOpts.highlightQuery (optional): set by the search-results
+      // dropdown (_buildSearchResultRow) so the opened WikiView highlights
+      // and scrolls to the term that was searched for.
+      _openPage: function (page, extraOpts) {
         var self = this;
         this._resolveHandle(page.objId, function (handle, envelope) {
           var w = self._contentWidth();
           var opts = self._autoHeightOpts({ bounds: lively.rect(0, 0, w, 780) });
           if (envelope) opts.envelope = envelope;
           opts.onEdit = function (h, o) { self._editExistingPage(h, o); };
+          if (extraOpts && extraOpts.highlightQuery) opts.highlightQuery = extraOpts.highlightQuery;
           self._setActiveContentMorph(lively.identity.WikiView.open(handle, page.objId, opts));
         });
       },
