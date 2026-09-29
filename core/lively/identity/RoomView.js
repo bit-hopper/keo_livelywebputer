@@ -790,31 +790,49 @@ module("lively.identity.RoomView")
         header.addMorph(this._countM);
         this._updateParticipantCount();
 
-        var leaveBtn = noDrag(new lively.morphic.Box(lively.rect(TOTAL_W - 16 - 110, 9, 110, 30)));
+        var LEAVE_H = 30, LEAVE_Y = 9, LEAVE_HPAD = 18;
+        var leaveBtn = noDrag(new lively.morphic.Box(lively.rect(TOTAL_W - 16 - 110, LEAVE_Y, 110, LEAVE_H)));
         leaveBtn.applyStyle({ fill: DANGER, borderWidth: 0, borderRadius: 15 });
         header.addMorph(leaveBtn);
-        var leaveLabel = lively.morphic.Text.makeLabel("Leave Room", {
+        var leaveLabel = lively.morphic.Text.makeLabel("Drift away", {
           fontSize: 12.5, fontWeight: "700", textColor: Color.white, fixedWidth: true, fixedHeight: true,
         });
-        // 18 clipped the bottom of the "e"/descender-adjacent glyphs —
-        // confirmed live (~19px real content height for 12.5px bold
-        // text); 20 covers it, re-centered in the 30px-tall button.
-        leaveLabel.setExtent(lively.pt(110, 20));
-        leaveLabel.setPosition(lively.pt(0, 5));
+        // 20 clipped the bottom of "away"'s descending "y" by 2px —
+        // confirmed live via getBoundingClientRect on the rendered span
+        // vs. the label's own clipped shapeNode (spanBottom 2px past
+        // shapeBottom at height 20; 0px overflow, i.e. no clipping, at
+        // 22). y=2.3 (not the naively-centered 5) is the live-measured
+        // offset that actually centers the glyph in the 30px-tall button
+        // -- confirmed via getBoundingClientRect on the button vs. the
+        // rendered span (topGap/bottomGap within ~0.1px of each other at
+        // 2.3; plain model-space centering at y=5 left an 8.3px top gap
+        // vs. a 3px bottom gap, visibly low).
+        // Throwaway 110-wide extent so it doesn't wrap while measuring --
+        // re-hugged to its own measured span width below (same idiom as
+        // statusLbl in ConstellationLounge._renderRoomCard).
+        leaveLabel.setExtent(lively.pt(110, 22));
+        leaveLabel.setPosition(lively.pt(0, 2.3));
         leaveLabel.applyStyle({ align: "center", borderWidth: 0 });
         leaveLabel.eventsAreIgnored = true;
         leaveBtn.addMorph(leaveLabel);
+
+        var leaveSpan = leaveLabel.renderContext().shapeNode.querySelector("span");
+        var leaveTextW = leaveSpan ? leaveSpan.offsetWidth : 40;
+        var leaveBtnW = leaveTextW + LEAVE_HPAD * 2;
+        leaveBtn.setExtent(lively.pt(leaveBtnW, LEAVE_H));
+        leaveBtn.setPosition(lively.pt(TOTAL_W - 16 - leaveBtnW, LEAVE_Y));
+        leaveLabel.setExtent(lively.pt(leaveBtnW, 22));
         leaveBtn.onMouseDown = function () { self.leave(); };
 
         // Settings gear -- creator-or-controller only (this._room.canManage,
         // computed server-side by canManageRoom, IdentityServer.js), same
         // icon-button idiom as the room card's own gear
         // (ConstellationLounge.js's _renderRoomCard). Sits just left of
-        // Leave Room; no capture-phase hazard here since the header box
-        // itself has no competing onMouseDown of its own.
+        // the Drift away button; no capture-phase hazard here since the
+        // header box itself has no competing onMouseDown of its own.
         if (this._room && this._room.canManage) {
           var GEAR = 26, GEAR_GLYPH_PX = 18;
-          var gearBtn = new lively.morphic.Text(lively.rect(TOTAL_W - 16 - 110 - 10 - GEAR, 9, GEAR, GEAR));
+          var gearBtn = new lively.morphic.Text(lively.rect(TOTAL_W - 16 - leaveBtnW - 10 - GEAR, 9, GEAR, GEAR));
           gearBtn.textString = "settings";
           gearBtn.applyStyle({
             fontFamily: "'Material Symbols Rounded'",
