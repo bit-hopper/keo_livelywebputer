@@ -412,7 +412,7 @@ module("lively.identity.WikiIndex")
         var self = this;
         var box = new lively.morphic.Box(lively.rect(0, 0, SEARCH_BAR_W, SEARCH_BAR_H));
         box.setFill(Color.white);
-        box.applyStyle({ borderWidth: 1, borderColor: Color.rgb(210, 210, 210), borderRadius: SEARCH_BAR_H / 2 });
+        box.applyStyle({ borderWidth: 1.5, borderColor: Color.rgb(236, 64, 122), borderRadius: SEARCH_BAR_H / 2 });
 
         // Vertically centered by position, not by spanning the full bar
         // height with align:'center' — that only centers horizontally
@@ -422,17 +422,17 @@ module("lively.identity.WikiIndex")
         // render size at fontSize 15pt (fontSize * 4/3, same icon-sizing
         // rule CLAUDE.md documents), so a 20-tall box positioned at
         // (SEARCH_BAR_H - 20) / 2 centers it.
-        var ICON_SIZE = 20;
+        var ICON_SIZE = 23;
         var icon = lively.morphic.Text.makeLabel("search", {
-          fontFamily: "'Material Symbols Rounded'", fontSize: 15,
-          textColor: Color.rgb(150, 150, 150), fixedWidth: true, fixedHeight: true,
+          fontFamily: "'Material Symbols Rounded'", fontSize: 17,
+          textColor: Color.rgb(236, 64, 122), fixedWidth: true, fixedHeight: true,
         });
         // -4: the formula's y lands the glyph 4px low relative to the bar's
         // true center — confirmed by comparing the rendered glyph span's
         // own getBoundingClientRect() against the bar's, same live-measure-
         // and-correct idiom CLAUDE.md's Text-centering notes describe (the
         // box's own render padding isn't perfectly symmetric top/bottom).
-        icon.setPosition(lively.pt(18, Math.round((SEARCH_BAR_H - ICON_SIZE) / 2) - 4));
+        icon.setPosition(lively.pt(17, Math.round((SEARCH_BAR_H - ICON_SIZE) / 2) - 4));
         icon.setExtent(lively.pt(ICON_SIZE, ICON_SIZE));
         icon.applyStyle({ borderWidth: 0 });
         icon.eventsAreIgnored = true;
@@ -531,7 +531,7 @@ module("lively.identity.WikiIndex")
           lively.rect(0, 0, SEARCH_BAR_W, rows.length ? rows.length * RESULT_ROW_H + 8 : 40),
         );
         dropdown.setFill(Color.white);
-        dropdown.applyStyle({ borderWidth: 1, borderColor: Color.rgb(210, 210, 210), borderRadius: 10 });
+        dropdown.applyStyle({ borderWidth: 1.5, borderColor: Color.rgb(236, 64, 122), borderRadius: 10 });
         dropdown.draggingEnabled = false;
         dropdown.droppingEnabled = false;
         dropdown.grabbingEnabled = false;
@@ -549,7 +549,14 @@ module("lively.identity.WikiIndex")
         } else {
           rows.forEach(function (result, i) {
             var row = self._buildSearchResultRow(result, query, i === rows.length - 1);
-            row.setPosition(lively.pt(0, 4 + i * RESULT_ROW_H));
+            // x=8, matching the row's own reduced width below (see
+            // _buildSearchResultRow) — a row flush against the dropdown's
+            // own left/right edges paints its sharp white corners directly
+            // over the dropdown's thin border along the straight run,
+            // confirmed live via elementsFromPoint at the border pixel
+            // (returned the row's own DOM node on top of the dropdown's).
+            // Only the corner arcs (where no row reaches) survive uninset.
+            row.setPosition(lively.pt(8, 4 + i * RESULT_ROW_H));
             dropdown.addMorph(row);
           });
         }
@@ -578,7 +585,13 @@ module("lively.identity.WikiIndex")
       // require the morph to already be in $world.
       _buildSearchResultRow: function (result, query, isLast) {
         var self = this;
-        var row = new lively.morphic.Box(lively.rect(0, 0, SEARCH_BAR_W, RESULT_ROW_H));
+        // 16px narrower than the dropdown (8px inset each side — see the
+        // setPosition call at this row's use site in _renderSearchResults):
+        // a row flush against the dropdown's own edges paints its sharp
+        // white corners directly over the dropdown's thin border along the
+        // straight run, hiding it everywhere except the corner arcs.
+        var ROW_W = SEARCH_BAR_W - 16;
+        var row = new lively.morphic.Box(lively.rect(0, 0, ROW_W, RESULT_ROW_H));
         row.setFill(Color.white);
         row.applyStyle({ borderWidth: 0 });
         if (!isLast) {
@@ -593,7 +606,7 @@ module("lively.identity.WikiIndex")
         };
 
         var chip = this._buildResultCategoryChip(result.category);
-        chip.setPosition(lively.pt(SEARCH_BAR_W - 14 - chip.getExtent().x, 10));
+        chip.setPosition(lively.pt(ROW_W - 14 - chip.getExtent().x, 10));
         row.addMorph(chip);
 
         var titleAvailW = chip.getPosition().x - 14 - 14;
@@ -603,11 +616,18 @@ module("lively.identity.WikiIndex")
           fixedWidth: true, fixedHeight: true,
         });
         title.setPosition(lively.pt(14, 8));
-        title.setExtent(lively.pt(titleAvailW, 18));
+        // 21, not 18: live-measured real rendered content height for this
+        // fontSize/weight is 20px (CLAUDE.md's fontSize-is-points gotcha —
+        // 13pt bold Helvetica renders taller than the naive 18px guess), so
+        // 18 was clipping descenders (p/y/g/q) at the bottom of the row.
+        title.setExtent(lively.pt(titleAvailW, 21));
         title.eventsAreIgnored = true;
         row.addMorph(title);
 
-        var snippetClip = new lively.morphic.Box(lively.rect(14, 32, SEARCH_BAR_W - 28, 18));
+        // 20, not 18 — same descender-clipping gap as the title above,
+        // confirmed live (measured run content height ~18.7px vs the old
+        // 18px clip box).
+        var snippetClip = new lively.morphic.Box(lively.rect(14, 32, ROW_W - 28, 20));
         snippetClip.applyStyle({ fill: null, borderWidth: 0, clipMode: "hidden" });
         snippetClip.eventsAreIgnored = true;
         row.addMorph(snippetClip);
@@ -682,7 +702,7 @@ module("lively.identity.WikiIndex")
             fixedWidth: true, fixedHeight: true, whiteSpaceHandling: "pre",
           });
           run.setPosition(lively.pt(x, 0));
-          run.setExtent(lively.pt(w + 6, 18));
+          run.setExtent(lively.pt(w + 6, 20));
           run.applyStyle({ borderWidth: 0 });
           run.eventsAreIgnored = true;
           container.addMorph(run);
