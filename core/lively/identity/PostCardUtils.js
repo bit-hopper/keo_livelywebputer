@@ -119,7 +119,7 @@ module('lively.identity.PostCardUtils')
         // of it) — -rest-clamped is an opt-in modifier PostCardFeed adds
         // for its own fixed-max-height row, since that context has no
         // "just grow taller" option.
-        '.lively-postcard-preview-lead{font-size:11px;color:#666;margin:2px 0 4px;}' +
+        '.lively-postcard-preview-lead{font-size:11px;color:#333;margin:2px 0 4px;}' +
         '.lively-postcard-preview-media{margin:2px 0 4px;}' +
         '.lively-postcard-preview-rest{font-size:11.5px;color:#333;}' +
         '.lively-postcard-preview-rest.lively-postcard-preview-rest-clamped{max-height:140px;overflow:hidden;' +

@@ -489,6 +489,18 @@ module("lively.identity.WebAuthn")
         //
         // Subsequent calls with the same credentialId return the cached KEK without
         // a new WebAuthn ceremony. The cache is cleared if the page is unloaded.
+        //
+        // Concurrent callers for the same credentialId (e.g. two overlapping
+        // PostCardEditor autosave cycles, each racing to sign their own envelope)
+        // share one in-flight ceremony instead of each starting their own
+        // navigator.credentials.get() — the browser only allows one WebAuthn
+        // request in flight at a time, and a second concurrent call rejects with
+        // "A request is already pending", which every _signEnvelopeIfPossible
+        // copy treats as non-fatal and silently falls back to an UNSIGNED
+        // envelope, getting 403'd server-side. Confirmed live 2026-09-29: two
+        // autosaves more than 2s apart in wall-clock time (so neither's
+        // _scheduleSave debounce cancelled the other) both called deriveKek
+        // while the first's real ceremony was still awaiting user approval.
         deriveKek: function (options, thenDo) {
           if (!this.isAvailable()) {
             return thenDo(new Error('WebAuthn is not available in this browser'));
@@ -506,6 +518,21 @@ module("lively.identity.WebAuthn")
             return thenDo(null, self._kekCache[credentialId]);
           }
 
+          // Join an already-in-flight ceremony for this credential rather than
+          // starting a second, doomed-to-collide navigator.credentials.get().
+          if (!self._kekPending) self._kekPending = {};
+          if (self._kekPending[credentialId]) {
+            self._kekPending[credentialId].push(thenDo);
+            return;
+          }
+          self._kekPending[credentialId] = [thenDo];
+
+          function settle(err, kek) {
+            var waiters = self._kekPending[credentialId] || [];
+            delete self._kekPending[credentialId];
+            waiters.forEach(function (waiter) { waiter(err, kek); });
+          }
+
           var c = lively.identity.crypto;
           var prfInput = new TextEncoder().encode('lively-kek-v1');
 
@@ -521,16 +548,16 @@ module("lively.identity.WebAuthn")
             .then(function (credential) {
               var ext = credential.getClientExtensionResults();
               if (!ext.prf || !ext.prf.results || !ext.prf.results.first) {
-                return thenDo(new Error(
+                return settle(new Error(
                   'deriveKek: PRF extension not available for this credential. ' +
                   'Re-register with PRF requested to enable encryption.'
                 ));
               }
               var kek = new Uint8Array(ext.prf.results.first);
               self._kekCache[credentialId] = kek;
-              thenDo(null, kek);
+              settle(null, kek);
             })
-            .catch(function (err) { thenDo(err); });
+            .catch(function (err) { settle(err); });
         },
 
         // Derive a second PRF output used as the X25519 private key for ECDH
