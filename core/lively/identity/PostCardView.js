@@ -71,7 +71,9 @@ module("lively.identity.PostCardView")
           "_dateEl",
           "_visibilityEl",
           "_verifyBadgeEl",
-          "_editBtn",
+          "_moreBtn",
+          "_moreMenuEl",
+          "_moreMenuOutsideHandler",
           "_footerEl",
           "_tipJarChipEl",
           "_pillsWrapEl",
@@ -318,34 +320,39 @@ module("lively.identity.PostCardView")
           flipBtn.style.bottom = "10px";
           front.appendChild(flipBtn);
 
-          var editBtn = document.createElement("button");
-          editBtn.textContent = "Edit";
-          editBtn.title = "Open in the editor";
-          editBtn.style.cssText = [
+          // "More" menu -- Edit (owner only) and Save to Collections (any
+          // viewer). Edit used to be its own dedicated button in this same
+          // top-right corner; folded into the menu so a non-owner viewer
+          // also has somewhere to reach Save to Collections from (see
+          // WikiView.js's identical Edit-button-to-menu migration).
+          var moreBtn = document.createElement("button");
+          moreBtn.innerHTML = '<span class="material-symbols-rounded" style="font-size:16px;line-height:1;">more_vert</span>';
+          moreBtn.title = "More";
+          moreBtn.style.cssText = [
             "position:absolute",
             "top:8px",
             "right:8px",
-            "display:none",
-            "font-size:11px",
-            "padding:3px 9px",
+            "width:24px",
+            "height:24px",
+            "padding:0",
             "cursor:pointer",
+            "display:flex",
+            "align-items:center",
+            "justify-content:center",
             "border:1px solid #ccc",
-            "border-radius:12px",
+            "border-radius:50%",
             "background:#fff",
+            "color:#555",
           ].join(";");
           ["mousedown", "click"].forEach(function (t) {
-            editBtn.addEventListener(t, function (e) {
+            moreBtn.addEventListener(t, function (e) {
               e.preventDefault();
               e.stopPropagation();
-              if (t === "click")
-                lively.identity.PostCardEditor.openCard(
-                  self._handle,
-                  self._objId,
-                );
+              if (t === "click") self._toggleMoreMenu(moreBtn);
             });
           });
-          front.appendChild(editBtn);
-          this._editBtn = editBtn;
+          front.appendChild(moreBtn);
+          this._moreBtn = moreBtn;
         },
 
         _buildBackContents: function (back) {
@@ -547,24 +554,273 @@ module("lively.identity.PostCardView")
         },
       },
 
+      "sharing",
+      {
+        // Small dropdown anchored under the "more" button, appended to
+        // document.body rather than nested inside this morph's own
+        // shapeNode -- _buildChrome sets overflow:hidden on the card faces,
+        // which would clip a menu popping out below the top bar. Toggle: a
+        // second click on the same button (or any outside mousedown)
+        // closes it. Mirrors WikiView.js's identical _toggleMoreMenu.
+        _toggleMoreMenu: function (anchorBtn) {
+          if (this._moreMenuEl) { this._closeMoreMenu(); return; }
+          var self = this;
+          var rect = anchorBtn.getBoundingClientRect();
+          var menu = document.createElement("div");
+          menu.style.cssText = [
+            "position:fixed", "z-index:9999",
+            "top:" + Math.round(rect.bottom + 4) + "px",
+            "left:" + Math.round(rect.right - 180) + "px",
+            "width:180px", "background:#fff", "border:1px solid #ddd",
+            "border-radius:8px", "box-shadow:0 4px 14px rgba(0,0,0,0.2)",
+            "padding:4px", "font-family:sans-serif", "font-size:13px",
+            "box-sizing:border-box",
+          ].join(";");
+
+          // `danger` mirrors PostCardMailbox.js's own ⋯-menu items (its
+          // `.pcm-menu-item.danger` class) -- red text/icon for a
+          // destructive action, same visual language across both postcard
+          // surfaces. `iconColor` is a narrower tint for just the glyph
+          // (text stays the normal color) -- used for the Save item's
+          // already-saved state, same green as PostCardMailbox.js's own
+          // --pcm-accent, so "saved" reads as a positive/active state
+          // rather than a destructive one.
+          var makeItem = function (label, iconName, onClick, danger, iconColor) {
+            var item = document.createElement("div");
+            var color = danger ? "#c0392b" : "#333";
+            item.style.cssText = [
+              "display:flex", "align-items:center", "gap:8px",
+              "padding:7px 10px", "border-radius:5px", "cursor:pointer", "color:" + color,
+            ].join(";");
+            item.innerHTML =
+              '<span class="material-symbols-rounded" style="font-size:16px;color:' + (danger ? color : (iconColor || "#666")) + ';">' + iconName + '</span>' +
+              '<span>' + label + '</span>';
+            item.addEventListener("mouseenter", function () { item.style.background = danger ? "#fdf0ee" : "#f2f2f2"; });
+            item.addEventListener("mouseleave", function () { item.style.background = "transparent"; });
+            ["mousedown", "click"].forEach(function (t) {
+              item.addEventListener(t, function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (t === "click") { self._closeMoreMenu(); onClick(); }
+              });
+            });
+            return item;
+          };
+
+          if (this._isOwner) {
+            menu.appendChild(makeItem("Edit", "edit", function () {
+              lively.identity.PostCardEditor.openCard(self._handle, self._objId);
+            }));
+          }
+          // Reflects whatever _checkCollectionsState last found (fetched in
+          // _renderEnvelope) -- "Saved"/filled green icon when this viewer
+          // already bookmarked the card, re-clickable to remove it again.
+          menu.appendChild(makeItem(
+            this._savedToCollections ? "Saved" : "Save",
+            this._savedToCollections ? "bookmark" : "bookmark_add",
+            function () {
+              if (self._savedToCollections) self._removeFromCollections();
+              else self._saveToCollections();
+            },
+            false,
+            this._savedToCollections ? "#16a34a" : null
+          ));
+          menu.appendChild(makeItem("Share", "share", function () {
+            self._shareLink();
+          }));
+          if (this._isOwner) {
+            menu.appendChild(makeItem("Delete", "delete", function () {
+              self._deleteCard();
+            }, true));
+          }
+
+          document.body.appendChild(menu);
+          this._moreMenuEl = menu;
+
+          // Deferred registration: the same click that opened the menu is
+          // still bubbling/capturing at this point, and would otherwise
+          // immediately trigger this handler and close the menu it just
+          // opened.
+          this._moreMenuOutsideHandler = function (e) {
+            if (menu.contains(e.target) || e.target === anchorBtn) return;
+            self._closeMoreMenu();
+          };
+          setTimeout(function () {
+            document.addEventListener("mousedown", self._moreMenuOutsideHandler, true);
+          }, 0);
+        },
+
+        _closeMoreMenu: function () {
+          if (!this._moreMenuEl) return;
+          this._moreMenuEl.remove();
+          this._moreMenuEl = null;
+          if (this._moreMenuOutsideHandler) {
+            document.removeEventListener("mousedown", this._moreMenuOutsideHandler, true);
+            this._moreMenuOutsideHandler = null;
+          }
+        },
+
+        // Fetches whether the current viewer already has this card bookmarked
+        // (GET /@:handle/collections/:objId, mirroring GET .../stars and
+        // .../reactions' own per-viewer "mine" flag) so the menu's Save item
+        // can render already-toggled-on next time it's opened. Silent no-op
+        // when logged out -- currentUser() is null and there's nothing to
+        // check; the item just stays "Save" (clicking it would 401, same as
+        // before this state existed).
+        _checkCollectionsState: function () {
+          var self = this;
+          var user = lively.identity.did.currentUser();
+          if (!user) return;
+          var base = lively.identity.did.baseUrl();
+          var xhr = new XMLHttpRequest();
+          xhr.open("GET", base + "/@" + user.handle + "/collections/" + encodeURIComponent(this._objId));
+          xhr.withCredentials = true;
+          xhr.setRequestHeader("Accept", "application/json");
+          xhr.onload = function () {
+            if (xhr.status !== 200) return;
+            try {
+              self._savedToCollections = !!JSON.parse(xhr.responseText).saved;
+            } catch (e) { /* leave state unknown -- item stays "Save" */ }
+          };
+          xhr.send();
+        },
+
+        // Bookmarks this card into the current user's own Collections tab
+        // -- same idempotent PUT as PostCardMailbox.js's _saveToCollections
+        // (§6.2), just reached from the single-card view instead of a
+        // mailbox row menu. Unlike that mailbox call site (silent on
+        // success), this one flashes a confirmation -- there's no
+        // Collections list visible from here to show the save landed, so
+        // the viewer needs explicit feedback rather than an absence of
+        // error.
+        _saveToCollections: function () {
+          var self = this;
+          var handle = lively.identity.did.currentUser().handle;
+          var base = lively.identity.did.baseUrl();
+          var xhr = new XMLHttpRequest();
+          xhr.open("PUT", base + "/@" + handle + "/collections/" + encodeURIComponent(this._objId));
+          xhr.withCredentials = true;
+          xhr.onload = function () {
+            if (xhr.status === 200) {
+              self._savedToCollections = true;
+              self._flashNearMoreBtn("Saved to Collections");
+            } else {
+              self._flashNearMoreBtn("Could not save to Collections", true);
+            }
+          };
+          xhr.onerror = function () {
+            self._flashNearMoreBtn("Could not save to Collections", true);
+          };
+          xhr.send();
+        },
+
+        // Un-bookmarks -- the Save menu item's toggled-off counterpart,
+        // reached only when _savedToCollections is already true.
+        _removeFromCollections: function () {
+          var self = this;
+          var handle = lively.identity.did.currentUser().handle;
+          var base = lively.identity.did.baseUrl();
+          var xhr = new XMLHttpRequest();
+          xhr.open("DELETE", base + "/@" + handle + "/collections/" + encodeURIComponent(this._objId));
+          xhr.withCredentials = true;
+          xhr.onload = function () {
+            if (xhr.status === 200) {
+              self._savedToCollections = false;
+              self._flashNearMoreBtn("Removed from Collections");
+            } else {
+              self._flashNearMoreBtn("Could not remove from Collections", true);
+            }
+          };
+          xhr.onerror = function () {
+            self._flashNearMoreBtn("Could not remove from Collections", true);
+          };
+          xhr.send();
+        },
+
+        // Copies this card's canonical URL -- IdentityServer.js's
+        // GET /@:handle/:objId content-negotiates a real standalone HTML
+        // page for a postcard/wikipage envelope (buildPostCardPage), so
+        // this is a genuinely shareable link, not just an API endpoint.
+        // Same clipboard-with-prompt-fallback idiom as WikiView.js's
+        // _copyShareLink.
+        _shareLink: function () {
+          var self = this;
+          var url = lively.identity.did.baseUrl() + "/@" + encodeURIComponent(this._handle) +
+            "/" + encodeURIComponent(this._objId);
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(url)
+              .then(function () { self._flashNearMoreBtn("Link copied"); })
+              .catch(function () { window.prompt("Copy this link:", url); });
+          } else {
+            window.prompt("Copy this link:", url);
+          }
+        },
+
+        // Placeholder -- real delete needs to decide between "hide from my
+        // mailbox" vs. a genuine tombstone PUT depending on whether the
+        // card is already frozen (state.sentAt), same branching
+        // PostCardMailbox.js's _deletePostcard/_hideFromMailbox already
+        // handle for the mailbox list view. Not wired up here yet; this
+        // just gives the menu item somewhere to go without silently doing
+        // nothing on click.
+        _deleteCard: function () {
+          this._flashNearMoreBtn("Delete isn't wired up here yet", true);
+        },
+
+        // Small transient tooltip near the "more" button -- used for both
+        // success (e.g. "Link copied") and failure feedback. Deliberately
+        // NOT _showError (which replaces the whole rendered card with an
+        // error message, appropriate only for an initial-load failure) --
+        // a failed menu action shouldn't blank out content the viewer is
+        // already looking at.
+        _flashNearMoreBtn: function (msg, isError) {
+          if (isError) console.error("[PostCardView]", msg);
+          if (!this._moreBtn) return;
+          var rect = this._moreBtn.getBoundingClientRect();
+          var bubble = document.createElement("div");
+          bubble.textContent = msg;
+          var bg = isError ? "#fff5f5" : "#f0fdf4";
+          var border = isError ? "#f3b4b4" : "#bbf7d0";
+          var color = isError ? "#a33" : "#166534";
+          bubble.style.cssText = [
+            "position:fixed", "z-index:9999",
+            "top:" + Math.round(rect.bottom + 4) + "px",
+            "left:" + Math.round(rect.right - 180) + "px",
+            "width:180px", "background:" + bg, "border:1px solid " + border,
+            "color:" + color, "border-radius:8px", "box-shadow:0 4px 14px rgba(0,0,0,0.2)",
+            "padding:7px 10px", "font-family:sans-serif", "font-size:12px",
+            "box-sizing:border-box",
+          ].join(";");
+          document.body.appendChild(bubble);
+          setTimeout(function () { bubble.remove(); }, 2200);
+        },
+      },
+
       "rendering",
       {
         _renderEnvelope: function (envelope) {
           this._envelope = envelope;
           var user = lively.identity.did.currentUser();
           this._isOwner = !!(user && user.did === envelope.did);
+          // Reset (not just left stale) so a reused view instance (e.g. the
+          // reel paging to a new card) doesn't show the PREVIOUS card's
+          // saved-state for a split second before _checkCollectionsState's
+          // fetch for the new one resolves.
+          this._savedToCollections = false;
 
           this._loadAvatar();
           this._titleEl.textContent =
             (envelope.state && envelope.state.title) || "(untitled)";
-          if (this._editBtn)
-            this._editBtn.style.display = this._isOwner ? "" : "none";
+          // The "more" button itself stays visible for every viewer --
+          // Save to Collections applies regardless of ownership. Edit is
+          // gated inside the menu's own contents instead (_toggleMoreMenu).
 
           this._renderContentArea(envelope);
           this._renderMembershipActions(envelope);
           this._renderBackMeta(envelope);
           this._renderReactionsFooter(envelope);
           this._verify(envelope);
+          this._checkCollectionsState();
         },
 
         // Approve/Decline for a constellation-join-request card

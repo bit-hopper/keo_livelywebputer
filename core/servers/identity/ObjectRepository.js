@@ -2158,6 +2158,23 @@ function removeFromCollections(did, objId, thenDo) {
   });
 }
 
+// Whether `did` already has objId bookmarked -- lets a single-card view
+// (PostCardView.js) render its Save action as already-toggled-on, same
+// "mine" idea as getStarInfo's per-viewer flag. Calls thenDo(err, bool).
+function isInCollections(did, objId, thenDo) {
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'SELECT EXISTS(SELECT 1 FROM postcard_collections WHERE did = $1 AND collection_name = $2 AND obj_id = $3) AS saved',
+      [did, 'Saved', objId],
+      function (err, result) {
+        if (err) return thenDo(err);
+        thenDo(null, !!(result.rows[0] && result.rows[0].saved));
+      }
+    );
+  });
+}
+
 // List the current viewer's saved/bookmarked postcards, most-recently-saved
 // first (PostcardDesignSpec-v2.md Collections tab). opts: { limit, offset, q }
 // -- same q-filters-on-title shape as listPostcardsForUser, but ordered by
@@ -2475,6 +2492,7 @@ module.exports = {
   getHiddenObjIdsForDid:         getHiddenObjIdsForDid,
   saveToCollections:             saveToCollections,
   removeFromCollections:         removeFromCollections,
+  isInCollections:               isInCollections,
   listCollectionsForDid:         listCollectionsForDid,
   setSentAtIfUnset:              setSentAtIfUnset,
   putInboxRecord:                putInboxRecord,

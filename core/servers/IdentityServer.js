@@ -2406,6 +2406,20 @@ module.exports = function (route, app) {
     });
   });
 
+  // Lets a single-card view (PostCardView.js's "more" menu) render Save as
+  // already-toggled-on for a card the viewer previously bookmarked -- same
+  // per-viewer "mine" idea as GET .../reactions and GET .../stars above.
+  app.get("/@:handle/collections/:objId", auth.requireAuth, function (req, res) {
+    var handle = req.params.handle;
+    var objId  = req.params.objId;
+    if (req.identity.handle !== handle)
+      return res.status(403).json({ error: "Forbidden: not your collections" });
+    objectRepo.isInCollections(req.identity.did, objId, function (err, saved) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json({ saved: saved });
+    });
+  });
+
   // POST /@:handle/inbox — deliver a post card reference to a recipient.
   // Checks the recipient's block list before writing.
   // Returns the byte-identical postal response for all failure causes (§2.3 anti-leak invariant).
