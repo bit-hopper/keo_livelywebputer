@@ -747,6 +747,7 @@ module("lively.identity.ConstellationLounge")
             lively.identity.MiniProfileCard.open(handle, did, t, {
               roomContext: true,
               isController: !!self._isController,
+              constellationName: self._name,
             });
           });
           evt.stop();

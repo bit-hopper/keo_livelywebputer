@@ -926,11 +926,12 @@ module('lively.identity.PostCardMailbox')
           // size, not the whole inbox log) — see ObjectRepository.js's
           // _enrichWithConstellationTag.
           var isInvite = rec.kind === 'constellation-invite';
+          var isFlag = rec.kind === 'profile-flag';
           if (rec.constellation) {
             var isJoinRequest = rec.kind === 'constellation-join-request';
             var tag = document.createElement('div');
-            tag.className = 'pcm-badge' + ((isJoinRequest || isInvite) ? ' pcm-badge-warn' : '');
-            tag.textContent = (isJoinRequest ? '📨 join request · ' : isInvite ? '✉️ invite · ' : '') + 'c/' + rec.constellation;
+            tag.className = 'pcm-badge' + ((isJoinRequest || isInvite || isFlag) ? ' pcm-badge-warn' : '');
+            tag.textContent = (isJoinRequest ? '📨 join request · ' : isInvite ? '✉️ invite · ' : isFlag ? '🚩 flagged profile report · ' : '') + 'c/' + rec.constellation;
             card.appendChild(tag);
           }
           card.appendChild(id);
@@ -977,7 +978,7 @@ module('lively.identity.PostCardMailbox')
             });
             var actionsCluster = self._makeActionsCluster([declineInviteBtn, acceptInviteBtn]);
             card.appendChild(actionsCluster);
-            content.appendChild(card);
+            content.appendChild(self._wrapMutedIfNeeded(card, rec));
             return;
           }
 
@@ -1009,8 +1010,38 @@ module('lively.identity.PostCardMailbox')
             }));
           }
           card.appendChild(self._makeActionsCluster(buttons));
-          content.appendChild(card);
+          content.appendChild(self._wrapMutedIfNeeded(card, rec));
         });
+      },
+
+      // De-emphasizes a fully-built received-record card for a muted sender
+      // (DID.js's relationships category — "Ignore" from MiniProfileCard.js)
+      // — moves whatever content the card already has into a hidden wrapper
+      // and shows a one-line "click to show" summary instead. Works
+      // regardless of the card's internal structure (plain postcard or the
+      // invite branch's extra buttons), since it just relocates whatever
+      // children already exist rather than special-casing them. No-op
+      // (returns card unchanged) when the sender isn't muted.
+      _wrapMutedIfNeeded: function (card, rec) {
+        if (!lively.identity.did.isMuted(rec.senderDid, rec.senderHandle)) return card;
+        var wrap = document.createElement('div');
+        while (card.firstChild) wrap.appendChild(card.firstChild);
+        wrap.style.display = 'none';
+        var summary = document.createElement('div');
+        summary.style.cssText = 'font-size:11px;color:var(--pcm-text-tertiary);cursor:pointer;text-decoration:underline;padding:2px 0;';
+        summary.textContent = 'Message from ignored profile — click to show';
+        card.style.opacity = '0.55';
+        card.appendChild(summary);
+        card.appendChild(wrap);
+        summary.addEventListener('click', function () {
+          var showing = wrap.style.display !== 'none';
+          wrap.style.display = showing ? 'none' : '';
+          card.style.opacity = showing ? '0.55' : '1';
+          summary.textContent = showing
+            ? 'Message from ignored profile — click to show'
+            : 'Message from ignored profile (click to hide)';
+        });
+        return card;
       },
 
       _renderCollectionsRecords: function (records) {
@@ -1958,28 +1989,39 @@ module('lively.identity.PostCardMailbox')
         }
       },
 
-      // Resolve to a DID too so both blockedDids and blockedHandles get
-      // populated — the inbox check (IdentityServer.js) matches on either.
+      // Delegates to DID.js's shared blockDid/unblockDid (same "relationships"
+      // primitive MiniProfileCard.js's Block menu item uses) so there's one
+      // source of truth for the mutate-and-PUT dance over this same settings
+      // envelope, instead of a second independent copy of it here. Resolve to
+      // a DID too so both blockedDids and blockedHandles get populated — the
+      // inbox check (IdentityServer.js) matches on either. After a
+      // successful mutation, re-GET via _loadBlocked so this tab's own
+      // _settingsEnvelope/rendered list reflect the server's actual state
+      // (DID.js's cache is a separate copy, used for synchronous
+      // isBlocked/isMuted checks elsewhere, not this tab's source of truth).
       _blockHandle: function (handle, thenDo) {
         var self = this;
         lively.identity.webKey.resolveHandle(handle, function (err, info) {
           var did = (!err && info) ? info.did : null;
-          self._patchSettings(function (state) {
-            state.blockedDids    = state.blockedDids    || [];
-            state.blockedHandles = state.blockedHandles || [];
-            if (state.blockedHandles.indexOf(handle) === -1) state.blockedHandles.push(handle);
-            if (did && state.blockedDids.indexOf(did) === -1) state.blockedDids.push(did);
-          }, thenDo);
+          lively.identity.did.blockDid(did, handle, function (err2) {
+            if (err2) return thenDo(err2);
+            self._loadBlocked();
+            thenDo(null);
+          });
         });
       },
 
       _unblockHandle: function (handle, thenDo) {
-        this._patchSettings(function (state) {
-          state.blockedHandles = (state.blockedHandles || []).filter(function (h) { return h !== handle; });
-          // Any DID entry for this handle is left as-is here — a stale DID
-          // left in blockedDids fails closed (over-blocks), not open, so
-          // it's not a correctness risk, just a minor cleanup gap.
-        }, thenDo);
+        var self = this;
+        // No did on hand here (only the handle is shown in the Blocked
+        // list) — unblockDid's did-array filter is a no-op when did is
+        // null, same "stale DID left in blockedDids fails closed, not a
+        // correctness risk" reasoning the old inline version noted.
+        lively.identity.did.unblockDid(null, handle, function (err) {
+          if (err) return thenDo(err);
+          self._loadBlocked();
+          thenDo(null);
+        });
       },
 
       // mutate(state) edits the settings envelope's state object in place

@@ -2109,6 +2109,13 @@ module('lively.identity.PostCardEditor')
                   handleMsg.style.color = '#c33';
                   return;
                 }
+                if (lively.identity.did.isBlocked(info.did, handle)) {
+                  handleMsg.textContent = "You've blocked @" + handle;
+                  handleMsg.style.color = '#c33';
+                  sendBtn.disabled = true;
+                  return;
+                }
+                sendBtn.disabled = false;
                 self._resolveRecipientPubKeys([handle], function (_e, result) {
                   if (handleInput.value.trim().replace(/^@/, '') !== handle) return; // stale
                   if (result.resolved.length) {
@@ -2277,6 +2284,14 @@ module('lively.identity.PostCardEditor')
 
         lively.identity.webKey.resolveHandle(handle, function (err, info) {
           if (err || !info || !info.did) return thenDo(new Error('Handle not found: @' + handle));
+
+          // Blocking disables interaction both ways — this covers "I've
+          // blocked them" (the /inbox route's own sender-side check is the
+          // server-side backstop for this same case; the recipient-blocked-
+          // me case was already covered there before this feature).
+          if (lively.identity.did.isBlocked(info.did, handle)) {
+            return thenDo(new Error("You've blocked @" + handle + " — unblock them to send."));
+          }
 
           if (self._visibility === 'public') {
             return self._postInbox(handle, thenDo);

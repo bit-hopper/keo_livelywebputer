@@ -10,8 +10,11 @@
  * _showEventPopover/_hidePopover.
  *
  * Open: lively.identity.MiniProfileCard.open(handle, did, anchor, opts)
- * opts is optional: { roomContext, isController } — see open()'s own doc
- * comment below for what these gate (the mod-view shield badge).
+ * opts is optional: { roomContext, isController, constellationName, roomId }
+ * — see open()'s own doc comment below. roomContext/isController gate the
+ * mod-view shield badge; constellationName/roomId feed the overflow menu's
+ * Flag Profile action (which constellation/room's controllers get the
+ * report) and are otherwise unrelated to the shield.
  *
  * anchor is either a morph (its worldPoint()/getExtent() position the
  * popover just below it, as every morph-based call site does) or a plain
@@ -28,6 +31,8 @@
 module("lively.identity.MiniProfileCard")
   .requires(
     "lively.identity.PostCardUtils",
+    "lively.identity.DID",
+    "lively.identity.PostCardSerializer",
     "lively.morphic.Complete",
   )
   .toRun(function () {
@@ -146,6 +151,8 @@ module("lively.identity.MiniProfileCard")
         this.close(); // only one popover open at a time
         var roomContext = !!(opts && opts.roomContext);
         var isController = !!(opts && opts.isController);
+        var constellationName = (opts && opts.constellationName) || null;
+        var roomId = (opts && opts.roomId) || null;
 
         var W = window.innerWidth, H = window.innerHeight;
         // World coordinates equal page/document coordinates (Core.js's
@@ -229,17 +236,19 @@ module("lively.identity.MiniProfileCard")
         closeX.onMouseUp = function (evt) { self.close(); evt.stop(); return true; };
         card.addMorph(closeX);
 
-        // Overflow menu — placeholder for now (single non-functional item),
-        // shown on every mini profile regardless of where it was opened
-        // from. Same circle-backdrop icon-button idiom as closeX above, but
-        // a neutral hover color (not close's red) so the two read as
-        // distinct actions. Toggle-dance (onMouseDown flags whether OUR
-        // menu was the one open at mousedown; onMouseUp checks that flag
-        // and just closes instead of reopening) copied from ProfileCard.js's
-        // own more_vert button, which needs it for the same reason: a click
-        // that closes an open menu (by landing on the scrim) still reaches
-        // this button's onMouseUp right after, which would otherwise
-        // instantly reopen it.
+        // Overflow menu — Share Profile always; Ignore/Block (labels flip to
+        // Unignore/Unblock live, per lively.identity.did's synchronous
+        // isMuted/isBlocked) and Flag Profile hidden on your own profile.
+        // Built just-in-time on each open (not a static list) so it always
+        // reflects current block/mute state. Same circle-backdrop
+        // icon-button idiom as closeX above, but a neutral hover color (not
+        // close's red) so the two read as distinct actions. Toggle-dance
+        // (onMouseDown flags whether OUR menu was the one open at
+        // mousedown; onMouseUp checks that flag and just closes instead of
+        // reopening) copied from ProfileCard.js's own more_vert button,
+        // which needs it for the same reason: a click that closes an open
+        // menu (by landing on the scrim) still reaches this button's
+        // onMouseUp right after, which would otherwise instantly reopen it.
         var MENU_FILL = Color.rgb(240, 240, 240);
         var MENU_HOVER = Color.rgb(224, 224, 224);
         var menuBtn = new lively.morphic.Text(lively.rect(MENU_X, 8, MENU, MENU), "more_vert");
@@ -264,8 +273,22 @@ module("lively.identity.MiniProfileCard")
         menuBtn.onMouseUp = function (evt) {
           if (menuBtn._wasMenuOpen) { menuBtn._wasMenuOpen = false; menuBtn._openMenu = null; evt.stop(); return true; }
           var pos = menuBtn.worldPoint(lively.pt(0, menuBtn.getExtent().y));
-          menuBtn._openMenu = lively.morphic.Menu.openAt(pos, "@" + trunc(handle, HANDLE_MAX),
-            [["More options coming soon", function () {}]]);
+          var isOwn = lively.identity.did.isOwnHandle(handle);
+          var items = [
+            ["Share Profile", function () { self._shareProfile(handle, menuBtn); }],
+          ];
+          if (!isOwn) {
+            var muted = lively.identity.did.isMuted(did, handle);
+            var blocked = lively.identity.did.isBlocked(did, handle);
+            items.push([muted ? "Unignore @" + trunc(handle, HANDLE_MAX) : "Ignore @" + trunc(handle, HANDLE_MAX),
+              function () { self._toggleMute(did, handle, muted, menuBtn); }]);
+            items.push([blocked ? "Unblock @" + trunc(handle, HANDLE_MAX) : "Block @" + trunc(handle, HANDLE_MAX),
+              function () { self._openBlockConfirm(did, handle, blocked, menuBtn); }]);
+            if (constellationName) {
+              items.push(["Flag Profile…", function () { self._openFlagReasonDialog(did, handle, constellationName, roomId); }]);
+            }
+          }
+          menuBtn._openMenu = lively.morphic.Menu.openAt(pos, "@" + trunc(handle, HANDLE_MAX), items);
           evt.stop();
           return true;
         };
@@ -454,6 +477,233 @@ module("lively.identity.MiniProfileCard")
         var win = new lively.morphic.Window(body, "Moderator View — @" + handle);
         $world.addMorph(win);
         win.comeForward();
+      },
+
+      // Small transient tooltip near a menu-adjacent morph — success/failure
+      // feedback for a menu action that already closed its own menu. Raw DOM
+      // bubble appended to document.body (a lively.morphic.Menu item click
+      // leaves no morph-internal place to swap a label into), same idiom as
+      // PostCardView.js's _flashNearMoreBtn, adapted for a morph ref instead
+      // of a raw DOM element.
+      _flashNear: function (refMorph, msg, isError) {
+        if (isError) console.error("[MiniProfileCard]", msg);
+        var node = refMorph && refMorph.renderContext && refMorph.renderContext().shapeNode;
+        if (!node) return;
+        var rect = node.getBoundingClientRect();
+        var bubble = document.createElement("div");
+        bubble.textContent = msg;
+        var bg = isError ? "#fff5f5" : "#f0fdf4";
+        var border = isError ? "#f3b4b4" : "#bbf7d0";
+        var color = isError ? "#a33" : "#166534";
+        bubble.style.cssText = [
+          "position:fixed", "z-index:9999",
+          "top:" + Math.round(rect.bottom + 4) + "px",
+          "left:" + Math.round(rect.right - 180) + "px",
+          "width:180px", "background:" + bg, "border:1px solid " + border,
+          "color:" + color, "border-radius:8px", "box-shadow:0 4px 14px rgba(0,0,0,0.2)",
+          "padding:7px 10px", "font-family:sans-serif", "font-size:12px",
+          "box-sizing:border-box",
+        ].join(";");
+        document.body.appendChild(bubble);
+        setTimeout(function () { bubble.remove(); }, 2200);
+      },
+
+      _shareProfile: function (handle, refMorph) {
+        var self = this;
+        var url = lively.identity.did.baseUrl() + "/@" + encodeURIComponent(handle);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(url)
+            .then(function () { self._flashNear(refMorph, "Link copied"); })
+            .catch(function () { window.prompt("Copy this link:", url); });
+        } else {
+          window.prompt("Copy this link:", url);
+        }
+      },
+
+      _toggleMute: function (did, handle, wasMuted, refMorph) {
+        var self = this;
+        var fn = wasMuted ? lively.identity.did.unmuteDid : lively.identity.did.muteDid;
+        fn.call(lively.identity.did, did, handle, function (err) {
+          if (err) return self._flashNear(refMorph, "Could not update — " + err.message, true);
+          self._flashNear(refMorph, wasMuted ? "Unignored" : "Ignored");
+        });
+      },
+
+      _openBlockConfirm: function (did, handle, wasBlocked, refMorph) {
+        var self = this;
+        if (wasBlocked) {
+          // Unblocking is not destructive — no confirmation needed.
+          lively.identity.did.unblockDid(did, handle, function (err) {
+            if (err) return self._flashNear(refMorph, "Could not unblock — " + err.message, true);
+            self._flashNear(refMorph, "Unblocked");
+          });
+          return;
+        }
+        $world.confirm(
+          "Block @" + handle + "? They won't be able to contact you and you won't see their messages.",
+          function (ok) {
+            if (!ok) return;
+            lively.identity.did.blockDid(did, handle, function (err) {
+              if (err) return self._flashNear(refMorph, "Could not block — " + err.message, true);
+              self._flashNear(refMorph, "Blocked");
+            });
+          },
+        );
+      },
+
+      // Small reason-entry dialog for Flag Profile. Programmatic Window
+      // constructor (same idiom as _openModPlaceholderWindow above), not a
+      // BuildSpec module, to keep this two-field dialog local to this file.
+      _openFlagReasonDialog: function (targetDid, targetHandle, constellationName, roomId) {
+        var W = 340, PAD = 16;
+        var MAX_REASON = 250;
+        var body = new lively.morphic.Box(lively.rect(0, 0, W, 226));
+        body.applyStyle({ fill: Color.rgb(250, 250, 252), borderWidth: 0 });
+
+        body.addMorph(label(lively.rect(PAD, 12, W - PAD * 2, 34),
+          "Report @" + targetHandle + " to moderators. Briefly explain why:",
+          { px: 12, color: Color.rgb(90, 90, 90), wrap: true }));
+
+        // Multi-line, wrapped (whiteSpaceHandling: "pre-wrap", same as
+        // RoomView.js's own chat-body text) and tall enough for several
+        // lines — beInputLine() alone (RoomSettingsDialog.js's textField
+        // idiom) is fine for a genuinely single-line field, but this one
+        // needs real wrapping, same as ProfileCard.js's own multi-line Bio
+        // field (which also calls beInputLine() at a taller extent).
+        var reasonField = new lively.morphic.Text(lively.rect(PAD, 52, W - PAD * 2, 76), "");
+        reasonField.name = "flagReasonField"; // looked up by name from the counter's addScript handler below, not a closure var
+        reasonField.beInputLine();
+        reasonField.applyStyle({
+          allowInput: true, fontSize: 12, clipMode: "hidden",
+          fixedWidth: true, fixedHeight: true, whiteSpaceHandling: "pre-wrap",
+          fill: Color.white, borderColor: Color.rgb(200, 200, 200), borderWidth: 1, borderRadius: 4,
+          padding: lively.Rectangle.inset(6, 6, 0, 0),
+        });
+        reasonField.setExtent(lively.pt(W - PAD * 2, 76));
+        body.addMorph(reasonField);
+
+        // Live "N / 250" counter, truncating on overflow — same idiom as
+        // ProfileCard.js's Bio field counter (onKeyUp fires Text's own
+        // 'textString' signal; the counter listens and trims/repositions
+        // the caret at the end so continued typing doesn't prepend).
+        var counter = new lively.morphic.Text(lively.rect(PAD, 130, W - PAD * 2, 14), "0 / " + MAX_REASON);
+        counter.applyStyle({ allowInput: false, fontSize: 10, align: "right",
+          textColor: Color.rgb(140, 140, 148), fill: null, borderWidth: 0,
+          selectable: false, clipMode: "hidden", whiteSpaceHandling: "pre" });
+        // maxReason is a plain morph property, not a closure `var` read
+        // inside the script body — addScript-installed methods are
+        // reconstructed from their own source text at call time and lose
+        // the enclosing closure (CLAUDE.md), so MAX_REASON itself would be
+        // "not defined" the first time this actually runs.
+        counter.maxReason = MAX_REASON;
+        counter.addScript(function onReasonChanged(s) {
+          s = s || "";
+          var max = this.maxReason;
+          if (s.length > max) {
+            s = s.slice(0, max);
+            var inp = this.owner && this.owner.get("flagReasonField");
+            if (inp) { inp.textString = s; inp.setSelectionRange(s.length, s.length); }
+          }
+          this.setTextString(s.length + " / " + max);
+          this.applyStyle({ textColor: s.length >= max ? Color.rgb(200, 40, 40) : Color.rgb(140, 140, 148) });
+        });
+        body.addMorph(counter);
+        lively.bindings.connect(reasonField, "textString", counter, "onReasonChanged");
+
+        var errorLabel = label(lively.rect(PAD, 150, W - PAD * 2, 16), "", { px: 11, color: Color.rgb(200, 60, 60) });
+        body.addMorph(errorLabel);
+
+        function makeButton(rect, text, primary) {
+          var btn = new lively.morphic.Box(rect);
+          btn.applyStyle({
+            fill: primary ? PINK : Color.white, borderRadius: 6, borderWidth: 1,
+            borderColor: primary ? PINK : Color.rgb(200, 200, 200), clipMode: "hidden",
+          });
+          noDrag(btn);
+          var t = new lively.morphic.Text(lively.rect(0, 0, rect.width, rect.height), text);
+          t.applyStyle({
+            fontSize: 12 * 0.75, textColor: primary ? Color.white : Color.rgb(60, 60, 60),
+            fill: null, borderWidth: 0, align: "center",
+            padding: lively.Rectangle.inset(0, Math.round((rect.height - 12) / 2) - 2, 0, 0),
+            allowInput: false, selectable: false, clipMode: "hidden", whiteSpaceHandling: "pre",
+          });
+          noDrag(t);
+          t.eventsAreIgnored = true;
+          btn.addMorph(t);
+          return btn;
+        }
+
+        var cancelBtn = makeButton(lively.rect(PAD, 174, 120, 28), "Cancel", false);
+        cancelBtn.onMouseUp = function (evt) { win.remove(); evt.stop(); return true; };
+        body.addMorph(cancelBtn);
+
+        var sendBtn = makeButton(lively.rect(W - PAD - 120, 174, 120, 28), "Send", true);
+        sendBtn.onMouseUp = function (evt) {
+          var reason = (reasonField.textString || "").trim().slice(0, MAX_REASON);
+          if (!reason) { errorLabel.setTextString("Please enter a reason."); evt.stop(); return true; }
+          errorLabel.setTextString("");
+          var user = lively.identity.did.currentUser();
+          if (!user) { errorLabel.setTextString("Not signed in."); evt.stop(); return true; }
+
+          var doc = {
+            type: "doc",
+            content: [{
+              type: "paragraph",
+              content: [{ type: "text",
+                text: "Profile flag: @" + targetHandle + " — " + reason }],
+            }],
+          };
+          lively.identity.postCardSerializer.serializePlainToEnvelope({
+            doc: doc,
+            title: "Profile flag: @" + targetHandle,
+            titleExplicit: true,
+            constellation: constellationName,
+            visibility: "public",
+            stateMeta: { kind: "profile-flag", reason: reason, targetDid: targetDid, targetHandle: targetHandle },
+          }, function (err, envelope) {
+            if (err) { errorLabel.setTextString("Could not create report: " + err.message); return; }
+            var base = lively.identity.did.baseUrl();
+            fetch(base + "/@" + encodeURIComponent(user.handle) + "/" + encodeURIComponent(envelope.objId), {
+              method: "PUT", credentials: "include",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(envelope),
+            }).then(function (r) {
+              if (!r.ok) throw new Error("Could not save report (" + r.status + ")");
+              return fetch(base + "/c/" + encodeURIComponent(constellationName) + "/flags", {
+                method: "POST", credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ objId: envelope.objId, targetDid: targetDid, roomId: roomId || undefined }),
+              });
+            }).then(function (r) {
+              if (!r) return;
+              if (!r.ok) return r.json().catch(function () { return {}; }).then(function (b) {
+                throw new Error(b.error || ("Flag failed (" + r.status + ")"));
+              });
+              win.remove();
+              $world.alert("Report sent to moderators.");
+            }).catch(function (err2) {
+              errorLabel.setTextString(err2.message);
+            });
+          });
+          evt.stop();
+          return true;
+        };
+        body.addMorph(sendBtn);
+
+        // new lively.morphic.Window(...)'s own initialize() takes its
+        // initial bounds straight from targetMorph.bounds() — before
+        // being added anywhere, `body`'s bounds are just its own
+        // constructor rect, (0,0,...), so plain $world.addMorph(win)
+        // (as _openModPlaceholderWindow above does) pins it to the
+        // world's top-left corner instead of somewhere sensible.
+        // openInWorldCenter() (MorphAddons.js) adds it to the world AND
+        // re-centers it in the current viewport in one call — the same
+        // idiom LoginDialog.js/RegisterDialog.js use for their own
+        // programmatic-Window dialogs.
+        var win = new lively.morphic.Window(body, "Flag Profile — @" + targetHandle);
+        win.openInWorldCenter();
+        win.comeForward();
+        reasonField.focus();
       },
     };
 

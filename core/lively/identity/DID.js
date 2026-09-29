@@ -342,6 +342,7 @@ module("lively.identity.DID")
           var self = this;
           self._currentUser = params;
           self._loadDomainHandle();
+          self._loadRelationships();
 
           // 1. Slot into the existing username system so L2L, Wiki, PartsBin
           //    all see the handle as the current user without any changes to them.
@@ -389,6 +390,8 @@ module("lively.identity.DID")
         // restoreSession() does not revive the session on the next page load.
         clearSession: function (thenDo) {
           this._currentUser = null;
+          this._relationshipsEnvelope = null;
+          this._relationships = null;
           lively.Config.set("UserName", null);
           if (typeof lively !== "undefined" && lively.bindings) {
             lively.bindings.signal(
@@ -500,6 +503,7 @@ module("lively.identity.DID")
                 lively.Config.set("UserName", meta.handle);
                 self._currentUser = params;
                 self._loadDomainHandle();
+                self._loadRelationships();
                 thenDo(null, params);
               }
               fetch("/nodejs/IdentityServer/session", { credentials: "include" })
@@ -520,6 +524,151 @@ module("lively.identity.DID")
                 });
             });
           });
+        },
+      },
+
+      // ─── relationships (block / mute) ─────────────────────────────────────────────
+      //
+      // Backed by the same per-account "settings" envelope PostCardMailbox.js's
+      // Blocked tab already reads/writes (GET/PUT /@:handle/settings) — this is
+      // just a synchronous in-memory cache of it plus a shared mutate-and-PUT
+      // primitive, so callers elsewhere (MiniProfileCard, RoomView, ProfileCard,
+      // PostCardEditor) don't need their own copy of the envelope/CID dance and
+      // can check isBlocked/isMuted synchronously during render.
+      //
+      // Mute ("Ignore") has no unified notification/toast system to hook into
+      // anywhere in this codebase (none exists) — concretely it means muted
+      // senders' messages/postcards render collapsed/de-emphasized (RoomView.js
+      // chat, PostCardMailbox.js received list), not any kind of suppressed
+      // push/toast. Document this here so it isn't re-litigated later.
+
+      "relationships",
+      {
+        _relationshipsEnvelope: null,
+        _relationships: null, // populated lazily; shape: { blockedDids, blockedHandles, mutedDids, mutedHandles }
+
+        _emptyRelationships: function () {
+          return { blockedDids: [], blockedHandles: [], mutedDids: [], mutedHandles: [] };
+        },
+
+        // Best-effort fetch of the current user's settings envelope into the
+        // in-memory cache. Fail-open: a network error just leaves the cache
+        // empty (nothing appears blocked/muted) rather than blocking session
+        // restore/establish on it, same posture as _loadDomainHandle above.
+        _loadRelationships: function (thenDo) {
+          var self = this;
+          var u = this._currentUser;
+          if (!u || !u.handle) { thenDo && thenDo(null); return; }
+          fetch(this.baseUrl() + "/@" + encodeURIComponent(u.handle) + "/settings", { credentials: "include" })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (env) {
+              if (u !== self._currentUser) return; // session changed mid-flight
+              self._relationshipsEnvelope = env || null;
+              var state = (env && env.state) || {};
+              self._relationships = {
+                blockedDids:    state.blockedDids    || [],
+                blockedHandles: state.blockedHandles || [],
+                mutedDids:      state.mutedDids      || [],
+                mutedHandles:   state.mutedHandles   || [],
+              };
+              thenDo && thenDo(null);
+            })
+            .catch(function (err) {
+              self._relationships = self._relationships || self._emptyRelationships();
+              thenDo && thenDo(err);
+            });
+        },
+
+        isBlocked: function (did, handle) {
+          var r = this._relationships;
+          if (!r) return false;
+          return (!!did && r.blockedDids.indexOf(did) !== -1) ||
+            (!!handle && r.blockedHandles.indexOf(handle) !== -1);
+        },
+
+        // NOTE: @mentions don't exist anywhere in this codebase yet (chat's
+        // "@" + handle is a static label, not a parsed token) — once they are
+        // built, whatever renders/parses a mention should also consult
+        // isBlocked() here so a blocked user can't be mentioned.
+        isMuted: function (did, handle) {
+          var r = this._relationships;
+          if (!r) return false;
+          return (!!did && r.mutedDids.indexOf(did) !== -1) ||
+            (!!handle && r.mutedHandles.indexOf(handle) !== -1);
+        },
+
+        // Shared mutate-and-PUT primitive. mutate(state) edits the settings
+        // envelope's state object in place (mirrors PostCardMailbox.js's own
+        // _patchSettings exactly, so the two stay compatible over the same
+        // envelope); lazy-loads the envelope first if it isn't cached yet.
+        _patchRelationships: function (mutate, thenDo) {
+          var self = this;
+          var u = this._currentUser;
+          if (!u || !u.handle) return thenDo && thenDo(new Error("Not signed in"));
+
+          function apply() {
+            var env = self._relationshipsEnvelope;
+            if (!env) return thenDo && thenDo(new Error("Settings not loaded"));
+            env.state = env.state || {};
+            mutate(env.state);
+
+            var payload = (env.record && env.record.payload) || {};
+            lively.identity.crypto.computeCid(payload, function (err, cid) {
+              if (err) return thenDo && thenDo(err);
+              env.record.cid = cid;
+              fetch(self.baseUrl() + "/@" + encodeURIComponent(u.handle) + "/settings", {
+                method: "PUT",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(env),
+              }).then(function (r) {
+                if (!r.ok) return thenDo && thenDo(new Error("PUT failed: " + r.status));
+                self._relationships = {
+                  blockedDids:    env.state.blockedDids    || [],
+                  blockedHandles: env.state.blockedHandles || [],
+                  mutedDids:      env.state.mutedDids      || [],
+                  mutedHandles:   env.state.mutedHandles   || [],
+                };
+                lively.bindings.signal(lively.identity.did, "relationshipsChanged", self._relationships);
+                thenDo && thenDo(null);
+              }).catch(function (err) { thenDo && thenDo(err); });
+            });
+          }
+
+          if (this._relationshipsEnvelope) apply();
+          else this._loadRelationships(function () { apply(); });
+        },
+
+        blockDid: function (did, handle, thenDo) {
+          this._patchRelationships(function (state) {
+            state.blockedDids    = state.blockedDids    || [];
+            state.blockedHandles = state.blockedHandles || [];
+            if (did && state.blockedDids.indexOf(did) === -1) state.blockedDids.push(did);
+            if (handle && state.blockedHandles.indexOf(handle) === -1) state.blockedHandles.push(handle);
+          }, thenDo);
+        },
+
+        unblockDid: function (did, handle, thenDo) {
+          this._patchRelationships(function (state) {
+            state.blockedDids    = (state.blockedDids    || []).filter(function (d) { return d !== did; });
+            state.blockedHandles = (state.blockedHandles || []).filter(function (h) { return h !== handle; });
+          }, thenDo);
+        },
+
+        muteDid: function (did, handle, thenDo) {
+          this._patchRelationships(function (state) {
+            state.mutedDids    = state.mutedDids    || [];
+            state.mutedHandles = state.mutedHandles || [];
+            if (did && state.mutedDids.indexOf(did) === -1) state.mutedDids.push(did);
+            if (handle && state.mutedHandles.indexOf(handle) === -1) state.mutedHandles.push(handle);
+          }, thenDo);
+        },
+
+        unmuteDid: function (did, handle, thenDo) {
+          this._patchRelationships(function (state) {
+            state.mutedDids    = (state.mutedDids    || []).filter(function (d) { return d !== did; });
+            state.mutedHandles = (state.mutedHandles || []).filter(function (h) { return h !== handle; });
+          }, thenDo);
         },
       },
 

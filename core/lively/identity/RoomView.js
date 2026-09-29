@@ -181,6 +181,7 @@ module("lively.identity.RoomView")
         this._participants = [];  // [{did, handle}]
         this._memberStatuses = {}; // did -> {status, expiresAt}, refined async by _fetchMemberStatuses
         this._messages = [];      // [{objId, did, handle, text, created}], real (see "chat" category)
+        this._mutedExpanded = {}; // key -> true, see _renderMessages' mute-collapse handling
         this._messagePollTimer = null;
         this._searchActive = false; // persistent rooms only — see _toggleSearch/_performSearch
         this._searchQuery = "";
@@ -227,6 +228,7 @@ module("lively.identity.RoomView")
         this._peerMeta = {};        // signaling peerId -> {did, handle}, known as soon as a peer is announced
         this._signalingPeers = {};  // signaling peerId -> {pc, did, handle, pendingIce}, only once a pc exists
         this._didToPeerId = {};     // did -> signaling peerId, for looking up a peer by roster identity
+        this._blockedPeerIds = {};  // signaling peerId -> true, for a peer isBlocked() at join time — see _onSignalingSignal
         this._remoteStreams = {};   // did -> MediaStream, latest known remote stream per participant
         this._screenStream = null;  // my own screen capture while sharing
         this._screenStreams = {};   // did -> MediaStream of that participant's shared screen
@@ -241,6 +243,12 @@ module("lively.identity.RoomView")
       open: function (name, roomId) {
         this._name = name;
         this._roomId = roomId;
+        // Re-render the chat list live when a block/mute is applied/removed
+        // from a MiniProfileCard opened inside this room (DID.js's
+        // relationships category), so a just-blocked participant's messages
+        // collapse immediately instead of waiting for the next poll.
+        // Disconnected in _stopSession.
+        lively.bindings.connect(lively.identity.did, "relationshipsChanged", this, "_renderMessages");
         // DID.js's restoreSession() is a multi-step async chain kicked off at
         // module-load time — reading currentUser() synchronously at a fixed
         // boot point (as everything below this does: seeding "you" into mock
@@ -666,6 +674,7 @@ module("lively.identity.RoomView")
       // would silently re-join presence right after the DELETE.
       _stopSession: function () {
         this._roomLeft = true;
+        try { lively.bindings.disconnect(lively.identity.did, "relationshipsChanged", this, "_renderMessages"); } catch (e) {}
         try { this.stopScreenShare(); } catch (e) {}   // before signaling closes, so viewers are told
         var selfForScreens = this;
         Object.keys(this._screenSurfaces).forEach(function (did) { selfForScreens._removeScreenSurface(did); });
@@ -1611,16 +1620,62 @@ module("lively.identity.RoomView")
           self._msgListBox.addMorph(empty);
         }
         list.forEach(function (msg) {
+          // Block/mute gating (DID.js's relationships category) — checked
+          // per-message since each carries its own sender did/handle.
+          // Block fully hides content (fixed-height placeholder, no
+          // expand); mute collapses to one line with a click-to-expand
+          // toggle. See CLAUDE.md's Ignore/Mute assumption note in DID.js.
+          if (lively.identity.did.isBlocked(msg.did, msg.handle)) {
+            var lockAv = noDrag(lively.morphic.Text.makeLabel("lock", { fontSize: 16, textColor: TEXT_MUTED }));
+            lockAv.applyStyle({ fontFamily: "'Material Symbols Rounded'", borderWidth: 0, fill: null, align: "center" });
+            lockAv.eventsAreIgnored = true;
+            lockAv.setExtent(lively.pt(AVATAR_MSG, AVATAR_MSG));
+            lockAv.setPosition(lively.pt(PAD, y));
+            self._msgListBox.addMorph(lockAv);
+
+            var blockedLabel = noDrag(lively.morphic.Text.makeLabel("Message from blocked profile", {
+              fontSize: 12, textColor: TEXT_MUTED, fixedWidth: true, fixedHeight: true,
+            }));
+            blockedLabel.eventsAreIgnored = true;
+            blockedLabel.setExtent(lively.pt(self._chatW - PAD * 2 - AVATAR_MSG - 8, AVATAR_MSG));
+            blockedLabel.setPosition(lively.pt(PAD + AVATAR_MSG + 8, y + Math.round((AVATAR_MSG - 16) / 2)));
+            self._msgListBox.addMorph(blockedLabel);
+
+            y += AVATAR_MSG + ROW_GAP;
+            return;
+          }
+          var isMuted = lively.identity.did.isMuted(msg.did, msg.handle);
+          var muteKey = msg.objId || (msg.did + "|" + msg.created);
+          var muteExpanded = !!self._mutedExpanded[muteKey];
+
           var av = noDrag(new lively.morphic.Image(lively.rect(PAD, y, AVATAR_MSG, AVATAR_MSG)));
           av.applyStyle({ borderRadius: AVATAR_MSG / 2, borderWidth: 0, clipMode: "hidden" });
           av.setImageURL(lively.identity.postCardUtils.identiconDataUrl(msg.handle || msg.did || "unknown", AVATAR_MSG));
           av.eventsAreIgnored = true;
           self._msgListBox.addMorph(av);
+          // Dim via the real DOM node's CSS opacity — Image morphs' own
+          // "fill" style only shows through transparent image regions, not
+          // a usable overlay-tint, so this is a direct-DOM write rather
+          // than a model-layer style (same class of gap as CLAUDE.md's
+          // "applyStyle can silently never reach the DOM" note, sidestepped
+          // here by not routing through applyStyle at all for this bit).
+          if (isMuted) av.renderContext().shapeNode.style.opacity = "0.4";
 
-          var headM = noDrag(lively.morphic.Text.makeLabel("@" + (msg.handle || "unknown") + "   " + self._formatTime(msg.created), {
-            fontSize: 12, fontWeight: "700", textColor: TEXT_PRIMARY, fixedWidth: true, fixedHeight: true,
+          var headText = "@" + (msg.handle || "unknown") + "   " + self._formatTime(msg.created) +
+            (isMuted ? "   (ignored" + (muteExpanded ? " — showing)" : ", click to show)") : "");
+          var headM = noDrag(lively.morphic.Text.makeLabel(headText, {
+            fontSize: 12, fontWeight: "700", textColor: isMuted ? TEXT_MUTED : TEXT_PRIMARY, fixedWidth: true, fixedHeight: true,
           }));
-          headM.eventsAreIgnored = true;
+          headM.eventsAreIgnored = !isMuted;
+          if (isMuted) {
+            headM.handStyle = "pointer";
+            headM.onMouseUp = function (evt) {
+              if (muteExpanded) delete self._mutedExpanded[muteKey]; else self._mutedExpanded[muteKey] = true;
+              self._renderMessages();
+              evt.stop();
+              return true;
+            };
+          }
           // 16 clipped the bottom of any descender (g/y/p in a handle) —
           // confirmed live via the shapeNode's own scrollHeight (~19px
           // for 12px bold text, same shapeNode-padding story as
@@ -1632,7 +1687,19 @@ module("lively.identity.RoomView")
 
           var bw = self._chatW - PAD * 2 - AVATAR_MSG - 8;
           var bh;
-          if (self._isMediaMessage(msg.text)) {
+          if (isMuted && !muteExpanded) {
+            // Collapsed: one truncated line, no media/flag rendering.
+            var oneLine = (msg.text || "").replace(/\s+/g, " ").trim();
+            if (oneLine.length > 60) oneLine = oneLine.slice(0, 59) + "…";
+            var collapsedM = noDrag(lively.morphic.Text.makeLabel(oneLine, {
+              fontSize: 13, textColor: TEXT_FAINT, fixedWidth: true, fixedHeight: true, whiteSpaceHandling: "pre",
+            }));
+            collapsedM.eventsAreIgnored = true;
+            collapsedM.setExtent(lively.pt(bw, 18));
+            collapsedM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, y + 20));
+            self._msgListBox.addMorph(collapsedM);
+            bh = 18 + 4;
+          } else if (self._isMediaMessage(msg.text)) {
             // A GIF/sticker sent via the picker (_sendMediaMessage) — its
             // own message "text" is just the media's own URL (no schema
             // change needed: the room-message envelope's state.title is
@@ -1754,6 +1821,8 @@ module("lively.identity.RoomView")
                 lively.identity.MiniProfileCard.open(p.handle, p.did, row, {
                   roomContext: true,
                   isController: !!self._isController,
+                  constellationName: self._name,
+                  roomId: self._roomId,
                 });
               });
               evt.stop();
@@ -2537,6 +2606,11 @@ module("lively.identity.RoomView")
         this._mySignalingPeerId = data.peerId;
         var self = this;
         (data.peers || []).forEach(function (p) {
+          // Blocking disables calls both ways: never register a blocked
+          // peer's did/handle into the roster or offer to them. See
+          // _onSignalingSignal for the other half (never accept an offer
+          // FROM them either).
+          if (lively.identity.did.isBlocked(p.did, p.handle)) { self._blockedPeerIds[p.peerId] = true; return; }
           self._peerMeta[p.peerId] = { did: p.did, handle: p.handle };
           self._didToPeerId[p.did] = p.peerId;
           self._maybeInitiateTo(p.peerId);
@@ -2544,6 +2618,7 @@ module("lively.identity.RoomView")
       },
 
       _onSignalingPeerJoined: function (data) {
+        if (lively.identity.did.isBlocked(data.did, data.handle)) { this._blockedPeerIds[data.peerId] = true; return; }
         this._peerMeta[data.peerId] = { did: data.did, handle: data.handle };
         this._didToPeerId[data.did] = data.peerId;
         this._scheduleRosterRefresh();
@@ -2551,6 +2626,7 @@ module("lively.identity.RoomView")
       },
 
       _onSignalingPeerLeft: function (data) {
+        delete this._blockedPeerIds[data.peerId];
         this._teardownPeerConnection(data.peerId);
         this._scheduleRosterRefresh();
       },
@@ -2781,6 +2857,14 @@ module("lively.identity.RoomView")
       _onSignalingSignal: function (data) {
         var peerId = data.from;
         var signal = data.signal;
+        // A blocked peer's client doesn't know it's blocked and may still
+        // send an unsolicited offer — _onOffer (below) would otherwise
+        // unconditionally create a real RTCPeerConnection for it regardless
+        // of _peerMeta/_blockedPeerIds, since it never consults them. This
+        // is the actual enforcement point for "never accept their offer
+        // either"; _onSignalingPeerJoined/_onSignalingJoined above only
+        // cover "never offer to them".
+        if (this._blockedPeerIds[peerId]) return;
         if (signal.type === "offer") return this._onOffer(peerId, signal);
         var peer = this._signalingPeers[peerId];
         if (!peer) return; // for a peer we no longer have a pc for -- drop

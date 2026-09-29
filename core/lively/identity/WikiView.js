@@ -393,7 +393,9 @@ module("lively.identity.WikiView")
             var localPt = lively.pt(elRect.left - shapeRect.left, elRect.bottom - shapeRect.top);
             var worldPos = self.worldPoint(localPt);
             lively.require("lively.identity.MiniProfileCard").toRun(function () {
-              lively.identity.MiniProfileCard.open(handle, did, worldPos);
+              lively.identity.MiniProfileCard.open(handle, did, worldPos, {
+                constellationName: self._constellation,
+              });
             });
           });
         },

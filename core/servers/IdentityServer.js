@@ -2488,17 +2488,30 @@ module.exports = function (route, app) {
       var recipientDid   = resolved ? resolved.did : null;
       var inboxHandle     = resolved ? resolved.primaryHandle : null;
 
-      // Load settings unconditionally — even for an unknown handle — so the
-      // response timing is the same shape regardless of outcome.
+      // Load both the recipient's AND the sender's own settings — even for
+      // an unknown handle — so the response shape/timing stays the same
+      // regardless of outcome. Blocking disables interaction both ways: the
+      // recipient's list already gated "they blocked me"; the sender's own
+      // list here additionally gates "I blocked them", which nothing
+      // enforced before (a sender could still successfully mail someone
+      // they'd blocked).
       objectRepo.getSettingsForDid(recipientDid || null, function (err2, settingsEnv) {
+        objectRepo.getSettingsForDid(senderDid, function (errSenderSettings, senderSettingsEnv) {
         var settings = (settingsEnv && settingsEnv.state) || {};
         var blockedDids    = settings.blockedDids    || [];
         var blockedHandles = settings.blockedHandles || [];
 
-        var isBlocked = !unknownHandle && (
-          blockedDids.indexOf(senderDid) !== -1 ||
-          (senderHandle && blockedHandles.indexOf(senderHandle) !== -1)
+        var senderSettings = (!errSenderSettings && senderSettingsEnv && senderSettingsEnv.state) || {};
+        var senderBlockedDids    = senderSettings.blockedDids    || [];
+        var senderBlockedHandles = senderSettings.blockedHandles || [];
+
+        var recipientBlockedSender = blockedDids.indexOf(senderDid) !== -1 ||
+          (senderHandle && blockedHandles.indexOf(senderHandle) !== -1);
+        var senderBlockedRecipient = !unknownHandle && (
+          senderBlockedDids.indexOf(recipientDid) !== -1 ||
+          senderBlockedHandles.indexOf(handle) !== -1
         );
+        var isBlocked = !unknownHandle && (recipientBlockedSender || senderBlockedRecipient);
 
         if (unknownHandle || isBlocked) {
           return _recordDelivery('returned', function () {
@@ -2549,6 +2562,7 @@ module.exports = function (route, app) {
             }
           });
         });
+        }); // closes getSettingsForDid(senderDid, ...)
       });
     });
   });
@@ -5041,15 +5055,116 @@ module.exports = function (route, app) {
             if (err) return res.status(500).json({ error: String(err) });
             var targetHandle = didToHandle[targetDid];
             if (!targetHandle) return res.status(201).json({ ok: true, status: "pending" });
+
+            // Symmetric block check: if the target has blocked the inviting
+            // controller, the invite row is still recorded above (so the
+            // controller-side UI doesn't error), but delivery is silently
+            // skipped — same anti-leak shape as the /inbox route's own
+            // block check: never a distinguishing response, so an invite
+            // can't be used to probe whether someone has blocked you.
+            objectRepo.getSettingsForDid(targetDid, function (errSettings, settingsEnv) {
+              var settings = (settingsEnv && settingsEnv.state) || {};
+              var blockedDids    = settings.blockedDids    || [];
+              var blockedHandles = settings.blockedHandles || [];
+              var targetBlockedInviter = !errSettings && (
+                blockedDids.indexOf(req.identity.did) !== -1 ||
+                (req.identity.handle && blockedHandles.indexOf(req.identity.handle) !== -1)
+              );
+              if (targetBlockedInviter) return res.status(201).json({ ok: true, status: "pending" });
+
+              var record = {
+                objId: objId,
+                senderDid: req.identity.did,
+                senderHandle: req.identity.handle,
+                sentAt: new Date().toISOString(),
+              };
+              objectRepo.putInboxRecord(targetHandle, record, function (err) {
+                if (err) return res.status(500).json({ error: String(err) });
+                res.status(201).json({ ok: true, status: "pending" });
+              });
+            });
+          });
+        });
+      });
+    });
+  });
+
+  // ─── profile flags (MiniProfileCard.js's "Flag Profile" report) ────────────
+  // Same never-server-fabricated postal-rail shape as join-requests/invites
+  // above: the reporter signs+PUTs a postcard (state.kind:'profile-flag') to
+  // their own objId, then POSTs its objId here. Delivery fans out directly to
+  // the resolved controller set via objectRepo.putInboxRecord — deliberately
+  // bypassing each controller's own block list (same reasoning as
+  // join-requests/invites), so a reported user can't block every controller
+  // in advance to suppress a report about themselves.
+  //
+  // Body: { objId, targetDid, roomId (optional) }. roomId, when given, adds
+  // that room's creator to the controller set (canManageRoom's own
+  // reasoning for "who manages this room") — a room-scoped report reaches
+  // both the constellation's controllers and the room's own creator, not
+  // just one or the other.
+  app.post("/c/:name/flags", auth.requireAuth, function (req, res) {
+    var name      = req.params.name;
+    var objId     = req.body && req.body.objId;
+    var targetDid = req.body && req.body.targetDid;
+    var roomId    = req.body && req.body.roomId ? parseInt(req.body.roomId, 10) : null;
+    if (!objId || !targetDid) {
+      return res.status(400).json({ error: "Missing required field(s): objId, targetDid" });
+    }
+
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+
+      objectRepo.get(objId, function (err, envelope) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!envelope) return res.status(404).json({ error: "Post card not found: " + objId });
+        if (envelope.did !== req.identity.did) {
+          return res.status(403).json({ error: "Forbidden: you do not own this post card" });
+        }
+        if (envelope.type !== "postcard" ||
+            !envelope.state || envelope.state.kind !== "profile-flag" ||
+            envelope.constellation !== name) {
+          return res.status(400).json({
+            error: "objId must be a postcard with state.kind='profile-flag' and constellation='" + name + "'",
+          });
+        }
+
+        function withRoomCreator(thenDo) {
+          if (!roomId) return thenDo(null, null);
+          constellationRegistry.getRoom(roomId, function (err, room) {
+            if (err) return thenDo(err);
+            thenDo(null, (room && room.constellation === name) ? room.createdBy : null);
+          });
+        }
+
+        withRoomCreator(function (err, roomCreatorDid) {
+          if (err) return res.status(500).json({ error: String(err) });
+          var controllerDids = (constellation.controllers || []).slice();
+          if (roomCreatorDid && controllerDids.indexOf(roomCreatorDid) === -1) controllerDids.push(roomCreatorDid);
+
+          _resolveHandlesForDids(controllerDids, function (err, didToHandle) {
+            if (err) return res.status(500).json({ error: String(err) });
             var record = {
               objId: objId,
               senderDid: req.identity.did,
               senderHandle: req.identity.handle,
               sentAt: new Date().toISOString(),
             };
-            objectRepo.putInboxRecord(targetHandle, record, function (err) {
-              if (err) return res.status(500).json({ error: String(err) });
-              res.status(201).json({ ok: true, status: "pending" });
+            var controllerHandles = controllerDids
+              .map(function (did) { return didToHandle[did]; })
+              .filter(Boolean);
+            var remaining = controllerHandles.length;
+            if (!remaining) return res.status(201).json({ ok: true });
+            var firstErr = null;
+            controllerHandles.forEach(function (controllerHandle) {
+              objectRepo.putInboxRecord(controllerHandle, record, function (err) {
+                if (err) firstErr = firstErr || err;
+                if (--remaining === 0) {
+                  if (firstErr) return res.status(500).json({ error: String(firstErr) });
+                  res.status(201).json({ ok: true });
+                }
+              });
             });
           });
         });

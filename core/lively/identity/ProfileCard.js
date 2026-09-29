@@ -214,6 +214,10 @@ module("lively.identity.ProfileCard")
       _sendConstellationInvite: function _sendConstellationInvite(constellationName, targetDid, targetHandle) {
         var user = lively.identity.did.currentUser();
         if (!user) return;
+        // Defensive re-check: the friend-nameplate menu already omits this
+        // item for a blocked target, but the menu can go stale if a block
+        // was applied elsewhere while it stayed open.
+        if (lively.identity.did.isBlocked(targetDid, targetHandle)) return;
         lively.require("lively.identity.PostCardSerializer").toRun(function () {
           var doc = {
             type: "doc",
@@ -1027,11 +1031,16 @@ module("lively.identity.ProfileCard")
                     var pn    = pnl && pnl.owner;
                     var w     = pn && pn.owner;
                     var pos   = btn.worldPoint(lively.pt(0, btn.getExtent().y));
-                    var items = [
-                      ["Invite to constellation…", function () {
+                    var items = [];
+                    // Blocking someone disables all interactions both ways,
+                    // including inviting them — see DID.js's isBlocked/
+                    // MiniProfileCard.js's Block menu item.
+                    if (!lively.identity.did.isBlocked(did, hndl)) {
+                      items.push(["Invite to constellation…", function () {
                         if (w) w._openInviteToConstellationPicker(did, hndl, pos);
-                      }],
-                    ];
+                      }]);
+                    }
+                    if (!items.length) return true; // nothing to offer; don't open an empty menu
                     btn._openMenu = lively.morphic.Menu.openAt(pos, '@' + (hndl || did), items);
                     evt.stop();
                     return true;
