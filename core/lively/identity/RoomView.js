@@ -61,13 +61,19 @@ module("lively.identity.RoomView")
   )
   .toRun(function () {
 
-    var BG_MAIN    = Color.rgb(0x36, 0x05, 0x38);     // #360538 — chat area
-    var BG_SIDEBAR = Color.rgb(0x63, 0x09, 0x67);     // #630967 — header + members panel
-    var BG_INPUT   = Color.rgb(0x63, 0x09, 0x67);     // #630967 — message input pill
+    var BG_MAIN    = Color.rgb(0xA8, 0x7B, 0xED);     // #A87BED — chat area (light two-tone experiment)
+    var BG_SIDEBAR = Color.rgb(0x63, 0x09, 0x67);     // #630967 — header + members panel (dark tone)
+    var BG_INPUT   = Color.rgb(0x63, 0x09, 0x67);     // #630967 — message input pill (dark tone)
     var BG_ROW_HOVER = Color.rgba(255, 255, 255, 0.04);
     var TEXT_PRIMARY = Color.rgb(242, 243, 245);
     var TEXT_MUTED   = Color.rgb(148, 155, 164);
     var TEXT_FAINT   = Color.rgb(114, 118, 125);
+    // Dark-on-light variants for content sitting directly on the now-light
+    // BG_MAIN chat area (message list) — TEXT_PRIMARY/MUTED/FAINT above stay
+    // near-white for the dark BG_SIDEBAR/BG_INPUT surfaces, which still need them.
+    var CHAT_TEXT_PRIMARY = Color.rgb(43, 20, 63);
+    var CHAT_TEXT_MUTED   = Color.rgb(90, 66, 122);
+    var CHAT_TEXT_FAINT   = Color.rgb(124, 100, 158);
     var ACCENT = Color.rgb(79, 11, 67);       // #4F0B43 — matches ConstellationLounge's ROOM_ACCENT
     var DANGER = Color.rgb(242, 63, 66);
     var ONLINE = Color.rgb(35, 165, 89);
@@ -485,6 +491,33 @@ module("lively.identity.RoomView")
         this._railTimer = setInterval(function () {
           if (!self._roomLeft && self._roomsPanelBox && !document.hidden) self._fetchRoomsList();
         }, RAIL_POLL_MS);
+      },
+
+      // One-time scrollbar recolor for this view's three scrollable panels
+      // (rooms rail, chat message list, members) — same idiom as
+      // ConstellationLounge.js's _ensureCommentBodyStyle: a single injected
+      // <style> tag (guarded by id so re-opening the view doesn't duplicate
+      // it), with each scrollable box's shapeNode tagged with one of two
+      // classes depending on which BG it sits on. "-dark" pairs a light
+      // purple (BG_MAIN's own A87BED) thumb against the BG_SIDEBAR track for
+      // the rail/members panels; "-light" inverts that — a dark ACCENT thumb
+      // against the now-light BG_MAIN track — for the chat message list.
+      _ensureScrollbarStyle: function () {
+        if (document.getElementById("roomview-scrollbar-style")) return;
+        var styleEl = document.createElement("style");
+        styleEl.id = "roomview-scrollbar-style";
+        styleEl.textContent =
+          ".roomview-scroll-dark{scrollbar-width:thin;scrollbar-color:#A87BED #4F0B43;}" +
+          ".roomview-scroll-dark::-webkit-scrollbar{width:10px;}" +
+          ".roomview-scroll-dark::-webkit-scrollbar-track{background:#4F0B43;}" +
+          ".roomview-scroll-dark::-webkit-scrollbar-thumb{background:#A87BED;border-radius:999px;border:2px solid #4F0B43;}" +
+          ".roomview-scroll-dark::-webkit-scrollbar-thumb:hover{background:#C3A6F5;}" +
+          ".roomview-scroll-light{scrollbar-width:thin;scrollbar-color:#4F0B43 #A87BED;}" +
+          ".roomview-scroll-light::-webkit-scrollbar{width:10px;}" +
+          ".roomview-scroll-light::-webkit-scrollbar-track{background:#A87BED;}" +
+          ".roomview-scroll-light::-webkit-scrollbar-thumb{background:#4F0B43;border-radius:999px;border:2px solid #A87BED;}" +
+          ".roomview-scroll-light::-webkit-scrollbar-thumb:hover{background:#38082F;}";
+        document.head.appendChild(styleEl);
       },
 
       // Brings the window forward (expanding it if minimized), or rebuilds it
@@ -977,6 +1010,8 @@ module("lively.identity.RoomView")
         var panel = noDrag(new lively.morphic.Box(lively.rect(
           this._originX, this._originY + HEADER_H, ROOMS_PANEL_W, BODY_H)));
         panel.applyStyle({ fill: BG_SIDEBAR, borderWidth: 0, clipMode: "auto" });
+        this._ensureScrollbarStyle();
+        panel.renderContext().shapeNode.classList.add("roomview-scroll-dark");
         this._viewRoot.addMorph(panel);
         this._roomsPanelBox = panel;
 
@@ -1188,6 +1223,8 @@ module("lively.identity.RoomView")
         var listH = BODY_H - INPUT_H;
         var list = noDrag(new lively.morphic.Box(lively.rect(0, 0, CHAT_W, listH)));
         list.applyStyle({ fill: null, borderWidth: 0, clipMode: "auto" });
+        this._ensureScrollbarStyle();
+        list.renderContext().shapeNode.classList.add("roomview-scroll-light");
         chat.addMorph(list);
         this._msgListBox = list;
 
@@ -1612,7 +1649,7 @@ module("lively.identity.RoomView")
         if (this._searchActive && !list.length) {
           var empty = noDrag(lively.morphic.Text.makeLabel(
             this._searchQuery ? "No messages found." : "Type to search this cluster's message history.",
-            { fontSize: 13, textColor: TEXT_MUTED }
+            { fontSize: 13, textColor: CHAT_TEXT_MUTED }
           ));
           empty.eventsAreIgnored = true;
           empty.setExtent(lively.pt(self._chatW - PAD * 2, 20));
@@ -1626,7 +1663,7 @@ module("lively.identity.RoomView")
           // expand); mute collapses to one line with a click-to-expand
           // toggle. See CLAUDE.md's Ignore/Mute assumption note in DID.js.
           if (lively.identity.did.isBlocked(msg.did, msg.handle)) {
-            var lockAv = noDrag(lively.morphic.Text.makeLabel("lock", { fontSize: 16, textColor: TEXT_MUTED }));
+            var lockAv = noDrag(lively.morphic.Text.makeLabel("lock", { fontSize: 16, textColor: CHAT_TEXT_MUTED }));
             lockAv.applyStyle({ fontFamily: "'Material Symbols Rounded'", borderWidth: 0, fill: null, align: "center" });
             lockAv.eventsAreIgnored = true;
             lockAv.setExtent(lively.pt(AVATAR_MSG, AVATAR_MSG));
@@ -1634,7 +1671,7 @@ module("lively.identity.RoomView")
             self._msgListBox.addMorph(lockAv);
 
             var blockedLabel = noDrag(lively.morphic.Text.makeLabel("Message from blocked profile", {
-              fontSize: 12, textColor: TEXT_MUTED, fixedWidth: true, fixedHeight: true,
+              fontSize: 12, textColor: CHAT_TEXT_MUTED, fixedWidth: true, fixedHeight: true,
             }));
             blockedLabel.eventsAreIgnored = true;
             blockedLabel.setExtent(lively.pt(self._chatW - PAD * 2 - AVATAR_MSG - 8, AVATAR_MSG));
@@ -1664,7 +1701,7 @@ module("lively.identity.RoomView")
           var headText = "@" + (msg.handle || "unknown") + "   " + self._formatTime(msg.created) +
             (isMuted ? "   (ignored" + (muteExpanded ? " — showing)" : ", click to show)") : "");
           var headM = noDrag(lively.morphic.Text.makeLabel(headText, {
-            fontSize: 12, fontWeight: "700", textColor: isMuted ? TEXT_MUTED : TEXT_PRIMARY, fixedWidth: true, fixedHeight: true,
+            fontSize: 12, fontWeight: "700", textColor: isMuted ? CHAT_TEXT_MUTED : CHAT_TEXT_PRIMARY, fixedWidth: true, fixedHeight: true,
           }));
           headM.eventsAreIgnored = !isMuted;
           if (isMuted) {
@@ -1692,7 +1729,7 @@ module("lively.identity.RoomView")
             var oneLine = (msg.text || "").replace(/\s+/g, " ").trim();
             if (oneLine.length > 60) oneLine = oneLine.slice(0, 59) + "…";
             var collapsedM = noDrag(lively.morphic.Text.makeLabel(oneLine, {
-              fontSize: 13, textColor: TEXT_FAINT, fixedWidth: true, fixedHeight: true, whiteSpaceHandling: "pre",
+              fontSize: 13, textColor: CHAT_TEXT_FAINT, fixedWidth: true, fixedHeight: true, whiteSpaceHandling: "pre",
             }));
             collapsedM.eventsAreIgnored = true;
             collapsedM.setExtent(lively.pt(bw, 18));
@@ -1730,7 +1767,7 @@ module("lively.identity.RoomView")
               var flagNode = bodyBox.renderContext().shapeNode;
               flagNode.style.fontFamily = "Helvetica";
               flagNode.style.fontSize = "13px";
-              flagNode.style.color = "rgb(219, 222, 225)";
+              flagNode.style.color = "rgb(43, 20, 63)";
               flagNode.style.wordBreak = "break-word";
               flagNode.innerHTML = self._messageBodyHtml(flagSegments);
               bh = flagNode.scrollHeight || 18;
@@ -1738,7 +1775,7 @@ module("lively.identity.RoomView")
               bh = bh + 4;
             } else {
               var bodyM = noDrag(lively.morphic.Text.makeLabel(msg.text, {
-                fontSize: 13, textColor: Color.rgb(219, 222, 225), fixedWidth: true, fixedHeight: true,
+                fontSize: 13, textColor: CHAT_TEXT_PRIMARY, fixedWidth: true, fixedHeight: true,
                 // makeLabel's default is white-space:pre, which never wraps: a long
                 // message ran off the panel edge instead of wrapping onto more lines.
                 whiteSpaceHandling: "pre-wrap",
@@ -1775,6 +1812,8 @@ module("lively.identity.RoomView")
         var panel = noDrag(new lively.morphic.Box(lively.rect(
           this._originX + CHAT_X_OFFSET + CHAT_W + PANEL_GAP, this._originY + HEADER_H, MEMBERS_W, BODY_H)));
         panel.applyStyle({ fill: BG_SIDEBAR, borderWidth: 0, clipMode: "auto" });
+        this._ensureScrollbarStyle();
+        panel.renderContext().shapeNode.classList.add("roomview-scroll-dark");
         this._viewRoot.addMorph(panel);
         this._membersBox = panel;
 
