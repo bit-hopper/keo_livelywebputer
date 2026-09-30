@@ -1565,6 +1565,10 @@ module("lively.identity.RoomView")
         return h + ":" + (m < 10 ? "0" : "") + m + " " + ampm;
       },
 
+      _formatDividerDate: function (isoOrTs) {
+        return new Date(isoOrTs).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
+      },
+
       // Persistent rooms only — the header's search icon button toggles
       // this. Opening pauses live polling (_loadMessages's own guard) so a
       // poll tick can't clobber the search results mid-view; closing drops
@@ -1685,8 +1689,50 @@ module("lively.identity.RoomView")
           row.onMouseOut = function () { row.applyStyle({ fill: null }); };
           return row;
         }
+        // Discord-style day-boundary divider: a centered date label flanked
+        // by thin rule lines. Text width is measured off the real rendered
+        // <span> right after addMorph (same same-tick measurement idiom
+        // already relied on below for message body height, ~bodyM) rather
+        // than guessed, so the flanking lines meet the text edges cleanly
+        // regardless of date-string length/locale.
+        function renderDateDivider(top, iso) {
+          var DIV_H = 20, DIV_MARGIN = 10;
+          var divRow = noDrag(new lively.morphic.Box(lively.rect(0, top + DIV_MARGIN, self._chatW, DIV_H)));
+          divRow.applyStyle({ fill: null, borderWidth: 0 });
+          divRow.eventsAreIgnored = true;
+          self._msgListBox.addMorph(divRow);
+
+          var label = noDrag(lively.morphic.Text.makeLabel(self._formatDividerDate(iso), {
+            fontSize: 11, fontWeight: "600", textColor: CHAT_TEXT_MUTED, fixedWidth: true, fixedHeight: true,
+          }));
+          label.eventsAreIgnored = true;
+          label.setExtent(lively.pt(260, DIV_H));
+          divRow.addMorph(label);
+          var span = label.renderContext().shapeNode.querySelector("span");
+          var textW = (span && span.offsetWidth) || 140;
+          label.setExtent(lively.pt(textW + 8, DIV_H));
+          label.setPosition(lively.pt(Math.round((self._chatW - textW) / 2) - 4, 0));
+
+          var lineColor = Color.rgba(124, 100, 158, 0.35);
+          var lineY = Math.round(DIV_H / 2);
+          var lineGap = 10;
+          var lineW = Math.round((self._chatW - textW) / 2) - lineGap - PAD;
+          if (lineW > 0) {
+            var leftLine = noDrag(new lively.morphic.Box(lively.rect(PAD, lineY, lineW, 1)));
+            leftLine.applyStyle({ fill: lineColor, borderWidth: 0 });
+            leftLine.eventsAreIgnored = true;
+            divRow.addMorph(leftLine);
+            var rightLine = noDrag(new lively.morphic.Box(lively.rect(self._chatW - PAD - lineW, lineY, lineW, 1)));
+            rightLine.applyStyle({ fill: lineColor, borderWidth: 0 });
+            rightLine.eventsAreIgnored = true;
+            divRow.addMorph(rightLine);
+          }
+
+          return top + DIV_MARGIN + DIV_H + DIV_MARGIN;
+        }
         if (this._searchActive) y = this._renderSearchBar(y);
         var list = this._searchActive ? (this._searchResults || []) : this._messages;
+        var lastDayKey = null;
         if (this._searchActive && !list.length) {
           var empty = noDrag(lively.morphic.Text.makeLabel(
             this._searchQuery ? "No messages found." : "Type to search this cluster's message history.",
@@ -1698,6 +1744,13 @@ module("lively.identity.RoomView")
           self._msgListBox.addMorph(empty);
         }
         list.forEach(function (msg) {
+          if (!self._searchActive) {
+            var dayKey = new Date(msg.created).toDateString();
+            if (dayKey !== lastDayKey) {
+              y = renderDateDivider(y, msg.created);
+              lastDayKey = dayKey;
+            }
+          }
           // Block/mute gating (DID.js's relationships category) — checked
           // per-message since each carries its own sender did/handle.
           // Block fully hides content (fixed-height placeholder, no
