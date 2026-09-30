@@ -188,6 +188,7 @@ module("lively.identity.RoomView")
         this._memberStatuses = {}; // did -> {status, expiresAt}, refined async by _fetchMemberStatuses
         this._messages = [];      // [{objId, did, handle, text, created}], real (see "chat" category)
         this._mutedExpanded = {}; // key -> true, see _renderMessages' mute-collapse handling
+        this._mediaDims = {};     // media msg.text (its URL) -> {w, h} once loaded, see _renderMessages' media branch
         this._messagePollTimer = null;
         this._searchActive = false; // persistent rooms only — see _toggleSearch/_performSearch
         this._searchQuery = "";
@@ -1642,7 +1643,13 @@ module("lively.identity.RoomView")
         var self = this;
         (this._msgListBox.submorphs || []).slice().forEach(function (m) { m.remove(); });
 
-        var PAD = 16, ROW_GAP = 14;
+        // Small breathing room between the "@handle  time" header line and
+        // the message body below it. Plain text gets away without this (its
+        // own font line-height already reads as a bit of a gap), but a media
+        // row's hard rectangular top edge sat flush against the header
+        // (confirmed live: both at the exact same pixel row) and read as
+        // cramped/touching rather than a clean two-line message.
+        var PAD = 16, ROW_GAP = 14, HEAD_GAP = 4;
         var y = 12;
         if (this._searchActive) y = this._renderSearchBar(y);
         var list = this._searchActive ? (this._searchResults || []) : this._messages;
@@ -1733,7 +1740,7 @@ module("lively.identity.RoomView")
             }));
             collapsedM.eventsAreIgnored = true;
             collapsedM.setExtent(lively.pt(bw, 18));
-            collapsedM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, y + 20));
+            collapsedM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, y + 20 + HEAD_GAP));
             self._msgListBox.addMorph(collapsedM);
             bh = 18 + 4;
           } else if (self._isMediaMessage(msg.text)) {
@@ -1741,17 +1748,34 @@ module("lively.identity.RoomView")
             // own message "text" is just the media's own URL (no schema
             // change needed: the room-message envelope's state.title is
             // already a plain string, see ObjectRepository.js's
-            // listMessagesForRoom). MEDIA_ROW_H is reserved up front (not
-            // measured after load) so the cumulative `y` layout below stays
-            // synchronous even though the image itself loads async;
-            // keepAspectRatio + matching maxWidth/maxHeight only ever
-            // shrinks the morph to fit inside that reserved box, never
-            // grows it into the next message.
-            bh = MEDIA_ROW_H;
-            var mediaM = noDrag(new lively.morphic.Image(lively.rect(PAD + AVATAR_MSG + 8, y + 20, bw, bh)));
+            // listMessagesForRoom). The real aspect ratio isn't known until
+            // the image loads, so the first time a given URL is rendered
+            // this reserves the generous MEDIA_ROW_H placeholder (keeping
+            // this render pass synchronous) and lets setImageURL's own
+            // maxWidth/maxHeight/keepAspectRatio shrink the morph down once
+            // loaded — but that placeholder height used to stick around
+            // permanently even after the shrink, leaving a dead gap below
+            // any image shorter than 190px (confirmed live: a 480x268 GIF
+            // capped to 220px wide rendered 123px tall, leaving ~67px of
+            // empty space before the next message). _mediaDims caches the
+            // real loaded extent by URL and triggers one re-render so the
+            // row collapses to the image's own size from then on.
+            var mw = Math.min(bw, 220);
+            var cachedDims = self._mediaDims[msg.text];
+            bh = cachedDims ? cachedDims.h : MEDIA_ROW_H;
+            var mediaM = noDrag(new lively.morphic.Image(lively.rect(
+              PAD + AVATAR_MSG + 8, y + 20 + HEAD_GAP,
+              cachedDims ? cachedDims.w : mw, bh)));
             mediaM.applyStyle({ borderRadius: 6, borderWidth: 0, clipMode: "hidden" });
             mediaM.eventsAreIgnored = true;
-            mediaM.setImageURL(msg.text, { maxWidth: Math.min(bw, 220), maxHeight: bh, keepAspectRatio: true });
+            mediaM.setImageURL(msg.text, { maxWidth: mw, maxHeight: MEDIA_ROW_H, keepAspectRatio: true }, function (err, imgMorph) {
+              if (err || !self._msgListBox) return;
+              var ext = imgMorph.getExtent();
+              var next = { w: Math.round(ext.x), h: Math.round(ext.y) };
+              var prev = self._mediaDims[msg.text];
+              self._mediaDims[msg.text] = next;
+              if (!prev || prev.w !== next.w || prev.h !== next.h) self._renderMessages();
+            });
             self._msgListBox.addMorph(mediaM);
           } else {
             var flagSegments = self._splitFlagRuns(msg.text);
@@ -1760,7 +1784,7 @@ module("lively.identity.RoomView")
               // Raw-HTML path (see _messageBodyHtml's own comment) — a
               // plain Box, not a Text morph, since the flag <img>s need to
               // sit inline in the browser's own native text flow.
-              var bodyBox = noDrag(new lively.morphic.Box(lively.rect(PAD + AVATAR_MSG + 8, y + 20, bw, 1)));
+              var bodyBox = noDrag(new lively.morphic.Box(lively.rect(PAD + AVATAR_MSG + 8, y + 20 + HEAD_GAP, bw, 1)));
               bodyBox.applyStyle({ fill: null, borderWidth: 0 });
               bodyBox.eventsAreIgnored = true;
               self._msgListBox.addMorph(bodyBox);
@@ -1786,12 +1810,12 @@ module("lively.identity.RoomView")
               var inner = bodyM.renderContext().shapeNode.querySelector("div");
               bh = inner ? inner.offsetHeight : 18;
               bodyM.setExtent(lively.pt(bw, bh + 4));
-              bodyM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, y + 20));
+              bodyM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, y + 20 + HEAD_GAP));
               bh = bh + 4;
             }
           }
 
-          y += 20 + bh + ROW_GAP;
+          y += 20 + HEAD_GAP + bh + ROW_GAP;
         });
 
         var scrollNode = this._msgListBox.renderContext().shapeNode;
