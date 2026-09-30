@@ -1280,19 +1280,21 @@ module("lively.identity.PostCardView")
         },
 
         // The two fixed reactions, always shown (count appended once
-        // non-zero). One reaction per user, so picking one replaces the
-        // other; clicking your own again removes it. Signed-out viewers see
-        // the counts but can't react.
+        // non-zero). This view treats them as one reaction slot -- picking
+        // one replaces the other; clicking your own again removes it --
+        // even though postcard_reactions' shared table now allows a did to
+        // stack several different emoji generically (added for room chat
+        // reactions). Signed-out viewers see the counts but can't react.
         _renderReactionPills: function (data) {
           var self = this;
           this._pillsWrapEl.innerHTML = "";
           var counts = data.counts || {};
-          var mine = data.mine || null;
+          var mine = data.mine || [];
           var currentUser = lively.identity.did.currentUser();
           var toAnimate = null;
 
           ["⭐", "🪿"].forEach(function (emoji) {
-            var isMine = emoji === mine;
+            var isMine = mine.indexOf(emoji) !== -1;
             var n = counts[emoji] || 0;
             var pill = document.createElement("button");
             // The emoji sits in its own inline-block span so the pop/spin
@@ -1318,12 +1320,12 @@ module("lively.identity.PostCardView")
                 e.preventDefault();
                 e.stopPropagation();
                 if (t !== "click" || !currentUser) return;
-                if (isMine) self._deleteMyReaction();
+                if (isMine) self._deleteMyReaction(emoji);
                 else {
                   // Played once the re-render after the PUT lands, since
                   // that rebuilds every pill (see below).
                   self._pendingReactionAnim = emoji;
-                  self._putReaction(emoji);
+                  self._putReaction(emoji, mine);
                 }
               });
             });
@@ -1417,28 +1419,44 @@ module("lively.identity.PostCardView")
           }, 650);
         },
 
-        _putReaction: function (emoji) {
+        // previousMine: the viewer's current reactions (from the last load)
+        // among the two offered emoji -- cleared first so this view keeps
+        // acting as a single reaction slot rather than stacking.
+        _putReaction: function (emoji, previousMine) {
           var self = this;
           var base = lively.identity.did.baseUrl();
-          var url =
+          var putUrl =
             base + "/@" + encodeURIComponent(this._handle) + "/" +
             encodeURIComponent(this._objId) + "/reactions";
-          fetch(url, {
-            method: "PUT",
-            credentials: "include",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ emoji: emoji }),
-          })
-            .then(function () { self._loadReactions(); })
-            .catch(function () {});
+          function doPut() {
+            fetch(putUrl, {
+              method: "PUT",
+              credentials: "include",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ emoji: emoji }),
+            })
+              .then(function () { self._loadReactions(); })
+              .catch(function () {});
+          }
+          var others = (previousMine || []).filter(function (e) { return e !== emoji; });
+          if (!others.length) return doPut();
+          var remaining = others.length;
+          others.forEach(function (e) {
+            var delUrl =
+              base + "/@" + encodeURIComponent(self._handle) + "/" +
+              encodeURIComponent(self._objId) + "/reactions/" + encodeURIComponent(e);
+            fetch(delUrl, { method: "DELETE", credentials: "include" })
+              .then(function () { if (--remaining === 0) doPut(); })
+              .catch(function () { if (--remaining === 0) doPut(); });
+          });
         },
 
-        _deleteMyReaction: function () {
+        _deleteMyReaction: function (emoji) {
           var self = this;
           var base = lively.identity.did.baseUrl();
           var url =
             base + "/@" + encodeURIComponent(this._handle) + "/" +
-            encodeURIComponent(this._objId) + "/reactions/self";
+            encodeURIComponent(this._objId) + "/reactions/" + encodeURIComponent(emoji);
           fetch(url, { method: "DELETE", credentials: "include" })
             .then(function () { self._loadReactions(); })
             .catch(function () {});

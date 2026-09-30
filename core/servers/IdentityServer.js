@@ -3145,8 +3145,11 @@ module.exports = function (route, app) {
 
   // ─── reactions (PostcardDesignSpec-v2.md §5.1) ─────────────────────────────
   // Sub-route under /:objId, same ordering rationale as /replies above.
-  // Misskey semantics: one reaction per user per card, replacing rather than
-  // stacking (enforced by postcard_reactions' PRIMARY KEY (obj_id, did)).
+  // A did may hold several different emoji reactions on the same card at
+  // once (Discord-style stacking) -- enforced by postcard_reactions'
+  // PRIMARY KEY (obj_id, did, emoji). Was originally "Misskey semantics"
+  // (one reaction per user, replacing rather than stacking, PK (obj_id,
+  // did)) before room-message chat reactions needed real multi-reaction.
 
   app.put("/@:handle/:objId/reactions", auth.requireAuth, function (req, res) {
     var objId = req.params.objId;
@@ -3175,9 +3178,16 @@ module.exports = function (route, app) {
     });
   });
 
-  app.delete("/@:handle/:objId/reactions/self", auth.requireAuth, function (req, res) {
+  // Path param, not a body -- DELETE-with-body has inconsistent
+  // proxy/browser support, and every other emoji-scoped route in this file
+  // (the PUT above) already takes emoji as an ordinary value, not
+  // identified by "self" the way a single-reaction model could get away
+  // with. A did may now hold several reactions on one card, so removing
+  // "self's" reaction is ambiguous without saying which emoji.
+  app.delete("/@:handle/:objId/reactions/:emoji", auth.requireAuth, function (req, res) {
     var objId = req.params.objId;
-    objectRepo.deleteReaction(objId, req.identity.did, function (err) {
+    var emoji = req.params.emoji;
+    objectRepo.deleteReaction(objId, req.identity.did, emoji, function (err) {
       if (err) return res.status(500).json({ error: String(err) });
       res.json({ ok: true });
     });
@@ -3196,11 +3206,11 @@ module.exports = function (route, app) {
 
         var counts = {};
         var byEmojiDids = {};
-        var mine = null;
+        var mine = [];
         rows.forEach(function (r) {
           counts[r.emoji] = (counts[r.emoji] || 0) + 1;
           (byEmojiDids[r.emoji] = byEmojiDids[r.emoji] || []).push(r.did);
-          if (req.identity && r.did === req.identity.did) mine = r.emoji;
+          if (req.identity && r.did === req.identity.did) mine.push(r.emoji);
         });
 
         // Resolve dids -> handles server-side so the hover-to-see-who-reacted
@@ -3496,6 +3506,16 @@ module.exports = function (route, app) {
   // via record.recipients (see GET above / addRecipient), not write access.
   // Co-editing shared objects is a future iteration, not implied by "shared".
 
+  // Used only by the room-message mod-delete exception below: true iff
+  // incomingState is existingState with nothing changed except state.deleted
+  // being newly set to true — pinning that exception to exactly one shape
+  // so a moderator can't smuggle a content edit in under cover of "delete".
+  function _isPureDeleteTombstone(existingState, incomingState) {
+    if (!incomingState || incomingState.deleted !== true) return false;
+    var expected = Object.assign({}, existingState || {}, { deleted: true });
+    return JSON.stringify(expected) === JSON.stringify(incomingState);
+  }
+
   app.put("/@:handle/:objId", auth.requireAuth, function (req, res) {
     var handle = req.params.handle;
     var objId = req.params.objId;
@@ -3536,7 +3556,18 @@ module.exports = function (route, app) {
     // history, not in this field. Write access for a non-owner is checked
     // further down instead (constellation membership, against the
     // EXISTING stored version).
-    if (envelope.type !== "wikipage" && req.identity.did !== envelope.did) {
+    //
+    // A room-message moderation delete is a second, much narrower
+    // exception, deliberately deferred (not granted) here: this only lets
+    // a tombstone-shaped write reach the real check further down (inside
+    // the existing.type === "postcard" branch), which verifies the
+    // requester is genuinely a controller of that message's room AND that
+    // the write changes nothing but state.deleted before allowing it.
+    // Every other postcard stays strictly owner-only, per §1.1.
+    var isPossibleModDelete = envelope.type === "postcard" &&
+      envelope.state && envelope.state.kind === "room-message" &&
+      envelope.state.deleted === true;
+    if (envelope.type !== "wikipage" && !isPossibleModDelete && req.identity.did !== envelope.did) {
       return res
         .status(403)
         .json({ error: "Forbidden: envelope DID does not match session DID" });
@@ -3861,6 +3892,32 @@ module.exports = function (route, app) {
           });
         }
         if (existing.did === req.identity.did) return _handleRegistryCheckAndWrite();
+
+        // Room-message mod-delete: a room controller/creator may tombstone
+        // another member's message. Deliberately narrow — every other
+        // postcard kind, and any write that isn't a pure delete tombstone
+        // of an unchanged-content row, still falls through to the 403
+        // below. existing.record.cid === envelope.record.cid confirms the
+        // payload itself is byte-identical (a real content edit changes
+        // the cid and would never reach this branch).
+        if (isPossibleModDelete &&
+            existing.state && existing.state.kind === "room-message" &&
+            existing.record && envelope.record &&
+            existing.record.cid === envelope.record.cid &&
+            _isPureDeleteTombstone(existing.state, envelope.state)) {
+          return constellationRegistry.get(existing.constellation, function (err, constellation) {
+            if (err) return res.status(500).json({ error: String(err) });
+            if (!constellation) return res.status(403).json({ error: "Forbidden" });
+            constellationRegistry.getRoom(Number(existing.state.roomId), function (err, room) {
+              if (err) return res.status(500).json({ error: String(err) });
+              if (!room || !canManageRoom(constellation, room, req.identity.did)) {
+                return res.status(403).json({ error: "Forbidden: not a moderator of this room" });
+              }
+              return _handleRegistryCheckAndWrite();
+            });
+          });
+        }
+
         return res
           .status(403)
           .json({ error: "Forbidden: envelope DID does not match session DID" });
@@ -5122,12 +5179,15 @@ module.exports = function (route, app) {
         if (envelope.did !== req.identity.did) {
           return res.status(403).json({ error: "Forbidden: you do not own this post card" });
         }
-        if (envelope.type !== "postcard" ||
-            !envelope.state || envelope.state.kind !== "profile-flag" ||
-            envelope.constellation !== name) {
+        var validKind = envelope.state &&
+          (envelope.state.kind === "profile-flag" || envelope.state.kind === "message-flag");
+        if (envelope.type !== "postcard" || !validKind || envelope.constellation !== name) {
           return res.status(400).json({
-            error: "objId must be a postcard with state.kind='profile-flag' and constellation='" + name + "'",
+            error: "objId must be a postcard with state.kind='profile-flag' or 'message-flag' and constellation='" + name + "'",
           });
+        }
+        if (envelope.state.kind === "message-flag" && !envelope.state.targetObjId) {
+          return res.status(400).json({ error: "message-flag requires state.targetObjId" });
         }
 
         function withRoomCreator(thenDo) {
@@ -5669,19 +5729,50 @@ module.exports = function (route, app) {
 
           objectRepo.listMessagesForRoom(roomId, { limit: limit, cursor: cursor }, function (err, result) {
             if (err) return res.status(500).json({ error: String(err) });
-            var dids = result.postcards.map(function (m) { return m.did; });
-            _resolveHandlesForDids(dids, function (err, didToHandle) {
+            var objIds = result.postcards.map(function (m) { return m.objId; });
+            // Batched, one query for the whole page -- not a per-row
+            // fetch, since this route is polled every few seconds
+            // (RoomView.js's MESSAGE_POLL_MS).
+            objectRepo.getReactionSummariesForObjIds(objIds, req.identity.did, function (err, reactionsByObjId) {
               if (err) return res.status(500).json({ error: String(err) });
-              var messages = result.postcards.map(function (m) {
-                return {
-                  objId: m.objId,
-                  did: m.did,
-                  handle: didToHandle[m.did] || null,
-                  text: (m.state && m.state.title) || "",
-                  created: m.created,
-                };
+              // One handle-resolution pass for every did we'll need to show
+              // a name for: message authors AND everyone who reacted (the
+              // latter can include dids that never posted in this page).
+              var didSet = {};
+              result.postcards.forEach(function (m) { didSet[m.did] = true; });
+              Object.keys(reactionsByObjId).forEach(function (objId) {
+                var byEmoji = reactionsByObjId[objId].byEmoji;
+                Object.keys(byEmoji).forEach(function (emoji) {
+                  byEmoji[emoji].forEach(function (did) { didSet[did] = true; });
+                });
               });
-              res.json({ messages: messages, cursor: result.cursor });
+              _resolveHandlesForDids(Object.keys(didSet), function (err, didToHandle) {
+                if (err) return res.status(500).json({ error: String(err) });
+                var messages = result.postcards.map(function (m) {
+                  var reactions = reactionsByObjId[m.objId];
+                  var reactionsOut = { counts: {}, byEmoji: {}, mine: [] };
+                  if (reactions) {
+                    reactionsOut.counts = reactions.counts;
+                    reactionsOut.mine = reactions.mine;
+                    Object.keys(reactions.byEmoji).forEach(function (emoji) {
+                      reactionsOut.byEmoji[emoji] = reactions.byEmoji[emoji].map(function (did) {
+                        return didToHandle[did] ? "@" + didToHandle[did] : did;
+                      });
+                    });
+                  }
+                  return {
+                    objId: m.objId,
+                    did: m.did,
+                    handle: didToHandle[m.did] || null,
+                    text: (m.state && m.state.title) || "",
+                    created: m.created,
+                    editedAt: (m.state && m.state.editedAt) || null,
+                    replyTo: m.replyTo || null,
+                    reactions: reactionsOut,
+                  };
+                });
+                res.json({ messages: messages, cursor: result.cursor });
+              });
             });
           });
         });

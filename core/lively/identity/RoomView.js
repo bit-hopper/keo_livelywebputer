@@ -151,6 +151,10 @@ module("lively.identity.RoomView")
     // room card).
     var ROOM_ROW_AV = 16, ROOM_ROW_OVERLAP = 6, ROOM_ROW_RING = 2, ROOM_ROW_MAX_SHOWN = 3;
     var MESSAGE_POLL_MS = 4000;
+    // Message actions (reactions/replies/edit/delete/flag) — persistent
+    // rooms only, see RoomViewController.initialize's own note on why.
+    var REPLY_STRIP_H = 26;     // extra height _inputRowM grows by while composing a reply
+    var REPLY_PREVIEW_H = 16;   // "Replying to @x: ..." strip rendered above a reply message
     var RAIL_POLL_MS = 8000;   // how often the rooms rail re-reads other rooms' headcounts
     var ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
 
@@ -199,6 +203,14 @@ module("lively.identity.RoomView")
         this._searchResults = null;
         this._sendingMessage = false;
         this._mediaPicker = null; // lazily created by _getMediaPicker on first emoji/GIF button click
+        // Message actions — persistent (non-ephemeral) rooms only, since
+        // reactions/replies/edit/delete/flag all key off a message's real
+        // signed-postcard objId, which ephemeral messages never have.
+        this._reactionPicker = null; // lazily created by _getReactionPicker, a second MediaPickerController instance
+        this._replyingTo = null;     // {objId, handle, snippet} while composing a reply, else null
+        this._replyStripM = null;    // the "Replying to @x" strip morph inside _inputRowM, while _replyingTo is set
+        this._editingObjId = null;   // objId of the message currently being edited inline, else null
+        this._editingDraftText = null; // keystroke-level draft of the in-progress edit, survives a poll-triggered re-render
         this._heartbeatTimer = null;
         // Video surfaces (see "video" category): tiles live in the window's grid
         // panel, circles float on the world while the window is collapsed/closed.
@@ -1194,14 +1206,54 @@ module("lively.identity.RoomView")
           var data;
           try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
           var fetched = (data.messages || []).slice().reverse(); // server returns newest-first; display oldest-first
-          var known = {};
-          self._messages.forEach(function (m) { known[m.objId] = true; });
+          var byObjId = {};
+          self._messages.forEach(function (m) { byObjId[m.objId] = m; });
           var changed = false;
           fetched.forEach(function (m) {
-            if (known[m.objId]) return;
-            self._messages.push(m);
-            changed = true;
+            var existing = byObjId[m.objId];
+            if (!existing) {
+              self._messages.push(m);
+              changed = true;
+              return;
+            }
+            // A poll tick can also bring back a CHANGE to an already-known
+            // message (a reaction, an edit) rather than a brand-new one —
+            // the old version here only ever added new objIds and left
+            // already-known rows untouched, so reactions/edits from other
+            // viewers (or this viewer's own reaction, applied via a
+            // fire-and-forget PUT that never touches this._messages
+            // directly) never showed up until something else happened to
+            // trigger a full reload.
+            if (existing.editedAt !== m.editedAt || existing.text !== m.text ||
+                JSON.stringify(existing.reactions) !== JSON.stringify(m.reactions) ||
+                JSON.stringify(existing.replyTo) !== JSON.stringify(m.replyTo)) {
+              existing.editedAt = m.editedAt;
+              existing.text = m.text;
+              existing.reactions = m.reactions;
+              existing.replyTo = m.replyTo;
+              changed = true;
+            }
           });
+          // A message can also disappear (deleted, by its author or a
+          // moderator) — pruned here so a deletion elsewhere shows up on
+          // the next poll tick too, not just new/edited messages. Scoped
+          // to the created-time window this fetch actually covers (the
+          // route always returns the newest 50, not the full history), so
+          // an older message that's simply outside THIS page isn't
+          // mistaken for a deleted one.
+          if (fetched.length) {
+            var fetchedIds = {};
+            fetched.forEach(function (m) { fetchedIds[m.objId] = true; });
+            var minT = new Date(fetched[0].created).getTime();
+            var maxT = new Date(fetched[fetched.length - 1].created).getTime();
+            var before = self._messages.length;
+            self._messages = self._messages.filter(function (m) {
+              var t = new Date(m.created).getTime();
+              if (t < minT || t > maxT) return true; // outside this page — leave it alone
+              return !!fetchedIds[m.objId];
+            });
+            if (self._messages.length !== before) changed = true;
+          }
           if (changed) {
             self._messages.sort(function (a, b) { return new Date(a.created) - new Date(b.created); });
             self._renderMessages();
@@ -1342,10 +1394,7 @@ module("lively.identity.RoomView")
       _layoutChat: function (w) {
         if (!this._chatBox || this._chatW === w) return;
         this._chatW = w;
-        var listH = BODY_H - INPUT_H;
         this._chatBox.setExtent(lively.pt(w, BODY_H));
-        this._msgListBox.setExtent(lively.pt(w, listH));
-        this._inputRowM.setExtent(lively.pt(w, INPUT_H));
         this._pillM.setExtent(lively.pt(w - 32, 36));
         this._inputM.setExtent(lively.pt(w - 32 - 72, 24));
         this._placeholderM.setExtent(lively.pt(w - 32 - 72, 24));
@@ -1353,6 +1402,12 @@ module("lively.identity.RoomView")
         // leave its DOM node at the old spot (model and render disagree).
         this._pickerBtns.forEach(function (b) { try { b.remove(); } catch (e) {} });
         this._buildPickerButtons(this._pillM);
+        // _msgListBox/_inputRowM/_pillM's own y-position and height depend
+        // on whether a reply is in progress (the strip grows _inputRowM),
+        // not just on width — _renderReplyComposeStrip owns that geometry
+        // as the single source of truth, so re-run it here too rather than
+        // duplicating the listH/rowH math.
+        this._renderReplyComposeStrip();
         this._renderMessages();
       },
 
@@ -1429,16 +1484,29 @@ module("lively.identity.RoomView")
         if (!user) return;
         this._sendingMessage = true;
 
+        // Consumed and cleared eagerly here (not left for the caller),
+        // same "don't feel stuck" reasoning as _onSendMessage clearing the
+        // input immediately — applies uniformly whether this send came
+        // from the Enter key or a GIF/emoji pick, so replying then picking
+        // a GIF still attaches the reply. Ephemeral rooms never reach
+        // this far with a pending reply since the toolbar's Reply button
+        // is only ever offered on persistent-room messages.
+        var replyTo = this._replyingTo ? { objId: this._replyingTo.objId, anchor: null } : null;
+        this._replyingTo = null;
+        this._renderReplyComposeStrip();
+
         if (this._room && this._room.ephemeral) return this._sendEphemeralText(text);
 
         var self = this;
         var doc = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: text }] }] };
-        lively.identity.postCardSerializer.serializePlainToEnvelope({
+        var params = {
           doc: doc,
           constellation: self._name,
           visibility: "public",
           stateMeta: { kind: "room-message", roomId: self._roomId },
-        }, function (err, envelope) {
+        };
+        if (replyTo) params.replyTo = replyTo;
+        lively.identity.postCardSerializer.serializePlainToEnvelope(params, function (err, envelope) {
           if (err) return self._onSendMessageFailed(text, err);
           var base = lively.identity.did.baseUrl();
           var xhr = new XMLHttpRequest();
@@ -1484,6 +1552,494 @@ module("lively.identity.RoomView")
         };
         xhr.onerror = function () { self._onSendMessageFailed(text, new Error("network error")); };
         xhr.send(JSON.stringify({ text: text }));
+      },
+
+      // Whether the current viewer may delete/moderate ANY message in this
+      // room, not just their own — a constellation controller, or this
+      // specific room's own creator (canManageRoom's own reasoning,
+      // IdentityServer.js). Recomputed once per _renderMessages pass, not
+      // per row.
+      _canModerateRoom: function () {
+        if (!this._room) return false;
+        if (this._isController) return true;
+        var user = lively.identity.did.currentUser();
+        return !!(user && this._room.createdBy === user.did);
+      },
+
+      _findMessageByObjId: function (objId) {
+        for (var i = 0; i < this._messages.length; i++) {
+          if (this._messages[i].objId === objId) return this._messages[i];
+        }
+        return null;
+      },
+
+      // ── replies ────────────────────────────────────────────────────────────
+      // Discord-style: a lightweight "replying to X" preview rendered
+      // inline above the reply message in the same flat chronological list
+      // (see _renderMessages), not a separate side-thread panel — reuses
+      // the existing top-level envelope replyTo:{objId,anchor} field
+      // ConstellationLounge.js's own (differently-shaped) comment threads
+      // already rely on; listMessagesForRoom's query doesn't filter out
+      // replyTo-carrying rows, so this needs no new listing logic at all.
+
+      _startReplyingTo: function (msg) {
+        this._replyingTo = { objId: msg.objId, handle: msg.handle, snippet: (msg.text || "").replace(/\s+/g, " ").slice(0, 80) };
+        this._renderReplyComposeStrip();
+        if (this._inputM && this._inputM.focus) this._inputM.focus();
+      },
+
+      _cancelReplyingTo: function () {
+        this._replyingTo = null;
+        this._renderReplyComposeStrip();
+      },
+
+      // Single source of truth for _inputRowM/_msgListBox/_pillM's height
+      // and position, since they depend on BOTH the chat panel's current
+      // width (_layoutChat) and whether a reply is in progress (this
+      // method) — called from both places rather than duplicating the
+      // listH/rowH math in each. _pillM's own CHILDREN (input, placeholder,
+      // picker buttons) are positioned relative to _pillM itself, so only
+      // _pillM's own y needs to move when the strip appears/disappears.
+      _renderReplyComposeStrip: function () {
+        if (!this._inputRowM) return;
+        if (this._replyStripM) { try { this._replyStripM.remove(); } catch (e) {} this._replyStripM = null; }
+
+        var extra = this._replyingTo ? REPLY_STRIP_H : 0;
+        var rowH = INPUT_H + extra;
+        var listH = BODY_H - rowH;
+        this._msgListBox.setExtent(lively.pt(this._chatW, listH));
+        this._inputRowM.setExtent(lively.pt(this._chatW, rowH));
+        this._inputRowM.setPosition(lively.pt(0, listH));
+        this._pillM.setPosition(lively.pt(16, 8 + extra));
+
+        if (!this._replyingTo) return;
+
+        var self = this;
+        var PAD = 16;
+        var strip = noDrag(new lively.morphic.Box(lively.rect(PAD, 4, this._chatW - PAD * 2, REPLY_STRIP_H - 8)));
+        strip.applyStyle({ fill: Color.rgba(79, 11, 67, 0.12), borderWidth: 0, borderRadius: 4 });
+        this._inputRowM.addMorph(strip);
+        this._replyStripM = strip;
+
+        var text = "Replying to @" + this._replyingTo.handle + ": " + this._replyingTo.snippet;
+        var lbl = noDrag(lively.morphic.Text.makeLabel(text, {
+          fontSize: 11, textColor: TEXT_MUTED, fixedWidth: true, fixedHeight: true, whiteSpaceHandling: "pre",
+        }));
+        lbl.eventsAreIgnored = true;
+        lbl.setExtent(lively.pt(this._chatW - PAD * 2 - 24, REPLY_STRIP_H - 8));
+        lbl.setPosition(lively.pt(6, 1));
+        strip.addMorph(lbl);
+
+        var closeBtn = noDrag(lively.morphic.Text.makeLabel("close", { fontSize: 12, textColor: TEXT_MUTED }));
+        closeBtn.applyStyle({ fontFamily: "'Material Symbols Rounded'", borderWidth: 0, fill: null, handStyle: "pointer" });
+        closeBtn.setExtent(lively.pt(16, 16));
+        closeBtn.setPosition(lively.pt(this._chatW - PAD * 2 - 20, 1));
+        closeBtn.onMouseUp = function (evt) { self._cancelReplyingTo(); evt.stop(); return true; };
+        strip.addMorph(closeBtn);
+      },
+
+      // ── reactions ──────────────────────────────────────────────────────────
+      // A second, independent MediaPickerController instance (the compose
+      // box's own _getMediaPicker already owns one, bound to inserting
+      // text/sending a GIF — this one's onPick calls the reactions PUT
+      // route instead). Reuses the same vendored emoji grid rather than
+      // building a second picker UI from scratch.
+
+      _getReactionPicker: function () {
+        if (!this._reactionPicker) this._reactionPicker = new lively.identity.MediaPickerController();
+        return this._reactionPicker;
+      },
+
+      _openReactionPicker: function (msg, anchorMorph) {
+        var self = this;
+        var picker = this._getReactionPicker();
+        if (picker.isOpen()) { picker.close(); return; }
+        picker.open(anchorMorph.globalBounds(), {
+          initialTab: "emoji",
+          onPick: function (payload) {
+            if (payload.type !== "emoji") return; // GIF tab isn't meaningful for a reaction
+            self._putMessageReaction(msg.objId, payload.value);
+          },
+        });
+      },
+
+      _putMessageReaction: function (objId, emoji) {
+        var self = this;
+        var user = lively.identity.did.currentUser();
+        if (!user) return;
+        var base = lively.identity.did.baseUrl();
+        var xhr = new XMLHttpRequest();
+        xhr.open("PUT", base + "/@" + encodeURIComponent(user.handle) + "/" + encodeURIComponent(objId) + "/reactions", true);
+        xhr.withCredentials = true;
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.onload = function () { self._loadMessages(); };
+        xhr.send(JSON.stringify({ emoji: emoji }));
+      },
+
+      _deleteMessageReaction: function (objId, emoji) {
+        var self = this;
+        var user = lively.identity.did.currentUser();
+        if (!user) return;
+        var base = lively.identity.did.baseUrl();
+        var xhr = new XMLHttpRequest();
+        xhr.open("DELETE", base + "/@" + encodeURIComponent(user.handle) + "/" + encodeURIComponent(objId) +
+          "/reactions/" + encodeURIComponent(emoji), true);
+        xhr.withCredentials = true;
+        xhr.onload = function () { self._loadMessages(); };
+        xhr.send();
+      },
+
+      // Grouped pill per distinct emoji (count + who, on hover), highlighted
+      // if the viewer is among the reactors — driven entirely from the
+      // batched msg.reactions summary the messages-list route already
+      // returns (no per-row fetch). A did may hold several different emoji
+      // on one message (multi-reaction, unlike PostCardView.js's own
+      // fixed-two-emoji single-slot UI), so clicking a not-yet-mine emoji
+      // always ADDS, never replaces another one of the viewer's own pills.
+      // Returns the extra height this row consumed (0 if no reactions).
+      _renderReactionPillRow: function (row, msg, topY, pad, bw) {
+        var self = this;
+        var reactions = msg.reactions;
+        var emojiList = reactions ? Object.keys(reactions.counts || {}) : [];
+        if (!emojiList.length) return 0;
+        var user = lively.identity.did.currentUser();
+        var mine = reactions.mine || [];
+        var PILL_H = 22, PILL_GAP = 6;
+        var x = pad + AVATAR_MSG + 8;
+        var rowBox = noDrag(new lively.morphic.Box(lively.rect(x, topY, bw, PILL_H)));
+        rowBox.applyStyle({ fill: null, borderWidth: 0 });
+        row.addMorph(rowBox);
+        var cx = 0;
+        emojiList.forEach(function (emoji) {
+          var n = reactions.counts[emoji] || 0;
+          var isMine = mine.indexOf(emoji) !== -1;
+          var pill = noDrag(lively.morphic.Text.makeLabel(emoji + " " + n, {
+            fontSize: 12, textColor: CHAT_TEXT_PRIMARY, fixedWidth: true, fixedHeight: true, whiteSpaceHandling: "pre",
+          }));
+          pill.applyStyle({
+            fill: isMine ? Color.rgb(238, 224, 245) : Color.rgb(250, 248, 252),
+            borderWidth: 1, borderColor: isMine ? ACCENT : Color.rgba(43, 20, 63, 0.15),
+            borderRadius: 11, handStyle: user ? "pointer" : "default",
+          });
+          pill.setExtent(lively.pt(60, PILL_H)); // generous throwaway, snug-fit right below
+          rowBox.addMorph(pill);
+          var span = pill.renderContext().shapeNode.querySelector("span");
+          var textW = (span && span.offsetWidth) || 30;
+          var pillW = textW + 20;
+          pill.setExtent(lively.pt(pillW, PILL_H));
+          pill.setPosition(lively.pt(cx, 0));
+          var byEmoji = (reactions.byEmoji && reactions.byEmoji[emoji]) || [];
+          pill.renderContext().shapeNode.title = byEmoji.join(", ");
+          if (user) {
+            pill.handStyle = "pointer";
+            pill.onMouseUp = function (evt) {
+              if (isMine) self._deleteMessageReaction(msg.objId, emoji);
+              else self._putMessageReaction(msg.objId, emoji);
+              evt.stop();
+              return true;
+            };
+          }
+          cx += pillW + PILL_GAP;
+        });
+        rowBox.setExtent(lively.pt(bw, PILL_H));
+        return PILL_H + 6;
+      },
+
+      // ── edit ────────────────────────────────────────────────────────────────
+      // Author-only, enforced purely by the server keeping the ordinary
+      // owner-only PUT check for any write whose content genuinely changes
+      // (unlike the mod-delete tombstone exception, IdentityServer.js) — no
+      // client-side gate beyond not offering the Edit button on someone
+      // else's row (_renderRowToolbar).
+
+      _startEditingMessage: function (msg) {
+        this._editingObjId = msg.objId;
+        this._editingDraftText = msg.text || "";
+        this._renderMessages();
+      },
+
+      _cancelEditingMessage: function () {
+        this._editingObjId = null;
+        this._editingDraftText = null;
+        this._renderMessages();
+      },
+
+      // GET the full envelope, re-serialize with prevEnvelope (chains onto
+      // the SAME objId rather than minting a new genesis object — the
+      // supported "edit in place" idiom, PostCardSerializer.js), PUT it
+      // back. This is a real content change (the cid changes), so it goes
+      // through the server's ordinary signature-verification path, unlike
+      // a delete tombstone's metadata-only exemption.
+      _saveMessageEdit: function (objId, authorHandle, newText) {
+        var self = this;
+        if (!newText) return; // empty edit — Cancel instead of saving blank
+        var user = lively.identity.did.currentUser();
+        if (!user) return;
+        var base = lively.identity.did.baseUrl();
+        var url = base + "/@" + encodeURIComponent(authorHandle) + "/" + encodeURIComponent(objId);
+        var getXhr = new XMLHttpRequest();
+        getXhr.open("GET", url, true);
+        getXhr.withCredentials = true;
+        getXhr.setRequestHeader("Accept", "application/json");
+        getXhr.onload = function () {
+          if (getXhr.status !== 200) return;
+          var envelope;
+          try { envelope = JSON.parse(getXhr.responseText); } catch (e) { return; }
+          var doc = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: newText }] }] };
+          var params = {
+            doc: doc,
+            constellation: self._name,
+            visibility: "public",
+            stateMeta: { kind: "room-message", roomId: self._roomId, editedAt: new Date().toISOString() },
+            prevEnvelope: envelope,
+          };
+          // serializePlainToEnvelope only sets envelope.replyTo from
+          // params.replyTo — it does NOT inherit it from prevEnvelope, so
+          // editing a reply without carrying this forward silently drops
+          // its "replying to X" association on save (confirmed live: the
+          // client still showed the old replyTo from stale local cache,
+          // but the server's actual stored envelope had none).
+          if (envelope.replyTo) params.replyTo = envelope.replyTo;
+          lively.identity.postCardSerializer.serializePlainToEnvelope(params, function (err, newEnvelope) {
+            if (err) return;
+            var putXhr = new XMLHttpRequest();
+            putXhr.open("PUT", url, true);
+            putXhr.withCredentials = true;
+            putXhr.setRequestHeader("Content-Type", "application/json");
+            putXhr.onload = function () {
+              self._editingObjId = null;
+              self._editingDraftText = null;
+              self._loadMessages();
+              self._renderMessages();
+            };
+            putXhr.send(JSON.stringify(newEnvelope));
+          });
+        };
+        getXhr.send();
+      },
+
+      // ── delete ─────────────────────────────────────────────────────────────
+      // Same GET-then-tombstone-PUT idiom PostCardMailbox.js's own
+      // _deletePostcard uses (metadata-only write, sig stripped, server
+      // skips re-verification for it). The URL's :handle is always the
+      // MESSAGE AUTHOR's (msg.handle), never the deleter's own — required
+      // even for a moderator deleting someone else's message, since the
+      // server's handle-registry check resolves :handle against the
+      // envelope's own (unchanged) did, not the requester's session did.
+
+      _deleteMessage: function (msg) {
+        var self = this;
+        var user = lively.identity.did.currentUser();
+        if (!user) return;
+        var base = lively.identity.did.baseUrl();
+        var url = base + "/@" + encodeURIComponent(msg.handle) + "/" + encodeURIComponent(msg.objId);
+        var getXhr = new XMLHttpRequest();
+        getXhr.open("GET", url, true);
+        getXhr.withCredentials = true;
+        getXhr.setRequestHeader("Accept", "application/json");
+        getXhr.onload = function () {
+          if (getXhr.status !== 200) return;
+          var envelope;
+          try { envelope = JSON.parse(getXhr.responseText); } catch (e) { return; }
+          $world.confirm("Delete this message? This can't be undone.", function (answer) {
+            if (!answer) return;
+            var updated = Object.assign({}, envelope, {
+              state: Object.assign({}, envelope.state || {}, { deleted: true }),
+            });
+            delete updated.sig;
+            var putXhr = new XMLHttpRequest();
+            putXhr.open("PUT", url, true);
+            putXhr.withCredentials = true;
+            putXhr.setRequestHeader("Content-Type", "application/json");
+            putXhr.onload = function () {
+              if (putXhr.status === 200) self._loadMessages();
+              else $world.alert("Could not delete this message (" + putXhr.status + ").");
+            };
+            putXhr.send(JSON.stringify(updated));
+          });
+        };
+        getXhr.send();
+      },
+
+      // ── flag ───────────────────────────────────────────────────────────────
+      // Near-verbatim clone of MiniProfileCard.js's _openFlagReasonDialog
+      // (same window/field/button chrome, same two-step PUT-then-POST
+      // report flow), parameterized for a message rather than a profile —
+      // state.kind:'message-flag' instead of 'profile-flag', carrying the
+      // flagged message's own objId so a moderator's inbox can deep-link
+      // to it. POST /c/:name/flags (IdentityServer.js) accepts either kind
+      // and resolves the same controller set either way.
+      _openMessageFlagDialog: function (objId, targetDid, targetHandle, roomId) {
+        var self = this;
+        var W = 360, PAD = 14, MAX_REASON = 250;
+        var body = noDrag(new lively.morphic.Box(lively.rect(0, 0, W, 270)));
+        body.applyStyle({ fill: Color.rgb(243, 243, 243), borderColor: Color.rgb(95, 94, 95), borderWidth: 1, borderRadius: 4 });
+
+        function fieldLabel(rect, text, opts) {
+          opts = opts || {};
+          var t = noDrag(new lively.morphic.Text(rect));
+          t.textString = text;
+          t.applyStyle({
+            fontSize: opts.px || 12, fontWeight: opts.bold ? "bold" : "normal",
+            textColor: opts.color || Color.rgb(40, 40, 40), fill: null, borderWidth: 0,
+            align: "left", allowInput: false, selectable: false, clipMode: "hidden",
+            whiteSpaceHandling: opts.wrap ? "normal" : "pre",
+          });
+          return t;
+        }
+
+        // 42px, not a guessed 32 -- a wrapped two-line 13px bold label
+        // undershot at 32 and clipped "moderators" onto a cut-off second
+        // line (confirmed live via chrome-devtools), same class of gap as
+        // CLAUDE.md's own multi-line text-sizing gotcha (a flat guessed
+        // per-line height reliably undershoots real wrapped line-height).
+        body.addMorph(fieldLabel(lively.rect(PAD, 12, W - PAD * 2, 42),
+          "Report message from @" + targetHandle + " to moderators", { px: 13, bold: true, wrap: true }));
+        body.addMorph(fieldLabel(lively.rect(PAD, 58, W - PAD * 2, 16), "Reason", { px: 11, color: Color.rgb(120, 120, 120) }));
+
+        var reasonField = noDrag(new lively.morphic.Text(lively.rect(PAD, 75, W - PAD * 2, 106), ""));
+        reasonField.beInputLine();
+        reasonField.applyStyle({
+          allowInput: true, fontSize: 12, fontFamily: "Helvetica", clipMode: "hidden",
+          fixedWidth: true, fixedHeight: true, whiteSpaceHandling: "pre-wrap",
+          fill: Color.white, borderColor: Color.rgb(203, 203, 203), borderWidth: 1, borderRadius: 4,
+          padding: lively.Rectangle.inset(6, 6, 0, 0),
+        });
+        body.addMorph(reasonField);
+
+        var counter = noDrag(new lively.morphic.Text(lively.rect(PAD, 185, W - PAD * 2, 14), "0 / " + MAX_REASON));
+        counter.applyStyle({
+          allowInput: false, fontSize: 10, align: "right",
+          textColor: Color.rgb(140, 140, 148), fill: null, borderWidth: 0,
+          selectable: false, clipMode: "hidden", whiteSpaceHandling: "pre",
+        });
+        lively.bindings.connect(reasonField, "textString", counter, "setTextString", {
+          converter: function (s) { return (s || "").length + " / " + MAX_REASON; },
+        });
+        body.addMorph(counter);
+
+        var errorLabel = fieldLabel(lively.rect(PAD, 205, W - PAD * 2, 16), "", { px: 11, color: Color.rgb(200, 60, 60) });
+        body.addMorph(errorLabel);
+
+        function makeButton(rect, text, primary) {
+          var btn = noDrag(new lively.morphic.Box(rect));
+          btn.applyStyle({
+            fill: primary ? Color.rgb(253, 235, 235) : Color.white, borderRadius: 5, borderWidth: 1,
+            borderColor: primary ? DANGER : Color.rgb(214, 214, 214), clipMode: "hidden",
+          });
+          var t = noDrag(new lively.morphic.Text(lively.rect(0, 0, rect.width, rect.height), text));
+          t.applyStyle({
+            fontSize: 12, textColor: primary ? DANGER : Color.rgb(60, 60, 60),
+            fill: null, borderWidth: 0, align: "center",
+            padding: lively.Rectangle.inset(0, Math.round((rect.height - 12) / 2) - 2, 0, 0),
+            allowInput: false, selectable: false, clipMode: "hidden", whiteSpaceHandling: "pre",
+          });
+          t.eventsAreIgnored = true;
+          btn.addMorph(t);
+          return btn;
+        }
+
+        var cancelBtn = makeButton(lively.rect(PAD, 230, 90, 28), "Cancel", false);
+        cancelBtn.onMouseUp = function (evt) { win.remove(); evt.stop(); return true; };
+        body.addMorph(cancelBtn);
+
+        var sendBtn = makeButton(lively.rect(W - PAD - 90, 230, 90, 28), "Report", true);
+        sendBtn.onMouseUp = function (evt) {
+          var reason = (reasonField.textString || "").trim().slice(0, MAX_REASON);
+          if (!reason) { errorLabel.setTextString("Please enter a reason."); evt.stop(); return true; }
+          errorLabel.setTextString("");
+          var user = lively.identity.did.currentUser();
+          if (!user) { errorLabel.setTextString("Not signed in."); evt.stop(); return true; }
+
+          var doc = {
+            type: "doc",
+            content: [{ type: "paragraph", content: [{ type: "text", text: "Message flag: @" + targetHandle + " — " + reason }] }],
+          };
+          lively.identity.postCardSerializer.serializePlainToEnvelope({
+            doc: doc,
+            title: "Message flag: @" + targetHandle,
+            titleExplicit: true,
+            constellation: self._name,
+            visibility: "public",
+            stateMeta: { kind: "message-flag", reason: reason, targetDid: targetDid, targetHandle: targetHandle, targetObjId: objId },
+          }, function (err, envelope) {
+            if (err) { errorLabel.setTextString("Could not create report: " + err.message); return; }
+            var base = lively.identity.did.baseUrl();
+            fetch(base + "/@" + encodeURIComponent(user.handle) + "/" + encodeURIComponent(envelope.objId), {
+              method: "PUT", credentials: "include",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(envelope),
+            }).then(function (r) {
+              if (!r.ok) throw new Error("Could not save report (" + r.status + ")");
+              return fetch(base + "/c/" + encodeURIComponent(self._name) + "/flags", {
+                method: "POST", credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ objId: envelope.objId, targetDid: targetDid, roomId: roomId }),
+              });
+            }).then(function (r) {
+              if (!r.ok) return r.json().catch(function () { return {}; }).then(function (b) {
+                throw new Error(b.error || ("Flag failed (" + r.status + ")"));
+              });
+              win.remove();
+              $world.alert("Report sent to moderators.");
+            }).catch(function (err2) {
+              errorLabel.setTextString(err2.message);
+            });
+          });
+          evt.stop();
+          return true;
+        };
+        body.addMorph(sendBtn);
+
+        var win = new lively.morphic.Window(body, "Flag message — @" + targetHandle);
+        win.openInWorldCenter();
+        win.comeForward();
+        reasonField.focus();
+      },
+
+      // ── hover action toolbar ──────────────────────────────────────────────
+      // Real children of `row` (per this file's own established pattern —
+      // a sibling overlay doesn't reliably receive hover events on this
+      // scrollable list), shown/hidden by the caller extending row's own
+      // onMouseOver/onMouseOut (makeRow, _renderMessages). Persistent
+      // rooms only — react/reply/edit/delete/flag all key off a real
+      // signed-postcard objId, which an ephemeral message never has.
+      _renderRowToolbar: function (row, msg, isMine, canModerate, topY, pad) {
+        var self = this;
+        if (this._room && this._room.ephemeral) return null;
+        var user = lively.identity.did.currentUser();
+        if (!user) return null;
+
+        var icons = [];
+        icons.push({ glyph: "add_reaction", action: function (btn) { self._openReactionPicker(msg, btn); } });
+        icons.push({ glyph: "reply", action: function () { self._startReplyingTo(msg); } });
+        if (isMine) icons.push({ glyph: "edit", action: function () { self._startEditingMessage(msg); } });
+        if (isMine || canModerate) icons.push({ glyph: "delete", action: function () { self._deleteMessage(msg); } });
+        if (!isMine) icons.push({ glyph: "flag", action: function () { self._openMessageFlagDialog(msg.objId, msg.did, msg.handle, self._roomId); } });
+        if (!icons.length) return null;
+
+        var BTN = 22, GAP = 2;
+        var toolbarW = icons.length * BTN + (icons.length - 1) * GAP;
+        var toolbar = noDrag(new lively.morphic.Box(lively.rect(self._chatW - pad - toolbarW, topY, toolbarW, BTN)));
+        toolbar.applyStyle({ fill: Color.white, borderWidth: 1, borderColor: Color.rgba(43, 20, 63, 0.12), borderRadius: 6 });
+        toolbar.setVisible(false);
+        row.addMorph(toolbar);
+
+        icons.forEach(function (spec, i) {
+          var btn = noDrag(new lively.morphic.Text(lively.rect(i * (BTN + GAP), 0, BTN, BTN)));
+          btn.textString = spec.glyph;
+          btn.applyStyle({
+            fontFamily: "'Material Symbols Rounded'", fontSize: 13, textColor: CHAT_TEXT_MUTED,
+            fill: null, borderWidth: 0, align: "center", allowInput: false, selectable: false,
+            clipMode: "hidden", whiteSpaceHandling: "pre", handStyle: "pointer",
+          });
+          btn.onMouseOver = function () { this.applyStyle({ textColor: ACCENT }); };
+          btn.onMouseOut = function () { this.applyStyle({ textColor: CHAT_TEXT_MUTED }); };
+          btn.onMouseUp = function (evt) { spec.action(btn); evt.stop(); return true; };
+          toolbar.addMorph(btn);
+        });
+
+        return toolbar;
       },
 
       // Restores the typed text into the input on failure — losing a
@@ -1733,6 +2289,8 @@ module("lively.identity.RoomView")
         if (this._searchActive) y = this._renderSearchBar(y);
         var list = this._searchActive ? (this._searchResults || []) : this._messages;
         var lastDayKey = null;
+        var canModerate = this._canModerateRoom(); // same for every row — computed once, not per-message
+        var currentUser = lively.identity.did.currentUser();
         if (this._searchActive && !list.length) {
           var empty = noDrag(lively.morphic.Text.makeLabel(
             this._searchQuery ? "No messages found." : "Type to search this cluster's message history.",
@@ -1780,9 +2338,33 @@ module("lively.identity.RoomView")
           var isMuted = lively.identity.did.isMuted(msg.did, msg.handle);
           var muteKey = msg.objId || (msg.did + "|" + msg.created);
           var muteExpanded = !!self._mutedExpanded[muteKey];
+          var isMine = !!(currentUser && msg.did === currentUser.did);
+          var isEditingThis = !!(msg.objId && msg.objId === self._editingObjId);
           var row = makeRow(y);
 
-          var av = noDrag(new lively.morphic.Image(lively.rect(PAD, 0, AVATAR_MSG, AVATAR_MSG)));
+          // Discord-style: a lightweight "replying to X" preview rendered
+          // above the avatar/header, inline in the same flat list — not a
+          // separate thread panel. The parent is looked up client-side
+          // against already-loaded messages; a parent outside the current
+          // page degrades gracefully to a handle-less line rather than a
+          // second network round trip.
+          var contentTop = 0;
+          if (msg.replyTo && msg.replyTo.objId) {
+            contentTop = REPLY_PREVIEW_H;
+            var parent = self._findMessageByObjId(msg.replyTo.objId);
+            var replyLabelText = parent
+              ? ("↩ Replying to @" + (parent.handle || "someone") + ": " + (parent.text || "").replace(/\s+/g, " ").slice(0, 50))
+              : "↩ Replying to a message";
+            var replyM = noDrag(lively.morphic.Text.makeLabel(replyLabelText, {
+              fontSize: 11, textColor: CHAT_TEXT_FAINT, fixedWidth: true, fixedHeight: true, whiteSpaceHandling: "pre",
+            }));
+            replyM.eventsAreIgnored = true;
+            replyM.setExtent(lively.pt(self._chatW - PAD * 2 - AVATAR_MSG - 8, REPLY_PREVIEW_H));
+            replyM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, 0));
+            row.addMorph(replyM);
+          }
+
+          var av = noDrag(new lively.morphic.Image(lively.rect(PAD, contentTop, AVATAR_MSG, AVATAR_MSG)));
           av.applyStyle({ borderRadius: AVATAR_MSG / 2, borderWidth: 0, clipMode: "hidden" });
           av.setImageURL(lively.identity.postCardUtils.identiconDataUrl(msg.handle || msg.did || "unknown", AVATAR_MSG));
           av.eventsAreIgnored = true;
@@ -1796,7 +2378,8 @@ module("lively.identity.RoomView")
           if (isMuted) av.renderContext().shapeNode.style.opacity = "0.4";
 
           var headText = "@" + (msg.handle || "unknown") + "   " + self._formatTime(msg.created) +
-            (isMuted ? "   (ignored" + (muteExpanded ? " — showing)" : ", click to show)") : "");
+            (isMuted ? "   (ignored" + (muteExpanded ? " — showing)" : ", click to show)") : "") +
+            (msg.editedAt ? "   (edited)" : "");
           var headM = noDrag(lively.morphic.Text.makeLabel(headText, {
             fontSize: 12, fontWeight: "700", textColor: isMuted ? CHAT_TEXT_MUTED : CHAT_TEXT_PRIMARY, fixedWidth: true, fixedHeight: true,
           }));
@@ -1811,12 +2394,55 @@ module("lively.identity.RoomView")
             };
           }
           headM.setExtent(lively.pt(self._chatW - PAD * 2 - AVATAR_MSG - 8, HEAD_H));
-          headM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, 0));
+          headM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, contentTop));
           row.addMorph(headM);
 
           var bw = self._chatW - PAD * 2 - AVATAR_MSG - 8;
           var bh;
-          if (isMuted && !muteExpanded) {
+          if (isEditingThis) {
+            // Inline edit: swap the read-only body for a real input,
+            // pre-filled from the last known draft (not msg.text) so a
+            // poll-triggered rebuild mid-edit doesn't discard unsaved
+            // keystrokes — see _loadMessages' own polling-safety note.
+            var editInput = noDrag(new lively.morphic.Text(lively.rect(
+              PAD + AVATAR_MSG + 8, contentTop + HEAD_H + HEAD_GAP, bw, 24)));
+            editInput.beInputLine({
+              fontSize: 13, fontFamily: "Helvetica", textColor: CHAT_TEXT_PRIMARY,
+              fill: Color.white, borderWidth: 1, borderColor: ACCENT, borderRadius: 4,
+              whiteSpaceHandling: "pre",
+            });
+            editInput.textString = self._editingDraftText != null ? self._editingDraftText : (msg.text || "");
+            row.addMorph(editInput);
+            editInput.onKeyUp = function () { self._editingDraftText = editInput.textString; };
+            editInput.onKeyDown = function (evt) {
+              var code = evt.getKeyCode && evt.getKeyCode();
+              if (code === 13) {
+                self._saveMessageEdit(msg.objId, msg.handle, (editInput.textString || "").trim());
+                evt.stop();
+                return true;
+              }
+              if (code === 27) { self._cancelEditingMessage(); evt.stop(); return true; }
+            };
+            setTimeout(function () { if (editInput.focus) editInput.focus(); }, 0);
+
+            var saveBtn = noDrag(lively.morphic.Text.makeLabel("Save", { fontSize: 11, fontWeight: "700", textColor: ACCENT }));
+            saveBtn.handStyle = "pointer";
+            saveBtn.setPosition(lively.pt(PAD + AVATAR_MSG + 8, contentTop + HEAD_H + HEAD_GAP + 28));
+            saveBtn.onMouseUp = function (evt) {
+              self._saveMessageEdit(msg.objId, msg.handle, (editInput.textString || "").trim());
+              evt.stop();
+              return true;
+            };
+            row.addMorph(saveBtn);
+
+            var cancelBtn = noDrag(lively.morphic.Text.makeLabel("Cancel", { fontSize: 11, textColor: CHAT_TEXT_MUTED }));
+            cancelBtn.handStyle = "pointer";
+            cancelBtn.setPosition(lively.pt(PAD + AVATAR_MSG + 8 + 44, contentTop + HEAD_H + HEAD_GAP + 28));
+            cancelBtn.onMouseUp = function (evt) { self._cancelEditingMessage(); evt.stop(); return true; };
+            row.addMorph(cancelBtn);
+
+            bh = 24 + 4 + 16;
+          } else if (isMuted && !muteExpanded) {
             // Collapsed: one truncated line, no media/flag rendering.
             var oneLine = (msg.text || "").replace(/\s+/g, " ").trim();
             if (oneLine.length > 60) oneLine = oneLine.slice(0, 59) + "…";
@@ -1825,7 +2451,7 @@ module("lively.identity.RoomView")
             }));
             collapsedM.eventsAreIgnored = true;
             collapsedM.setExtent(lively.pt(bw, 18));
-            collapsedM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, HEAD_H + HEAD_GAP));
+            collapsedM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, contentTop + HEAD_H + HEAD_GAP));
             row.addMorph(collapsedM);
             bh = 18 + 4;
           } else if (self._isMediaMessage(msg.text)) {
@@ -1849,7 +2475,7 @@ module("lively.identity.RoomView")
             var cachedDims = self._mediaDims[msg.text];
             bh = cachedDims ? cachedDims.h : MEDIA_ROW_H;
             var mediaM = noDrag(new lively.morphic.Image(lively.rect(
-              PAD + AVATAR_MSG + 8, HEAD_H + HEAD_GAP,
+              PAD + AVATAR_MSG + 8, contentTop + HEAD_H + HEAD_GAP,
               cachedDims ? cachedDims.w : mw, bh)));
             mediaM.applyStyle({ borderRadius: 6, borderWidth: 0, clipMode: "hidden" });
             mediaM.eventsAreIgnored = true;
@@ -1869,7 +2495,7 @@ module("lively.identity.RoomView")
               // Raw-HTML path (see _messageBodyHtml's own comment) — a
               // plain Box, not a Text morph, since the flag <img>s need to
               // sit inline in the browser's own native text flow.
-              var bodyBox = noDrag(new lively.morphic.Box(lively.rect(PAD + AVATAR_MSG + 8, HEAD_H + HEAD_GAP, bw, 1)));
+              var bodyBox = noDrag(new lively.morphic.Box(lively.rect(PAD + AVATAR_MSG + 8, contentTop + HEAD_H + HEAD_GAP, bw, 1)));
               bodyBox.applyStyle({ fill: null, borderWidth: 0 });
               bodyBox.eventsAreIgnored = true;
               row.addMorph(bodyBox);
@@ -1895,13 +2521,30 @@ module("lively.identity.RoomView")
               var inner = bodyM.renderContext().shapeNode.querySelector("div");
               bh = inner ? inner.offsetHeight : 18;
               bodyM.setExtent(lively.pt(bw, bh + 4));
-              bodyM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, HEAD_H + HEAD_GAP));
+              bodyM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, contentTop + HEAD_H + HEAD_GAP));
               bh = bh + 4;
             }
           }
 
-          row.setExtent(lively.pt(self._chatW, HEAD_H + HEAD_GAP + bh));
-          y += HEAD_H + HEAD_GAP + bh + ROW_GAP;
+          // Reaction pill row, below the body — 0 extra height when there
+          // are no reactions. Skipped while mid-edit (react/reply/flag
+          // aren't offered on the row being edited either, see the
+          // toolbar hookup below).
+          var pillRowH = isEditingThis ? 0 : self._renderReactionPillRow(row, msg, contentTop + HEAD_H + HEAD_GAP + bh, PAD, bw);
+
+          var totalH = contentTop + HEAD_H + HEAD_GAP + bh + pillRowH;
+          row.setExtent(lively.pt(self._chatW, totalH));
+
+          if (!isEditingThis) {
+            var toolbar = self._renderRowToolbar(row, msg, isMine, canModerate, contentTop, PAD);
+            if (toolbar) {
+              var baseOver = row.onMouseOver, baseOut = row.onMouseOut;
+              row.onMouseOver = function () { baseOver(); toolbar.setVisible(true); };
+              row.onMouseOut = function () { baseOut(); toolbar.setVisible(false); };
+            }
+          }
+
+          y += totalH + ROW_GAP;
         });
 
         var scrollNode = this._msgListBox.renderContext().shapeNode;

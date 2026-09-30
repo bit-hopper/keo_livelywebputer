@@ -110,13 +110,41 @@ var DDL =
   '  obj_id   TEXT NOT NULL,' +
   '  PRIMARY KEY (blob_cid, obj_id)' +
   ');\n' +
+  // One row per (obj_id, did, emoji) -- a did may stack several different
+  // emoji reactions on the same postcard (Discord-style), unlike the
+  // original single-reaction-per-did "Misskey semantics" this table
+  // shipped with (PRIMARY KEY (obj_id, did) only -- a second PUT with a
+  // different emoji used to replace, not add). The migration below widens
+  // an already-live table's PK the same way; a fresh database gets the
+  // 3-column PK straight from this CREATE TABLE.
   'CREATE TABLE IF NOT EXISTS postcard_reactions (' +
   '  obj_id     TEXT NOT NULL,' +
   '  did        TEXT NOT NULL,' +
   '  emoji      TEXT NOT NULL,' +
   '  created_at TEXT NOT NULL,' +
-  '  PRIMARY KEY (obj_id, did)' +
+  '  PRIMARY KEY (obj_id, did, emoji)' +
   ');\n' +
+  // CREATE TABLE IF NOT EXISTS above is a no-op against an already-live
+  // table from before the multi-reaction change, so it never widens that
+  // table's PK on its own -- this DO block is the actual migration,
+  // idempotent (checked via information_schema, safe on every boot,
+  // matching ConstellationRegistry.js's own precedent of running additive
+  // DDL unconditionally every boot) rather than a one-off script.
+  'DO $$\n' +
+  'BEGIN\n' +
+  '  IF NOT EXISTS (\n' +
+  '    SELECT 1 FROM information_schema.key_column_usage kcu\n' +
+  '    JOIN information_schema.table_constraints tc\n' +
+  '      ON tc.constraint_name = kcu.constraint_name\n' +
+  '     AND tc.table_schema = kcu.table_schema\n' +
+  '    WHERE tc.table_name = \'postcard_reactions\'\n' +
+  '      AND tc.constraint_type = \'PRIMARY KEY\'\n' +
+  '      AND kcu.column_name = \'emoji\'\n' +
+  '  ) THEN\n' +
+  '    ALTER TABLE postcard_reactions DROP CONSTRAINT postcard_reactions_pkey;\n' +
+  '    ALTER TABLE postcard_reactions ADD PRIMARY KEY (obj_id, did, emoji);\n' +
+  '  END IF;\n' +
+  'END $$;\n' +
   'CREATE TABLE IF NOT EXISTS postcard_mailbox_hidden (' +
   '  did       TEXT NOT NULL,' +
   '  obj_id    TEXT NOT NULL,' +
@@ -1657,8 +1685,12 @@ function listRepliesForPostcard(parentObjId, opts, thenDo) {
       (qLike ? ' AND (o.envelope #>> \'{state,title}\') ILIKE $2 ESCAPE \'\\\'' : '');
 
     if (sort === 'top') {
+      // COUNT(DISTINCT pr.did), not COUNT(pr.obj_id) -- postcard_reactions
+      // now allows one did to stack several different emoji on the same
+      // card, so an ungated row count would shift "top" from "most
+      // distinct reactors" toward "most total reaction volume".
       var topSql =
-        'SELECT o.envelope, o.obj_id, o.id, COUNT(pr.obj_id) AS reaction_count' +
+        'SELECT o.envelope, o.obj_id, o.id, COUNT(DISTINCT pr.did) AS reaction_count' +
         ' FROM objects o' +
         ' INNER JOIN (' +
         '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
@@ -1778,36 +1810,41 @@ function resolvePartAlias(did, aliasName, thenDo) {
 
 // ─── postcard reactions (PostcardDesignSpec-v2.md §5.1) ────────────────────────
 
-// Upsert (replace) the caller's own reaction on a postcard. PRIMARY KEY
-// (obj_id, did) means a second reaction from the same did overwrites the
-// first rather than stacking.
+// Add (or refresh the timestamp of) one of the caller's reactions on a
+// postcard. PRIMARY KEY (obj_id, did, emoji) means a did may hold several
+// different emoji reactions on the same postcard at once (Discord-style
+// stacking) -- a second call with a DIFFERENT emoji adds rather than
+// replacing; the same emoji again is a no-op refresh of created_at.
 // Calls thenDo(err).
 function upsertReaction(objId, did, emoji, thenDo) {
   withDB(function (err, pool) {
     if (err) return thenDo(err);
     pool.query(
       'INSERT INTO postcard_reactions (obj_id, did, emoji, created_at) VALUES ($1, $2, $3, $4)' +
-      ' ON CONFLICT (obj_id, did) DO UPDATE SET emoji = EXCLUDED.emoji, created_at = EXCLUDED.created_at',
+      ' ON CONFLICT (obj_id, did, emoji) DO UPDATE SET created_at = EXCLUDED.created_at',
       [objId, did, emoji, new Date().toISOString()],
       function (err) { thenDo(err || null); }
     );
   });
 }
 
-// Remove the caller's own reaction, if any. Idempotent.
+// Remove one specific reaction of the caller's, if present. Idempotent.
+// Emoji is required now that a did may hold several reactions on one
+// postcard -- there's no longer a single "self" reaction to remove.
 // Calls thenDo(err).
-function deleteReaction(objId, did, thenDo) {
+function deleteReaction(objId, did, emoji, thenDo) {
   withDB(function (err, pool) {
     if (err) return thenDo(err);
     pool.query(
-      'DELETE FROM postcard_reactions WHERE obj_id = $1 AND did = $2',
-      [objId, did],
+      'DELETE FROM postcard_reactions WHERE obj_id = $1 AND did = $2 AND emoji = $3',
+      [objId, did, emoji],
       function (err) { thenDo(err || null); }
     );
   });
 }
 
-// All reactions on a postcard. Calls thenDo(null, [{ did, emoji }]).
+// All reactions on a postcard. Calls thenDo(null, [{ did, emoji }]) -- may
+// now include several rows for the same did (distinct emoji).
 function getReactionsForObjId(objId, thenDo) {
   withDB(function (err, pool) {
     if (err) return thenDo(err);
@@ -1815,6 +1852,37 @@ function getReactionsForObjId(objId, thenDo) {
       'SELECT did, emoji FROM postcard_reactions WHERE obj_id = $1',
       [objId],
       function (err, result) { thenDo(err, result ? result.rows : []); }
+    );
+  });
+}
+
+// Batched reaction summaries for a whole page of objIds (RoomView.js's
+// message list, one query per poll tick rather than one per row -- see
+// listMessagesForRoom's own metadata-only-listing rationale for why an
+// N+1 pattern here would be a real cost, not just style). Calls
+// thenDo(null, { [objId]: { counts: {emoji: n}, byEmoji: {emoji: [did...]},
+// mine: [emoji...] } }) -- an objId with no reactions at all is simply
+// absent from the result map; callers should default to empty structures.
+function getReactionSummariesForObjIds(objIds, viewerDid, thenDo) {
+  if (!objIds || !objIds.length) return thenDo(null, {});
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'SELECT obj_id, did, emoji FROM postcard_reactions WHERE obj_id = ANY($1)',
+      [objIds],
+      function (err, result) {
+        if (err) return thenDo(err);
+        var summaries = {};
+        result.rows.forEach(function (r) {
+          var s = summaries[r.obj_id];
+          if (!s) s = summaries[r.obj_id] = { counts: {}, byEmoji: {}, mine: [] };
+          s.counts[r.emoji] = (s.counts[r.emoji] || 0) + 1;
+          if (!s.byEmoji[r.emoji]) s.byEmoji[r.emoji] = [];
+          s.byEmoji[r.emoji].push(r.did);
+          if (viewerDid && r.did === viewerDid) s.mine.push(r.emoji);
+        });
+        thenDo(null, summaries);
+      }
     );
   });
 }
@@ -2667,6 +2735,7 @@ module.exports = {
   upsertReaction:                upsertReaction,
   deleteReaction:                deleteReaction,
   getReactionsForObjId:          getReactionsForObjId,
+  getReactionSummariesForObjIds: getReactionSummariesForObjIds,
   hidePostcardForDid:            hidePostcardForDid,
   getHiddenObjIdsForDid:         getHiddenObjIdsForDid,
   saveToCollections:             saveToCollections,
