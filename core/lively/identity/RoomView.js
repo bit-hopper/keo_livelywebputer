@@ -65,6 +65,10 @@ module("lively.identity.RoomView")
     var BG_SIDEBAR = Color.rgb(0x63, 0x09, 0x67);     // #630967 — header + members panel (dark tone)
     var BG_INPUT   = Color.rgb(0x63, 0x09, 0x67);     // #630967 — message input pill (dark tone)
     var BG_ROW_HOVER = Color.rgba(255, 255, 255, 0.04);
+    // BG_ROW_HOVER above is a white overlay tuned for the dark rail/members
+    // surfaces — too faint on the light BG_MAIN chat list, so message rows
+    // get their own dark-tinted hover fill instead.
+    var BG_MSG_ROW_HOVER = Color.rgba(43, 20, 63, 0.07);
     var TEXT_PRIMARY = Color.rgb(242, 243, 245);
     var TEXT_MUTED   = Color.rgb(148, 155, 164);
     var TEXT_FAINT   = Color.rgb(114, 118, 125);
@@ -1650,7 +1654,37 @@ module("lively.identity.RoomView")
         // (confirmed live: both at the exact same pixel row) and read as
         // cramped/touching rather than a clean two-line message.
         var PAD = 16, ROW_GAP = 14, HEAD_GAP = 4;
+        // The "@handle  time" header line was boxed at a guessed 20px —
+        // confirmed live (getBoundingClientRect on the real content div)
+        // the actual rendered line needs 21px, clipping the bottom pixel of
+        // any descender (g/y/p) in every handle. 23 leaves real headroom
+        // rather than the exact measured minimum.
+        var HEAD_H = 23;
         var y = 12;
+        // Discord/Slack-style per-message hover strip: invisible at rest,
+        // fades in on hover for row separation without a permanent
+        // border/shadow. Each message gets its own full-width wrapping row
+        // Box, with avatar/header/body added AS ITS CHILDREN (local
+        // coordinates, row-relative) rather than as flat siblings of
+        // _msgListBox with the row sent behind them — a sibling box behind
+        // opaque/transparent content in this scrollable list turned out to
+        // be unreliable for real mouse hover (confirmed live via
+        // chrome-devtools: elementFromPoint at empty parts of a row
+        // resolved to the scroll container itself, never the sibling box,
+        // even with an opaque test color forced on, and a real trusted
+        // hover never triggered the fill). Making the row box the actual
+        // DOM ancestor of its own content — matching the working
+        // rooms-rail/members-panel row pattern elsewhere in this file —
+        // means native mouse events on those children correctly bubble up
+        // into it.
+        function makeRow(top) {
+          var row = noDrag(new lively.morphic.Box(lively.rect(0, top, self._chatW, 1)));
+          row.applyStyle({ fill: null, borderWidth: 0, borderRadius: 6 });
+          self._msgListBox.addMorph(row);
+          row.onMouseOver = function () { row.applyStyle({ fill: BG_MSG_ROW_HOVER }); };
+          row.onMouseOut = function () { row.applyStyle({ fill: null }); };
+          return row;
+        }
         if (this._searchActive) y = this._renderSearchBar(y);
         var list = this._searchActive ? (this._searchResults || []) : this._messages;
         if (this._searchActive && !list.length) {
@@ -1670,33 +1704,36 @@ module("lively.identity.RoomView")
           // expand); mute collapses to one line with a click-to-expand
           // toggle. See CLAUDE.md's Ignore/Mute assumption note in DID.js.
           if (lively.identity.did.isBlocked(msg.did, msg.handle)) {
+            var row = makeRow(y);
             var lockAv = noDrag(lively.morphic.Text.makeLabel("lock", { fontSize: 16, textColor: CHAT_TEXT_MUTED }));
             lockAv.applyStyle({ fontFamily: "'Material Symbols Rounded'", borderWidth: 0, fill: null, align: "center" });
             lockAv.eventsAreIgnored = true;
             lockAv.setExtent(lively.pt(AVATAR_MSG, AVATAR_MSG));
-            lockAv.setPosition(lively.pt(PAD, y));
-            self._msgListBox.addMorph(lockAv);
+            lockAv.setPosition(lively.pt(PAD, 0));
+            row.addMorph(lockAv);
 
             var blockedLabel = noDrag(lively.morphic.Text.makeLabel("Message from blocked profile", {
               fontSize: 12, textColor: CHAT_TEXT_MUTED, fixedWidth: true, fixedHeight: true,
             }));
             blockedLabel.eventsAreIgnored = true;
             blockedLabel.setExtent(lively.pt(self._chatW - PAD * 2 - AVATAR_MSG - 8, AVATAR_MSG));
-            blockedLabel.setPosition(lively.pt(PAD + AVATAR_MSG + 8, y + Math.round((AVATAR_MSG - 16) / 2)));
-            self._msgListBox.addMorph(blockedLabel);
+            blockedLabel.setPosition(lively.pt(PAD + AVATAR_MSG + 8, Math.round((AVATAR_MSG - 16) / 2)));
+            row.addMorph(blockedLabel);
 
+            row.setExtent(lively.pt(self._chatW, AVATAR_MSG));
             y += AVATAR_MSG + ROW_GAP;
             return;
           }
           var isMuted = lively.identity.did.isMuted(msg.did, msg.handle);
           var muteKey = msg.objId || (msg.did + "|" + msg.created);
           var muteExpanded = !!self._mutedExpanded[muteKey];
+          var row = makeRow(y);
 
-          var av = noDrag(new lively.morphic.Image(lively.rect(PAD, y, AVATAR_MSG, AVATAR_MSG)));
+          var av = noDrag(new lively.morphic.Image(lively.rect(PAD, 0, AVATAR_MSG, AVATAR_MSG)));
           av.applyStyle({ borderRadius: AVATAR_MSG / 2, borderWidth: 0, clipMode: "hidden" });
           av.setImageURL(lively.identity.postCardUtils.identiconDataUrl(msg.handle || msg.did || "unknown", AVATAR_MSG));
           av.eventsAreIgnored = true;
-          self._msgListBox.addMorph(av);
+          row.addMorph(av);
           // Dim via the real DOM node's CSS opacity — Image morphs' own
           // "fill" style only shows through transparent image regions, not
           // a usable overlay-tint, so this is a direct-DOM write rather
@@ -1720,14 +1757,9 @@ module("lively.identity.RoomView")
               return true;
             };
           }
-          // 16 clipped the bottom of any descender (g/y/p in a handle) —
-          // confirmed live via the shapeNode's own scrollHeight (~19px
-          // for 12px bold text, same shapeNode-padding story as
-          // ConstellationLounge.js's own label-height gotchas): 20 covers
-          // it with a little headroom rather than the exact measured min.
-          headM.setExtent(lively.pt(self._chatW - PAD * 2 - AVATAR_MSG - 8, 20));
-          headM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, y));
-          self._msgListBox.addMorph(headM);
+          headM.setExtent(lively.pt(self._chatW - PAD * 2 - AVATAR_MSG - 8, HEAD_H));
+          headM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, 0));
+          row.addMorph(headM);
 
           var bw = self._chatW - PAD * 2 - AVATAR_MSG - 8;
           var bh;
@@ -1740,8 +1772,8 @@ module("lively.identity.RoomView")
             }));
             collapsedM.eventsAreIgnored = true;
             collapsedM.setExtent(lively.pt(bw, 18));
-            collapsedM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, y + 20 + HEAD_GAP));
-            self._msgListBox.addMorph(collapsedM);
+            collapsedM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, HEAD_H + HEAD_GAP));
+            row.addMorph(collapsedM);
             bh = 18 + 4;
           } else if (self._isMediaMessage(msg.text)) {
             // A GIF/sticker sent via the picker (_sendMediaMessage) — its
@@ -1764,7 +1796,7 @@ module("lively.identity.RoomView")
             var cachedDims = self._mediaDims[msg.text];
             bh = cachedDims ? cachedDims.h : MEDIA_ROW_H;
             var mediaM = noDrag(new lively.morphic.Image(lively.rect(
-              PAD + AVATAR_MSG + 8, y + 20 + HEAD_GAP,
+              PAD + AVATAR_MSG + 8, HEAD_H + HEAD_GAP,
               cachedDims ? cachedDims.w : mw, bh)));
             mediaM.applyStyle({ borderRadius: 6, borderWidth: 0, clipMode: "hidden" });
             mediaM.eventsAreIgnored = true;
@@ -1776,7 +1808,7 @@ module("lively.identity.RoomView")
               self._mediaDims[msg.text] = next;
               if (!prev || prev.w !== next.w || prev.h !== next.h) self._renderMessages();
             });
-            self._msgListBox.addMorph(mediaM);
+            row.addMorph(mediaM);
           } else {
             var flagSegments = self._splitFlagRuns(msg.text);
             var hasFlag = flagSegments.some(function (s) { return s.flag; });
@@ -1784,10 +1816,10 @@ module("lively.identity.RoomView")
               // Raw-HTML path (see _messageBodyHtml's own comment) — a
               // plain Box, not a Text morph, since the flag <img>s need to
               // sit inline in the browser's own native text flow.
-              var bodyBox = noDrag(new lively.morphic.Box(lively.rect(PAD + AVATAR_MSG + 8, y + 20 + HEAD_GAP, bw, 1)));
+              var bodyBox = noDrag(new lively.morphic.Box(lively.rect(PAD + AVATAR_MSG + 8, HEAD_H + HEAD_GAP, bw, 1)));
               bodyBox.applyStyle({ fill: null, borderWidth: 0 });
               bodyBox.eventsAreIgnored = true;
-              self._msgListBox.addMorph(bodyBox);
+              row.addMorph(bodyBox);
               var flagNode = bodyBox.renderContext().shapeNode;
               flagNode.style.fontFamily = "Helvetica";
               flagNode.style.fontSize = "13px";
@@ -1806,16 +1838,17 @@ module("lively.identity.RoomView")
               }));
               bodyM.eventsAreIgnored = true;
               bodyM.setExtent(lively.pt(bw, 1));
-              self._msgListBox.addMorph(bodyM);
+              row.addMorph(bodyM);
               var inner = bodyM.renderContext().shapeNode.querySelector("div");
               bh = inner ? inner.offsetHeight : 18;
               bodyM.setExtent(lively.pt(bw, bh + 4));
-              bodyM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, y + 20 + HEAD_GAP));
+              bodyM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, HEAD_H + HEAD_GAP));
               bh = bh + 4;
             }
           }
 
-          y += 20 + HEAD_GAP + bh + ROW_GAP;
+          row.setExtent(lively.pt(self._chatW, HEAD_H + HEAD_GAP + bh));
+          y += HEAD_H + HEAD_GAP + bh + ROW_GAP;
         });
 
         var scrollNode = this._msgListBox.renderContext().shapeNode;
