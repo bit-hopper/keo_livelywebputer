@@ -111,6 +111,33 @@ module("lively.identity.MiniProfileCard")
       return t;
     }
 
+    // Pink "mat" frame — same technique this codebase's other small dialogs
+    // use (NewWikiPageDialog.js's BuildSpec `_Fill` on the outer Window
+    // itself, which shows through as a colored margin around the inset
+    // content pane; nothing painted on top, no thick extra border). Driven
+    // via a scoped CSS class rather than applyStyle/setFill, since a plain
+    // applyStyle({fill:...}) on an already-rendered classic Window can
+    // silently update the model without reaching the DOM (CLAUDE.md's
+    // applyStyle-DOM-sync gotcha) — same technique PostCardMailbox.js's
+    // _ensureAccentChromeCss/DMChat.js's applyAccentChrome already use for
+    // their own per-window accent colors. Default `.Text.window-title`
+    // (dark gray, tuned for the default light-gray chrome) reads poorly
+    // against this saturated a pink, so it's forced white here too — same
+    // fix DMChat's indigo/Wallet's violet accents needed.
+    function _ensureFlagDialogChromeCss() {
+      var STYLE_ID = "miniprofilecard-flag-dialog-chrome-style";
+      if (document.getElementById(STYLE_ID)) return;
+      var styleEl = document.createElement("style");
+      styleEl.id = STYLE_ID;
+      styleEl.textContent = [
+        ".Window.flag-dialog-pink-frame { background-color: rgb(204,0,87) !important; }",
+        ".Window.flag-dialog-pink-frame .Text.window-title { color: #fff; }",
+        ".Window.flag-dialog-pink-frame.highlighted .Text.window-title { color: #fff; font-weight: bold; }",
+        ".Window.flag-dialog-pink-frame.highlighted { border: none !important; box-shadow: 0px 3px 10px rgba(204,0,87,0.35) !important; }",
+      ].join("\n");
+      document.head.appendChild(styleEl);
+    }
+
     lively.identity.MiniProfileCard = {
       _scrim: null,
       _card: null,
@@ -553,40 +580,59 @@ module("lively.identity.MiniProfileCard")
 
       // Small reason-entry dialog for Flag Profile. Programmatic Window
       // constructor (same idiom as _openModPlaceholderWindow above), not a
-      // BuildSpec module, to keep this two-field dialog local to this file.
+      // BuildSpec module, to keep this two-field dialog local to this file
+      // — but styled after this codebase's established small-dialog look
+      // (NewWikiPageDialog.js): a colored window "mat" (the outer Window's
+      // own fill, showing through as a margin around the inset pane —
+      // NOT a thick painted-on border) framing a light-gray content pane
+      // with its own subtle dark border, small gray field labels above
+      // white bordered inputs, and Cancel/primary buttons clustered
+      // bottom-right rather than spread edge-to-edge.
       _openFlagReasonDialog: function (targetDid, targetHandle, constellationName, roomId) {
-        var W = 340, PAD = 16;
+        var W = 360, PAD = 14;
         var MAX_REASON = 250;
-        var body = new lively.morphic.Box(lively.rect(0, 0, W, 226));
-        body.applyStyle({ fill: Color.rgb(250, 250, 252), borderWidth: 0 });
+        var body = new lively.morphic.Box(lively.rect(0, 0, W, 297));
+        // Matches NewWikiPageDialog's content-pane look (_Fill:243/243/243,
+        // _BorderColor:95/94/95, _BorderRadius:4) rather than this dialog's
+        // previous borderless off-white box.
+        body.applyStyle({ fill: Color.rgb(243, 243, 243), borderColor: Color.rgb(95, 94, 95), borderWidth: 1, borderRadius: 4 });
 
-        body.addMorph(label(lively.rect(PAD, 12, W - PAD * 2, 34),
-          "Report @" + targetHandle + " to moderators. Briefly explain why:",
-          { px: 12, color: Color.rgb(90, 90, 90), wrap: true }));
+        body.addMorph(label(lively.rect(PAD, 12, W - PAD * 2, 18),
+          "Report @" + targetHandle + " to moderators", { px: 13, bold: true, color: Color.rgb(40, 40, 40) }));
+
+        // Small field label above the box (NewWikiPageDialog's addField
+        // pattern: a short gray label, then the input directly below it),
+        // rather than folding "briefly explain why" into the sentence above.
+        body.addMorph(label(lively.rect(PAD, 32, W - PAD * 2, 16),
+          "Reason", { px: 11, color: Color.rgb(120, 120, 120) }));
 
         // Multi-line, wrapped (whiteSpaceHandling: "pre-wrap", same as
-        // RoomView.js's own chat-body text) and tall enough for several
-        // lines — beInputLine() alone (RoomSettingsDialog.js's textField
-        // idiom) is fine for a genuinely single-line field, but this one
-        // needs real wrapping, same as ProfileCard.js's own multi-line Bio
-        // field (which also calls beInputLine() at a taller extent).
-        var reasonField = new lively.morphic.Text(lively.rect(PAD, 52, W - PAD * 2, 76), "");
+        // RoomView.js's own chat-body text) — beInputLine() alone
+        // (RoomSettingsDialog.js's textField idiom) is fine for a
+        // genuinely single-line field, but this one needs real wrapping,
+        // same as ProfileCard.js's own multi-line Bio field (which also
+        // calls beInputLine() at a taller extent). 156px is a measured
+        // constant (CLAUDE.md: guessed per-line-height math on a
+        // multi-line box reliably undershoots and clips the last line) —
+        // confirmed live against a real 280-char wrapped string at this
+        // exact width/font, so a 250-char reason never clips.
+        var reasonField = new lively.morphic.Text(lively.rect(PAD, 49, W - PAD * 2, 156), "");
         reasonField.name = "flagReasonField"; // looked up by name from the counter's addScript handler below, not a closure var
         reasonField.beInputLine();
         reasonField.applyStyle({
-          allowInput: true, fontSize: 12, clipMode: "hidden",
+          allowInput: true, fontSize: 12, fontFamily: "Helvetica", clipMode: "hidden",
           fixedWidth: true, fixedHeight: true, whiteSpaceHandling: "pre-wrap",
-          fill: Color.white, borderColor: Color.rgb(200, 200, 200), borderWidth: 1, borderRadius: 4,
+          fill: Color.white, borderColor: Color.rgb(203, 203, 203), borderWidth: 1, borderRadius: 4,
           padding: lively.Rectangle.inset(6, 6, 0, 0),
         });
-        reasonField.setExtent(lively.pt(W - PAD * 2, 76));
+        reasonField.setExtent(lively.pt(W - PAD * 2, 156));
         body.addMorph(reasonField);
 
         // Live "N / 250" counter, truncating on overflow — same idiom as
         // ProfileCard.js's Bio field counter (onKeyUp fires Text's own
         // 'textString' signal; the counter listens and trims/repositions
         // the caret at the end so continued typing doesn't prepend).
-        var counter = new lively.morphic.Text(lively.rect(PAD, 130, W - PAD * 2, 14), "0 / " + MAX_REASON);
+        var counter = new lively.morphic.Text(lively.rect(PAD, 209, W - PAD * 2, 14), "0 / " + MAX_REASON);
         counter.applyStyle({ allowInput: false, fontSize: 10, align: "right",
           textColor: Color.rgb(140, 140, 148), fill: null, borderWidth: 0,
           selectable: false, clipMode: "hidden", whiteSpaceHandling: "pre" });
@@ -610,19 +656,26 @@ module("lively.identity.MiniProfileCard")
         body.addMorph(counter);
         lively.bindings.connect(reasonField, "textString", counter, "onReasonChanged");
 
-        var errorLabel = label(lively.rect(PAD, 150, W - PAD * 2, 16), "", { px: 11, color: Color.rgb(200, 60, 60) });
+        var errorLabel = label(lively.rect(PAD, 229, W - PAD * 2, 16), "", { px: 11, color: Color.rgb(200, 60, 60) });
         body.addMorph(errorLabel);
 
+        // Cancel: plain white/gray-bordered, matching NewWikiPageDialog's
+        // own Cancel button exactly. Primary (Send): the light-pink-tint +
+        // pink-border + pink-text look this file's OWN "View full profile"
+        // button already established (_addViewButton above) — its hover
+        // fill (Color.rgb(253,235,243)) used here as Send's resting fill —
+        // rather than a solid saturated pink block, for visual consistency
+        // within this same file.
         function makeButton(rect, text, primary) {
           var btn = new lively.morphic.Box(rect);
           btn.applyStyle({
-            fill: primary ? PINK : Color.white, borderRadius: 6, borderWidth: 1,
-            borderColor: primary ? PINK : Color.rgb(200, 200, 200), clipMode: "hidden",
+            fill: primary ? Color.rgb(253, 235, 243) : Color.white, borderRadius: 5, borderWidth: 1,
+            borderColor: primary ? PINK : Color.rgb(214, 214, 214), clipMode: "hidden",
           });
           noDrag(btn);
           var t = new lively.morphic.Text(lively.rect(0, 0, rect.width, rect.height), text);
           t.applyStyle({
-            fontSize: 12 * 0.75, textColor: primary ? Color.white : Color.rgb(60, 60, 60),
+            fontSize: 12 * 0.75, textColor: primary ? PINK : Color.rgb(60, 60, 60),
             fill: null, borderWidth: 0, align: "center",
             padding: lively.Rectangle.inset(0, Math.round((rect.height - 12) / 2) - 2, 0, 0),
             allowInput: false, selectable: false, clipMode: "hidden", whiteSpaceHandling: "pre",
@@ -633,11 +686,15 @@ module("lively.identity.MiniProfileCard")
           return btn;
         }
 
-        var cancelBtn = makeButton(lively.rect(PAD, 174, 120, 28), "Cancel", false);
+        // Both start at a generous placeholder width/position and get
+        // snug-fit + re-clustered bottom-right below, once real span
+        // measurement is possible (see the setTimeout pass at the end of
+        // this function).
+        var cancelBtn = makeButton(lively.rect(PAD, 255, 90, 28), "Cancel", false);
         cancelBtn.onMouseUp = function (evt) { win.remove(); evt.stop(); return true; };
         body.addMorph(cancelBtn);
 
-        var sendBtn = makeButton(lively.rect(W - PAD - 120, 174, 120, 28), "Send", true);
+        var sendBtn = makeButton(lively.rect(W - PAD - 90, 255, 90, 28), "Send", true);
         sendBtn.onMouseUp = function (evt) {
           var reason = (reasonField.textString || "").trim().slice(0, MAX_REASON);
           if (!reason) { errorLabel.setTextString("Please enter a reason."); evt.stop(); return true; }
@@ -701,9 +758,37 @@ module("lively.identity.MiniProfileCard")
         // idiom LoginDialog.js/RegisterDialog.js use for their own
         // programmatic-Window dialogs.
         var win = new lively.morphic.Window(body, "Flag Profile — @" + targetHandle);
+        _ensureFlagDialogChromeCss();
+        win.addStyleClassName("flag-dialog-pink-frame");
         win.openInWorldCenter();
         win.comeForward();
         reasonField.focus();
+
+        // Snug-fit Cancel/Send to their own label width instead of the
+        // generous 120px placeholder each was built at — needs a real
+        // render pass first (CLAUDE.md: measuring a span in the same tick
+        // as adding the morph to the world can still read back 0), so this
+        // runs a turn later via setTimeout, not right after
+        // openInWorldCenter() above.
+        setTimeout(function () {
+          var BTN_H_PAD = 16;
+          function snugFit(btn) {
+            var lbl = btn.submorphs[0];
+            var span = lbl.renderContext().shapeNode.querySelector("span");
+            if (!span) return;
+            var w = span.offsetWidth + BTN_H_PAD * 2;
+            btn.setExtent(lively.pt(w, btn.getExtent().y));
+            lbl.setExtent(lively.pt(w, lbl.getExtent().y));
+          }
+          snugFit(cancelBtn);
+          snugFit(sendBtn);
+          // Cluster both buttons bottom-right (NewWikiPageDialog's own
+          // Cancel/Create layout), not spread edge-to-edge.
+          var y = sendBtn.getPosition().y;
+          var sendX = W - PAD - sendBtn.getExtent().x;
+          sendBtn.setPosition(lively.pt(sendX, y));
+          cancelBtn.setPosition(lively.pt(sendX - 8 - cancelBtn.getExtent().x, y));
+        }, 0);
       },
     };
 
