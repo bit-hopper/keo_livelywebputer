@@ -198,7 +198,7 @@ module('lively.identity.WikiSerializer')
             // envelope.did (server-side write auth for wikipage envelopes
             // is checked separately, against constellation membership).
             _signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
-              if (signErr) console.warn('[WikiSerializer] Could not sign envelope (non-fatal):', signErr.message);
+              if (signErr) return thenDo(signErr);
               thenDo(null, signed || envelope);
             });
           }
@@ -307,8 +307,14 @@ module('lively.identity.WikiSerializer')
       crypto.getRandomValues(ch);
       wa.deriveKek({ credentialId: user.credentialId, rpId: user.rpId, challenge: ch }, function (err, kek) {
         if (err) {
-          console.warn('[WikiSerializer] Could not derive KEK to sign envelope (non-fatal):', err.message);
-          return thenDo(null, envelope);
+          // This account's DID document already has a delegation cert on
+          // file, so the server mandates a valid signature — an unsigned
+          // envelope here is guaranteed to be rejected. Propagate the real
+          // error instead of quietly falling back to unsigned (see
+          // PostCardSerializer.js's identical fix for the full rationale).
+          // This was the root cause of WikiEditor autosave silently
+          // submitting doomed unsigned envelopes whenever the ceremony failed.
+          return thenDo(err);
         }
         var wrapped;
         try { wrapped = JSON.parse(livelyMeta.softSigningKeyWrapped); } catch (e) { return thenDo(e); }

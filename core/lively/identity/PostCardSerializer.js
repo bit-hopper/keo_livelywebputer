@@ -232,7 +232,7 @@ module('lively.identity.PostCardSerializer')
 
             // Step 6: Sign with device soft key if delegation cert + KEK available
             _signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
-              if (signErr) console.warn('[PostCardSerializer] Could not sign envelope (non-fatal):', signErr.message);
+              if (signErr) return thenDo(signErr);
               thenDo(null, signed || envelope);
             });
           }
@@ -377,7 +377,7 @@ module('lively.identity.PostCardSerializer')
             if (params.replyTo)       envelope.replyTo       = params.replyTo;
 
             _signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
-              if (signErr) console.warn('[PostCardSerializer] Could not sign envelope (non-fatal):', signErr.message);
+              if (signErr) return thenDo(signErr);
               thenDo(null, signed || envelope);
             });
           }
@@ -525,7 +525,7 @@ module('lively.identity.PostCardSerializer')
                 if (params.replyTo) envelope.replyTo = params.replyTo;
 
                 _signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
-                  if (signErr) console.warn('[PostCardSerializer] Could not sign encrypted envelope (non-fatal):', signErr.message);
+                  if (signErr) return thenDo(signErr);
                   thenDo(null, signed || envelope);
                 });
               }
@@ -697,7 +697,7 @@ module('lively.identity.PostCardSerializer')
                 if (params.replyTo) envelope.replyTo = params.replyTo;
 
                 _signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
-                  if (signErr) console.warn('[PostCardSerializer] Could not sign encrypted envelope (non-fatal):', signErr.message);
+                  if (signErr) return thenDo(signErr);
                   thenDo(null, signed || envelope);
                 });
               }
@@ -904,8 +904,17 @@ module('lively.identity.PostCardSerializer')
       crypto.getRandomValues(ch);
       wa.deriveKek({ credentialId: user.credentialId, rpId: user.rpId, challenge: ch }, function (err, kek) {
         if (err) {
-          console.warn('[PostCardSerializer] Could not derive KEK to sign envelope (non-fatal):', err.message);
-          return thenDo(null, envelope);
+          // Unlike the two early-return branches above (no delegation cert at
+          // all — this account genuinely never signs, unsigned is fine), we
+          // already know THIS account's server-side DID document expects a
+          // valid signature, so an unsigned envelope here is guaranteed to be
+          // rejected by the server's mandatory signature check. Propagating
+          // the real error (rather than quietly falling back to unsigned, as
+          // this used to) saves a doomed network round trip and surfaces the
+          // actual WebAuthn failure to the user instead of a generic
+          // "save failed (403)" that invites a blind retry — and another
+          // identical doomed ceremony.
+          return thenDo(err);
         }
         var wrapped;
         try { wrapped = JSON.parse(livelyMeta.softSigningKeyWrapped); } catch (e) { return thenDo(e); }

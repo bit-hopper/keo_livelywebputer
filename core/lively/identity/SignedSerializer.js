@@ -158,9 +158,7 @@ module("lively.identity.SignedSerializer")
               // Resolves the long-standing "IDENTITY: privateKey removed — envelope signing deferred".
               // Gracefully degrades: unsigned envelopes still work, same as before.
               _signEnvelopeIfPossible(envelope, user, function (signErr, signedEnvelope) {
-                if (signErr) {
-                  console.warn('[SignedSerializer] Could not sign envelope (non-fatal):', signErr.message);
-                }
+                if (signErr) return thenDo(signErr);
                 thenDo(null, signedEnvelope || envelope);
               });
             });
@@ -188,8 +186,13 @@ module("lively.identity.SignedSerializer")
             crypto.getRandomValues(ch);
             wa.deriveKek({ credentialId: user.credentialId, rpId: user.rpId, challenge: ch }, function (err, kek) {
               if (err) {
-                console.warn('[SignedSerializer] Could not derive KEK to sign envelope (non-fatal):', err.message);
-                return thenDo(null, envelope);
+                // See PostCardSerializer.js's identical fix: this account's DID
+                // document already has a delegation cert on file, so the server
+                // mandates a valid signature here — an unsigned envelope is
+                // guaranteed to be rejected. Propagate the real error instead
+                // of quietly falling back to unsigned and wasting a doomed
+                // network round trip.
+                return thenDo(err);
               }
               // Decrypt the wrapped soft private key JWK
               var wrapped;

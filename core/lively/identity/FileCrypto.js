@@ -85,10 +85,13 @@ module('lively.identity.FileCrypto')
       // metadata-only write (shareFolder/revokeFolderRecipient, which only
       // ever touch record.recipients/visibility and never change record.cid)
       // doesn't need this — the server already exempts those entirely.
-      // Gracefully degrades to an unsigned envelope if delegation/soft-key
-      // setup isn't present or the KEK can't be derived (mirrors every other
-      // call site's behavior); the resulting unsigned PUT then fails
-      // downstream with a real, visible error, same as any other save.
+      // Gracefully degrades to an unsigned envelope only if delegation/soft-key
+      // setup isn't present at all (no credential on file expects a
+      // signature). If that setup IS present but the KEK can't actually be
+      // derived, the account's DID document already commits it to signing, so
+      // the deriveKek error itself is propagated as fatal here rather than
+      // silently producing an unsigned envelope the server's mandatory
+      // signature check is guaranteed to 403.
       _signEnvelopeIfPossible: function (envelope, user, c, thenDo) {
         var method = lively.identity.did.findMethodByCredentialId(user.document, user.credentialId);
         if (!method || !method.lively) return thenDo(null, envelope);
@@ -101,8 +104,13 @@ module('lively.identity.FileCrypto')
         crypto.getRandomValues(ch);
         wa.deriveKek({ credentialId: user.credentialId, rpId: user.rpId, challenge: ch }, function (err, kek) {
           if (err) {
-            console.warn('[FileCrypto] Could not derive KEK to sign envelope (non-fatal):', err.message);
-            return thenDo(null, envelope);
+            // Unlike the two early-return branches above (no delegation cert
+            // at all), this account's DID document already has one on file,
+            // so the server mandates a valid signature — an unsigned envelope
+            // here is guaranteed to be rejected. Propagate the real error
+            // instead of quietly falling back to unsigned (see
+            // PostCardSerializer.js's identical fix for the full rationale).
+            return thenDo(err);
           }
           var wrapped;
           try { wrapped = JSON.parse(livelyMeta.softSigningKeyWrapped); } catch (e) { return thenDo(e); }
@@ -433,7 +441,7 @@ module('lively.identity.FileCrypto')
                         state: { name: fileName },
                       }, envelopeExtra || {});
                       self._signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
-                        if (signErr) console.warn('[FileCrypto] Could not sign envelope (non-fatal):', signErr.message);
+                        if (signErr) return thenDo(signErr);
                         self._putEnvelope(user.handle, signed || envelope, function (err) {
                           if (err) return thenDo(err);
                           // blobNonce is always null now (public: blob is
@@ -779,7 +787,7 @@ module('lively.identity.FileCrypto')
               state: { name: name, fileCount: files.length },
             };
             self._signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
-              if (signErr) console.warn('[FileCrypto] Could not sign envelope (non-fatal):', signErr.message);
+              if (signErr) return thenDo(signErr);
               self._putEnvelope(handle, signed || envelope, function (err) {
                 if (err) return thenDo(err);
                 self._cacheFolderDek(envelope.objId, dek);
@@ -849,7 +857,7 @@ module('lively.identity.FileCrypto')
                       state: { name: name, fileCount: 0 },
                     };
                     self._signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
-                      if (signErr) console.warn('[FileCrypto] Could not sign envelope (non-fatal):', signErr.message);
+                      if (signErr) return thenDo(signErr);
                       self._putEnvelope(user.handle, signed || envelope, function (err) {
                         if (err) return thenDo(err);
                         self._cacheFolderDek(envelope.objId, dek);

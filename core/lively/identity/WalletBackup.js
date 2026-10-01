@@ -183,7 +183,7 @@ Object.subclass('lively.identity.WalletBackup',
             state: {},
           };
           self._signEnvelopeIfPossible(tombstone, user, c, function (signErr, signed) {
-            if (signErr) console.warn('[WalletBackup] Could not sign tombstone envelope (non-fatal):', signErr.message);
+            if (signErr) return thenDo(signErr);
             self._putEnvelope(user.handle, signed || tombstone, thenDo);
           });
         });
@@ -199,11 +199,12 @@ Object.subclass('lively.identity.WalletBackup',
   // hand rather than going through SignedSerializer, so it never picked up
   // this step when signature verification became mandatory server-side
   // (postcard_audit.md F20, 2026-09-05) — every write was landing unsigned
-  // and getting 403'd. Gracefully degrades to an unsigned envelope if
-  // delegation/soft-key setup isn't present or the KEK can't be derived
-  // (mirrors every other call site's behavior); the resulting unsigned PUT
-  // then fails downstream with a real, visible error, same as any other
-  // save.
+  // and getting 403'd. Gracefully degrades to an unsigned envelope only if
+  // delegation/soft-key setup isn't present at all. If that setup IS
+  // present but the KEK can't actually be derived, the account's DID
+  // document already commits it to signing, so the deriveKek error itself
+  // is propagated as fatal rather than silently producing an unsigned
+  // envelope the server's mandatory signature check is guaranteed to 403.
   _signEnvelopeIfPossible: function (envelope, user, c, thenDo) {
     var method = lively.identity.did.findMethodByCredentialId(user.document, user.credentialId);
     if (!method || !method.lively) return thenDo(null, envelope);
@@ -216,8 +217,7 @@ Object.subclass('lively.identity.WalletBackup',
     crypto.getRandomValues(ch);
     wa.deriveKek({ credentialId: user.credentialId, rpId: user.rpId, challenge: ch }, function (err, kek) {
       if (err) {
-        console.warn('[WalletBackup] Could not derive KEK to sign envelope (non-fatal):', err.message);
-        return thenDo(null, envelope);
+        return thenDo(err);
       }
       var wrapped;
       try { wrapped = JSON.parse(livelyMeta.softSigningKeyWrapped); } catch (e) { return thenDo(e); }
@@ -296,7 +296,7 @@ Object.subclass('lively.identity.WalletBackup',
             state: {},
           };
           self._signEnvelopeIfPossible(migrated, user, lively.identity.crypto, function (signErr, signed) {
-            if (signErr) console.warn('[WalletBackup] Could not sign migrated envelope (non-fatal):', signErr.message);
+            if (signErr) return thenDo(signErr);
             self._putEnvelope(user.handle, signed || migrated, function (errPut) {
               if (errPut) return thenDo(errPut);
               // Migration succeeding is what matters; a failed tombstone of
@@ -358,7 +358,7 @@ Object.subclass('lively.identity.WalletBackup',
                 state: {},
               };
               self._signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
-                if (signErr) console.warn('[WalletBackup] Could not sign envelope (non-fatal):', signErr.message);
+                if (signErr) return thenDo(signErr);
                 onProgress('uploading');
                 self._putEnvelope(user.handle, signed || envelope, function (err6) {
                   if (err6) return thenDo(err6);
