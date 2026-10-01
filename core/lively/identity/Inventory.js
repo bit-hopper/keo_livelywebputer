@@ -2045,22 +2045,24 @@ lively.BuildSpec('lively.identity.Inventory', {
 
     // ─── inspect ─────────────────────────────────────────────────────────
 
-    // PartInspector is a local WebDAV debugging tool and loads fine
-    // regardless of which instance the browsed item's data came from -- it
-    // just needs the item's raw JSON, fetched via the same _fetchFullEnvelope
-    // every other item action already shares. Unlike the classic browser's
-    // own openPartInspectorForSelection (which drives PartInspector's
-    // PartsBinCategoryChooser/PartsBinPartItemChooser dropdowns against a
-    // real WebDAV PartsSpace), an Inventory item has no such WebDAV path --
-    // its partsSpaceName is either '*public*' or another user's identity
-    // space, neither of which PartInspector's chooser can ever resolve. So
-    // this calls PartInspector's loadFromJSON(json, label, tabName) entry
-    // point instead, which skips the chooser entirely and feeds the JSON
-    // straight to updateJSON -- see inventory.md §12 for the full writeup of
-    // why the old .loadPart(...) call here was dead-on-arrival.
+    // lively.morphic.tools.ItemInspector is a standalone inspector built for
+    // Inventory items specifically -- it just needs the item's raw JSON,
+    // fetched via the same _fetchFullEnvelope every other item action
+    // already shares. It replaces an earlier approach that reused the
+    // classic WebDAV debugging tool PartInspector (PartsBin/Debugging/
+    // PartInspector.json) via a loadFromJSON(json, label, tabName) entry
+    // point bolted onto it: that part's own PartsBinCategoryChooser/
+    // PartsBinPartItemChooser dropdowns only ever worked against a real
+    // WebDAV PartsSpace -- an Inventory item has no such path, its
+    // partsSpaceName is either '*public*' or another user's identity space
+    // -- so those dropdowns (and the rest of PartInspector's WebDAV-chooser
+    // UI) were always dead weight here. ItemInspector carries over only the
+    // generic JSON/registry-graph logic (Overview's morph list + reference
+    // viewer, JSON, Serialization Info, Object Graph) and drops the rest.
+    // See inventory.md §12 for the full writeup.
     //
     // A single "Inspect" button (openInspectorMenu, below) fans out to this
-    // for all three of PartInspector's non-Overview tabs -- JSON,
+    // for all three of ItemInspector's non-Overview tabs -- JSON,
     // Serialization Info, Object Graph -- rather than one physical button
     // per tab, which measured live (chrome-devtools MCP) to overflow the
     // right panel's fixed-width button row (originally ItemInfoPanel's
@@ -2074,7 +2076,7 @@ lively.BuildSpec('lively.identity.Inventory', {
         this._fetchFullEnvelope(item, function(err, envelope) {
             if (err) { self.setStatus('Failed to load item: ' + (err.message || err), true); return; }
             // record.payload is ciphertext for private/shared items -- feeding
-            // that into PartInspector's JSON.parse would just fail or produce
+            // that into ItemInspector's JSON.parse would just fail or produce
             // garbage. Scoped to public items only for now (see inventory.md
             // §12's open question); private/shared is a deliberate follow-up,
             // not an oversight.
@@ -2087,12 +2089,27 @@ lively.BuildSpec('lively.identity.Inventory', {
                 var indicatorClose, indicator;
                 lively.lang.fun.composeAsync(
                     function(n) { Global.require('lively.morphic.tools.LoadingIndicator').toRun(function() { n(); }); },
-                    function(n) { indicator = lively.morphic.tools.LoadingIndicator.open('loading...', function(close) { indicatorClose = close; n(); }); },
-                    function(n) { lively.PartsBin.getPart('PartInspector', 'PartsBin/Debugging/', function(err2, inspector) { n(err2, inspector); }); },
-                    function(inspector, n) {
-                        inspector.openInWorldCenter();
+                    function(n) {
+                        // LoadingIndicator.open calls its callback
+                        // synchronously, before returning -- assigning
+                        // `indicator` from n() (itself called inside that
+                        // callback) races the assignment below against
+                        // whatever n() resumes synchronously. Call n() after
+                        // the assignment completes, not from inside the
+                        // callback, so a later step reading `indicator`
+                        // (e.g. indicator.bringToFront()) never sees it
+                        // still undefined. Confirmed live: reusing an
+                        // already-open ItemInspector window (a faster path
+                        // than first-time creation) was enough to flip this
+                        // race and throw "Cannot read properties of
+                        // undefined (reading 'bringToFront')".
+                        indicator = lively.morphic.tools.LoadingIndicator.open('loading...', function(close) { indicatorClose = close; });
+                        n();
+                    },
+                    function(n) { Global.require('lively.morphic.tools.ItemInspector').toRun(function() { n(); }); },
+                    function(n) {
+                        lively.morphic.tools.ItemInspector.open(item.name, json, tabName);
                         indicator.bringToFront();
-                        inspector.targetMorph.loadFromJSON(json, item.name, tabName);
                         n();
                     }
                 )(function(err3) {
