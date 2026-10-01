@@ -79,6 +79,7 @@ module("lively.identity.RoomView")
     var CHAT_TEXT_MUTED   = Color.rgb(90, 66, 122);
     var CHAT_TEXT_FAINT   = Color.rgb(124, 100, 158);
     var ACCENT = Color.rgb(79, 11, 67);       // #4F0B43 — matches ConstellationLounge's ROOM_ACCENT
+    var JUMP_HIGHLIGHT = Color.rgba(79, 11, 67, 0.18); // flash fill for "jump to replied-to message"
     var DANGER = Color.rgb(242, 63, 66);
     var ONLINE = Color.rgb(35, 165, 89);
 
@@ -154,7 +155,8 @@ module("lively.identity.RoomView")
     // Message actions (reactions/replies/edit/delete/flag) — persistent
     // rooms only, see RoomViewController.initialize's own note on why.
     var REPLY_STRIP_H = 26;     // extra height _inputRowM grows by while composing a reply
-    var REPLY_PREVIEW_H = 16;   // "Replying to @x: ..." strip rendered above a reply message
+    var REPLY_PREVIEW_H = 26;   // reply-preview chip (parent avatar + handle + snippet) above a reply message — tall enough for a short connector curve below the small avatar
+    var REPLY_AVATAR = 16;      // small parent-message avatar shown inside the reply-preview chip
     var RAIL_POLL_MS = 8000;   // how often the rooms rail re-reads other rooms' headcounts
     var ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
 
@@ -1573,6 +1575,32 @@ module("lively.identity.RoomView")
         return null;
       },
 
+      // Scrolls a reply's parent message into view and briefly flashes it —
+      // _rowTopByObjId/_rowMorphByObjId are rebuilt fresh on every
+      // _renderMessages() pass (see there), so reading them here rather
+      // than closing over stale values means a click always targets
+      // wherever the message is NOW, even if a poll/reaction/edit
+      // re-rendered the list between the chip being drawn and the click.
+      _jumpToMessage: function (objId) {
+        if (this._searchActive) return; // offsets only cover the current search results here, not the full list
+        var top = this._rowTopByObjId && this._rowTopByObjId[objId];
+        var targetRow = this._rowMorphByObjId && this._rowMorphByObjId[objId];
+        if (top == null || !targetRow || !this._msgListBox) return;
+        var scrollNode = this._msgListBox.renderContext().shapeNode;
+        scrollNode.scrollTop = Math.max(0, top - Math.round(scrollNode.clientHeight / 3));
+
+        // A temporary overlay morph rather than touching the row's own
+        // `fill` — the row already swaps `fill` on hover (see makeRow
+        // below), and fighting over the same property with a timed revert
+        // would lose the flash early if the mouse happened to be over the
+        // row at the time.
+        var overlay = noDrag(new lively.morphic.Box(lively.rect(0, 0, targetRow.getExtent().x, targetRow.getExtent().y)));
+        overlay.applyStyle({ fill: JUMP_HIGHLIGHT, borderWidth: 0, borderRadius: 6 });
+        overlay.eventsAreIgnored = true;
+        targetRow.addMorph(overlay);
+        setTimeout(function () { try { overlay.remove(); } catch (e) {} }, 1200);
+      },
+
       // ── replies ────────────────────────────────────────────────────────────
       // Discord-style: a lightweight "replying to X" preview rendered
       // inline above the reply message in the same flat chronological list
@@ -2206,6 +2234,12 @@ module("lively.identity.RoomView")
         if (!this._msgListBox) return; // window closed — showView re-renders from this._messages
         var self = this;
         (this._msgListBox.submorphs || []).slice().forEach(function (m) { m.remove(); });
+        // Rebuilt fresh every pass — _jumpToMessage reads these at click
+        // time rather than a closure capturing them now, so a reply chip's
+        // target stays correct even if the list re-renders (poll/reaction/
+        // edit) before the user actually clicks it.
+        self._rowTopByObjId = {};
+        self._rowMorphByObjId = {};
 
         // Small breathing room between the "@handle  time" header line and
         // the message body below it. Plain text gets away without this (its
@@ -2244,6 +2278,36 @@ module("lively.identity.RoomView")
           row.onMouseOver = function () { row.applyStyle({ fill: BG_MSG_ROW_HOVER }); };
           row.onMouseOut = function () { row.applyStyle({ fill: null }); };
           return row;
+        }
+        // An "L" connector — straight down from `start`, one smoothly
+        // rounded 90° corner, straight across into `end` — rather than a
+        // single freeform bezier (the first version of this), which read
+        // as an arbitrary swoop instead of a clean right-angle turn.
+        // `start` is directly above `corner` (same x); `end` is directly
+        // beside `corner` (same y) — i.e. start drops straight down, then
+        // the path turns to arrive at end horizontally. The standard SVG
+        // rounded-corner trick: a straight line into the corner, a
+        // quadratic curve (Q) whose control point IS the sharp corner
+        // point itself (so both legs stay tangent to the curve), then a
+        // straight line out. `lively.morphic.Shapes.PathElement.parse`
+        // (the same primitive `Morph.makeCubicBezier` uses for its raw "C"
+        // string) parses "Q" and "L" just as well.
+        function makeElbowConnector(start, corner, end, radius, lineWidth, lineColor) {
+          var legInEnd = lively.pt(corner.x, corner.y - radius * (corner.y > start.y ? 1 : -1));
+          var legOutStart = lively.pt(corner.x - radius * (corner.x > end.x ? 1 : -1), corner.y);
+          var ptToString = function (p) { return p.x + "," + p.y; };
+          var d = "M" + ptToString(start) + "L" + ptToString(legInEnd) +
+            "Q" + ptToString(corner) + " " + ptToString(legOutStart) +
+            "L" + ptToString(end);
+          var path = new lively.morphic.Path([lively.pt(0, 0), lively.pt(0, 0)]);
+          path.shape.setPathElements(lively.morphic.Shapes.PathElement.parse(d));
+          path.setBorderWidth(lineWidth);
+          path.setBorderColor(lineColor);
+          path.shape.getBounds = function () {
+            var b = this.renderContext().pathNode.getBBox();
+            return new Rectangle(b.x - lineWidth, b.y - lineWidth, b.width + 2 * lineWidth, b.height + 2 * lineWidth);
+          };
+          return path;
         }
         // Discord-style day-boundary divider: a centered date label flanked
         // by thin rule lines. Text width is measured off the real rendered
@@ -2316,6 +2380,7 @@ module("lively.identity.RoomView")
           // toggle. See CLAUDE.md's Ignore/Mute assumption note in DID.js.
           if (lively.identity.did.isBlocked(msg.did, msg.handle)) {
             var row = makeRow(y);
+            if (msg.objId) { self._rowTopByObjId[msg.objId] = y; self._rowMorphByObjId[msg.objId] = row; }
             var lockAv = noDrag(lively.morphic.Text.makeLabel("lock", { fontSize: 16, textColor: CHAT_TEXT_MUTED }));
             lockAv.applyStyle({ fontFamily: "'Material Symbols Rounded'", borderWidth: 0, fill: null, align: "center" });
             lockAv.eventsAreIgnored = true;
@@ -2341,27 +2406,65 @@ module("lively.identity.RoomView")
           var isMine = !!(currentUser && msg.did === currentUser.did);
           var isEditingThis = !!(msg.objId && msg.objId === self._editingObjId);
           var row = makeRow(y);
+          if (msg.objId) { self._rowTopByObjId[msg.objId] = y; self._rowMorphByObjId[msg.objId] = row; }
 
-          // Discord-style: a lightweight "replying to X" preview rendered
-          // above the avatar/header, inline in the same flat list — not a
+          // Discord-style: a lightweight reply-preview chip rendered above
+          // the avatar/header, inline in the same flat list — not a
           // separate thread panel. The parent is looked up client-side
           // against already-loaded messages; a parent outside the current
-          // page degrades gracefully to a handle-less line rather than a
+          // page degrades gracefully to a handle-less line (no avatar, no
+          // connector, no click — there's nowhere to jump to) rather than a
           // second network round trip.
           var contentTop = 0;
+          var replyM = null, replyAv = null;
           if (msg.replyTo && msg.replyTo.objId) {
             contentTop = REPLY_PREVIEW_H;
             var parent = self._findMessageByObjId(msg.replyTo.objId);
-            var replyLabelText = parent
-              ? ("↩ Replying to @" + (parent.handle || "someone") + ": " + (parent.text || "").replace(/\s+/g, " ").slice(0, 50))
-              : "↩ Replying to a message";
-            var replyM = noDrag(lively.morphic.Text.makeLabel(replyLabelText, {
-              fontSize: 11, textColor: CHAT_TEXT_FAINT, fixedWidth: true, fixedHeight: true, whiteSpaceHandling: "pre",
-            }));
-            replyM.eventsAreIgnored = true;
-            replyM.setExtent(lively.pt(self._chatW - PAD * 2 - AVATAR_MSG - 8, REPLY_PREVIEW_H));
-            replyM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, 0));
-            row.addMorph(replyM);
+            if (parent) {
+              var parentObjId = parent.objId;
+              // Sits close to the BIG avatar's own column (left edge at its
+              // horizontal center) rather than all the way out at the
+              // header-text column — confirmed against a reference image
+              // that the small avatar belongs almost directly above the
+              // big one, with only a short connector bridging them, not a
+              // long diagonal stretch over to where "@handle   time" starts
+              // on the row below.
+              var replyAvX = PAD + AVATAR_MSG / 2;
+              replyAv = noDrag(new lively.morphic.Image(lively.rect(replyAvX, 1, REPLY_AVATAR, REPLY_AVATAR)));
+              replyAv.applyStyle({ borderRadius: REPLY_AVATAR / 2, borderWidth: 0, clipMode: "hidden" });
+              replyAv.setImageURL(lively.identity.postCardUtils.identiconDataUrl(parent.handle || parent.did || "unknown", REPLY_AVATAR));
+              row.addMorph(replyAv);
+
+              var snippetText = "@" + (parent.handle || "someone") + "  " + (parent.text || "").replace(/\s+/g, " ").slice(0, 50);
+              replyM = noDrag(lively.morphic.Text.makeLabel(snippetText, {
+                fontSize: 11, textColor: CHAT_TEXT_FAINT, fixedWidth: true, fixedHeight: true, whiteSpaceHandling: "pre",
+              }));
+              replyM.setExtent(lively.pt(self._chatW - PAD - (replyAvX - PAD) - REPLY_AVATAR - 6, REPLY_PREVIEW_H));
+              replyM.setPosition(lively.pt(replyAvX + REPLY_AVATAR + 6, 0));
+              row.addMorph(replyM);
+
+              [replyAv, replyM].forEach(function (m) {
+                // Text.makeLabel (replyM) runs beLabel(), which calls
+                // ignoreEvents() internally and leaves eventsAreIgnored
+                // true — confirmed live to silently swallow onMouseUp
+                // (Events.js's onMouseUpEntry early-returns on that flag
+                // before ever calling this.onMouseUp), the same thing the
+                // existing muted-message label works around by setting
+                // eventsAreIgnored back to false. Harmless to also set on
+                // replyAv (an Image, default already false).
+                m.eventsAreIgnored = false;
+                m.handStyle = "pointer";
+                m.onMouseUp = function (evt) { self._jumpToMessage(parentObjId); evt.stop(); return true; };
+              });
+            } else {
+              replyM = noDrag(lively.morphic.Text.makeLabel("Replying to a message", {
+                fontSize: 11, textColor: CHAT_TEXT_FAINT, fixedWidth: true, fixedHeight: true, whiteSpaceHandling: "pre",
+              }));
+              replyM.eventsAreIgnored = true;
+              replyM.setExtent(lively.pt(self._chatW - PAD * 2 - AVATAR_MSG - 8, REPLY_PREVIEW_H));
+              replyM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, 0));
+              row.addMorph(replyM);
+            }
           }
 
           var av = noDrag(new lively.morphic.Image(lively.rect(PAD, contentTop, AVATAR_MSG, AVATAR_MSG)));
@@ -2369,6 +2472,35 @@ module("lively.identity.RoomView")
           av.setImageURL(lively.identity.postCardUtils.identiconDataUrl(msg.handle || msg.did || "unknown", AVATAR_MSG));
           av.eventsAreIgnored = true;
           row.addMorph(av);
+
+          if (replyAv) {
+            // "L" connector linking the reply chip's small parent-message
+            // avatar above to the actual message's avatar below it,
+            // Discord-style — touching each avatar's own circumference
+            // (not its center). The small avatar sits almost directly
+            // above the big one (see replyAvX above), so this is a short
+            // drop rather than a long diagonal: straight down from the
+            // small avatar's bottom, one rounded 90° corner, then straight
+            // across into the TOP of the big avatar — a horizontal
+            // approach is only a true tangent at the circle's topmost
+            // point, i.e. exactly its center x.
+            var smallAvBottom = lively.pt(replyAvX + REPLY_AVATAR / 2, 1 + REPLY_AVATAR);
+            var bigAvTop = lively.pt(PAD + AVATAR_MSG / 2, contentTop);
+            var connStart = smallAvBottom;
+            var connCorner = lively.pt(smallAvBottom.x, bigAvTop.y);
+            var connEnd = bigAvTop;
+            var connRadius = Math.max(2, Math.min(6, connCorner.y - connStart.y - 1, connStart.x - connEnd.x - 1));
+            var connector = noDrag(makeElbowConnector(connStart, connCorner, connEnd, connRadius, 1.5, CHAT_TEXT_FAINT));
+            connector.eventsAreIgnored = true;
+            row.addMorph(connector);
+            // eventsAreIgnored only makes this transparent to Lively's own
+            // morphic dispatch — the browser's native hit-testing still
+            // resolves clicks to the connector's real SVG <path> node when
+            // it overlaps replyAv underneath, confirmed live (document.
+            // elementFromPoint landed on the path, not the avatar). Real
+            // CSS pointer-events is the actual fix.
+            connector.renderContext().shapeNode.style.pointerEvents = "none";
+          }
           // Dim via the real DOM node's CSS opacity — Image morphs' own
           // "fill" style only shows through transparent image regions, not
           // a usable overlay-tint, so this is a direct-DOM write rather
