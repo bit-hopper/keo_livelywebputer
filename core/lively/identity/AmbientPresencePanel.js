@@ -327,7 +327,16 @@ module("lively.identity.AmbientPresencePanel")
         title.eventsAreIgnored = true;
         block.addMorph(title);
 
-        var label = new lively.morphic.Text(lively.rect(54, 25, NS.PANEL_W - 110, 16));
+        // End-call pill width is carved out of the room-name label's own
+        // width (below) so the two never overlap — PILL_W/PILL_MARGIN are
+        // shared between both so a future resize of either stays consistent.
+        // Wider than its stacked content strictly needs — a true stadium-
+        // shaped pill (borderRadius PILL_H/2 below) reads oval, not circular,
+        // at this width/height ratio.
+        var PILL_W = 60, PILL_H = 36, PILL_MARGIN = 10;
+        var pillX = NS.PANEL_W - PILL_MARGIN - PILL_W;
+
+        var label = new lively.morphic.Text(lively.rect(54, 25, pillX - 8 - 54, 16));
         label.textString = room.roomName || "";
         label.applyStyle({
           fontSize: 8.25, fontWeight: "600", textColor: NS.TEXT_SECONDARY,
@@ -345,15 +354,49 @@ module("lively.identity.AmbientPresencePanel")
         };
         block.addMorph(label);
 
-        var leaveBtn = new lively.morphic.Text(lively.rect(NS.PANEL_W - 46, 10, 32, 30));
-        leaveBtn.textString = "call_end";
+        // Solid red pill ("End" label stacked above the hang-up icon) — a bare
+        // glyph here used to blend into the pink panel at a glance; a filled
+        // pill with its own text reads unambiguously as a hang-up control.
+        var leaveBtn = new lively.morphic.Box(lively.rect(pillX, 6, PILL_W, PILL_H));
         leaveBtn.applyStyle({
-          fontFamily: "'Material Symbols Rounded'", fontSize: 15, textColor: NS.ICON_DANGER,
-          fill: null, borderWidth: 0, align: "center", allowInput: false, selectable: false,
-          padding: lively.Rectangle.inset(0, 5, 0, 0),
-          clipMode: "hidden", handStyle: "pointer",
+          fill: NS.ICON_DANGER, borderWidth: 2, borderColor: Color.rgb(255, 255, 255),
+          borderRadius: PILL_H / 2, handStyle: "pointer",
         });
-        leaveBtn.toolTip = "Drift";
+        leaveBtn.draggingEnabled = false; leaveBtn.droppingEnabled = false; leaveBtn.grabbingEnabled = false;
+        leaveBtn.toolTip = "End call";
+        block.addMorph(leaveBtn);
+
+        var leaveLabel = new lively.morphic.Text(lively.rect(0, 4, PILL_W, 14));
+        leaveLabel.textString = "End";
+        leaveLabel.applyStyle({
+          fontSize: 8, fontWeight: "bold", textColor: Color.rgb(255, 255, 255),
+          fill: null, borderWidth: 0, align: "center", allowInput: false, selectable: false,
+          clipMode: "hidden", whiteSpaceHandling: "pre",
+        });
+        leaveLabel.eventsAreIgnored = true;
+        leaveLabel.draggingEnabled = false; leaveLabel.droppingEnabled = false; leaveLabel.grabbingEnabled = false;
+        leaveBtn.addMorph(leaveLabel);
+
+        var leaveIcon = new lively.morphic.Text(lively.rect(0, 18, PILL_W, 16));
+        leaveIcon.textString = "call_end";
+        leaveIcon.applyStyle({
+          fontFamily: "'Material Symbols Rounded'", fontSize: 9, textColor: Color.rgb(255, 255, 255),
+          fill: null, borderWidth: 0, align: "center", allowInput: false, selectable: false,
+          clipMode: "hidden", whiteSpaceHandling: "pre",
+        });
+        leaveIcon.eventsAreIgnored = true;
+        leaveIcon.draggingEnabled = false; leaveIcon.droppingEnabled = false; leaveIcon.grabbingEnabled = false;
+        leaveBtn.addMorph(leaveIcon);
+        // Widening the glyph itself (not the pill) needs a horizontal-only
+        // stretch — bumping fontSize scales height right along with width
+        // (confirmed live: grew the rendered glyph past its own box's bottom
+        // edge under clipMode:hidden) and the pill was never meant to grow.
+        // A CSS transform on the real span sidesteps that entirely.
+        (function () {
+          var span = leaveIcon.renderContext().shapeNode.querySelector("span");
+          if (span) { span.style.display = "inline-block"; span.style.transform = "scaleX(1.917)"; }
+        })();
+
         // onMouseUp, not onMouseDown: leaving hides this very block, and the panel
         // is bottom-anchored, so it re-aligns downward — on mouse-down that slid
         // the settings gear under the still-held pointer, whose mouse-up then
