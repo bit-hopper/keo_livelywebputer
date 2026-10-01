@@ -1033,6 +1033,14 @@ Trait('lively.PartsBin.PartTrait', {
             comment: opts.comment || '',
             tags: opts.tags || [],
             category: opts.category || null,
+            // Continues this objId's version chain (prevCid) instead of
+            // minting a new genesis object -- set by PublishToInventoryDialog
+            // when the target morph carries provenance from a prior
+            // Inventory load/publish (morph._inventoryEnvelope, see
+            // Inventory.js's _openEnvelope). Absent (null) for a genuine
+            // first-time publish, which still takes the existing genesis
+            // path in PartSerializer.js unchanged.
+            prevEnvelope: opts.prevEnvelope || null,
         };
 
         // Local-first, same as every other identity write (UserSpace.js) —
@@ -1051,32 +1059,89 @@ Trait('lively.PartsBin.PartTrait', {
             lively.identity.objectStore.put(envelope, function(err) {
                 if (err) { thenDo(new Error('Publish to Inventory failed: ' + err.message)); return; }
 
-                lively.identity.userSpace.addPart('general', {
-                    objId: envelope.objId, cid: envelope.record.cid, title: opts.name, partName: opts.name,
-                }, function(addErr) {
-                    // Non-fatal: the envelope is already saved and browsable
-                    // via *myparts*/tag categories even if this index write fails.
-                    if (addErr) console.warn('[_publishToInventory] Could not register in My Parts index:', addErr.message);
+                function finish() {
+                    lively.identity.userSpace.addPart('general', {
+                        objId: envelope.objId, cid: envelope.record.cid, title: opts.name, partName: opts.name,
+                    }, function(addErr) {
+                        // Non-fatal: the envelope is already saved and browsable
+                        // via *myparts*/tag categories even if this index write fails.
+                        if (addErr) console.warn('[_publishToInventory] Could not register in My Parts index:', addErr.message);
 
+                        if (typeof $world !== 'undefined' && $world.submorphs) {
+                            $world.submorphs.forEach(function(w) {
+                                if (w.name !== 'PartsBinBrowser' || !w.get) return;
+                                var browser = w.get('PartsBinBrowser');
+                                var cat = browser && browser.categoryName;
+                                if (cat === '*myparts*' || (cat && cat.charAt(0) === '#')) {
+                                    browser.loadPartsOfCategory(cat);
+                                }
+                            });
+                        }
+
+                        // Remembers this publish's own envelope on the live
+                        // morph so a second "Publish to Inventory" in the
+                        // same session (without reopening from Inventory)
+                        // also continues the chain -- see
+                        // PublishToInventoryDialog.js's setTarget. Same
+                        // doNotSerialize requirement as Inventory.js's
+                        // _openEnvelope: an un-excluded own property here
+                        // gets walked into the NEXT publish's own
+                        // serialized JSON.
+                        morph._inventoryEnvelope = envelope;
+                        morph.doNotSerialize = (morph.doNotSerialize || []).concat('_inventoryEnvelope');
+
+                        thenDo(null, envelope);
+                    });
+                }
+
+                if (!opts.prevEnvelope) {
+                    // Ordinary genesis publish -- existing fire-and-forget
+                    // sync behavior, unchanged. A genesis objId is random,
+                    // so a server-side conflict here is astronomically
+                    // unlikely; sync failures are logged and left for the
+                    // normal background sync machinery to retry.
                     lively.identity.objectStore.syncObject(
                         envelope.objId, user.handle, lively.identity.did.baseUrl(),
                         function(syncErr) {
                             if (syncErr) console.warn('[_publishToInventory] sync failed (will retry later):', syncErr.message);
                         }
                     );
+                    finish();
+                    return;
+                }
 
-                    if (typeof $world !== 'undefined' && $world.submorphs) {
-                        $world.submorphs.forEach(function(w) {
-                            if (w.name !== 'PartsBinBrowser' || !w.get) return;
-                            var browser = w.get('PartsBinBrowser');
-                            var cat = browser && browser.categoryName;
-                            if (cat === '*myparts*' || (cat && cat.charAt(0) === '#')) {
-                                browser.loadPartsOfCategory(cat);
-                            }
-                        });
+                // True continuation (opts.prevEnvelope set): every republish
+                // now sends a real, specific prevCid, so a server-side
+                // conflict (someone else published a newer version first --
+                // two tabs, a stale reopened dialog) is a realistic,
+                // normal-use race, not a near-impossible genesis-objId
+                // collision. The fire-and-forget path above would silently
+                // swallow a 409 forever -- ObjectStore.js's _pushObject
+                // treats any non-ok server response as "skip, don't abort",
+                // the record never gets marked synced, and every future
+                // sync attempt skips it the same way, permanently -- so
+                // this specifically awaits the server's response instead of
+                // reporting local-save success as if it were published.
+                var url = lively.identity.did.baseUrl().replace(/\/$/, '') + '/@' + user.handle + '/' + envelope.objId;
+                fetch(url, {
+                    method: 'PUT',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(envelope),
+                }).then(function(res) {
+                    if (res.ok) {
+                        lively.identity.objectStore._markSynced(envelope.objId, envelope.record.cid, finish);
+                        return;
                     }
-
-                    thenDo(null, envelope);
+                    res.json().catch(function() { return {}; }).then(function(body) {
+                        if (res.status === 409) {
+                            thenDo(new Error('This item changed since you opened it. Reopen it from Inventory and reapply your edits, then publish again.'));
+                        } else {
+                            thenDo(new Error('Publish to Inventory failed: ' + (body.error || ('HTTP ' + res.status))));
+                        }
+                    });
+                }).catch(function(fetchErr) {
+                    thenDo(new Error('Publish to Inventory failed: ' + fetchErr.message));
                 });
             });
         }

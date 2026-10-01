@@ -2082,23 +2082,24 @@ lively.BuildSpec('lively.identity.Inventory', {
                 self.setStatus('Inspector view only supports public items right now.', true);
                 return;
             }
-            var payload = envelope.record && envelope.record.payload;
-            var json = typeof payload === 'string' ? payload : JSON.stringify(payload);
-            var indicatorClose, indicator;
-            lively.lang.fun.composeAsync(
-                function(n) { Global.require('lively.morphic.tools.LoadingIndicator').toRun(function() { n(); }); },
-                function(n) { indicator = lively.morphic.tools.LoadingIndicator.open('loading...', function(close) { indicatorClose = close; n(); }); },
-                function(n) { lively.PartsBin.getPart('PartInspector', 'PartsBin/Debugging/', function(err2, inspector) { n(err2, inspector); }); },
-                function(inspector, n) {
-                    inspector.openInWorldCenter();
-                    indicator.bringToFront();
-                    inspector.targetMorph.loadFromJSON(json, item.name, tabName);
-                    n();
-                }
-            )(function(err3) {
-                indicatorClose && indicatorClose();
-                if (err3) { self.setStatus('Failed to open inspector: ' + (err3.message || err3), true); return; }
-                self.setStatus('Opened ' + tabName + ' for "' + item.name + '"');
+            self._resolvePayloadText(envelope, item.handle, item._instanceBaseUrl, function(errJson, json) {
+                if (errJson) { self.setStatus('Failed to load item: ' + (errJson.message || errJson), true); return; }
+                var indicatorClose, indicator;
+                lively.lang.fun.composeAsync(
+                    function(n) { Global.require('lively.morphic.tools.LoadingIndicator').toRun(function() { n(); }); },
+                    function(n) { indicator = lively.morphic.tools.LoadingIndicator.open('loading...', function(close) { indicatorClose = close; n(); }); },
+                    function(n) { lively.PartsBin.getPart('PartInspector', 'PartsBin/Debugging/', function(err2, inspector) { n(err2, inspector); }); },
+                    function(inspector, n) {
+                        inspector.openInWorldCenter();
+                        indicator.bringToFront();
+                        inspector.targetMorph.loadFromJSON(json, item.name, tabName);
+                        n();
+                    }
+                )(function(err3) {
+                    indicatorClose && indicatorClose();
+                    if (err3) { self.setStatus('Failed to open inspector: ' + (err3.message || err3), true); return; }
+                    self.setStatus('Opened ' + tabName + ' for "' + item.name + '"');
+                });
             });
         });
     },
@@ -2131,7 +2132,7 @@ lively.BuildSpec('lively.identity.Inventory', {
         this.setStatus('Opening ' + item.name + '…');
         this._fetchFullEnvelope(item, function(err, envelope) {
             if (err) { self.setStatus('Failed to load item: ' + (err.message || err), true); return; }
-            self._openEnvelope(envelope, item.handle);
+            self._openEnvelope(envelope, item.handle, item._instanceBaseUrl);
         });
     },
 
@@ -2147,11 +2148,12 @@ lively.BuildSpec('lively.identity.Inventory', {
         this.setStatus('Loading source for ' + item.name + '…');
         this._fetchFullEnvelope(item, function(err, envelope) {
             if (err) { self.setStatus('Failed to load source: ' + (err.message || err), true); return; }
-            var payload = envelope.record && envelope.record.payload;
-            var json = typeof payload === 'string' ? payload : JSON.stringify(payload);
-            lively.require('lively.morphic.tools.ItemSourceViewer').toRun(function() {
-                lively.morphic.tools.ItemSourceViewer.open(item.name, json);
-                self.setStatus('Opened source for "' + item.name + '"');
+            self._resolvePayloadText(envelope, item.handle, item._instanceBaseUrl, function(err2, json) {
+                if (err2) { self.setStatus('Failed to load source: ' + (err2.message || err2), true); return; }
+                lively.require('lively.morphic.tools.ItemSourceViewer').toRun(function() {
+                    lively.morphic.tools.ItemSourceViewer.open(item.name, json);
+                    self.setStatus('Opened source for "' + item.name + '"');
+                });
             });
         });
     },
@@ -2163,45 +2165,94 @@ lively.BuildSpec('lively.identity.Inventory', {
     // PublicPartsBrowser.js) to sometimes fire/report "loaded" before a
     // class-shaped module has actually finished loading, which produced a
     // broken non-morph "part" (later TypeError on part.comeForward).
-    _openEnvelope: function _openEnvelope(envelope, handle) {
+    // Resolves record.payload when it's a blob-store reference object
+    // ({blobCid, size, mime} -- added so a part's payload no longer has to
+    // fit inline in the Postgres row, see PartSerializer.js's size-threshold
+    // branch) into the real payload bytes as a string, fetched from the
+    // content-addressed blob store. Passes the payload through unchanged
+    // (coerced to a string, same as every call site already did before this
+    // existed) when it's not a blob reference -- small/legacy items need no
+    // extra round trip. No CID re-check here: BlobStore.put() already
+    // verifies SHA-256(bytes) === cid at write time (FileCrypto.js's
+    // identical precedent for file envelopes), and every one of these call
+    // sites already skipped CID verification on the inline case too.
+    _resolvePayloadText: function _resolvePayloadText(envelope, handle, baseUrl, thenDo) {
+        var payload = envelope.record && envelope.record.payload;
+        if (!payload || typeof payload !== 'object' || typeof payload.blobCid !== 'string') {
+            thenDo(null, typeof payload === 'string' ? payload : JSON.stringify(payload));
+            return;
+        }
+        var base = baseUrl || window.location.origin;
+        var url = base + '/@' + encodeURIComponent(handle || '_') + '/blobs/' + encodeURIComponent(payload.blobCid);
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', url, true);
+        // Same cross-origin credential rule as _fetchJson/loadPartVersions
+        // elsewhere in this file: a wildcard Access-Control-Allow-Origin
+        // response can't be combined with a credentialed request.
+        var isCrossOrigin = base !== window.location.origin;
+        xhr.withCredentials = !isCrossOrigin;
+        xhr.onload = function() {
+            if (xhr.status !== 200) { thenDo(new Error('Failed to fetch blob ' + payload.blobCid + ' (HTTP ' + xhr.status + ')')); return; }
+            thenDo(null, xhr.responseText);
+        };
+        xhr.onerror = function() { thenDo(new Error('Failed to fetch blob ' + payload.blobCid)); };
+        xhr.send();
+    },
+
+    _openEnvelope: function _openEnvelope(envelope, handle, baseUrl) {
         var self = this;
         var state = envelope.state || {};
         var partName = state.partName || envelope.objId;
-        var payload = envelope.record && envelope.record.payload;
-        var json = typeof payload === 'string' ? payload : JSON.stringify(payload);
 
-        var modules;
-        try { modules = lively.persistence.Serializer.sourceModulesIn(JSON.parse(json)); }
-        catch (e) { modules = []; }
+        this._resolvePayloadText(envelope, handle, baseUrl, function(err0, json) {
+            if (err0) { self.setStatus('Failed to load item: ' + (err0.message || err0), true); return; }
 
-        lively.require(modules).toRun(function() {
-            self._waitForModules(modules, 0, function(err) {
-                if (err) { self.setStatus('Failed to load item: ' + err.message, true); return; }
+            var modules;
+            try { modules = lively.persistence.Serializer.sourceModulesIn(JSON.parse(json)); }
+            catch (e) { modules = []; }
 
-                var item = new lively.identity.IdentityPartItem(partName, '*public*');
-                item.envelope = envelope;
-                item.handle = handle;
+            lively.require(modules).toRun(function() {
+                self._waitForModules(modules, 0, function(err) {
+                    if (err) { self.setStatus('Failed to load item: ' + err.message, true); return; }
 
-                var metaInfo = new lively.PartsBin.PartsBinMetaInfo();
-                metaInfo.partName = partName;
-                metaInfo.comment = state.comment || '';
-                metaInfo.tags = state.tags || [];
-                metaInfo.requiredModules = state.requiredModules || [];
-                metaInfo.migrationLevel = state.migrationLevel || 9;
-                metaInfo.partsSpaceName = '*public*';
-                metaInfo.lastModifiedDate = envelope.created ? new Date(envelope.created) : new Date();
-                item.loadedMetaInfo = metaInfo;
+                    var item = new lively.identity.IdentityPartItem(partName, '*public*');
+                    item.envelope = envelope;
+                    item.handle = handle;
 
-                item.loadPart(false, false, null, function(err2, part) {
-                    if (err2) { self.setStatus('Failed to load item: ' + (err2.message || err2), true); return; }
-                    if (!part || typeof part.openInWorld !== 'function') {
-                        self.setStatus('Failed to load item: deserialized object is not a morph', true);
-                        return;
-                    }
-                    var world = self.world();
-                    part.openInWorld(world.visibleBounds().center().subPt(part.getExtent().scaleBy(0.5)));
-                    if (typeof part.comeForward === 'function') part.comeForward();
-                    self.setStatus('Opened "' + partName + '"');
+                    var metaInfo = new lively.PartsBin.PartsBinMetaInfo();
+                    metaInfo.partName = partName;
+                    metaInfo.comment = state.comment || '';
+                    metaInfo.tags = state.tags || [];
+                    metaInfo.requiredModules = state.requiredModules || [];
+                    metaInfo.migrationLevel = state.migrationLevel || 9;
+                    metaInfo.partsSpaceName = '*public*';
+                    metaInfo.lastModifiedDate = envelope.created ? new Date(envelope.created) : new Date();
+                    item.loadedMetaInfo = metaInfo;
+
+                    item.loadPart(false, false, null, function(err2, part) {
+                        if (err2) { self.setStatus('Failed to load item: ' + (err2.message || err2), true); return; }
+                        if (!part || typeof part.openInWorld !== 'function') {
+                            self.setStatus('Failed to load item: deserialized object is not a morph', true);
+                            return;
+                        }
+                        // Stash this part's provenance so a later "Publish to
+                        // Inventory" on the same live morph continues the
+                        // same objId's version chain (prevCid) instead of
+                        // minting a new genesis object -- see
+                        // PublishToInventoryDialog.js's setTarget and
+                        // PartsBin.js's _publishToInventoryImpl.
+                        // doNotSerialize is required, not optional: a plain
+                        // own property here gets walked into the very next
+                        // publish's serialized JSON by DoNotSerializePlugin,
+                        // baking this envelope into the next version's own
+                        // payload.
+                        part._inventoryEnvelope = envelope;
+                        part.doNotSerialize = (part.doNotSerialize || []).concat('_inventoryEnvelope');
+                        var world = self.world();
+                        part.openInWorld(world.visibleBounds().center().subPt(part.getExtent().scaleBy(0.5)));
+                        if (typeof part.comeForward === 'function') part.comeForward();
+                        self.setStatus('Opened "' + partName + '"');
+                    });
                 });
             });
         });

@@ -62,14 +62,18 @@ module("lively.identity.IdentityPartsSpace")
           }
 
           if (envelope.visibility === "public") {
-            // Historically record.payload was stringified/re-stringified
-            // inline here rather than through PartSerializer — kept
-            // equivalent so already-published public parts need no migration.
-            var payload = envelope.record.payload;
-            var json = typeof payload === "string" ? payload : JSON.stringify(payload);
-            _apply(null, json);
+            // Routed through PartSerializer.deserializeFromEnvelope (rather
+            // than the old inline stringify) so a blob-backed payload
+            // ({blobCid, size, mime} -- see PartSerializer.js's size-
+            // threshold branch) gets resolved to the real JSON here too, not
+            // just the small reference object. Also picks up a real CID
+            // check for free, matching the private/shared branch below,
+            // which already had one.
+            lively.identity.partSerializer.deserializeFromEnvelope(envelope, self.handle, function (err, json) {
+              _apply(err, json);
+            });
           } else {
-            lively.identity.partSerializer.deserializeEncrypted(envelope, function (err, json) {
+            lively.identity.partSerializer.deserializeEncrypted(envelope, self.handle, function (err, json) {
               _apply(err, json);
             });
           }

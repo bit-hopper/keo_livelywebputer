@@ -476,6 +476,17 @@ function _syncBlobRefsTx(client, envelope, thenDo) {
   var cids = [];
   if (envelope.type === 'file' && envelope.blobCid) cids = [envelope.blobCid];
   else if (envelope.type === 'folder' && Array.isArray(envelope.blobCids)) cids = envelope.blobCids;
+  // A part envelope (PartSerializer.js's PART_BLOB_THRESHOLD) carries the
+  // same top-level blobCid shape as a file envelope when its payload is
+  // too large to inline. Unlike a file (one objId per upload, blobCid
+  // fixed for its lifetime), a part's objId can now accumulate multiple
+  // versions (prevCid continuation) where some versions are blob-backed
+  // and others aren't, or point at different blobs -- the clear-then-
+  // reinsert behavior this function already has for folders handles that
+  // correctly with no further change: each PUT re-syncs this objId's
+  // current-version blob_refs row (or leaves none, if this version isn't
+  // blob-backed).
+  else if (envelope.type === 'part' && envelope.blobCid) cids = [envelope.blobCid];
 
   client.query('DELETE FROM blob_refs WHERE obj_id = $1', [envelope.objId], function (delErr) {
     if (delErr) console.warn('[ObjectRepository] Failed to clear stale blob_refs for', envelope.objId, ':', delErr.message);

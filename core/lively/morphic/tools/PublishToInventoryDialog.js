@@ -398,8 +398,19 @@ lively.BuildSpec("lively.morphic.tools.PublishToInventoryDialog", {
     },
         setTarget: function setTarget(morph) {
         this.target = morph;
-        this.get('NameText').textString = morph ? morph.name : '';
-        this.get('CommentText').textString = '';
+        // A morph opened from Inventory (or already published once this
+        // session) carries its originating envelope -- see Inventory.js's
+        // _openEnvelope and PartsBin.js's _publishToInventoryImpl, both of
+        // which stash morph._inventoryEnvelope + doNotSerialize. When
+        // present, this republish continues that objId's version chain
+        // (prevCid) instead of minting a new genesis object -- prefill the
+        // form from its last-known state so the user isn't retyping
+        // metadata that's already on record.
+        var prevEnvelope = (morph && morph._inventoryEnvelope) || null;
+        this.prevEnvelope = prevEnvelope;
+        var prevState = (prevEnvelope && prevEnvelope.state) || null;
+        this.get('NameText').textString = prevState ? (prevState.partName || morph.name) : (morph ? morph.name : '');
+        this.get('CommentText').textString = (prevState && prevState.comment) || '';
         var chooser = this.get('CategoryChooser');
         // A leading placeholder entry (value: null) so the rendered native
         // <select> visually matches the logical "nothing chosen yet" state
@@ -408,16 +419,23 @@ lively.BuildSpec("lively.morphic.tools.PublishToInventoryDialog", {
         // as if selected, which would silently mismatch onPublish's
         // required-category check (a user could click Publish believing
         // the visibly-shown first category was already chosen).
+        var categoryNames = lively.identity.PartSerializer.CATEGORY_NAMES;
         chooser.setList([{ isListItem: true, string: '— Select a category —', value: null }].concat(
-            lively.identity.PartSerializer.CATEGORY_NAMES.map(function(name) {
+            categoryNames.map(function(name) {
                 return { isListItem: true, string: name, value: name };
             })
         ));
-        chooser.selectAt(0);
-        this.get('TagsText').textString = '';
+        var prevCategoryIdx = prevState && prevState.category ? categoryNames.indexOf(prevState.category) : -1;
+        chooser.selectAt(prevCategoryIdx === -1 ? 0 : prevCategoryIdx + 1);
+        this.get('TagsText').textString = (prevState && prevState.tags) ? prevState.tags.join(', ') : '';
+        // Recipient handles are never persisted in the envelope (only each
+        // recipient's DID/sealed key is) -- a "shared" republish still
+        // needs the user to re-enter handles, same as a first-time publish.
         this.get('RecipientsText').textString = '';
-        this.setStatus('');
-        this.selectVisibility('public');
+        this.setStatus(prevEnvelope
+            ? ('Updating published item "' + (prevState && prevState.partName || morph.name) + '".')
+            : '');
+        this.selectVisibility((prevEnvelope && prevEnvelope.visibility) || 'public');
     },
         // Manual 3-way radio group -- Lively has no built-in RadioButton
         // widget, so each of the three buttons just connects its 'fire' to
@@ -487,6 +505,7 @@ lively.BuildSpec("lively.morphic.tools.PublishToInventoryDialog", {
             tags: tags,
             visibility: this.visibility,
             recipientHandles: recipientHandles,
+            prevEnvelope: this.prevEnvelope || null,
             onWaiting: function() { self.setStatus('Confirm passkey…'); },
         }, function(err) {
             self.get('PublishButton').enable && self.get('PublishButton').enable();

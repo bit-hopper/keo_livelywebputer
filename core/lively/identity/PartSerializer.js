@@ -45,6 +45,86 @@ module('lively.identity.PartSerializer')
   )
   .toRun(function () {
 
+    // Payload byte size above which record.payload is stored as a
+    // {blobCid,size,mime} reference into the content-addressed blob store
+    // (/@:handle/blobs/:cid) instead of inline in the Postgres envelope row
+    // -- same shape as FileCrypto.js's file envelopes. Below this, payload
+    // stays inline exactly as before. A plain `var` here is safe: unlike
+    // lively.BuildSpec/addScript methods, Object.subclass methods below are
+    // ordinary closures, not reconstructed from source text at call time
+    // (see FileCrypto.js's FILE_CHUNK_SIZE for the identical precedent/
+    // reasoning in this same codebase).
+    var PART_BLOB_THRESHOLD = 200 * 1024;
+
+    // ─── blob-store helpers (module-private copies, mirroring FileCrypto.js's
+    //     _putBlob/_fetchBlobBytes -- each serializer owns its own copy of
+    //     shared helpers in this codebase rather than a cross-file call, same
+    //     convention _signEnvelopeIfPossible below already follows) ─────────
+
+    function _putBlob(handle, cid, bytes, thenDo) {
+      var base = lively.identity.did.baseUrl();
+      fetch(base + '/@' + handle + '/blobs/' + cid, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: bytes,
+      }).then(function (res) {
+        if (!res.ok) return res.json().then(function (b) {
+          throw new Error('PartSerializer: blob upload failed: ' + (b.error || res.status));
+        });
+        return res.json();
+      }).then(function (body) { thenDo(null, body); })
+        .catch(function (e) { thenDo(e); });
+    }
+
+    // Part payloads/ciphertext are always text (unlike FileCrypto's binary
+    // files), so this returns a UTF-8 string rather than raw bytes -- the
+    // one real difference from FileCrypto.js's _fetchBlobBytes.
+    function _fetchBlobText(handle, cid, thenDo) {
+      var base = lively.identity.did.baseUrl();
+      fetch(base + '/@' + handle + '/blobs/' + cid, { credentials: 'include' })
+        .then(function (res) {
+          if (!res.ok) throw new Error('PartSerializer: could not fetch blob ' + cid + ' (HTTP ' + res.status + ')');
+          return res.text();
+        })
+        .then(function (text) { thenDo(null, text); })
+        .catch(function (e) { thenDo(e); });
+    }
+
+    // Resolves {cid, payload, blobCid} for record.payload/record.cid from a
+    // piece of text (plaintext JSON for public parts, ciphertext for
+    // private/shared). Below PART_BLOB_THRESHOLD: cid over the text itself,
+    // payload is the text, inline, exactly as before. Above it: upload the
+    // UTF-8 bytes to the blob store first, then cid over the small
+    // {blobCid,size,mime} reference object instead (same precedent as
+    // FileCrypto.js's computeCid(metadata, ...) for a public file).
+    // handle: the current user's own handle (uploads are always to the
+    // caller's own blob space, same as FileCrypto.js). mime: content type to
+    // record on the reference object, only used when blob-backed.
+    // Calls thenDo(null, { payload, cid, blobCid }) -- blobCid is null when
+    // the payload stayed inline.
+    function _resolveRecordPayload(c, handle, text, mime, thenDo) {
+      var bytes = new TextEncoder().encode(text);
+      if (bytes.length <= PART_BLOB_THRESHOLD) {
+        c.computeCid(text, function (err, cid) {
+          if (err) return thenDo(err);
+          thenDo(null, { payload: text, cid: cid, blobCid: null });
+        });
+        return;
+      }
+      c.sha256(bytes, function (err, blobCid) {
+        if (err) return thenDo(err);
+        _putBlob(handle, blobCid, bytes, function (err) {
+          if (err) return thenDo(err);
+          var payloadRef = { blobCid: blobCid, size: bytes.length, mime: mime };
+          c.computeCid(payloadRef, function (err, cid) {
+            if (err) return thenDo(err);
+            thenDo(null, { payload: payloadRef, cid: cid, blobCid: blobCid });
+          });
+        });
+      });
+    }
+
     Object.subclass('lively.identity.PartSerializer',
 
     // ─── public parts (signed, unencrypted) ───────────────────────────────────
@@ -69,7 +149,7 @@ module('lively.identity.PartSerializer')
         if (!user) return thenDo(new Error('PartSerializer.serializeToEnvelope: no identity session active'));
         if (!params.json) return thenDo(new Error('PartSerializer.serializeToEnvelope: json is required'));
 
-        c.computeCid(params.json, function (err, cid) {
+        _resolveRecordPayload(c, user.handle, params.json, 'application/json', function (err, resolved) {
           if (err) return thenDo(err);
           var prevEnvelope = params.prevEnvelope || null;
           var prevCid = prevEnvelope && prevEnvelope.record ? (prevEnvelope.record.cid || null) : null;
@@ -88,10 +168,11 @@ module('lively.identity.PartSerializer')
               type: 'part',
               visibility: 'public',
               created: (prevEnvelope && prevEnvelope.created) || new Date().toISOString(),
-              record: { cid: cid, prevCid: prevCid, payload: params.json },
+              record: { cid: resolved.cid, prevCid: prevCid, payload: resolved.payload },
               state: state,
             };
             if (genesisNonce) envelope.genesisNonce = genesisNonce;
+            if (resolved.blobCid) envelope.blobCid = resolved.blobCid;
 
             _signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
               if (signErr) return thenDo(signErr);
@@ -110,21 +191,41 @@ module('lively.identity.PartSerializer')
         });
       },
 
+      // handle: owner's handle, used only to build the blob-fetch URL when
+      // this envelope's payload is blob-backed (see PART_BLOB_THRESHOLD
+      // above) -- unused for an inline payload. Pass null/undefined if not
+      // known; the blob route doesn't actually validate it against the
+      // owner (see IdentityServer.js's /blobs/:cid GET handler), so any
+      // string works, but the real handle is preferred when the caller has
+      // it.
       // Calls thenDo(null, json, htmlLogo) — json is the plain Lively JSON
       // string, ready for IdentityPartItem.setPartFromJSON.
-      deserializeFromEnvelope: function (envelope, thenDo) {
+      deserializeFromEnvelope: function (envelope, handle, thenDo) {
         var c = lively.identity.crypto;
         if (!envelope || !envelope.record || !envelope.record.payload) {
           return thenDo(new Error('PartSerializer.deserializeFromEnvelope: invalid envelope structure'));
         }
         var payload = envelope.record.payload;
+        var htmlLogo = envelope.state && envelope.state.htmlLogo || null;
+        // CID check against whatever record.payload literally is -- the
+        // small {blobCid,...} reference object for a blob-backed item, the
+        // full JSON string otherwise. Never re-checked against resolved
+        // blob bytes below: BlobStore.put() already verified
+        // SHA-256(bytes) === cid at write time (same precedent as
+        // FileCrypto.js's _fetchPublic/_fetchPrivate).
         c.computeCid(payload, function (err, expectedCid) {
           if (err) return thenDo(err);
           if (expectedCid !== envelope.record.cid) {
             return thenDo(new Error('PartSerializer.deserializeFromEnvelope: CID mismatch for objId=' + envelope.objId));
           }
+          if (payload && typeof payload === 'object' && typeof payload.blobCid === 'string') {
+            _fetchBlobText(handle || '_', payload.blobCid, function (err, json) {
+              if (err) return thenDo(err);
+              thenDo(null, json, htmlLogo);
+            });
+            return;
+          }
           var json = typeof payload === 'string' ? payload : JSON.stringify(payload);
-          var htmlLogo = envelope.state && envelope.state.htmlLogo || null;
           thenDo(null, json, htmlLogo);
         });
       },
@@ -198,7 +299,7 @@ module('lively.identity.PartSerializer')
           c.encryptPayload(params.json, dek, function (err, encrypted) {
             if (err) return thenDo(err);
 
-            c.computeCid(encrypted.ciphertext, function (err, cid) {
+            _resolveRecordPayload(c, user.handle, encrypted.ciphertext, 'application/octet-stream', function (err, resolved) {
               if (err) return thenDo(err);
 
               var prevEnvelope = params.prevEnvelope || null;
@@ -220,9 +321,9 @@ module('lively.identity.PartSerializer')
                   visibility: visibility,
                   created: (prevEnvelope && prevEnvelope.created) || new Date().toISOString(),
                   record: {
-                    cid: cid,
+                    cid: resolved.cid,
                     prevCid: prevCid,
-                    payload: encrypted.ciphertext,
+                    payload: resolved.payload,
                     nonce: encrypted.nonce,
                     wrappedDek: dekResult.wrappedDek,
                     recipients: recipientWraps,
@@ -230,6 +331,7 @@ module('lively.identity.PartSerializer')
                   state: state,
                 };
                 if (genesisNonce) envelope.genesisNonce = genesisNonce;
+                if (resolved.blobCid) envelope.blobCid = resolved.blobCid;
 
                 _signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
                   if (signErr) return thenDo(signErr);
@@ -266,9 +368,12 @@ module('lively.identity.PartSerializer')
         });
       },
 
+      // handle: owner's handle, for the blob-fetch URL when this envelope's
+      // ciphertext is blob-backed -- same role/fallback as
+      // deserializeFromEnvelope's handle param above.
       // Decrypts a private/shared part envelope for either its owner or one
       // of its recipients. Calls thenDo(null, json, htmlLogo).
-      deserializeEncrypted: function (envelope, thenDo) {
+      deserializeEncrypted: function (envelope, handle, thenDo) {
         var c = lively.identity.crypto;
         var wa = lively.identity.webAuthn;
         var user = lively.identity.did.currentUser();
@@ -283,16 +388,27 @@ module('lively.identity.PartSerializer')
             return thenDo(new Error('PartSerializer.deserializeEncrypted: CID mismatch for objId=' + envelope.objId));
           }
 
-          _unwrapDekForEnvelope(envelope, user, wa, c, function (err, dek) {
+          function withCiphertext(cb) {
+            var payload = envelope.record.payload;
+            if (payload && typeof payload === 'object' && typeof payload.blobCid === 'string') {
+              return _fetchBlobText(handle || '_', payload.blobCid, cb);
+            }
+            cb(null, payload);
+          }
+
+          withCiphertext(function (err, ciphertext) {
             if (err) return thenDo(err);
-            c.decryptPayload(envelope.record.payload, envelope.record.nonce, dek, function (err, parsed) {
+            _unwrapDekForEnvelope(envelope, user, wa, c, function (err, dek) {
               if (err) return thenDo(err);
-              // decryptPayload always JSON.parses the plaintext (Crypto.js) —
-              // parsed is the part's Lively JSON as a JS object here, not a
-              // string. IdentityPartItem.setPartFromJSON wants a string.
-              var json = JSON.stringify(parsed);
-              var htmlLogo = envelope.state && envelope.state.htmlLogo || null;
-              thenDo(null, json, htmlLogo);
+              c.decryptPayload(ciphertext, envelope.record.nonce, dek, function (err, parsed) {
+                if (err) return thenDo(err);
+                // decryptPayload always JSON.parses the plaintext (Crypto.js) —
+                // parsed is the part's Lively JSON as a JS object here, not a
+                // string. IdentityPartItem.setPartFromJSON wants a string.
+                var json = JSON.stringify(parsed);
+                var htmlLogo = envelope.state && envelope.state.htmlLogo || null;
+                thenDo(null, json, htmlLogo);
+              });
             });
           });
         });
