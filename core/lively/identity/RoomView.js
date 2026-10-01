@@ -127,6 +127,42 @@ module("lively.identity.RoomView")
     var CHAT_X_OFFSET = ROOMS_PANEL_W + PANEL_GAP;
     var TOTAL_W = CHAT_X_OFFSET + CHAT_W + PANEL_GAP + MEMBERS_W;
     var TOTAL_H = HEADER_H + BODY_H;
+
+    // Taller titlebar + thicker frame margin for this window specifically —
+    // TitleBar.barHeight/Window.spacing are shared defaults (Widgets.js)
+    // used by every window in the app, so this overrides them on just
+    // this._win's own titleBar/window instance rather than touching the
+    // globals (dozens of other windows across the codebase hardcode their
+    // own contentOffset in BuildSpec data and would clip under a taller
+    // titlebar if the shared defaults changed instead).
+    var ROOM_BAR_HEIGHT = 30;
+    var ROOM_FRAME_SPACING = 6;
+
+    function _widenWindowChrome(win) {
+      var tb = win.titleBar;
+      tb.barHeight = ROOM_BAR_HEIGHT;
+      // Vertically re-center the titleBar's existing (fixed-size) circular
+      // buttons within the new taller bar — controlVerticalOffset is only
+      // correct for the base theme's default 22px bar (see its own comment
+      // in Widgets.js), so it needs recomputing here too.
+      tb.controlVerticalOffset = (ROOM_BAR_HEIGHT - 17) / 2;
+
+      var contentOffset = lively.pt(ROOM_FRAME_SPACING, ROOM_BAR_HEIGHT);
+      win.spacing = ROOM_FRAME_SPACING;
+      win.contentOffset = contentOffset;
+
+      // Window#setExtent stretches titleBar/targetMorph by the same raw
+      // pixel delta as the window's own resize (not recomputed from
+      // contentOffset), so after resizing the window itself, targetMorph's
+      // size/position has to be forced back to the real content size —
+      // confirmed live: skipping this step left the content overflowing
+      // the right/bottom edges of the new, larger frame.
+      win.setExtent(lively.pt(TOTAL_W + 2 * ROOM_FRAME_SPACING, TOTAL_H + ROOM_FRAME_SPACING + ROOM_BAR_HEIGHT));
+      win.targetMorph.setExtent(lively.pt(TOTAL_W, TOTAL_H));
+      win.targetMorph.setPosition(contentOffset);
+      tb.setExtent(lively.pt(TOTAL_W + 2 * ROOM_FRAME_SPACING, ROOM_BAR_HEIGHT));
+      tb.adjustElementPositions();
+    }
     // Video rooms: the center column is either the full-width video grid (chat
     // hidden) or, with the chat toggle on, the active speaker on the left and a
     // narrower chat panel on the right.
@@ -523,6 +559,7 @@ module("lively.identity.RoomView")
         // own rendered DOM, which only exists once the morph is in the world.
         this._win = root.openInWindow({ title: (this._room && this._room.name) || "Cluster", pos: pos });
         applyAccentChrome(this._win);
+        _widenWindowChrome(this._win);
 
         this._computeOrigin();
         this._buildHeader();
