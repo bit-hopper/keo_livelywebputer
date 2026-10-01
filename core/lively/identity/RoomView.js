@@ -97,7 +97,7 @@ module("lively.identity.RoomView")
       var styleEl = document.createElement('style');
       styleEl.id = STYLE_ID;
       styleEl.textContent = [
-        '.Window.room-view-accent-chrome { background-color: #630967 !important; }',
+        '.Window.room-view-accent-chrome { background-color: #A87BED !important; }',
         '.Window.room-view-accent-chrome { border-radius: 10px !important; }',
         '.Window.room-view-accent-chrome .Text.window-title { color: #fff; }',
         '.Window.room-view-accent-chrome.highlighted .Text.window-title { color: #fff; font-weight: bold; }',
