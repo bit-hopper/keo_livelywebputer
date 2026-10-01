@@ -157,6 +157,7 @@ module("lively.identity.RoomView")
     var REPLY_STRIP_H = 26;     // extra height _inputRowM grows by while composing a reply
     var REPLY_PREVIEW_H = 26;   // reply-preview chip (parent avatar + handle + snippet) above a reply message — tall enough for a short connector curve below the small avatar
     var REPLY_AVATAR = 16;      // small parent-message avatar shown inside the reply-preview chip
+    var REPLY_ELBOW_DX = 12;   // horizontal gap between the big avatar's center column and the small avatar's left edge, so the reply connector has a real elbow leg to turn through
     var RAIL_POLL_MS = 8000;   // how often the rooms rail re-reads other rooms' headcounts
     var ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
 
@@ -2422,14 +2423,14 @@ module("lively.identity.RoomView")
             var parent = self._findMessageByObjId(msg.replyTo.objId);
             if (parent) {
               var parentObjId = parent.objId;
-              // Sits close to the BIG avatar's own column (left edge at its
-              // horizontal center) rather than all the way out at the
-              // header-text column — confirmed against a reference image
-              // that the small avatar belongs almost directly above the
-              // big one, with only a short connector bridging them, not a
-              // long diagonal stretch over to where "@handle   time" starts
-              // on the row below.
-              var replyAvX = PAD + AVATAR_MSG / 2;
+              // Sits close to the BIG avatar's own column rather than all
+              // the way out at the header-text column, offset right from
+              // its horizontal center by REPLY_ELBOW_DX — the connector
+              // below touches this avatar on its LEFT edge and the big
+              // avatar on its TOP, so that offset is what gives the elbow a
+              // real horizontal leg to turn through instead of degenerating
+              // into a straight vertical line.
+              var replyAvX = PAD + AVATAR_MSG / 2 + REPLY_ELBOW_DX;
               replyAv = noDrag(new lively.morphic.Image(lively.rect(replyAvX, 1, REPLY_AVATAR, REPLY_AVATAR)));
               replyAv.applyStyle({ borderRadius: REPLY_AVATAR / 2, borderWidth: 0, clipMode: "hidden" });
               replyAv.setImageURL(lively.identity.postCardUtils.identiconDataUrl(parent.handle || parent.did || "unknown", REPLY_AVATAR));
@@ -2477,20 +2478,24 @@ module("lively.identity.RoomView")
             // "L" connector linking the reply chip's small parent-message
             // avatar above to the actual message's avatar below it,
             // Discord-style — touching each avatar's own circumference
-            // (not its center). The small avatar sits almost directly
-            // above the big one (see replyAvX above), so this is a short
-            // drop rather than a long diagonal: straight down from the
-            // small avatar's bottom, one rounded 90° corner, then straight
-            // across into the TOP of the big avatar — a horizontal
-            // approach is only a true tangent at the circle's topmost
-            // point, i.e. exactly its center x.
-            var smallAvBottom = lively.pt(replyAvX + REPLY_AVATAR / 2, 1 + REPLY_AVATAR);
+            // (not its center): the small (original-sender) avatar on its
+            // LEFT edge, the big (replier's) avatar on its TOP. A vertical
+            // approach is only a true tangent at the big avatar's topmost
+            // point (its center x); a horizontal approach is only a true
+            // tangent at the small avatar's leftmost point (its center y).
+            // REPLY_ELBOW_DX (baked into replyAvX above) is what gives this
+            // a real horizontal leg instead of collapsing into one straight
+            // vertical line. `makeElbowConnector`'s own start/corner/end
+            // just need start-to-corner vertical and corner-to-end
+            // horizontal — passing the big avatar's top as `start` here
+            // (rather than the small avatar's side, which was `start` in
+            // the old bottom-to-top version) draws the identical stroke,
+            // just built from the other end.
+            var smallAvLeft = lively.pt(replyAvX, 1 + REPLY_AVATAR / 2);
             var bigAvTop = lively.pt(PAD + AVATAR_MSG / 2, contentTop);
-            var connStart = smallAvBottom;
-            var connCorner = lively.pt(smallAvBottom.x, bigAvTop.y);
-            var connEnd = bigAvTop;
-            var connRadius = Math.max(2, Math.min(6, connCorner.y - connStart.y - 1, connStart.x - connEnd.x - 1));
-            var connector = noDrag(makeElbowConnector(connStart, connCorner, connEnd, connRadius, 1.5, CHAT_TEXT_FAINT));
+            var connCorner = lively.pt(bigAvTop.x, smallAvLeft.y);
+            var connRadius = Math.max(2, Math.min(6, bigAvTop.y - connCorner.y - 1, smallAvLeft.x - connCorner.x - 1));
+            var connector = noDrag(makeElbowConnector(bigAvTop, connCorner, smallAvLeft, connRadius, 1.5, CHAT_TEXT_FAINT));
             connector.eventsAreIgnored = true;
             row.addMorph(connector);
             // eventsAreIgnored only makes this transparent to Lively's own
