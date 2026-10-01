@@ -62,8 +62,8 @@ module("lively.identity.RoomView")
   .toRun(function () {
 
     var BG_MAIN    = Color.rgb(0xA8, 0x7B, 0xED);     // #A87BED — chat area (light two-tone experiment)
-    var BG_SIDEBAR = Color.rgb(0x63, 0x09, 0x67);     // #630967 — header + members panel (dark tone)
-    var BG_INPUT   = Color.rgb(0x63, 0x09, 0x67);     // #630967 — message input pill (dark tone)
+    var BG_SIDEBAR = Color.rgb(0x67, 0x14, 0x8E);     // #67148E — header + members panel
+    var BG_INPUT   = Color.rgb(0x67, 0x14, 0x8E);     // #67148E — message input pill
     var BG_ROW_HOVER = Color.rgba(255, 255, 255, 0.04);
     // BG_ROW_HOVER above is a white overlay tuned for the dark rail/members
     // surfaces — too faint on the light BG_MAIN chat list, so message rows
@@ -82,6 +82,34 @@ module("lively.identity.RoomView")
     var JUMP_HIGHLIGHT = Color.rgba(79, 11, 67, 0.18); // flash fill for "jump to replied-to message"
     var DANGER = Color.rgb(242, 63, 66);
     var ONLINE = Color.rgb(35, 165, 89);
+
+    // Same accent-chrome fix DMChat.js/Wallet.js/PostCardMailbox.js/
+    // FilesBrowser.js already apply (title-text contrast + suppressing the
+    // base theme's white focus-ring border on `.highlighted`), plus a
+    // softened border-radius on top — see PostCardMailbox.js's own
+    // _ensureAccentChromeCss for the confirmed-live bug writeup this
+    // pattern fixes. Frame-only: this file's own internal #4F0B43 ACCENT
+    // (borders/hover/selection highlights elsewhere in the room UI) is
+    // deliberately left untouched.
+    function _ensureAccentChromeCss() {
+      var STYLE_ID = 'room-view-accent-chrome-style';
+      if (document.getElementById(STYLE_ID)) return;
+      var styleEl = document.createElement('style');
+      styleEl.id = STYLE_ID;
+      styleEl.textContent = [
+        '.Window.room-view-accent-chrome { background-color: #630967 !important; }',
+        '.Window.room-view-accent-chrome { border-radius: 10px !important; }',
+        '.Window.room-view-accent-chrome .Text.window-title { color: #fff; }',
+        '.Window.room-view-accent-chrome.highlighted .Text.window-title { color: #fff; font-weight: bold; }',
+        '.Window.room-view-accent-chrome.highlighted { border: none !important; box-shadow: 0px 3px 10px rgba(40,5,45,0.35) !important; }',
+      ].join('\n');
+      document.head.appendChild(styleEl);
+    }
+
+    function applyAccentChrome(win) {
+      _ensureAccentChromeCss();
+      win.addStyleClassName('room-view-accent-chrome');
+    }
 
     var HEADER_H = 48;
     var MEMBERS_W = 240;
@@ -494,6 +522,7 @@ module("lively.identity.RoomView")
         // Window first, children after: several builders below measure their
         // own rendered DOM, which only exists once the morph is in the world.
         this._win = root.openInWindow({ title: (this._room && this._room.name) || "Cluster", pos: pos });
+        applyAccentChrome(this._win);
 
         this._computeOrigin();
         this._buildHeader();
