@@ -415,7 +415,7 @@ module("lively.identity.RoomView")
 
       _start: function () {
         var isCall = this._isCall();
-        this._buildView();
+        this.showView();
         // Snapshot Invisible status once, at join time, not read live on every
         // heartbeat tick — a room already open when the user later flips to
         // Invisible must keep broadcasting presence normally (its video
@@ -525,42 +525,29 @@ module("lively.identity.RoomView")
     },
 
     // ─── view — the detachable window ──────────────────────────────────────────
-    // The room UI is one Box (the "view root") in a classic lively.morphic.Window,
-    // opened in whatever world the room was entered from. Closing or collapsing
-    // the window never touches the session: presence, chat polling, signaling,
-    // peer connections and remote audio all keep running on the controller;
-    // only leave() (or a real page load) ends them. showView() rebuilds the UI
-    // from the session's current state, so a closed window can be reopened at
-    // any time (the Ambient Presence Panel's "In room" row does exactly that).
+    // There is exactly one room/cluster Window per world, owned by the
+    // lively.identity.RoomView registry (see "registry" below), not by any one
+    // controller. Entering a different room swaps that window's content rather
+    // than opening a second window. Closing or collapsing the window never
+    // touches a call session: presence, chat polling, signaling, peer
+    // connections and remote audio all keep running on the controller; only
+    // leave() (or a real page load) ends them. A TEXT room has no call to keep
+    // alive in the background, though, so losing the window — closed, or its
+    // content swapped to a different room — ends a text room's session too
+    // (see _onViewReplaced). showView() rebuilds the UI from the session's
+    // current state, so a controller whose content isn't currently shown can
+    // be brought back at any time (the Ambient Presence Panel's "In room" row
+    // does exactly that).
 
     "view", {
 
-      _buildView: function () {
-        if (this._viewRoot) return;
+      // (Re)builds this controller's own content into the shared window —
+      // called only once RoomView._showController has already pointed
+      // this._viewRoot/this._win at the shared window (see registry below).
+      _renderView: function () {
         var self = this;
-        var root = new lively.morphic.Box(lively.rect(0, 0, TOTAL_W, TOTAL_H));
-        root.applyStyle({ fill: BG_MAIN, borderWidth: 0, clipMode: "hidden" });
-        // Window#signalShutdown calls this on close (X button). Only detaches the
-        // view refs — the window removes itself right after — and never the session.
-        root.onShutdown = function () { self._onWindowClosed(); };
-        // Window#collapse calls the first on its target BEFORE detaching the
-        // content; Window#expand calls the second on every submorph once the
-        // content is back. They switch the video between grid and circles.
-        root.onWindowCollapse = function () { self._windowCollapsed = true; self._syncVideoMode(); };
-        root.onWindowExpand = function () { self._windowCollapsed = false; self._syncVideoMode(); };
+        this._win.setTitle((this._room && this._room.name) || "Cluster");
         this._windowCollapsed = false;
-        this._viewRoot = root;
-
-        var vb = $world.visibleBounds();
-        var pos = lively.pt(
-          Math.max(0, Math.round((vb.width - TOTAL_W) / 2)),
-          Math.max(0, Math.round((vb.height - TOTAL_H) / 2)));
-        // Window first, children after: several builders below measure their
-        // own rendered DOM, which only exists once the morph is in the world.
-        this._win = root.openInWindow({ title: (this._room && this._room.name) || "Cluster", pos: pos });
-        applyAccentChrome(this._win);
-        _widenWindowChrome(this._win);
-
         this._computeOrigin();
         this._buildHeader();
         this._buildRoomsPanel();
@@ -606,26 +593,33 @@ module("lively.identity.RoomView")
         document.head.appendChild(styleEl);
       },
 
-      // Brings the window forward (expanding it if minimized), or rebuilds it
-      // from session state if it was closed.
+      // Makes this controller's content the one shown in the shared room
+      // window — bringing it forward if it's already current, otherwise
+      // asking the registry to take over the (possibly just-created) window.
       showView: function () {
         if (this._roomLeft || !this._room) return; // no room detail yet (still loading) — nothing to show
-        if (!this._viewRoot) return this._buildView();
-        var win = this._win;
-        if (!win) return;
-        if (win.isCollapsed && win.isCollapsed()) win.expand();
-        if (win.comeForward) win.comeForward();
+        var RV = lively.identity.RoomView;
+        if (RV._shown === this && RV._win) {
+          if (RV._win.isCollapsed && RV._win.isCollapsed()) RV._win.expand();
+          if (RV._win.comeForward) RV._win.comeForward();
+          return;
+        }
+        RV._showController(this);
       },
 
-      // Window's own X button. The window removes itself after this returns.
-      _onWindowClosed: function () {
-        // Grid -> circles first, while the view still exists to hand over from.
+      // Called by the registry whenever this controller's content stops being
+      // what's shown in the shared window — either the window was actually
+      // closed (its own X button; the Window morph removes itself right after
+      // this returns) or another room is about to take over the same,
+      // still-open window. Either way: hand video off to world-owned circles
+      // first, detach my own morphs, and — if I'm a text room, with no call to
+      // keep alive in the background — end my session too. (View refs are
+      // already detached by the time leave() runs, so it won't try to remove
+      // the window a second time; see _destroyView.)
+      _onViewReplaced: function () {
         this._windowCollapsed = true;
         this._syncVideoMode();
         this._detachViewRefs();
-        // A text room has no call to keep alive in the background: closing its
-        // window leaves it. (View refs are already detached, so leave() won't
-        // try to remove the window a second time.)
         if (!this._isCall()) this.leave();
       },
 
@@ -635,7 +629,15 @@ module("lively.identity.RoomView")
       // world-owned and stand in for the window while it's closed: they stay
       // while the call is live and are removed when the call ends (or when their
       // participant leaves, see _renderVideoCircles).
+      //
+      // The shared window's content root can survive this call (another
+      // controller may take it over right after — see RoomView._showController),
+      // so this has to actually remove my own child morphs, not just drop my
+      // references to them.
       _detachViewRefs: function () {
+        [this._headerBox, this._roomsPanelBox, this._chatBox, this._membersBox, this._gridBox].forEach(function (m) {
+          try { if (m && m.owner) m.remove(); } catch (e) {}
+        });
         if (this._railTimer) { clearInterval(this._railTimer); this._railTimer = null; }
         this._clearGrid();
         if (this._roomLeft) this._clearCircles();
@@ -1240,8 +1242,10 @@ module("lively.identity.RoomView")
             row.onMouseOver = function () { row.applyStyle({ fill: BG_ROW_HOVER }); };
             row.onMouseOut = function () { row.applyStyle({ fill: null }); };
             // RoomView.open decides what this means: a call room replaces the
-            // current call (leaving it first), a text room opens alongside
-            // whatever is already running.
+            // current call (leaving it first); a text room replaces whatever
+            // is currently shown in the shared window (leaving it first, if
+            // that was a text room too) but never touches a call running in
+            // the background.
             row.onMouseDown = function () {
               lively.identity.RoomView.open(self._name, room.id);
             };
@@ -4212,13 +4216,19 @@ module("lively.identity.RoomView")
 
     // World-level entry point and the one place room sessions are held. A user
     // has at most one CALL session (an audio/video room, `_active`) plus any
-    // number of TEXT sessions (`_texts`) at once. Entering a room you already
-    // have open just brings its window forward (or rebuilds it if closed);
-    // entering a different call room leaves the current call first, waiting for
-    // its presence DELETE to settle so it can't land after the next room's join.
-    // Entering a text room never touches the call. Which kind a room is only
-    // becomes known once its detail loads, so that decision is made in
-    // _register, not here.
+    // number of TEXT sessions (`_texts`) at once. There is only ever one
+    // room/cluster Window per world, though (`_win`/`_viewRoot`, owned here,
+    // not by any controller): entering a room you already have open just
+    // brings that window forward (or rebuilds its content if it was closed);
+    // entering a DIFFERENT room swaps the window's content to it instead of
+    // opening a second window (`_showController`). Swapping away from a text
+    // room ends its session (it has no call to keep alive in the background);
+    // swapping away from a call room only detaches its view — the call keeps
+    // running, same as it always has across a window close. Entering a
+    // different call room leaves the current call first, waiting for its
+    // presence DELETE to settle so it can't land after the next room's join.
+    // Which kind a room is only becomes known once its detail loads, so that
+    // decision is made in _register, not here.
     //
     // Scope: the session lives in this world's JS, so it survives everything
     // except a real page load (which still ends the call via the controller's
@@ -4230,6 +4240,10 @@ module("lively.identity.RoomView")
       _texts: {},         // "name/roomId" -> text-room RoomViewController
       _pending: {},       // "name/roomId" -> controller whose room detail is still loading
       _listeners: [],     // fn(controllerOrNull) — presence joined/left, for the lounge's headcounts
+
+      _win: null,         // the one shared room/cluster Window morph, or null if none is open
+      _viewRoot: null,    // its content-root Box (what controllers build their panels into)
+      _shown: null,       // whichever controller currently owns _win/_viewRoot's content, or null
 
       _key: function (name, roomId) { return name + "/" + roomId; },
 
@@ -4247,6 +4261,63 @@ module("lively.identity.RoomView")
         this._pending[this._key(name, roomId)] = controller;
         controller.open(name, roomId);
         return controller;
+      },
+
+      // Returns the one shared room/cluster Window, creating it if it was
+      // never opened or has since been closed. Content (and the title) is
+      // always the caller's job — see _showController.
+      _ensureWindow: function () {
+        if (this._win && this._win.owner) return this._win;
+        var self = this;
+        var root = new lively.morphic.Box(lively.rect(0, 0, TOTAL_W, TOTAL_H));
+        root.applyStyle({ fill: BG_MAIN, borderWidth: 0, clipMode: "hidden" });
+        // Window#signalShutdown calls this on close (X button) — dispatches to
+        // whichever controller currently owns the content, not a fixed one.
+        root.onShutdown = function () { self._onWindowClosed(); };
+        // Window#collapse calls the first on its target BEFORE detaching the
+        // content; Window#expand calls the second on every submorph once the
+        // content is back. They switch the video between grid and circles —
+        // again, for whichever controller is currently shown.
+        root.onWindowCollapse = function () {
+          var c = self._shown;
+          if (c) { c._windowCollapsed = true; c._syncVideoMode(); }
+        };
+        root.onWindowExpand = function () {
+          var c = self._shown;
+          if (c) { c._windowCollapsed = false; c._syncVideoMode(); }
+        };
+        this._viewRoot = root;
+
+        var vb = $world.visibleBounds();
+        var pos = lively.pt(
+          Math.max(0, Math.round((vb.width - TOTAL_W) / 2)),
+          Math.max(0, Math.round((vb.height - TOTAL_H) / 2)));
+        // Window first, children after: several builders measure their own
+        // rendered DOM, which only exists once the morph is in the world.
+        this._win = root.openInWindow({ title: "Cluster", pos: pos });
+        applyAccentChrome(this._win);
+        _widenWindowChrome(this._win);
+        return this._win;
+      },
+
+      // Makes controller's content the one shown in the shared window,
+      // evicting whoever was shown before it (if different).
+      _showController: function (controller) {
+        if (this._shown && this._shown !== controller) this._shown._onViewReplaced();
+        this._ensureWindow();
+        controller._viewRoot = this._viewRoot;
+        controller._win = this._win;
+        this._shown = controller;
+        controller._renderView();
+      },
+
+      // The shared window's own X button. The window removes itself right
+      // after this returns (see _ensureWindow's onShutdown).
+      _onWindowClosed: function () {
+        if (this._shown) this._shown._onViewReplaced();
+        this._win = null;
+        this._viewRoot = null;
+        this._shown = null;
       },
 
       // Called by the controller once its room detail has loaded. Text rooms
@@ -4320,6 +4391,11 @@ module("lively.identity.RoomView")
         if (this._active === controller) this._active = null;
         if (this._texts[key] === controller) delete this._texts[key];
         if (this._pending[key] === controller) delete this._pending[key];
+        // Only clears the shared window's bookkeeping if nothing else has
+        // already taken it over (a swap-eviction reassigns _shown to the new
+        // controller synchronously, before this — async, post-DELETE —
+        // callback ever runs).
+        if (this._shown === controller) { this._win = null; this._viewRoot = null; this._shown = null; }
         this._notify(null);
         // A text session coming or going flips the panel's controls between
         // inactive (text only) and their normal state.
