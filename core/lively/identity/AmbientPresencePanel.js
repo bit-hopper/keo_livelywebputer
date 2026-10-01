@@ -353,7 +353,7 @@ module("lively.identity.AmbientPresencePanel")
           padding: lively.Rectangle.inset(0, 5, 0, 0),
           clipMode: "hidden", handStyle: "pointer",
         });
-        leaveBtn.toolTip = "Drift away";
+        leaveBtn.toolTip = "Drift";
         // onMouseUp, not onMouseDown: leaving hides this very block, and the panel
         // is bottom-anchored, so it re-aligns downward — on mouse-down that slid
         // the settings gear under the still-held pointer, whose mouse-up then

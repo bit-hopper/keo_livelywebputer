@@ -934,7 +934,7 @@ module("lively.identity.RoomView")
         var leaveBtn = noDrag(new lively.morphic.Box(lively.rect(TOTAL_W - 16 - 110, LEAVE_Y, 110, LEAVE_H)));
         leaveBtn.applyStyle({ fill: DANGER, borderWidth: 0, borderRadius: 15 });
         header.addMorph(leaveBtn);
-        var leaveLabel = lively.morphic.Text.makeLabel("Drift away", {
+        var leaveLabel = lively.morphic.Text.makeLabel("Drift", {
           fontSize: 12.5, fontWeight: "700", textColor: Color.white, fixedWidth: true, fixedHeight: true,
         });
         // 20 clipped the bottom of "away"'s descending "y" by 2px —
@@ -968,7 +968,7 @@ module("lively.identity.RoomView")
         // never stored, so there's nothing to search; see
         // ObjectRepository.searchRoomMessages's own header comment). Same
         // icon-button idiom as the gear button just below, sitting
-        // immediately left of it (or of Drift away, if this viewer has no
+        // immediately left of it (or of Drift, if this viewer has no
         // gear button to manage the room).
         var rightEdge = TOTAL_W - 16 - leaveBtnW;
         if (this._room && !this._room.ephemeral) {
@@ -1008,7 +1008,7 @@ module("lively.identity.RoomView")
         // computed server-side by canManageRoom, IdentityServer.js), same
         // icon-button idiom as the room card's own gear
         // (ConstellationLounge.js's _renderRoomCard). Sits just left of
-        // the Drift away button; no capture-phase hazard here since the
+        // the Drift button; no capture-phase hazard here since the
         // header box itself has no competing onMouseDown of its own.
         if (this._room && this._room.canManage) {
           var GEAR = 26, GEAR_GLYPH_PX = 18;
