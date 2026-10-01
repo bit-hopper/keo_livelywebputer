@@ -1177,8 +1177,15 @@ module("lively.identity.RoomView")
             // current (highlighted) row, where white stays for contrast
             // against the accent-colored background.
             var isEphemeralChat = glyph === "chat" && room.ephemeral && !isCurrent;
+            // Entering an audio/video room establishes a live WebRTC session
+            // immediately (no separate "join call" step) -- so the current
+            // room's own videocam/headset glyph goes green (this file's own
+            // ONLINE constant) to flag that session as active, instead of
+            // just turning white like the plain chat glyph does for a
+            // non-media current room.
+            var isActiveMediaIcon = isCurrent && (glyph === "videocam" || glyph === "headset");
             var g = noDrag(lively.morphic.Text.makeLabel(glyph, {
-              fontSize: 11, textColor: isCurrent ? Color.white : (isEphemeralChat ? Color.rgb(232, 73, 126) : TEXT_MUTED),
+              fontSize: 11, textColor: isActiveMediaIcon ? ONLINE : (isCurrent ? Color.white : (isEphemeralChat ? Color.rgb(232, 73, 126) : TEXT_MUTED)),
             }));
             g.applyStyle({ fontFamily: "'Material Symbols Rounded'", borderWidth: 0 });
             g.eventsAreIgnored = true;
