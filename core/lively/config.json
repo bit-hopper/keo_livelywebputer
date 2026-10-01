@@ -482,6 +482,10 @@
     ["instanceURLs", [], "Other known identity-server instances to offer for browsing public Inventory from, in addition to this one."]
   ],
 
+  "lively.media": [
+    ["mediaBase", "/apps/RetroMediaConsole/media/", "Base URL serving RetroMediaConsole's track/video/sfx media assets."]
+  ],
+
   "lively.morphic.Windows": [
     ["useWindowSwitcher", true, "Use the window switcher (F5/CMD+`/CTRL+`)."]
   ],

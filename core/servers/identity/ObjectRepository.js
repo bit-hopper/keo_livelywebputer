@@ -472,21 +472,36 @@ function put(envelope, thenDo) {
 // the same single row. Runs on the same transaction client put() holds its
 // advisory lock and INSERT on, so the version row and its blob_refs are
 // atomic together.
-function _syncBlobRefsTx(client, envelope, thenDo) {
-  var cids = [];
-  if (envelope.type === 'file' && envelope.blobCid) cids = [envelope.blobCid];
-  else if (envelope.type === 'folder' && Array.isArray(envelope.blobCids)) cids = envelope.blobCids;
+// Which blobCid(s) a given envelope version references, by type. Shared by
+// _syncBlobRefsTx (indexing the current tip's membership) and
+// deleteVersionsAfter (finding reclaim candidates when a version is
+// permanently removed — see that function's own comment for why reclaim
+// only ever triggers there, never on an ordinary supersede). Returns an
+// array, possibly empty.
+function _blobCidsOf(envelope) {
+  if (envelope.type === 'file' && envelope.blobCid) return [envelope.blobCid];
+  if (envelope.type === 'folder' && Array.isArray(envelope.blobCids)) return envelope.blobCids;
   // A part envelope (PartSerializer.js's PART_BLOB_THRESHOLD) carries the
   // same top-level blobCid shape as a file envelope when its payload is
   // too large to inline. Unlike a file (one objId per upload, blobCid
   // fixed for its lifetime), a part's objId can now accumulate multiple
   // versions (prevCid continuation) where some versions are blob-backed
   // and others aren't, or point at different blobs -- the clear-then-
-  // reinsert behavior this function already has for folders handles that
+  // reinsert behavior _syncBlobRefsTx already has for folders handles that
   // correctly with no further change: each PUT re-syncs this objId's
   // current-version blob_refs row (or leaves none, if this version isn't
   // blob-backed).
-  else if (envelope.type === 'part' && envelope.blobCid) cids = [envelope.blobCid];
+  if (envelope.type === 'part' && envelope.blobCid) return [envelope.blobCid];
+  // An app envelope (inventory.md §15.3/§1 "app vendoring") carries a file
+  // manifest instead of a single payload -- one blobCid per listed file.
+  if (envelope.type === 'app' && Array.isArray(envelope.files)) {
+    return envelope.files.map(function (f) { return f.blobCid; }).filter(Boolean);
+  }
+  return [];
+}
+
+function _syncBlobRefsTx(client, envelope, thenDo) {
+  var cids = _blobCidsOf(envelope);
 
   client.query('DELETE FROM blob_refs WHERE obj_id = $1', [envelope.objId], function (delErr) {
     if (delErr) console.warn('[ObjectRepository] Failed to clear stale blob_refs for', envelope.objId, ':', delErr.message);
@@ -953,29 +968,138 @@ function addRecipient(objId, recipientDid, thenDo) {
   });
 }
 
-// Delete all versions of an object that were written after the given cid.
-// Used by the revert UI to roll back to a known-good snapshot.
-// Calls thenDo(err, { deleted }) where deleted is the row count removed.
+// Delete all versions of an object that were written after the given cid
+// (the revert primitive). Used by the revert UI to roll back to a
+// known-good snapshot.
+//
+// Also reclaims now-orphaned blobs, and fixes a real bug along the way.
+// blob_refs only ever reflects an object's *current* tip (rewritten on
+// every put(), never accumulated — see its header comment above), so
+// without this fix a revert left it stale: it still pointed at whichever
+// version was the tip at ITS OWN put() time, which this call just deleted,
+// meaning the reverted-to version's own blob would have no blob_refs row
+// at all and 404 via the blob GET route's gating lookup. Re-syncing
+// blob_refs for the new tip (the version at `cid`) fixes that regardless
+// of whether any blob is actually reclaimed below.
+//
+// Blob reclaim is deliberately scoped to ONLY this function — not to an
+// ordinary supersede (republish). Reclaiming eagerly the moment a new
+// version supersedes an old one would leave a dead reference if a later
+// revert restored that exact old version, since blob_refs' latest-only
+// semantics can't tell "superseded for now" from "gone forever". Only once
+// a version's row is actually, permanently deleted (here) is its blob
+// provably unreachable — checked against both blob_refs (covers another
+// objId's current tip referencing the same content, e.g. dedup) and this
+// objId's own surviving rows (covers a blob a version *older* than the
+// revert target also happened to reference).
+//
+// Type-agnostic by construction, via the same _blobCidsOf used by
+// _syncBlobRefsTx — covers file/folder/part/app alike with one mechanism.
+//
+// Calls thenDo(err, { deleted, orphanedBlobCids }) — deleted is the row
+// count removed, orphanedBlobCids the blobs now safe to delete from the
+// blob store. This module has no blobStore dependency (IdentityServer.js
+// owns that, same as the existing DELETE /blobs/:cid route) — the caller
+// is responsible for actually deleting each one, best-effort/non-fatal.
 function deleteVersionsAfter(objId, cid, thenDo) {
   withDB(function (err, pool) {
     if (err) return thenDo(err);
-    pool.query(
-      'SELECT id FROM objects WHERE obj_id = $1 AND cid = $2',
-      [objId, cid],
-      function (err, result) {
-        if (err) return thenDo(err);
-        var row = result.rows[0];
-        if (!row) return thenDo(new Error('deleteVersionsAfter: version not found: ' + cid));
-        pool.query(
-          'DELETE FROM objects WHERE obj_id = $1 AND id > $2',
-          [objId, row.id],
-          function (err, delResult) {
-            if (err) return thenDo(err);
-            thenDo(null, { deleted: delResult.rowCount });
-          }
-        );
-      }
-    );
+    pool.connect(function (err, client, release) {
+      if (err) return thenDo(err);
+      client.query('BEGIN', function (err) {
+        if (err) { release(); return thenDo(err); }
+
+        _lockObjIdTx(client, objId, function (err) {
+          if (err) return _rollbackAndRelease(client, release, err, thenDo);
+
+          client.query(
+            'SELECT id, envelope FROM objects WHERE obj_id = $1 AND cid = $2',
+            [objId, cid],
+            function (err, result) {
+              if (err) return _rollbackAndRelease(client, release, err, thenDo);
+              var targetRow = result.rows[0];
+              if (!targetRow) {
+                return _rollbackAndRelease(
+                  client, release,
+                  new Error('deleteVersionsAfter: version not found: ' + cid),
+                  thenDo
+                );
+              }
+
+              client.query(
+                'SELECT envelope FROM objects WHERE obj_id = $1 AND id > $2',
+                [objId, targetRow.id],
+                function (err, deadResult) {
+                  if (err) return _rollbackAndRelease(client, release, err, thenDo);
+                  var deadEnvelopes = deadResult.rows.map(function (r) { return r.envelope; });
+
+                  client.query(
+                    'DELETE FROM objects WHERE obj_id = $1 AND id > $2',
+                    [objId, targetRow.id],
+                    function (err, delResult) {
+                      if (err) return _rollbackAndRelease(client, release, err, thenDo);
+
+                      _syncBlobRefsTx(client, targetRow.envelope, function () {
+                        var survivingTipCids = _blobCidsOf(targetRow.envelope);
+                        var deadCids = [];
+                        deadEnvelopes.forEach(function (env) {
+                          _blobCidsOf(env).forEach(function (c) {
+                            if (deadCids.indexOf(c) === -1) deadCids.push(c);
+                          });
+                        });
+                        var candidates = deadCids.filter(function (c) {
+                          return survivingTipCids.indexOf(c) === -1;
+                        });
+
+                        if (!candidates.length) {
+                          return client.query('COMMIT', function (err) {
+                            release();
+                            if (err) return thenDo(err);
+                            thenDo(null, { deleted: delResult.rowCount, orphanedBlobCids: [] });
+                          });
+                        }
+
+                        client.query(
+                          'SELECT envelope FROM objects WHERE obj_id = $1',
+                          [objId],
+                          function (err, survivingResult) {
+                            if (err) return _rollbackAndRelease(client, release, err, thenDo);
+                            var survivingHistoryCids = [];
+                            survivingResult.rows.forEach(function (r) {
+                              _blobCidsOf(r.envelope).forEach(function (c) {
+                                if (survivingHistoryCids.indexOf(c) === -1) survivingHistoryCids.push(c);
+                              });
+                            });
+
+                            client.query(
+                              'SELECT DISTINCT blob_cid FROM blob_refs WHERE blob_cid = ANY($1)',
+                              [candidates],
+                              function (err, refsResult) {
+                                if (err) return _rollbackAndRelease(client, release, err, thenDo);
+                                var stillInBlobRefs = refsResult.rows.map(function (r) { return r.blob_cid; });
+                                var orphaned = candidates.filter(function (c) {
+                                  return stillInBlobRefs.indexOf(c) === -1 && survivingHistoryCids.indexOf(c) === -1;
+                                });
+
+                                client.query('COMMIT', function (err) {
+                                  release();
+                                  if (err) return thenDo(err);
+                                  thenDo(null, { deleted: delResult.rowCount, orphanedBlobCids: orphaned });
+                                });
+                              }
+                            );
+                          }
+                        );
+                      });
+                    }
+                  );
+                }
+              );
+            }
+          );
+        });
+      });
+    });
   });
 }
 

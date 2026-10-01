@@ -4292,9 +4292,82 @@ module.exports = function (route, app) {
       objectRepo.deleteVersionsAfter(objId, cid, function (err, result) {
         if (err) return res.status(500).json({ error: String(err) });
         res.json({ ok: true, deleted: result.deleted });
+        // Best-effort blob reclaim for whatever became unreachable by this
+        // revert (see deleteVersionsAfter's own comment for why this is the
+        // only place reclaim happens) — fired after the response, never
+        // lets a cleanup failure affect the revert's own success.
+        (result.orphanedBlobCids || []).forEach(function (blobCid) {
+          blobStore.delete(blobCid, function (err) {
+            if (err) console.warn("[IdentityServer] Failed to reclaim orphaned blob", blobCid, "after revert of", objId, ":", err.message || err);
+          });
+        });
       });
     }
   );
+
+  // ─── app bundle serving ─────────────────────────────────────────────────────
+  // type:'app' envelopes (inventory.md §15.3/§1, decided 2026-10-01) carry a
+  // file manifest — top-level `entry`/`files: [{path, blobCid, mime, size}]`
+  // — instead of a single payload. Top-level, not inside record.payload: same
+  // reason a file/folder envelope's own blobCid(s) live at the top level
+  // (FileCrypto.js) rather than inside record — the server (and
+  // _syncBlobRefsTx's indexing, which already reads envelope.files the same
+  // way) must be able to resolve them without reading record.payload, which
+  // for a private/shared object is ciphertext. v1 apps are public-only, but
+  // matching the established shape keeps one convention codebase-wide rather
+  // than a one-off. One blobCid per static asset, so a vendored app's entry
+  // HTML can reference its own sibling files by relative URL the same way
+  // today's root-relative /apps/<Name>/ serving already works. Resolves one
+  // listed file's blob by its manifest path, or `entry` when no path is given
+  // (so loadInIFrame can point straight at this route's own root, same as it
+  // points at /apps/<Name>/<entry>.html today). Always the latest version —
+  // no historical app serving, matching every other read path in this file
+  // that resolves a payload (blob GET, view source, openSelectedItem all only
+  // ever fetch objectRepo.get's latest). Mirrors the blob GET route's own
+  // stream.pipe(res) (above) almost exactly; the only new work is resolving a
+  // relative path against the manifest instead of trusting a raw cid straight
+  // from the URL.
+
+  function _serveAppFile(req, res, reqPath) {
+    var objId = req.params.objId;
+
+    objectRepo.get(objId, function (err, envelope) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!envelope) return res.status(404).json({ error: "Object not found: " + objId });
+      if (envelope.type !== "app") {
+        return res.status(400).json({ error: "Not an app object: " + objId });
+      }
+      if (!_canReadEnvelope(envelope, req.identity)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
+      if (!Array.isArray(envelope.files)) {
+        return res.status(500).json({ error: "Malformed app manifest" });
+      }
+      var manifest = { entry: envelope.entry, files: envelope.files };
+
+      var wantPath = reqPath || manifest.entry;
+      var file = manifest.files.filter(function (f) { return f.path === wantPath; })[0];
+      if (!file) {
+        return res.status(404).json({ error: "File not found in app manifest: " + wantPath });
+      }
+
+      blobStore.get(file.blobCid, function (err, stream) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!stream) return res.status(404).json({ error: "Blob not found" });
+        res.setHeader("Content-Type", file.mime || "application/octet-stream");
+        stream.pipe(res);
+      });
+    });
+  }
+
+  app.get("/@:handle/:objId/app", auth.optionalAuth, function (req, res) {
+    _serveAppFile(req, res, "");
+  });
+
+  app.get("/@:handle/:objId/app/*", auth.optionalAuth, function (req, res) {
+    _serveAppFile(req, res, req.params[0] || "");
+  });
 
   // ─── version diff ──────────────────────────────────────────────────────────
   // Returns a unified diff of two versions' payloads.

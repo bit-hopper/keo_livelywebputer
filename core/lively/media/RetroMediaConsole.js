@@ -25,7 +25,7 @@
 module("lively.media.RetroMediaConsole")
   .requires()
   .toRun(function () {
-    var MEDIA_BASE = "/apps/RetroMediaConsole/media/";
+    var MEDIA_BASE = (lively.Config && lively.Config.get('mediaBase', true)) || "/apps/RetroMediaConsole/media/";
 
     var RetroMediaConsoleClass = lively.morphic.Box.subclass(
       "lively.media.RetroMediaConsole",
