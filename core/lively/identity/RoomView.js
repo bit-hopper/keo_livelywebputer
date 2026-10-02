@@ -54,6 +54,10 @@ module("lively.identity.RoomView")
     "lively.identity.DID",
     "lively.identity.PostCardUtils",
     "lively.identity.PostCardSerializer",
+    "lively.identity.RoomCrypto",
+    "lively.identity.Crypto",
+    "lively.identity.WebKey",
+    "lively.identity.EnvelopeSigning",
     "lively.identity.AmbientPresencePanel",
     "lively.identity.MediaPickerDialog",
     "lively.Network",
@@ -219,6 +223,8 @@ module("lively.identity.RoomView")
     // Message actions (reactions/replies/edit/delete/flag) — persistent
     // rooms only, see RoomViewController.initialize's own note on why.
     var REPLY_STRIP_H = 26;     // extra height _inputRowM grows by while composing a reply
+    var ROTATION_BANNER_H = 32; // extra height _inputRowM grows by while an e2eeEnabled room's key rotation is pending (e2eeclusters.md §9.1)
+    var E2EE_UNDECRYPTABLE_TEXT = "🔒 Message unavailable — sent before you had access to this cluster's key.";
     var REPLY_PREVIEW_H = 26;   // reply-preview chip (parent avatar + handle + snippet) above a reply message — tall enough for a short connector curve below the small avatar
     var REPLY_AVATAR = 16;      // small parent-message avatar shown inside the reply-preview chip
     var REPLY_ELBOW_DX = 12;   // horizontal gap between the big avatar's center column and the small avatar's left edge, so the reply connector has a real elbow leg to turn through
@@ -402,6 +408,23 @@ module("lively.identity.RoomView")
         return !!(this._room && (this._room.isVideo || this._room.isVoice));
       },
 
+      // e2eeEnabled is set once at room creation and immutable after
+      // (e2eeclusters.md §9's "Decisions locked in") — safe to read
+      // straight off this._room wherever needed.
+      _isE2ee: function () {
+        return !!(this._room && this._room.e2eeEnabled);
+      },
+
+      // Mirrors the server-side e2ee_rotation_pending flag as of when this
+      // room detail was last fetched (room-open time, or this controller's
+      // own successful retry — see _retryRotation). A rotation performed by
+      // ANOTHER client while this session is open won't clear this locally
+      // until the room is reopened — the on-reopen refresh is the backstop,
+      // not a live subscription (e2eeclusters.md §9.1's own framing).
+      _rotationPending: function () {
+        return this._isE2ee() && !!(this._room && this._room.e2eeRotationPending);
+      },
+
       _callMediaKinds: function () {
         return { audio: true, video: !!(this._room && this._room.isVideo) };
       },
@@ -552,6 +575,7 @@ module("lively.identity.RoomView")
         this._buildHeader();
         this._buildRoomsPanel();
         this._buildChatPanel();
+        this._renderReplyComposeStrip(); // picks up the rotation-pending banner, if any, at open time
         this._buildMembersPanel();
         this._buildVideoLayer();
         this._renderMembers();
@@ -1290,60 +1314,100 @@ module("lively.identity.RoomView")
           var data;
           try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
           var fetched = (data.messages || []).slice().reverse(); // server returns newest-first; display oldest-first
-          var byObjId = {};
-          self._messages.forEach(function (m) { byObjId[m.objId] = m; });
-          var changed = false;
-          fetched.forEach(function (m) {
-            var existing = byObjId[m.objId];
-            if (!existing) {
-              self._messages.push(m);
-              changed = true;
-              return;
-            }
-            // A poll tick can also bring back a CHANGE to an already-known
-            // message (a reaction, an edit) rather than a brand-new one —
-            // the old version here only ever added new objIds and left
-            // already-known rows untouched, so reactions/edits from other
-            // viewers (or this viewer's own reaction, applied via a
-            // fire-and-forget PUT that never touches this._messages
-            // directly) never showed up until something else happened to
-            // trigger a full reload.
-            if (existing.editedAt !== m.editedAt || existing.text !== m.text ||
-                JSON.stringify(existing.reactions) !== JSON.stringify(m.reactions) ||
-                JSON.stringify(existing.replyTo) !== JSON.stringify(m.replyTo)) {
-              existing.editedAt = m.editedAt;
-              existing.text = m.text;
-              existing.reactions = m.reactions;
-              existing.replyTo = m.replyTo;
-              changed = true;
-            }
-          });
-          // A message can also disappear (deleted, by its author or a
-          // moderator) — pruned here so a deletion elsewhere shows up on
-          // the next poll tick too, not just new/edited messages. Scoped
-          // to the created-time window this fetch actually covers (the
-          // route always returns the newest 50, not the full history), so
-          // an older message that's simply outside THIS page isn't
-          // mistaken for a deleted one.
-          if (fetched.length) {
-            var fetchedIds = {};
-            fetched.forEach(function (m) { fetchedIds[m.objId] = true; });
-            var minT = new Date(fetched[0].created).getTime();
-            var maxT = new Date(fetched[fetched.length - 1].created).getTime();
-            var before = self._messages.length;
-            self._messages = self._messages.filter(function (m) {
-              var t = new Date(m.created).getTime();
-              if (t < minT || t > maxT) return true; // outside this page — leave it alone
-              return !!fetchedIds[m.objId];
-            });
-            if (self._messages.length !== before) changed = true;
-          }
-          if (changed) {
-            self._messages.sort(function (a, b) { return new Date(a.created) - new Date(b.created); });
-            self._renderMessages();
+          if (self._isE2ee()) {
+            self._decryptFetchedMessages(fetched, function () { self._mergeFetchedMessages(fetched); });
+          } else {
+            self._mergeFetchedMessages(fetched);
           }
         };
         xhr.send();
+      },
+
+      // Decrypts every fetched message's ciphertext/nonce (under the epoch
+      // IT was actually sent under, not necessarily the room's current
+      // epoch — RoomCrypto.decryptMessage's own header comment) into a
+      // plain `.text` field in place, so _mergeFetchedMessages' diffing and
+      // every downstream renderer can keep treating `.text` as a plain
+      // string exactly like a non-e2eeEnabled room's messages — this is the
+      // ONLY place that distinction has to exist. A per-message decrypt
+      // FAILURE (expected for a message sent before this viewer had access
+      // to that epoch — e2eeclusters.md §3's "no historical reseal" policy,
+      // not a bug) renders as a neutral placeholder rather than erroring
+      // the whole load. thenDo() takes no args — fetched is mutated in place.
+      _decryptFetchedMessages: function (fetched, thenDo) {
+        if (!fetched.length) return thenDo();
+        var remaining = fetched.length;
+        function done() { if (--remaining === 0) thenDo(); }
+        fetched.forEach(function (m) {
+          if (m.ciphertext == null || m.epoch == null) { m.text = ""; return done(); }
+          lively.identity.roomCrypto.decryptMessage({
+            constellationName: this._name, roomId: this._roomId,
+            ciphertext: m.ciphertext, nonce: m.nonce, epoch: m.epoch,
+          }, function (err, payload) {
+            m.text = (!err && payload && typeof payload.text === "string") ? payload.text : E2EE_UNDECRYPTABLE_TEXT;
+            done();
+          });
+        }, this);
+      },
+
+      // Merges a freshly-fetched (oldest-first) page of messages into
+      // this._messages and re-renders if anything actually changed — split
+      // out of _loadMessages so an e2eeEnabled room can decrypt first (see
+      // _decryptFetchedMessages) without duplicating this diffing logic.
+      _mergeFetchedMessages: function (fetched) {
+        var self = this;
+        var byObjId = {};
+        self._messages.forEach(function (m) { byObjId[m.objId] = m; });
+        var changed = false;
+        fetched.forEach(function (m) {
+          var existing = byObjId[m.objId];
+          if (!existing) {
+            self._messages.push(m);
+            changed = true;
+            return;
+          }
+          // A poll tick can also bring back a CHANGE to an already-known
+          // message (a reaction, an edit) rather than a brand-new one —
+          // the old version here only ever added new objIds and left
+          // already-known rows untouched, so reactions/edits from other
+          // viewers (or this viewer's own reaction, applied via a
+          // fire-and-forget PUT that never touches this._messages
+          // directly) never showed up until something else happened to
+          // trigger a full reload.
+          if (existing.editedAt !== m.editedAt || existing.text !== m.text ||
+              JSON.stringify(existing.reactions) !== JSON.stringify(m.reactions) ||
+              JSON.stringify(existing.replyTo) !== JSON.stringify(m.replyTo)) {
+            existing.editedAt = m.editedAt;
+            existing.text = m.text;
+            existing.reactions = m.reactions;
+            existing.replyTo = m.replyTo;
+            changed = true;
+          }
+        });
+        // A message can also disappear (deleted, by its author or a
+        // moderator) — pruned here so a deletion elsewhere shows up on
+        // the next poll tick too, not just new/edited messages. Scoped
+        // to the created-time window this fetch actually covers (the
+        // route always returns the newest 50, not the full history), so
+        // an older message that's simply outside THIS page isn't
+        // mistaken for a deleted one.
+        if (fetched.length) {
+          var fetchedIds = {};
+          fetched.forEach(function (m) { fetchedIds[m.objId] = true; });
+          var minT = new Date(fetched[0].created).getTime();
+          var maxT = new Date(fetched[fetched.length - 1].created).getTime();
+          var before = self._messages.length;
+          self._messages = self._messages.filter(function (m) {
+            var t = new Date(m.created).getTime();
+            if (t < minT || t > maxT) return true; // outside this page — leave it alone
+            return !!fetchedIds[m.objId];
+          });
+          if (self._messages.length !== before) changed = true;
+        }
+        if (changed) {
+          self._messages.sort(function (a, b) { return new Date(a.created) - new Date(b.created); });
+          self._renderMessages();
+        }
       },
 
       _startMessagePolling: function () {
@@ -1566,6 +1630,21 @@ module("lively.identity.RoomView")
       _sendText: function (text) {
         var user = lively.identity.did.currentUser();
         if (!user) return;
+
+        // Checked BEFORE touching _sendingMessage/_replyingTo, so a blocked
+        // send leaves everything (including an in-progress reply) exactly
+        // as it was — the typed text just bounces back into the input via
+        // _onSendMessageFailed, same as any other failure. See
+        // e2eeclusters.md §9.1: the rotation-pending flag is the actual
+        // forward-secrecy safety net, not just a UI nag — a new message
+        // must never go out sealed to a membership list that's already
+        // known to be stale.
+        if (this._rotationPending()) {
+          return this._onSendMessageFailed(text, new Error(
+            "Can't send — this cluster's encryption key is rotating. Use Retry above, or try again shortly."
+          ));
+        }
+
         this._sendingMessage = true;
 
         // Consumed and cleared eagerly here (not left for the caller),
@@ -1580,6 +1659,7 @@ module("lively.identity.RoomView")
         this._renderReplyComposeStrip();
 
         if (this._room && this._room.ephemeral) return this._sendEphemeralText(text);
+        if (this._isE2ee()) return this._sendEncryptedText(text, replyTo, user);
 
         var self = this;
         var doc = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: text }] }] };
@@ -1592,28 +1672,76 @@ module("lively.identity.RoomView")
         if (replyTo) params.replyTo = replyTo;
         lively.identity.postCardSerializer.serializePlainToEnvelope(params, function (err, envelope) {
           if (err) return self._onSendMessageFailed(text, err);
-          var base = lively.identity.did.baseUrl();
-          var xhr = new XMLHttpRequest();
-          xhr.open("PUT", base + "/@" + encodeURIComponent(user.handle) + "/" + encodeURIComponent(envelope.objId), true);
-          xhr.withCredentials = true;
-          xhr.setRequestHeader("Content-Type", "application/json");
-          xhr.onload = function () {
-            if (xhr.status !== 200) return self._onSendMessageFailed(text, new Error("save failed (" + xhr.status + ")"));
-            var xhr2 = new XMLHttpRequest();
-            xhr2.open("POST", base + "/c/" + encodeURIComponent(self._name) + "/rooms/" + self._roomId + "/messages", true);
-            xhr2.withCredentials = true;
-            xhr2.setRequestHeader("Content-Type", "application/json");
-            xhr2.onload = function () {
-              self._sendingMessage = false;
-              if (xhr2.status !== 201) return self._onSendMessageFailed(text, new Error("send failed (" + xhr2.status + ")"));
-              self._loadMessages();
-            };
-            xhr2.onerror = function () { self._onSendMessageFailed(text, new Error("network error")); };
-            xhr2.send(JSON.stringify({ objId: envelope.objId }));
-          };
-          xhr.onerror = function () { self._onSendMessageFailed(text, new Error("network error")); };
-          xhr.send(JSON.stringify(envelope));
+          self._putAndConfirmMessage(envelope, text);
         });
+      },
+
+      // room-message envelope for an e2eeEnabled room: record.payload is
+      // the raw ciphertext string (not a ProseMirror doc), record.nonce and
+      // state.epoch tell any reader which room-key epoch to decrypt it with
+      // — built directly here rather than through PostCardSerializer (whose
+      // plain/encrypted pairs are either unencrypted or KEK/wrappedDek-based
+      // private postcards, neither of which matches "one DEK shared via the
+      // room's own epoch envelope, no per-message sealing" — see
+      // RoomCrypto.js's own header comment on this division of labor).
+      _sendEncryptedText: function (text, replyTo, user) {
+        var self = this;
+        var c = lively.identity.crypto;
+        lively.identity.roomCrypto.encryptMessage({
+          constellationName: self._name, roomId: self._roomId, payload: { text: text },
+        }, function (err, enc) {
+          if (err) return self._onSendMessageFailed(text, err);
+          lively.identity.webKey.generateGenesisObjId(user.did, function (err2, genesis) {
+            if (err2) return self._onSendMessageFailed(text, err2);
+            c.computeCid(enc.ciphertext, function (err3, cid) {
+              if (err3) return self._onSendMessageFailed(text, err3);
+              var envelope = {
+                objId: genesis.objId, genesisNonce: genesis.genesisNonce,
+                did: user.did, type: "postcard", visibility: "public",
+                constellation: self._name,
+                created: new Date().toISOString(),
+                record: { cid: cid, prevCid: null, payload: enc.ciphertext, nonce: enc.nonce },
+                state: { kind: "room-message", roomId: self._roomId, epoch: enc.epoch },
+              };
+              if (replyTo) envelope.replyTo = replyTo;
+              lively.identity.envelopeSigning.signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
+                if (signErr) return self._onSendMessageFailed(text, signErr);
+                self._putAndConfirmMessage(signed || envelope, text);
+              });
+            });
+          });
+        });
+      },
+
+      // Shared PUT-own-envelope -> POST {objId} confirm tail for both the
+      // plaintext and encrypted send paths (_sendText/_sendEncryptedText) —
+      // same two-step "save the signed envelope, then ask the room route to
+      // validate+accept it" sequence either way; only the envelope's own
+      // shape differs between callers.
+      _putAndConfirmMessage: function (envelope, text) {
+        var self = this;
+        var user = lively.identity.did.currentUser();
+        var base = lively.identity.did.baseUrl();
+        var xhr = new XMLHttpRequest();
+        xhr.open("PUT", base + "/@" + encodeURIComponent(user.handle) + "/" + encodeURIComponent(envelope.objId), true);
+        xhr.withCredentials = true;
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.onload = function () {
+          if (xhr.status !== 200) return self._onSendMessageFailed(text, new Error("save failed (" + xhr.status + ")"));
+          var xhr2 = new XMLHttpRequest();
+          xhr2.open("POST", base + "/c/" + encodeURIComponent(self._name) + "/rooms/" + self._roomId + "/messages", true);
+          xhr2.withCredentials = true;
+          xhr2.setRequestHeader("Content-Type", "application/json");
+          xhr2.onload = function () {
+            self._sendingMessage = false;
+            if (xhr2.status !== 201) return self._onSendMessageFailed(text, new Error("send failed (" + xhr2.status + ")"));
+            self._loadMessages();
+          };
+          xhr2.onerror = function () { self._onSendMessageFailed(text, new Error("network error")); };
+          xhr2.send(JSON.stringify({ objId: envelope.objId }));
+        };
+        xhr.onerror = function () { self._onSendMessageFailed(text, new Error("network error")); };
+        xhr.send(JSON.stringify(envelope));
       },
 
       // Ephemeral-room counterpart to _sendText — no ProseMirror doc, no
@@ -1704,17 +1832,25 @@ module("lively.identity.RoomView")
       },
 
       // Single source of truth for _inputRowM/_msgListBox/_pillM's height
-      // and position, since they depend on BOTH the chat panel's current
-      // width (_layoutChat) and whether a reply is in progress (this
-      // method) — called from both places rather than duplicating the
-      // listH/rowH math in each. _pillM's own CHILDREN (input, placeholder,
-      // picker buttons) are positioned relative to _pillM itself, so only
-      // _pillM's own y needs to move when the strip appears/disappears.
+      // and position, since they depend on the chat panel's current width
+      // (_layoutChat), whether a reply is in progress, AND (new) whether
+      // this e2eeEnabled room's key rotation is pending — called from all
+      // three places rather than duplicating the listH/rowH math in each.
+      // _pillM's own CHILDREN (input, placeholder, picker buttons) are
+      // positioned relative to _pillM itself, so only _pillM's own y needs
+      // to move when the strip/banner appears/disappears. The rotation
+      // banner (if shown) always sits above the reply strip (if also
+      // shown) — stacked, not mutually exclusive, since a half-composed
+      // reply can still be in progress when a rotation starts.
       _renderReplyComposeStrip: function () {
         if (!this._inputRowM) return;
         if (this._replyStripM) { try { this._replyStripM.remove(); } catch (e) {} this._replyStripM = null; }
+        if (this._rotationBannerM) { try { this._rotationBannerM.remove(); } catch (e) {} this._rotationBannerM = null; }
 
-        var extra = this._replyingTo ? REPLY_STRIP_H : 0;
+        var rotationOn = this._rotationPending();
+        var rotationExtra = rotationOn ? ROTATION_BANNER_H : 0;
+        var replyExtra = this._replyingTo ? REPLY_STRIP_H : 0;
+        var extra = rotationExtra + replyExtra;
         var rowH = INPUT_H + extra;
         var listH = BODY_H - rowH;
         this._msgListBox.setExtent(lively.pt(this._chatW, listH));
@@ -1722,11 +1858,50 @@ module("lively.identity.RoomView")
         this._inputRowM.setPosition(lively.pt(0, listH));
         this._pillM.setPosition(lively.pt(16, 8 + extra));
 
-        if (!this._replyingTo) return;
+        if (rotationOn) this._buildRotationBanner();
+        if (this._replyingTo) this._buildReplyStrip(rotationExtra);
+      },
 
+      // The e2ee rotation-pending notice — see e2eeclusters.md §9.1. Sending
+      // is actually blocked in _sendText (this._rotationPending()), not by
+      // disabling the input: the banner is the ambient explanation for why
+      // a send just bounced back into the box, not a hard lockout of typing.
+      _buildRotationBanner: function () {
         var self = this;
         var PAD = 16;
-        var strip = noDrag(new lively.morphic.Box(lively.rect(PAD, 4, this._chatW - PAD * 2, REPLY_STRIP_H - 8)));
+        var banner = noDrag(new lively.morphic.Box(lively.rect(PAD, 4, this._chatW - PAD * 2, ROTATION_BANNER_H - 8)));
+        banner.applyStyle({ fill: Color.rgba(242, 63, 66, 0.14), borderWidth: 0, borderRadius: 4 });
+        this._inputRowM.addMorph(banner);
+        this._rotationBannerM = banner;
+
+        var lbl = noDrag(lively.morphic.Text.makeLabel(
+          "Key rotation pending — sending is paused until it completes.",
+          { fontSize: 11, textColor: DANGER, fixedWidth: true, fixedHeight: true, whiteSpaceHandling: "pre" }
+        ));
+        lbl.eventsAreIgnored = true;
+        lbl.setExtent(lively.pt(this._chatW - PAD * 2 - 60, ROTATION_BANNER_H - 8));
+        lbl.setPosition(lively.pt(8, 1));
+        banner.addMorph(lbl);
+
+        // Text.makeLabel's own beLabel() unconditionally calls
+        // ignoreEvents() regardless of style — CLAUDE.md's makeLabel
+        // click-dead gotcha — so this has to be flipped back explicitly or
+        // onMouseUp below is structurally unreachable.
+        var retryBtn = noDrag(lively.morphic.Text.makeLabel("Retry", { fontSize: 11, textColor: DANGER }));
+        retryBtn.applyStyle({ borderWidth: 0, fill: null, fontWeight: "bold", handStyle: "pointer" });
+        retryBtn.eventsAreIgnored = false;
+        retryBtn.setExtent(lively.pt(40, ROTATION_BANNER_H - 8));
+        retryBtn.setPosition(lively.pt(this._chatW - PAD * 2 - 46, 1));
+        retryBtn.onMouseUp = function (evt) { self._retryRotation(retryBtn); evt.stop(); return true; };
+        banner.addMorph(retryBtn);
+      },
+
+      // yOffset: ROTATION_BANNER_H when the rotation banner is also shown
+      // (stacks below it), 0 otherwise.
+      _buildReplyStrip: function (yOffset) {
+        var self = this;
+        var PAD = 16;
+        var strip = noDrag(new lively.morphic.Box(lively.rect(PAD, yOffset + 4, this._chatW - PAD * 2, REPLY_STRIP_H - 8)));
         strip.applyStyle({ fill: Color.rgba(79, 11, 67, 0.12), borderWidth: 0, borderRadius: 4 });
         this._inputRowM.addMorph(strip);
         this._replyStripM = strip;
@@ -1746,6 +1921,30 @@ module("lively.identity.RoomView")
         closeBtn.setPosition(lively.pt(this._chatW - PAD * 2 - 20, 1));
         closeBtn.onMouseUp = function (evt) { self._cancelReplyingTo(); evt.stop(); return true; };
         strip.addMorph(closeBtn);
+      },
+
+      // Manual retry for a stuck e2ee_rotation_pending flag (e2eeclusters.md
+      // §9.1/§9.3) — the single entry point RoomCrypto.ensureEpoch covers
+      // both "no epoch minted yet" (a brand-new room) and "mid-life
+      // rotation" cases, so this doesn't need to know which applies. Only
+      // updates this._room locally on success (no room-detail refetch) —
+      // consistent with _rotationPending's own header comment on this
+      // being a per-session snapshot, not a live subscription.
+      _retryRotation: function (btn) {
+        var self = this;
+        if (btn) { btn.textString = "…"; btn.eventsAreIgnored = true; }
+        lively.identity.roomCrypto.ensureEpoch({
+          constellationName: self._name, roomId: self._roomId,
+        }, function (err) {
+          if (err) {
+            console.error("[RoomView] E2EE rotation retry failed:", err);
+            if (btn) { btn.textString = "Retry"; btn.eventsAreIgnored = false; }
+            return;
+          }
+          if (self._room) self._room.e2eeRotationPending = false;
+          self._renderReplyComposeStrip();
+          self._loadMessages();
+        });
       },
 
       // ── reactions ──────────────────────────────────────────────────────────
@@ -1895,6 +2094,20 @@ module("lively.identity.RoomView")
           if (getXhr.status !== 200) return;
           var envelope;
           try { envelope = JSON.parse(getXhr.responseText); } catch (e) { return; }
+
+          // An e2eeEnabled room's message body must stay ciphertext on
+          // every write, including an edit — serializePlainToEnvelope
+          // below builds a plaintext ProseMirror-doc payload, which would
+          // otherwise silently write the edited text to the server in the
+          // clear the moment this ran. Re-encrypts under the room's
+          // CURRENT epoch (not necessarily the epoch the original message
+          // was sent under) — a member removed since the original send
+          // already couldn't decrypt new content either way, and this
+          // keeps the edit visible to every member still current, same
+          // reasoning _sendEncryptedText's own forward-secrecy framing
+          // gives for brand-new messages.
+          if (self._isE2ee()) return self._saveEncryptedMessageEdit(envelope, newText, url);
+
           var doc = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: newText }] }] };
           var params = {
             doc: doc,
@@ -1926,6 +2139,44 @@ module("lively.identity.RoomView")
           });
         };
         getXhr.send();
+      },
+
+      // e2eeEnabled counterpart of the plaintext branch above — same
+      // chain-onto-the-same-objId idiom (record.prevCid set from the
+      // existing envelope, replyTo carried forward), but record.payload is
+      // re-encrypted ciphertext instead of a plaintext ProseMirror doc.
+      _saveEncryptedMessageEdit: function (envelope, newText, url) {
+        var self = this;
+        var c = lively.identity.crypto;
+        var user = lively.identity.did.currentUser();
+        lively.identity.roomCrypto.encryptMessage({
+          constellationName: self._name, roomId: self._roomId, payload: { text: newText },
+        }, function (err, enc) {
+          if (err) { console.error("[RoomView] Encrypted edit failed:", err); return; }
+          c.computeCid(enc.ciphertext, function (err2, cid) {
+            if (err2) { console.error("[RoomView] Encrypted edit failed:", err2); return; }
+            var updated = Object.assign({}, envelope, {
+              record: Object.assign({}, envelope.record, { cid: cid, prevCid: envelope.record.cid, payload: enc.ciphertext, nonce: enc.nonce }),
+              state: Object.assign({}, envelope.state, { epoch: enc.epoch, editedAt: new Date().toISOString() }),
+            });
+            delete updated.sig;
+            lively.identity.envelopeSigning.signEnvelopeIfPossible(updated, user, c, function (signErr, signed) {
+              if (signErr) { console.error("[RoomView] Encrypted edit failed:", signErr); return; }
+              var toSend = signed || updated;
+              var putXhr = new XMLHttpRequest();
+              putXhr.open("PUT", url, true);
+              putXhr.withCredentials = true;
+              putXhr.setRequestHeader("Content-Type", "application/json");
+              putXhr.onload = function () {
+                self._editingObjId = null;
+                self._editingDraftText = null;
+                self._loadMessages();
+                self._renderMessages();
+              };
+              putXhr.send(JSON.stringify(toSend));
+            });
+          });
+        });
       },
 
       // ── delete ─────────────────────────────────────────────────────────────

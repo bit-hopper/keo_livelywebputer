@@ -39,6 +39,7 @@ module("lively.identity.RoomSettingsDialog")
   .requires(
     "lively.identity.DID",
     "lively.identity.FileCrypto",
+    "lively.identity.RoomCrypto",
     "lively.persistence.BuildSpec",
     "lively.morphic.Complete",
   )
@@ -88,6 +89,8 @@ module("lively.identity.RoomSettingsDialog")
         this._isVoice = false;
         this._activity = "";
         this._ephemeral = false;
+        this._e2eeEnabled = false;
+        this._e2eeRotationPending = false;
         this._onDone = function () {};
       },
 
@@ -104,6 +107,8 @@ module("lively.identity.RoomSettingsDialog")
         this._isVoice = !!room.isVoice;
         this._activity = room.activity || "";
         this._ephemeral = !!room.ephemeral;
+        this._e2eeEnabled = !!room.e2eeEnabled;
+        this._e2eeRotationPending = !!room.e2eeRotationPending;
         this._onDone = onDone || function () {};
         this.setTitle("Cluster Settings — " + this._roomName);
         this._render();
@@ -369,6 +374,33 @@ module("lively.identity.RoomSettingsDialog")
           : "Messages are saved and searchable — the normal cluster chat history.");
         divider();
 
+        // ── Encryption (read-only — set at creation, e2eeclusters.md §9) ────
+        sectionLabel("Encryption");
+        if (this._e2eeEnabled) {
+          fieldLabel("End-to-end encrypted. Set at creation — can't be changed here.");
+          if (this._e2eeRotationPending) {
+            var warnLbl = new lively.morphic.Text(lively.rect(MARGIN, y, ew, 16),
+              "Key rotation pending — sending is blocked in this cluster until it completes.");
+            warnLbl.applyStyle({ allowInput: false, fontSize: 11, fontWeight: "bold",
+              textColor: Color.rgb(180, 40, 60), fill: null, borderWidth: 0 });
+            content.addMorph(warnLbl);
+            y += 20;
+            var retryBtn = styledButton(lively.rect(MARGIN, y, 140, 26), "Retry rotation", "danger");
+            retryBtn.addScript(function doAction() {
+              var win = this.owner && this.owner.owner;
+              if (win) win._retryE2eeRotation(this);
+            });
+            lively.bindings.connect(retryBtn, "fire", retryBtn, "doAction");
+            content.addMorph(retryBtn);
+            y += 32;
+          } else {
+            fieldLabel("Key rotation is up to date.");
+          }
+        } else {
+          fieldLabel("Standard — the server can read message content. Set at creation, can't be changed here.");
+        }
+        divider();
+
         // ── Pin ─────────────────────────────────────────────────────────────
         sectionLabel("Pin this cluster");
         var CHK = 20;
@@ -489,6 +521,30 @@ module("lively.identity.RoomSettingsDialog")
       },
 
       // ─── actions ────────────────────────────────────────────────────────────
+
+      // Manual retry for a stuck e2ee_rotation_pending flag (e2eeclusters.md
+      // §9.1/§9.3) — RoomCrypto.ensureEpoch covers both "no epoch minted
+      // yet" (a brand-new room whose creation-time mint failed) and
+      // "mid-life rotation" cases in one call, so this doesn't need to
+      // know which applies. A full _render() on success/failure keeps this
+      // in sync with the rest of the dialog's own re-render-on-change idiom.
+      _retryE2eeRotation: function _retryE2eeRotation(btn) {
+        var self = this;
+        btn.setLabel("Retrying…");
+        btn.setActive(false);
+        lively.identity.roomCrypto.ensureEpoch({
+          constellationName: self._constellationName, roomId: self._roomId,
+        }, function (err) {
+          if (err) {
+            alert("Could not complete key rotation: " + err.message);
+            btn.setLabel("Retry rotation");
+            btn.setActive(true);
+            return;
+          }
+          self._e2eeRotationPending = false;
+          self._render();
+        });
+      },
 
       _save: function _save(btn) {
         var self = this;

@@ -1807,6 +1807,17 @@ module("lively.identity.ConstellationLounge")
       // independently) and re-fetches on success rather than
       // optimistically inserting the dialog's own fields, so the room
       // gets its real server-assigned id before the card can be clicked.
+      //
+      // fields.e2eeEnabled (e2eeclusters.md §3/§9): the room is born with
+      // e2ee_rotation_pending already set (no epoch minted yet — the
+      // server's own createRoom comment), so a successful creation here
+      // must mint epoch 1 right away, before _fetchRooms even runs —
+      // otherwise the room sits permanently "pending" (sending blocked)
+      // until someone happens to open RoomView's settings and click
+      // Retry. Minting failure is non-fatal to the creation itself (the
+      // room still exists, just stuck pending — same recoverable state a
+      // later membership-change rotation failure leaves it in) and is
+      // surfaced the same way a creation failure is: _showError.
       _openNewRoom: function () {
         var self = this;
         var opts = {
@@ -1823,7 +1834,22 @@ module("lively.identity.ConstellationLounge")
                 try { var b = JSON.parse(xhr.responseText); if (b.error) msg = b.error; } catch (e) {}
                 return self._showError(msg);
               }
-              self._fetchRooms();
+              if (!fields.e2eeEnabled) return self._fetchRooms();
+              var data;
+              try { data = JSON.parse(xhr.responseText); } catch (e) { data = null; }
+              var roomId = data && data.room && data.room.id;
+              if (!roomId) { self._fetchRooms(); return; }
+              lively.require("lively.identity.RoomCrypto").toRun(function () {
+                lively.identity.roomCrypto.mintInitialEpoch({
+                  constellationName: self._name, roomId: roomId,
+                }, function (mintErr) {
+                  if (mintErr) {
+                    self._showError("Cluster created, but setting up encryption failed: " + mintErr.message +
+                      " — open the cluster's settings to retry.");
+                  }
+                  self._fetchRooms();
+                });
+              });
             };
             xhr.onerror = function () { self._showError("Network error creating cluster"); };
             xhr.send(JSON.stringify(fields));

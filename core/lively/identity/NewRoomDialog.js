@@ -44,12 +44,12 @@
  */
 
 module('lively.identity.NewRoomDialog')
-  .requires('lively.persistence.BuildSpec')
+  .requires('lively.persistence.BuildSpec', 'lively.identity.DID', 'lively.identity.UserSpace')
   .toRun(function () {
 
     lively.BuildSpec('lively.identity.NewRoomDialog', {
       _BorderRadius: 7,
-      _Extent: lively.pt(380.0, 380.0),
+      _Extent: lively.pt(380.0, 460.0),
       _Fill: Color.rgb(88, 101, 242),
       className: 'lively.morphic.Window',
       name: 'NewRoomDialog',
@@ -57,11 +57,11 @@ module('lively.identity.NewRoomDialog')
       contentOffset: lively.pt(3.0, 22.0),
       draggingEnabled: true,
       layout: { adjustForNewBounds: true },
-      minExtent: lively.pt(380.0, 380.0),
+      minExtent: lively.pt(380.0, 460.0),
       submorphs: [{
         _BorderColor: Color.rgb(95, 94, 95),
         _BorderRadius: 4,
-        _Extent: lively.pt(374.0, 352.0),
+        _Extent: lively.pt(374.0, 432.0),
         _Fill: Color.rgb(243, 243, 243),
         _Position: lively.pt(3.0, 23.0),
         className: 'lively.morphic.Box',
@@ -429,11 +429,98 @@ module('lively.identity.NewRoomDialog')
             });
           },
         }, {
-          _Extent: lively.pt(354.0, 18.0),
+          _Extent: lively.pt(200.0, 16.0),
           _FontFamily: 'Arial, sans-serif',
           _FontSize: 11,
           _Padding: lively.rect(4, 3, 0, 0),
           _Position: lively.pt(10.0, 292.0),
+          _InputAllowed: false,
+          allowInput: false,
+          className: 'lively.morphic.Text',
+          droppingEnabled: false,
+          fixedWidth: true,
+          grabbingEnabled: false,
+          name: 'EncryptionLabel',
+          sourceModule: 'lively.morphic.TextCore',
+          submorphs: [],
+          textString: 'Encryption',
+        }, {
+          // 2-way radio: 'standard' (default) vs 'e2ee' -- immutable after
+          // creation (e2eeclusters.md §9's "Decisions locked in"), same
+          // manual-radio idiom as selectAccess/selectRetention above.
+          _BorderColor: Color.rgb(180, 180, 180),
+          _BorderRadius: 5,
+          _BorderWidth: 1,
+          _Extent: lively.pt(90.0, 24.0),
+          _Position: lively.pt(10.0, 314.0),
+          className: 'lively.morphic.Button',
+          doNotCopyProperties: [],
+          doNotSerialize: [],
+          isPressed: false,
+          label: 'Standard',
+          name: 'StandardEncryptionButton',
+          sourceModule: 'lively.morphic.Widgets',
+          submorphs: [],
+          toggle: false,
+          value: false,
+          connectionRebuilder: function connectionRebuilder() {
+            lively.bindings.connect(this, 'fire', this.get('NewRoomDialogPane'), 'selectEncryption', {
+              converter: function() { return false; }
+            });
+          },
+        }, {
+          _BorderColor: Color.rgb(180, 180, 180),
+          _BorderRadius: 5,
+          _BorderWidth: 1,
+          _Extent: lively.pt(165.0, 24.0),
+          _Position: lively.pt(108.0, 314.0),
+          className: 'lively.morphic.Button',
+          doNotCopyProperties: [],
+          doNotSerialize: [],
+          isPressed: false,
+          label: 'End-to-End Encrypted',
+          name: 'E2eeEncryptionButton',
+          sourceModule: 'lively.morphic.Widgets',
+          submorphs: [],
+          toggle: false,
+          value: false,
+          connectionRebuilder: function connectionRebuilder() {
+            lively.bindings.connect(this, 'fire', this.get('NewRoomDialogPane'), 'selectEncryption', {
+              converter: function() { return true; }
+            });
+          },
+        }, {
+          // Hidden unless selecting E2EE reveals this account never
+          // published an X25519 key (checkOwnEncryptionKey) -- mintInitialEpoch
+          // would otherwise fail for the creator themselves right after
+          // creation, with no recourse short of leaving the dialog. One
+          // click runs the same WebAuthn PRF ceremony ProfileCard.js's own
+          // "Enable encryption" button does.
+          _BorderColor: Color.rgb(214, 170, 60),
+          _BorderRadius: 5,
+          _BorderWidth: 1,
+          _Extent: lively.pt(230.0, 22.0),
+          _Fill: Color.rgb(255, 247, 225),
+          _Position: lively.pt(10.0, 342.0),
+          className: 'lively.morphic.Button',
+          doNotCopyProperties: [],
+          doNotSerialize: [],
+          isPressed: false,
+          label: 'Enable Encryption on This Account',
+          name: 'EnableKeyButton',
+          sourceModule: 'lively.morphic.Widgets',
+          submorphs: [],
+          toggle: false,
+          value: false,
+          connectionRebuilder: function connectionRebuilder() {
+            lively.bindings.connect(this, 'fire', this.get('NewRoomDialogPane'), 'onEnableEncryption', {});
+          },
+        }, {
+          _Extent: lively.pt(354.0, 18.0),
+          _FontFamily: 'Arial, sans-serif',
+          _FontSize: 11,
+          _Padding: lively.rect(4, 3, 0, 0),
+          _Position: lively.pt(10.0, 372.0),
           _InputAllowed: false,
           allowInput: false,
           className: 'lively.morphic.Text',
@@ -450,7 +537,7 @@ module('lively.identity.NewRoomDialog')
           _BorderRadius: 5,
           _BorderWidth: 1,
           _Extent: lively.pt(80.0, 24.0),
-          _Position: lively.pt(204.0, 318.0),
+          _Position: lively.pt(204.0, 398.0),
           className: 'lively.morphic.Button',
           doNotCopyProperties: [],
           doNotSerialize: [],
@@ -470,7 +557,7 @@ module('lively.identity.NewRoomDialog')
           _BorderWidth: 1.184,
           _Extent: lively.pt(80.0, 24.0),
           _Fill: Color.rgb(231, 233, 254),
-          _Position: lively.pt(288.0, 318.0),
+          _Position: lively.pt(288.0, 398.0),
           className: 'lively.morphic.Button',
           doNotCopyProperties: [],
           doNotSerialize: [],
@@ -497,12 +584,15 @@ module('lively.identity.NewRoomDialog')
           this._onCreateCallback = (opts && opts.onCreate) || null;
           this._isVideo = false;
           this._isVoice = false;
+          this._hasOwnX25519Key = null; // null = not checked yet; see checkOwnEncryptionKey
           this.get('NameText').textString = '';
           this.get('ActivityText').textString = '';
           this.paintToggle('VideoToggleChip', 'VideoIcon', 'VideoLabel', false);
           this.paintTypeToggles();
           this.selectAccess('open');
           this.selectRetention(false);
+          this.get('EnableKeyButton').setVisible(false);
+          this.selectEncryption(false);
           this.setStatus('');
         },
 
@@ -603,16 +693,111 @@ module('lively.identity.NewRoomDialog')
           }, this);
         },
 
+        // ─── encryption ─────────────────────────────────────────────────────────
+        // Same manual-radio idiom as selectAccess/selectRetention above.
+        // e2eeEnabled is set here but is otherwise only ever READ by the
+        // server (immutable after creation, e2eeclusters.md §9) — this
+        // dialog's only other job for it is the pre-creation missing-key
+        // check below, since mintInitialEpoch (called right after creation
+        // succeeds — ConstellationLounge.js's _openNewRoom) would otherwise
+        // fail loudly for the creator's own account with no recourse short
+        // of leaving the dialog.
+
+        selectEncryption: function selectEncryption(e2ee) {
+          this._e2eeEnabled = e2ee;
+          var selectedFill = Color.rgb(224, 227, 254), selectedBorder = Color.rgb(88, 101, 242);
+          var normalFill = Color.rgb(243, 243, 243), normalBorder = Color.rgb(180, 180, 180);
+          [['StandardEncryptionButton', false], ['E2eeEncryptionButton', true]].forEach(function(pair) {
+            var btn = this.get(pair[0]);
+            var isSelected = pair[1] === e2ee;
+            btn.setFill(isSelected ? selectedFill : normalFill);
+            btn.setBorderColor(isSelected ? selectedBorder : normalBorder);
+          }, this);
+          if (e2ee) {
+            this.checkOwnEncryptionKey();
+          } else {
+            this.get('EnableKeyButton').setVisible(false);
+            this.setStatus('');
+          }
+        },
+
+        // Fetches the signed-in user's own /profile and checks
+        // accountX25519Pub is published — mintInitialEpoch's own
+        // _resolveAndVerifyMembers (RoomCrypto.js) fails the WHOLE mint if
+        // ANY effective member (creator included) is missing this, loudly
+        // naming who; checking it here, before creation, surfaces that
+        // same gap with something actionable (EnableKeyButton) instead of
+        // a confusing "cluster created but encryption setup failed" message.
+        checkOwnEncryptionKey: function checkOwnEncryptionKey() {
+          var self = this;
+          var user = lively.identity.did.currentUser();
+          if (!user) return; // no session -- the create button itself will fail cleanly
+          this.setStatus('Checking encryption setup…');
+          var base = lively.identity.did.baseUrl();
+          var xhr = new XMLHttpRequest();
+          xhr.open('GET', base + '/@' + encodeURIComponent(user.handle) + '/profile', true);
+          xhr.withCredentials = true;
+          xhr.onload = function () {
+            var hasKey = false;
+            if (xhr.status === 200) {
+              try {
+                var body = JSON.parse(xhr.responseText);
+                hasKey = !!(body && body.record && body.record.payload && body.record.payload.accountX25519Pub);
+              } catch (e) {}
+            }
+            self._hasOwnX25519Key = hasKey;
+            self.get('EnableKeyButton').setVisible(!hasKey);
+            self.setStatus(hasKey
+              ? ''
+              : 'Your account hasn\'t set up encryption yet — click below before creating this cluster.',
+              !hasKey);
+          };
+          xhr.onerror = function () {
+            self._hasOwnX25519Key = null; // unknown -- onSubmit treats this the same as "missing"
+            self.get('EnableKeyButton').setVisible(true);
+            self.setStatus('Could not check your encryption setup — try again.', true);
+          };
+          xhr.send();
+        },
+
+        // Same WebAuthn PRF ceremony ProfileCard.js's own "Enable
+        // encryption" button runs (lively.identity.userSpace.enableEncryption) --
+        // kept as a one-click fix here rather than sending the user away to
+        // their profile card mid-dialog.
+        onEnableEncryption: function onEnableEncryption() {
+          var self = this;
+          var btn = this.get('EnableKeyButton');
+          btn.setLabel('Confirm passkey…');
+          btn.setActive(false);
+          lively.identity.userSpace.enableEncryption(function (err) {
+            if (err) {
+              self.setStatus('Could not enable encryption: ' + err.message, true);
+              btn.setLabel('Enable Encryption on This Account');
+              btn.setActive(true);
+              return;
+            }
+            self._hasOwnX25519Key = true;
+            btn.setVisible(false);
+            btn.setLabel('Enable Encryption on This Account');
+            btn.setActive(true);
+            self.setStatus('');
+          });
+        },
+
         // ─── submit ──────────────────────────────────────────────────────────────
 
         onSubmit: function onSubmit() {
           var name = this.get('NameText').textString.trim();
           if (!name) { this.setStatus('Cluster name is required', true); return; }
+          if (this._e2eeEnabled && this._hasOwnX25519Key !== true) {
+            this.setStatus('Enable encryption on your account first (see above), or switch to Standard.', true);
+            return;
+          }
 
           var activity = this.get('ActivityText').textString.trim();
           var fields = {
             name: name, isVideo: this._isVideo, isVoice: this._isVoice, access: this._access,
-            activity: activity || null, ephemeral: this._ephemeral,
+            activity: activity || null, ephemeral: this._ephemeral, e2eeEnabled: !!this._e2eeEnabled,
           };
           var cb = this._onCreateCallback;
           this.owner.remove();

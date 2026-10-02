@@ -389,6 +389,23 @@ module('lively.identity.RoomCrypto')
         });
       },
 
+      // Picks mintInitialEpoch or rotateEpoch automatically, depending on
+      // whether this room already has an epoch — the single entry point a
+      // "retry rotation" UI (RoomView.js's banner, RoomSettingsDialog.js)
+      // should call. From that side there's no way to know in advance which
+      // case applies: a brand-new e2eeEnabled room is born
+      // e2ee_rotation_pending with no epoch minted yet (e2eeclusters.md
+      // §9.1) — the exact same flag a post-creation membership-change
+      // rotation sets — so "retry" has to cover both.
+      ensureEpoch: function (params, thenDo) {
+        var self = this;
+        self._fetchEpochEnvelope(params.constellationName, params.roomId, null, function (err, current) {
+          if (err) return thenDo(err);
+          if (current) return self.rotateEpoch(params, thenDo);
+          self.mintInitialEpoch(params, thenDo);
+        });
+      },
+
     },
 
     'message', {
