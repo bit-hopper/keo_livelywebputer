@@ -1740,9 +1740,9 @@ lively.BuildSpec('lively.identity.Inventory', {
             'Created: ' + created,
             'Object ID: ' + (objId || 'unknown'),
             'Author DID: ' + didShort,
+            'Size: ' + this._formatBytes(sizeBytes),
             'Hosting: ' + hostingHost,
-            'Tags: ' + (tags.length ? tags.join(', ') : 'none'),
-            'Size: ' + this._formatBytes(sizeBytes)
+            'Tags: ' + (tags.length ? tags.join(', ') : 'none')
         ];
         return { text: lines.join('\n'), lines: lines, objId: objId, did: did, objIdLineIndex: 2, didLineIndex: 3 };
     },
