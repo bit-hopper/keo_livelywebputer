@@ -4696,6 +4696,16 @@ module("lively.identity.ConstellationLounge")
 
       _showError: function (msg) {
         console.error("[ConstellationLounge]", msg);
+        // Was console-only -- every one of this file's 15+ call sites
+        // (join-request failures, feed/cluster load failures, RSVP, upload,
+        // and critically the "cluster created but encryption mint failed"
+        // path) silently showed the user nothing. Confirmed live 2026-10-02
+        // clicking through NewRoomDialog's real E2EE create flow: the room
+        // was created and its mint failure correctly logged to console, but
+        // nothing on screen told the user their new cluster was stuck
+        // e2ee-pending. $world.alert is the same precedent RoomView.js
+        // already uses for an equivalent user-facing error.
+        $world.alert(msg);
       },
     });
 
