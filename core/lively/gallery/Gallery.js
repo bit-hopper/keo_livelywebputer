@@ -325,14 +325,23 @@ module("lively.gallery.Gallery")
           if (typeof lively === "undefined" || !lively.identity || !lively.identity.did) return null;
           return lively.identity.did.currentUser();
         },
-        // $world.name is the plain Morph property the user picks at
-        // world-creation time (WorldTemplateLauncher.js's own
-        // stateMeta.name comment documents this same property) — read it
-        // live rather than hardcoding "Gallery", so a renamed world's
-        // header stays in sync on the next render.
+        // $world.name is NOT the real assigned display name — it's a
+        // plain Morph property that stays at its generic default and is
+        // never synced from the envelope on load (confirmed by
+        // WorldTemplateLauncher.js's own _saveCurrentWorld comment, which
+        // has to work around this same gap by preserving the prior
+        // envelope's name instead of trusting $world.name). The actual
+        // source of truth is document.title: IdentityServer.js's
+        // buildWorldPage sets it server-side from envelope.state.name
+        // (the name the user typed in WorldsBrowser.js's create form),
+        // and SignedSerializer.js's own save path documents this same
+        // precedence ("prefer document.title, which buildWorldPage sets
+        // from state.name"). bootstrap.js never touches document.title
+        // afterward, so it stays correct for the life of the page.
         _worldName: function () {
-          var w = this.world();
-          return (w && w.name) || "Gallery";
+          var t = document.title;
+          var isDefault = !t || t === "world" || t === "Lively" || t === "untitled world";
+          return isDefault ? "Gallery" : t;
         },
         _bindIdentity: function () {
           if (typeof lively === "undefined" || !lively.bindings || !lively.identity || !lively.identity.did) return;
