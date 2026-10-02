@@ -527,6 +527,21 @@ lively.morphic.Morph.addMethods(
         });
         lively.bindings.connect(this, 'onOwnerChanged', this, 'runWhenOpenedInWorldCallbacks', {
             updater: function($upd) { this.sourceObj.world() && $upd(); }, removeAfterUpdate: true});
+
+        // Fallback for a callback queued from onrestore() on a morph that's a
+        // direct part of a whole-world snapshot: onOwnerChanged above is only
+        // ever fired by addMorph(), which a bulk world restore never calls --
+        // the owner/submorphs graph there is reconstructed by direct property
+        // assignment, not live mutation, so such a callback would otherwise
+        // sit dead forever even once the morph is genuinely rendered and in
+        // the world. lively.whenLoaded queues safely pre-boot and fires
+        // immediately once the world has finished loading, so this is a
+        // no-op for the ordinary post-boot addMorph case (not yet
+        // rendered/in-world when it fires).
+        var self = this;
+        lively.whenLoaded(function() {
+            if (self.isRendered() && self.world()) self.runWhenOpenedInWorldCallbacks();
+        });
     }
 
 });
