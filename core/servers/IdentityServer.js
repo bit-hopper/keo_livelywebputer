@@ -3661,33 +3661,65 @@ module.exports = function (route, app) {
           return res.status(400).json({ error: "Invalid tip jar address" });
         }
 
-        objectRepo.put(envelope, function (err, result) {
-          if (err) {
-            // prevCid chain-continuity violation (postcard_audit.md F20,
-            // part 3/3 — tagged by ObjectRepository.put itself, checked
-            // inside its advisory-lock-held transaction so this is race-free
-            // under real concurrent writers). Surfaced as 409 so a client
-            // can reload the current version and retry, rather than assume
-            // a server fault.
-            if (err.isConflict) {
-              return res.status(409).json({
-                error: String(err),
-                currentCid: err.currentCid,
-              });
-            }
-            return res.status(500).json({ error: String(err) });
+        // Inventory item size (state.sizeBytes) — server-computed from the
+        // real bytes actually stored, never trusted from the client, same
+        // posture as the location-floor coercion above. Inline payloads: the
+        // byte length of the JSON string already sitting in this request.
+        // Blob-backed payloads (PartSerializer.js's PART_BLOB_THRESHOLD):
+        // the blob's real on-disk/object-store size via blobStore.stat,
+        // falling back to the client-reported size only if stat fails.
+        function _withComputedPartSize(cb) {
+          if (envelope.type !== "part" || !envelope.record || envelope.record.payload == null) return cb();
+          var payload = envelope.record.payload;
+          if (typeof payload === "string") {
+            envelope = Object.assign({}, envelope, {
+              state: Object.assign({}, envelope.state, {
+                sizeBytes: Buffer.byteLength(payload, "utf8"),
+              }),
+            });
+            return cb();
           }
-          // IDENTITY: future — WaveBus-style fan-out on PUT.
-          // After a successful write, notify any WebSocket connections subscribed
-          // to this objId so other clients can pull the new version. This maps to
-          // Wave's WaveBus.publish(). Use lively.net.SessionTracker (L2L) as the
-          // transport when implementing. Not needed until live collaboration.
-          res.json({
-            ok: true,
-            objId: result.objId,
-            cid: result.cid,
-            duplicate: result.duplicate || false,
-            changed: result.changed || "content",
+          if (payload.blobCid) {
+            return blobStore.stat(payload.blobCid, function (err, stat) {
+              var sizeBytes = (!err && stat && stat.size) ? stat.size : (payload.size || null);
+              envelope = Object.assign({}, envelope, {
+                state: Object.assign({}, envelope.state, { sizeBytes: sizeBytes }),
+              });
+              cb();
+            });
+          }
+          cb();
+        }
+
+        _withComputedPartSize(function () {
+          objectRepo.put(envelope, function (err, result) {
+            if (err) {
+              // prevCid chain-continuity violation (postcard_audit.md F20,
+              // part 3/3 — tagged by ObjectRepository.put itself, checked
+              // inside its advisory-lock-held transaction so this is race-free
+              // under real concurrent writers). Surfaced as 409 so a client
+              // can reload the current version and retry, rather than assume
+              // a server fault.
+              if (err.isConflict) {
+                return res.status(409).json({
+                  error: String(err),
+                  currentCid: err.currentCid,
+                });
+              }
+              return res.status(500).json({ error: String(err) });
+            }
+            // IDENTITY: future — WaveBus-style fan-out on PUT.
+            // After a successful write, notify any WebSocket connections subscribed
+            // to this objId so other clients can pull the new version. This maps to
+            // Wave's WaveBus.publish(). Use lively.net.SessionTracker (L2L) as the
+            // transport when implementing. Not needed until live collaboration.
+            res.json({
+              ok: true,
+              objId: result.objId,
+              cid: result.cid,
+              duplicate: result.duplicate || false,
+              changed: result.changed || "content",
+            });
           });
         });
       });

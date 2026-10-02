@@ -1702,6 +1702,19 @@ lively.BuildSpec('lively.identity.Inventory', {
             .catch(function(err) { cb(err); });
     },
 
+    // Referenced as this._formatBytes(...) from describeItemMeta below, not
+    // a closure var -- this is a lively.BuildSpec(...) class (see this
+    // file's own module() line), so a spec method's body is reconstructed
+    // from its own source text at call time and loses any module-local
+    // closure (CLAUDE.md's BuildSpec/addScript closure gotcha). A sibling
+    // spec property is the documented fix.
+    _formatBytes: function _formatBytes(n) {
+        if (n == null || isNaN(n)) return 'unknown';
+        if (n < 1024) return n + ' B';
+        if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+        return (n / (1024 * 1024)).toFixed(1) + ' MB';
+    },
+
     // Object ID and Author DID each get their own line (previously crammed
     // onto one "Object ID: X   Author DID: Y" line) -- objIdLineIndex/
     // didLineIndex are the zero-based line numbers within `text` that
@@ -1721,13 +1734,15 @@ lively.BuildSpec('lively.identity.Inventory', {
         var hostingUrl = item._instanceBaseUrl || window.location.origin;
         var hostingHost = hostingUrl.replace(/^https?:\/\//, '').replace(/\/$/, '') || 'unknown';
         var tags = (item.loadedMetaInfo && item.loadedMetaInfo.tags) || [];
+        var sizeBytes = env.state && env.state.sizeBytes;
         var lines = [
             'Published by: @' + (item.handle || '?'),
             'Created: ' + created,
             'Object ID: ' + (objId || 'unknown'),
             'Author DID: ' + didShort,
             'Hosting: ' + hostingHost,
-            'Tags: ' + (tags.length ? tags.join(', ') : 'none')
+            'Tags: ' + (tags.length ? tags.join(', ') : 'none'),
+            'Size: ' + this._formatBytes(sizeBytes)
         ];
         return { text: lines.join('\n'), lines: lines, objId: objId, did: did, objIdLineIndex: 2, didLineIndex: 3 };
     },

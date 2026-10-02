@@ -760,7 +760,7 @@ function listPublicParts(opts, thenDo) {
             // listing response heavy for no reason. Full envelope
             // (htmlLogo included) is one GET /@:handle/:objId away once
             // a specific result is actually opened.
-            state: { partName: state.partName, comment: state.comment, tags: state.tags, category: state.category || null },
+            state: { partName: state.partName, comment: state.comment, tags: state.tags, category: state.category || null, sizeBytes: state.sizeBytes || null },
             record: { cid: env.record && env.record.cid },
             created: env.created,
             visibility: env.visibility || 'public'
