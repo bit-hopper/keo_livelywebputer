@@ -207,6 +207,20 @@ module("lively.identity.UserSpace")
                 body: JSON.stringify(doc),
               }).then(function (res) {
                 if (!res.ok) throw new Error('Could not publish DID document update (HTTP ' + res.status + ')');
+                // Keep the live, in-memory currentUser() in sync with what
+                // the server now has -- `user` here is the same object
+                // DID.currentUser() returns (enableEncryption passes it
+                // through by reference, not a copy), so this is what every
+                // later signEnvelopeIfPossible call in THIS session reads to
+                // find its device's delegationCert/softSigningKeyWrapped.
+                // Without this, those calls keep using the now-orphaned
+                // pre-rotation key pair (whatever findMethodByCredentialId
+                // last saw at login/restoreSession time) while the server
+                // verifies against the NEW one just published above --
+                // every signature produced afterward in this session fails
+                // with "no verification method validated the signature"
+                // until the page is reloaded. Confirmed live 2026-10-02.
+                user.document = doc;
                 // Best-effort local copy — failure here doesn't block the
                 // (already-succeeded) server publish other users depend on.
                 did.saveDocument(doc, function () {});
