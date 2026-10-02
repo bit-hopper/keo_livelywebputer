@@ -209,7 +209,22 @@ var DDL =
   // messages are signed postcards, durably stored, searchable. true routes
   // sends through room-ephemeral-messages-redis.js instead — never written
   // here, never searchable, gone shortly after the room empties out.
-  'ALTER TABLE rooms ADD COLUMN IF NOT EXISTS ephemeral BOOLEAN NOT NULL DEFAULT false;';
+  'ALTER TABLE rooms ADD COLUMN IF NOT EXISTS ephemeral BOOLEAN NOT NULL DEFAULT false;\n' +
+  // E2EE (e2eeclusters.md §3, Phase 1). Set only at creation
+  // (NewRoomDialog.js) — deliberately absent from updateRoom's SET clause
+  // below, so it is immutable by construction, not just by convention; a
+  // room with mixed plaintext/ciphertext history is exactly what that
+  // immutability avoids. e2ee_rotation_pending/_since are the server-side
+  // safety net described in RoomCrypto.js: set synchronously the moment a
+  // membership change commits (before any client-side DEK rotation runs),
+  // cleared only when a client successfully PUTs a new room-key-epoch
+  // envelope for this room. While pending, RoomView.js refuses to send new
+  // encrypted messages — this is what actually preserves forward secrecy if
+  // the client-side rotation chain never completes, not just a dashboard
+  // nag.
+  'ALTER TABLE rooms ADD COLUMN IF NOT EXISTS e2ee_enabled BOOLEAN NOT NULL DEFAULT false;\n' +
+  'ALTER TABLE rooms ADD COLUMN IF NOT EXISTS e2ee_rotation_pending BOOLEAN NOT NULL DEFAULT false;\n' +
+  'ALTER TABLE rooms ADD COLUMN IF NOT EXISTS e2ee_rotation_pending_since TIMESTAMP DEFAULT NULL;';
 
 var _bootstrapped = false;
 
@@ -1009,18 +1024,27 @@ function getRsvpEventsForUser(did, thenDo) {
 // check in this file). Live presence (who's currently in a room) is NOT
 // tracked here — see RoomPresence.js.
 
-// fields: { constellation, name, isVideo, isVoice, access, activity, createdBy, ephemeral }
+// fields: { constellation, name, isVideo, isVoice, access, activity, createdBy, ephemeral, e2eeEnabled }
 // access: 'open' | 'request'. activity: an optional short creator-picked
 // label (e.g. "Jamming", "Reading" — see NewRoomDialog.js's activity chips)
 // describing what active participants are doing, shown on the room card
-// (ConstellationLounge.js's _renderRoomCard, "· <activity>"). Calls
+// (ConstellationLounge.js's _renderRoomCard, "· <activity>"). e2eeEnabled is
+// creation-only — see the DDL comment above; there is deliberately no way to
+// flip it later. An e2eeEnabled room is born with e2ee_rotation_pending
+// ALSO true — there is no epoch yet at all (NewRoomDialog.js's caller still
+// has to call RoomCrypto.mintInitialEpoch right after this returns), and
+// that's exactly the condition e2ee_rotation_pending already exists to
+// represent ("this room's key isn't caught up yet, new sends are blocked
+// until it is") — reusing it here means "room created but epoch not yet
+// minted" doesn't need its own separate state or banner copy. Calls
 // thenDo(err, roomId).
 function createRoom(fields, thenDo) {
   withDB(function(err, pool) {
     if (err) return thenDo(err);
+    var e2eeEnabled = !!fields.e2eeEnabled;
     pool.query(
-      'INSERT INTO rooms (constellation, name, is_video, is_voice, access, activity, created_by, created_at, ephemeral)' +
-      ' VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id',
+      'INSERT INTO rooms (constellation, name, is_video, is_voice, access, activity, created_by, created_at, ephemeral, e2ee_enabled, e2ee_rotation_pending, e2ee_rotation_pending_since)' +
+      ' VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id',
       [
         fields.constellation,
         fields.name,
@@ -1030,7 +1054,10 @@ function createRoom(fields, thenDo) {
         fields.activity || null,
         fields.createdBy,
         new Date().toISOString(),
-        !!fields.ephemeral
+        !!fields.ephemeral,
+        e2eeEnabled,
+        e2eeEnabled,
+        e2eeEnabled ? new Date().toISOString() : null
       ],
       function(err, result) { thenDo(err || null, result && result.rows[0] ? result.rows[0].id : null); }
     );
@@ -1051,7 +1078,10 @@ function _rowToRoom(row) {
     headerUrl: row.header_url || null,
     pinned: !!row.pinned,
     archivedAt: row.archived_at || null,
-    ephemeral: !!row.ephemeral
+    ephemeral: !!row.ephemeral,
+    e2eeEnabled: !!row.e2ee_enabled,
+    e2eeRotationPending: !!row.e2ee_rotation_pending,
+    e2eeRotationPendingSince: row.e2ee_rotation_pending_since || null
   };
 }
 
@@ -1089,9 +1119,13 @@ function getRoom(roomId, thenDo) {
 // caller (IdentityServer.js's PUT /c/:name/rooms/:roomId), not here, same
 // division of responsibility as every other write in this file.
 // fields: { id, constellation, name, access, headerUrl, pinned, isVideo,
-// isVoice, activity, ephemeral }. Calls
-// thenDo(null, true|false) — false means no row matched (bad id/mismatched
-// constellation), same shape as updateEvent.
+// isVoice, activity, ephemeral }. Deliberately does NOT accept e2eeEnabled —
+// it's creation-only (see the DDL comment above); the HTTP route
+// (IdentityServer.js's PUT /c/:name/rooms/:roomId) rejects a request body
+// that tries to change it before this function is ever called, and even if
+// it weren't rejected there, this SQL simply has no column for it to land
+// in. Calls thenDo(null, true|false) — false means no row matched (bad
+// id/mismatched constellation), same shape as updateEvent.
 function updateRoom(fields, thenDo) {
   withDB(function(err, pool) {
     if (err) return thenDo(err);
@@ -1235,6 +1269,92 @@ function canJoinRoom(constellation, room, did, thenDo) {
   });
 }
 
+// ─── E2EE rotation-pending safety net (e2eeclusters.md §3, Phase 1) ────────
+// See the DDL comment above for the full rationale: marking "pending" is a
+// cheap, synchronous, server-side fact ("a membership change happened that
+// this room's key hasn't caught up to yet") kept deliberately separate from
+// actually performing the rotation, which is client-side crypto and only
+// best-effort. Marking can never be skipped; clearing can only happen by a
+// new epoch actually landing (see clearRoomRotationPending).
+
+// Called after a CONSTELLATION-level membership change (removeMember,
+// approveJoinRequest, approveInvite) commits. Marks every e2eeEnabled,
+// non-archived room in `constellationName` that `affectedDid` had (or, for a
+// removal, just had) effective access to: unconditionally for 'open' rooms
+// (constellation membership IS open-room access), and for 'request' rooms
+// only if `affectedDid` has an approved room_join_requests row — removeMember
+// deliberately leaves that row alone (see its own comment), so this check
+// still sees it after a removal. Calls thenDo(err).
+function markRoomsRotationPending(constellationName, affectedDid, thenDo) {
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'SELECT id, access FROM rooms WHERE constellation = $1 AND e2ee_enabled = true AND archived_at IS NULL',
+      [constellationName],
+      function (err, result) {
+        if (err) return thenDo(err);
+        var rooms = result.rows || [];
+        if (!rooms.length) return thenDo(null);
+        var openIds = rooms.filter(function (r) { return r.access !== 'request'; })
+          .map(function (r) { return r.id; });
+        var requestRoomIds = rooms.filter(function (r) { return r.access === 'request'; })
+          .map(function (r) { return r.id; });
+
+        function markIds(ids) {
+          if (!ids.length) return thenDo(null);
+          pool.query(
+            'UPDATE rooms SET e2ee_rotation_pending = true, e2ee_rotation_pending_since = now() WHERE id = ANY($1::int[])',
+            [ids],
+            function (err) { thenDo(err || null); }
+          );
+        }
+
+        if (!requestRoomIds.length) return markIds(openIds);
+        pool.query(
+          'SELECT room_id FROM room_join_requests WHERE did = $1 AND status = \'approved\' AND room_id = ANY($2::int[])',
+          [affectedDid, requestRoomIds],
+          function (err, reqResult) {
+            if (err) return thenDo(err);
+            var approvedRequestIds = (reqResult.rows || []).map(function (r) { return r.room_id; });
+            markIds(openIds.concat(approvedRequestIds));
+          }
+        );
+      }
+    );
+  });
+}
+
+// Called after a single ROOM-level membership change (approveRoomJoinRequest)
+// commits — narrower than markRoomsRotationPending above, which fans out
+// across every room in a constellation for a constellation-wide membership
+// change. No-ops if the room isn't e2eeEnabled. Calls thenDo(err).
+function markRoomRotationPending(roomId, thenDo) {
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'UPDATE rooms SET e2ee_rotation_pending = true, e2ee_rotation_pending_since = now() WHERE id = $1 AND e2ee_enabled = true',
+      [roomId],
+      function (err) { thenDo(err || null); }
+    );
+  });
+}
+
+// The only way the pending flag clears. Called from IdentityServer.js's
+// generic envelope-PUT handler the instant a room-key-epoch envelope for
+// this room is successfully stored — "a new epoch landed" IS the
+// resolution, so this can't be faked or forgotten as a separate client call.
+// Calls thenDo(err).
+function clearRoomRotationPending(roomId, thenDo) {
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'UPDATE rooms SET e2ee_rotation_pending = false, e2ee_rotation_pending_since = NULL WHERE id = $1',
+      [roomId],
+      function (err) { thenDo(err || null); }
+    );
+  });
+}
+
 module.exports = {
   withDB: withDB,
   isValidName: isValidName,
@@ -1283,5 +1403,8 @@ module.exports = {
   listPendingRoomJoinRequests: listPendingRoomJoinRequests,
   approveRoomJoinRequest: approveRoomJoinRequest,
   declineRoomJoinRequest: declineRoomJoinRequest,
-  canJoinRoom: canJoinRoom
+  canJoinRoom: canJoinRoom,
+  markRoomsRotationPending: markRoomsRotationPending,
+  markRoomRotationPending: markRoomRotationPending,
+  clearRoomRotationPending: clearRoomRotationPending
 };

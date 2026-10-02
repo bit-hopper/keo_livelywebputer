@@ -87,6 +87,7 @@ module('lively.identity.PostCardSerializer')
     'lively.identity.DID',
     'lively.identity.WebKey',
     'lively.identity.WebAuthn',
+    'lively.identity.EnvelopeSigning',
   )
   .toRun(function () {
 
@@ -877,60 +878,14 @@ module('lively.identity.PostCardSerializer')
 
     });
 
-    // ─── shared signing helper (mirrors SignedSerializer._signEnvelopeIfPossible) ──
-
+    // ─── shared signing helper ────────────────────────────────────────────────────
+    // Extracted to lively.identity.EnvelopeSigning (EnvelopeSigning.js) so
+    // RoomCrypto.js's room-key-epoch envelopes can reuse the exact same
+    // signing logic instead of forking it. See that file for the full
+    // rationale (deriveKek's on-demand-prompt behavior, F20 mandatory
+    // signing, etc.) — kept there now, not duplicated here.
     function _signEnvelopeIfPossible(envelope, user, c, thenDo) {
-      var method = lively.identity.did.findMethodByCredentialId(user.document, user.credentialId);
-      if (!method || !method.lively) return thenDo(null, envelope);
-      var livelyMeta = method.lively;
-      if (!livelyMeta.softSigningKeyWrapped || !livelyMeta.delegationCert) return thenDo(null, envelope);
-      var wa = lively.identity.webAuthn;
-      if (!wa) return thenDo(null, envelope);
-
-      // deriveKek returns the cached KEK immediately if already warm this
-      // session, or runs a fresh on-demand WebAuthn PRF ceremony otherwise
-      // (WebAuthn.js's own cache, not checked manually here) — added
-      // 2026-09-05 because signature verification is now mandatory
-      // server-side (postcard_audit.md F20) and the old
-      // "only sign if already cached" check silently produced an unsigned
-      // envelope, guaranteed to be rejected, for any session that hadn't
-      // separately warmed the KEK via some encrypted-content path (which is
-      // most sessions — ordinary login never warms it, by design, per the
-      // reverted login-time-warmup incident this same memory documents).
-      // A user who cancels this prompt still gets a real, visible failure
-      // (the resulting unsigned envelope's PUT 403s downstream), same as
-      // any other client-side save error.
-      var ch = new Uint8Array(32);
-      crypto.getRandomValues(ch);
-      wa.deriveKek({ credentialId: user.credentialId, rpId: user.rpId, challenge: ch }, function (err, kek) {
-        if (err) {
-          // Unlike the two early-return branches above (no delegation cert at
-          // all — this account genuinely never signs, unsigned is fine), we
-          // already know THIS account's server-side DID document expects a
-          // valid signature, so an unsigned envelope here is guaranteed to be
-          // rejected by the server's mandatory signature check. Propagating
-          // the real error (rather than quietly falling back to unsigned, as
-          // this used to) saves a doomed network round trip and surfaces the
-          // actual WebAuthn failure to the user instead of a generic
-          // "save failed (403)" that invites a blind retry — and another
-          // identical doomed ceremony.
-          return thenDo(err);
-        }
-        var wrapped;
-        try { wrapped = JSON.parse(livelyMeta.softSigningKeyWrapped); } catch (e) { return thenDo(e); }
-        c.decryptPayload(wrapped.ciphertext, wrapped.nonce, kek, function (err, softPrivJwk) {
-          if (err) return thenDo(err);
-          c.importPrivateKeyJwk(softPrivJwk, function (err, softPrivKey) {
-            if (err) return thenDo(err);
-            var envelopeToSign = Object.assign({}, envelope);
-            delete envelopeToSign.sig;
-            c.signJws(envelopeToSign, softPrivKey, function (err, sig) {
-              if (err) return thenDo(err);
-              thenDo(null, Object.assign({}, envelope, { sig: sig }));
-            });
-          });
-        });
-      });
+      return lively.identity.envelopeSigning.signEnvelopeIfPossible(envelope, user, c, thenDo);
     }
 
     // ─── shared DEK-unwrap helper ─────────────────────────────────────────────────

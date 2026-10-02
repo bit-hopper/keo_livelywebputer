@@ -4895,7 +4895,20 @@ module.exports = function (route, app) {
       }
       constellationRegistry.removeMember(name, did, function (err2) {
         if (err2) return res.status(500).json({ error: String(err2) });
-        res.json({ ok: true });
+        // Forward secrecy for this departure (e2eeclusters.md §3): mark
+        // every e2eeEnabled room this DID had access to as needing a key
+        // rotation, BEFORE responding — this is the server-authoritative
+        // safety net, independent of whether the removing controller's own
+        // browser tab is still open to actually perform the client-side
+        // rotation afterward. removeMember leaves room_join_requests alone
+        // (see its own comment), so markRoomsRotationPending can still see
+        // which request-gated rooms this DID had approved access to.
+        constellationRegistry.markRoomsRotationPending(name, did, function (pendingErr) {
+          if (pendingErr) {
+            console.error("[IdentityServer] markRoomsRotationPending failed for " + name + "/" + did + ":", pendingErr && pendingErr.message);
+          }
+          res.json({ ok: true });
+        });
       });
     });
   });
@@ -5162,7 +5175,20 @@ module.exports = function (route, app) {
         var apply = action === "approve" ? constellationRegistry.approveJoinRequest : constellationRegistry.declineJoinRequest;
         apply(name, did, function (err) {
           if (err) return res.status(500).json({ error: String(err) });
-          res.json({ ok: true, status: action === "approve" ? "approved" : "declined" });
+          if (action !== "approve") {
+            return res.json({ ok: true, status: "declined" });
+          }
+          // New constellation member just got access to every open
+          // e2eeEnabled room at once — mark them all pending so no new
+          // message is encrypted under an epoch they can't yet decrypt
+          // (e2eeclusters.md §3). Not fatal to the join itself if this
+          // fails; logged so a stuck room is at least debuggable.
+          constellationRegistry.markRoomsRotationPending(name, did, function (pendingErr) {
+            if (pendingErr) {
+              console.error("[IdentityServer] markRoomsRotationPending failed for " + name + "/" + did + ":", pendingErr && pendingErr.message);
+            }
+            res.json({ ok: true, status: "approved" });
+          });
         });
       });
     });
@@ -5265,6 +5291,16 @@ module.exports = function (route, app) {
   // reasoning for "who manages this room") — a room-scoped report reaches
   // both the constellation's controllers and the room's own creator, not
   // just one or the other.
+  //
+  // RoomView.js's message-flag dialog (state.kind:'message-flag') also
+  // rides this same route. For an e2eeEnabled room, the reported postcard's
+  // own objId is useless to a moderator server-side — they can only act on
+  // whatever plaintext the REPORTER chose to quote into the flag postcard's
+  // own body (already decrypted client-side before the report was built);
+  // there is no way to re-fetch or re-verify the original message's content
+  // from the server (e2eeclusters.md §6). Documentation only — no behavior
+  // change needed here, since this route never reads the target postcard's
+  // content either way.
   app.post("/c/:name/flags", auth.requireAuth, function (req, res) {
     var name      = req.params.name;
     var objId     = req.body && req.body.objId;
@@ -5378,7 +5414,17 @@ module.exports = function (route, app) {
         var apply = action === "approve" ? constellationRegistry.approveInvite : constellationRegistry.declineInvite;
         apply(name, did, function (err) {
           if (err) return res.status(500).json({ error: String(err) });
-          res.json({ ok: true, status: action === "approve" ? "accepted" : "declined" });
+          if (action !== "approve") {
+            return res.json({ ok: true, status: "declined" });
+          }
+          // Same as the join-requests approve route above — new member,
+          // mark every open e2eeEnabled room pending (e2eeclusters.md §3).
+          constellationRegistry.markRoomsRotationPending(name, did, function (pendingErr) {
+            if (pendingErr) {
+              console.error("[IdentityServer] markRoomsRotationPending failed for " + name + "/" + did + ":", pendingErr && pendingErr.message);
+            }
+            res.json({ ok: true, status: "accepted" });
+          });
         });
       });
     });
@@ -5435,6 +5481,7 @@ module.exports = function (route, app) {
                 id: room.id, name: room.name, isVideo: room.isVideo, isVoice: room.isVoice,
                 access: room.access, activity: room.activity, createdBy: room.createdBy, createdAt: room.createdAt,
                 headerUrl: room.headerUrl, pinned: room.pinned, ephemeral: room.ephemeral,
+                e2eeEnabled: room.e2eeEnabled, e2eeRotationPending: room.e2eeRotationPending,
                 participantCount: live.count, participants: live.seedDids,
                 iJoined: viewerDid ? roster.some(function (p) { return p.did === viewerDid; }) : false,
                 myAccessStatus: room.access === "request" ? (status || null) : null,
@@ -5475,10 +5522,18 @@ module.exports = function (route, app) {
       // A video room always carries audio: never store video without voice.
       var newIsVideo = !!body.isVideo, newIsVoice = !!body.isVoice || newIsVideo;
       var newEphemeral = !!body.ephemeral;
+      // e2eeEnabled is creation-only (e2eeclusters.md §3/Phase 1) — accepted
+      // here and nowhere else; the PUT route below has no field for it at
+      // all. The room is born with rotation already "pending" (no epoch
+      // minted yet) — see createRoom's own comment — so the caller
+      // (NewRoomDialog.js) must call RoomCrypto.mintInitialEpoch right after
+      // this responds, before the dialog closes.
+      var newE2eeEnabled = !!body.e2eeEnabled;
       constellationRegistry.createRoom({
         constellation: name, name: roomName,
         isVideo: newIsVideo, isVoice: newIsVoice,
-        access: access, activity: activity, createdBy: req.identity.did, ephemeral: newEphemeral
+        access: access, activity: activity, createdBy: req.identity.did, ephemeral: newEphemeral,
+        e2eeEnabled: newE2eeEnabled
       }, function (err, roomId) {
         if (err) return res.status(500).json({ error: String(err) });
         res.status(201).json({
@@ -5486,6 +5541,7 @@ module.exports = function (route, app) {
             id: roomId, name: roomName, isVideo: newIsVideo, isVoice: newIsVoice,
             access: access, activity: activity, createdBy: req.identity.did, createdAt: new Date().toISOString(),
             headerUrl: null, pinned: false, ephemeral: newEphemeral,
+            e2eeEnabled: newE2eeEnabled, e2eeRotationPending: newE2eeEnabled,
             participantCount: 0, participants: [], iJoined: false, myAccessStatus: null, canManage: true
           }
         });
@@ -5511,6 +5567,14 @@ module.exports = function (route, app) {
         if (!room || room.constellation !== name) return res.status(404).json({ error: "Room not found" });
         if (!canManageRoom(constellation, room, req.identity.did)) {
           return res.status(403).json({ error: "Forbidden: room creator or controllers only" });
+        }
+        // e2eeEnabled is creation-only (e2eeclusters.md §3/Phase 1, decision
+        // locked in: same immutability precedent as constellation
+        // visibility, not room.ephemeral) — reject outright rather than
+        // silently ignoring it, so a client bug doesn't look like a no-op
+        // success. updateRoom() below has no field for it at all either way.
+        if (typeof body.e2eeEnabled === "boolean" && body.e2eeEnabled !== room.e2eeEnabled) {
+          return res.status(400).json({ error: "e2eeEnabled cannot be changed after room creation" });
         }
         var roomName = typeof body.name === "string" ? body.name.trim().slice(0, 80) : room.name;
         if (!roomName) return res.status(400).json({ error: "Missing required field: name" });
@@ -5539,7 +5603,8 @@ module.exports = function (route, app) {
           res.json({
             room: {
               id: roomId, name: roomName, access: access, headerUrl: headerUrl, pinned: pinned,
-              isVideo: isVideo, isVoice: isVoice, activity: activity, ephemeral: ephemeral
+              isVideo: isVideo, isVoice: isVoice, activity: activity, ephemeral: ephemeral,
+              e2eeEnabled: room.e2eeEnabled, e2eeRotationPending: room.e2eeRotationPending
             }
           });
         });
@@ -5730,7 +5795,19 @@ module.exports = function (route, app) {
         var apply = action === "approve" ? constellationRegistry.approveRoomJoinRequest : constellationRegistry.declineRoomJoinRequest;
         apply(roomId, did, function (err) {
           if (err) return res.status(500).json({ error: String(err) });
-          res.json({ ok: true, status: action === "approve" ? "approved" : "declined" });
+          if (action !== "approve") {
+            return res.json({ ok: true, status: "declined" });
+          }
+          // Narrower than the constellation-level approve routes above —
+          // only THIS room's access changed, not every open room
+          // (e2eeclusters.md §3). No-ops server-side if the room isn't
+          // e2eeEnabled.
+          constellationRegistry.markRoomRotationPending(roomId, function (pendingErr) {
+            if (pendingErr) {
+              console.error("[IdentityServer] markRoomRotationPending failed for room " + roomId + ":", pendingErr && pendingErr.message);
+            }
+            res.json({ ok: true, status: "approved" });
+          });
         });
       });
     });
@@ -5865,16 +5942,29 @@ module.exports = function (route, app) {
                       });
                     });
                   }
-                  return {
+                  var out = {
                     objId: m.objId,
                     did: m.did,
                     handle: didToHandle[m.did] || null,
-                    text: (m.state && m.state.title) || "",
                     created: m.created,
                     editedAt: (m.state && m.state.editedAt) || null,
                     replyTo: m.replyTo || null,
                     reactions: reactionsOut,
                   };
+                  // e2eeEnabled: the server never had plaintext to begin
+                  // with — forward the ciphertext/nonce/epoch straight from
+                  // the envelope (listMessagesForRoom's own comment) and let
+                  // RoomCrypto.js decrypt client-side. Non-e2eeEnabled rooms
+                  // keep today's behavior exactly (state.title, already
+                  // plaintext, auto-extracted at send time).
+                  if (room.e2eeEnabled) {
+                    out.ciphertext = (m.record && m.record.payload) || null;
+                    out.nonce = (m.record && m.record.nonce) || null;
+                    out.epoch = (m.state && m.state.epoch != null) ? m.state.epoch : null;
+                  } else {
+                    out.text = (m.state && m.state.title) || "";
+                  }
+                  return out;
                 });
                 res.json({ messages: messages, cursor: result.cursor });
               });
@@ -5903,6 +5993,9 @@ module.exports = function (route, app) {
           if (err) return res.status(500).json({ error: String(err) });
           if (!allowed) return res.status(403).json({ error: "Forbidden: join not permitted for this room" });
           if (room.ephemeral) return res.json({ results: [] });
+          // E2EE rooms: server never holds plaintext to ILIKE against (see
+          // e2eeclusters.md §6) — same short-circuit shape as ephemeral above.
+          if (room.e2eeEnabled) return res.json({ results: [] });
 
           objectRepo.searchRoomMessages(roomId, req.query.q, function (err, results) {
             if (err) return res.status(500).json({ error: String(err) });
@@ -5971,6 +6064,153 @@ module.exports = function (route, app) {
               });
             }
             res.status(201).json({ ok: true });
+          });
+        });
+      });
+    });
+  });
+
+  // ─── E2EE room-key epochs (e2eeclusters.md §3, Phase 1) ────────────────────
+
+  // Batch-resolves every current EFFECTIVE member of this room (constellation
+  // members/controllers, filtered through canJoinRoom so a request-gated
+  // room correctly excludes constellation members never granted room
+  // access) to their published X25519 key — RoomCrypto.js's
+  // mintInitialEpoch/rotateEpoch need this to seal a fresh room DEK to every
+  // current member in one round trip, rather than a client-side DID→handle
+  // batch followed by one /profile fetch per member. The CLIENT still
+  // re-verifies each returned accountX25519Pub against its own profileCid
+  // before sealing to it (same integrity stance PartSerializer.
+  // resolveRecipientPubKeys already takes for a single recipient elsewhere)
+  // — this route is a round-trip optimization, not a trust shortcut.
+  app.get("/c/:name/rooms/:roomId/e2ee/members", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var roomId = parseInt(req.params.roomId, 10);
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      constellationRegistry.getRoom(roomId, function (err, room) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!room || room.constellation !== name) return res.status(404).json({ error: "Room not found" });
+        constellationRegistry.canJoinRoom(constellation, room, req.identity.did, function (err, allowed) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (!allowed) return res.status(403).json({ error: "Forbidden: join not permitted for this room" });
+
+          var candidates = constellation.members.concat(constellation.controllers)
+            .filter(function (did, idx, arr) { return arr.indexOf(did) === idx; });
+          if (!candidates.length) return res.json({ members: [] });
+
+          var effective = [];
+          var remaining = candidates.length;
+          var firstErr = null;
+          candidates.forEach(function (did) {
+            constellationRegistry.canJoinRoom(constellation, room, did, function (err, ok) {
+              if (err) firstErr = firstErr || err;
+              if (ok) effective.push(did);
+              if (--remaining > 0) return;
+              if (firstErr) return res.status(500).json({ error: String(firstErr) });
+              if (!effective.length) return res.json({ members: [] });
+
+              _resolveHandlesForDids(effective, function (err, didToHandle) {
+                if (err) return res.status(500).json({ error: String(err) });
+                var out = [];
+                var rem2 = effective.length;
+                var fe2 = null;
+                effective.forEach(function (did) {
+                  objectRepo.getProfileForDid(did, function (err, envelope) {
+                    if (err) fe2 = fe2 || err;
+                    var payload = envelope && envelope.record && envelope.record.payload;
+                    out.push({
+                      did: did,
+                      handle: didToHandle[did] || null,
+                      accountX25519Pub: (payload && payload.accountX25519Pub) || null,
+                      profileCid: (envelope && envelope.record && envelope.record.cid) || null
+                    });
+                    if (--rem2 > 0) return;
+                    if (fe2) return res.status(500).json({ error: String(fe2) });
+                    res.json({ members: out });
+                  });
+                });
+              });
+            });
+          });
+        });
+      });
+    });
+  });
+
+  // Returns the full room-key-epoch envelope (including record.recipients/
+  // sealedDek — deliberately NOT metadata-stripped, see
+  // ObjectRepository.getRoomKeyEpoch's own comment: the whole point of this
+  // object is to ship sealed keys). epoch query param: a specific epoch
+  // number, or omitted for the current (highest) one. Same canJoinRoom gate
+  // as the messages routes.
+  app.get("/c/:name/rooms/:roomId/e2ee/epoch", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var roomId = parseInt(req.params.roomId, 10);
+    var epoch = req.query.epoch != null && req.query.epoch !== "" ? parseInt(req.query.epoch, 10) : null;
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      constellationRegistry.getRoom(roomId, function (err, room) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!room || room.constellation !== name) return res.status(404).json({ error: "Room not found" });
+        constellationRegistry.canJoinRoom(constellation, room, req.identity.did, function (err, allowed) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (!allowed) return res.status(403).json({ error: "Forbidden: join not permitted for this room" });
+          objectRepo.getRoomKeyEpoch(roomId, epoch, function (err, envelope) {
+            if (err) return res.status(500).json({ error: String(err) });
+            if (!envelope) return res.status(404).json({ error: "No room key epoch found" });
+            res.json({ envelope: envelope });
+          });
+        });
+      });
+    });
+  });
+
+  // Confirms a just-PUT room-key-epoch envelope (same two-step PUT-then-POST
+  // shape as POST .../messages above — the generic envelope PUT route has
+  // no room-membership concept at all for a genesis write, so this is where
+  // "is this really a room-key-epoch for THIS room, minted by someone who
+  // can actually join it" gets checked). This is also the ONLY place
+  // e2ee_rotation_pending clears (ConstellationRegistry.
+  // clearRoomRotationPending) — "a new epoch was confirmed" IS the
+  // resolution, so it can't be faked or forgotten as a separate client call.
+  app.post("/c/:name/rooms/:roomId/e2ee/epoch", auth.requireAuth, function (req, res) {
+    var name = req.params.name;
+    var roomId = parseInt(req.params.roomId, 10);
+    var body = req.body || {};
+    constellationRegistry.get(name, function (err, constellation) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!constellation) return res.status(404).json({ error: "Constellation not found: " + name });
+      constellationRegistry.getRoom(roomId, function (err, room) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!room || room.constellation !== name) return res.status(404).json({ error: "Room not found" });
+        if (!room.e2eeEnabled) return res.status(400).json({ error: "Room is not E2EE-enabled" });
+        constellationRegistry.canJoinRoom(constellation, room, req.identity.did, function (err, allowed) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (!allowed) return res.status(403).json({ error: "Forbidden: join not permitted for this room" });
+
+          var objId = body.objId;
+          if (!objId) return res.status(400).json({ error: "Missing required field: objId" });
+
+          objectRepo.get(objId, function (err, envelope) {
+            if (err) return res.status(500).json({ error: String(err) });
+            if (!envelope) return res.status(404).json({ error: "Object not found: " + objId });
+            if (envelope.did !== req.identity.did) {
+              return res.status(403).json({ error: "Forbidden: you do not own this object" });
+            }
+            if (envelope.type !== "postcard" ||
+                !envelope.state || envelope.state.kind !== "room-key-epoch" ||
+                Number(envelope.state.roomId) !== roomId) {
+              return res.status(400).json({
+                error: "objId must be a postcard with state.kind='room-key-epoch' and matching roomId",
+              });
+            }
+            constellationRegistry.clearRoomRotationPending(roomId, function (err) {
+              if (err) return res.status(500).json({ error: String(err) });
+              res.status(201).json({ ok: true, epoch: envelope.state.epoch });
+            });
           });
         });
       });

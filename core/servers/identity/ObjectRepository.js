@@ -1298,16 +1298,61 @@ function listPostcardsForConstellation(constellation, opts, thenDo) {
   });
 }
 
+// Same shape as _runPostcardQuery, EXCEPT it also returns record.payload/
+// record.nonce and state.epoch — used ONLY by listMessagesForRoom, never by
+// _runPostcardQuery's other callers (constellation feed, user postcard
+// listings, etc.), which must keep honoring the "metadata only, never leak
+// payload" contract documented at _runPostcardQuery's own "spec §7.1"
+// comment. Deliberately duplicated rather than adding an opt-in flag to that
+// shared helper, so that contract stays visibly intact for every other call
+// site. A room-message's payload is either a plaintext ProseMirror doc
+// (non-e2eeEnabled room, `record.payload.doc`) or ciphertext (e2eeEnabled
+// room, `record.payload` is the raw ciphertext string, `record.nonce` and
+// `state.epoch` tell the client which room-key epoch to decrypt it with) —
+// this function doesn't care which; IdentityServer.js's messages route
+// decides what to forward to the client based on the room's own
+// e2eeEnabled flag (e2eeclusters.md §3).
+function _runRoomMessageQuery(pool, sql, params, limit, thenDo) {
+  pool.query(sql, params, function (err, result) {
+    if (err) return thenDo(err);
+    var rows = result.rows;
+    var hasMore = rows.length > limit;
+    if (hasMore) rows = rows.slice(0, limit);
+    var postcards = rows.map(function (r) {
+      var env = r.envelope;
+      return {
+        objId: env.objId,
+        did: env.did,
+        state: env.state || {},
+        record: {
+          cid: env.record && env.record.cid,
+          payload: env.record && env.record.payload,
+          nonce: env.record && env.record.nonce
+        },
+        created: env.created,
+        replyTo: env.replyTo || null,
+        recipients: (env.record && env.record.recipients) || []
+      };
+    });
+    var nextCursor = hasMore ? rows[rows.length - 1].obj_id : null;
+    thenDo(null, { postcards: postcards, cursor: nextCursor });
+  });
+}
+
 // List the latest room-message postcard envelopes for a room, newest first
 // — same "latest version per obj_id" join shape as listPostcardsForConstellation
 // (RoomView.js's chat rides the same objects-table/postal rail every other
 // postcard uses: state.kind:'room-message', state.roomId:<roomId>, rather
 // than a dedicated messages table), scoped to a roomId instead of a
-// constellation. Metadata only (state.title, the auto-extracted first-block
-// text — plenty for a short chat line, capped at 200 chars same as any
-// other postcard's title extraction) — no separate payload fetch needed per
-// message, keeping a chat page's listing call as cheap as any other feed
-// listing here.
+// constellation. Unlike every other listing in this file, this one DOES
+// return record.payload/record.nonce (via _runRoomMessageQuery above, not
+// the shared _runPostcardQuery) — needed for an e2eeEnabled room, where
+// record.payload IS the ciphertext and record.nonce/state.epoch tell the
+// client which room-key epoch to decrypt it with (the server can't read it
+// either way, so "metadata only" has no meaning here). A non-e2eeEnabled
+// room's display text still comes from state.title exactly as before
+// (IdentityServer.js's messages route branches on room.e2eeEnabled to
+// decide which); record.payload/nonce just ride along unused in that case.
 // opts: { limit, cursor } — same pagination shape as listPostcardsForConstellation.
 // Calls thenDo(null, { postcards: [envelopeMetadata...], cursor: String|null }).
 function listMessagesForRoom(roomId, opts, thenDo) {
@@ -1345,13 +1390,13 @@ function listMessagesForRoom(roomId, opts, thenDo) {
             sql = baseSql + ' ORDER BY o.id DESC LIMIT $2';
             params = [roomId, limit + 1];
           }
-          _runPostcardQuery(pool, sql, params, limit, thenDo);
+          _runRoomMessageQuery(pool, sql, params, limit, thenDo);
         }
       );
     } else {
       sql = baseSql + ' ORDER BY o.id DESC LIMIT $2';
       params = [roomId, limit + 1];
-      _runPostcardQuery(pool, sql, params, limit, thenDo);
+      _runRoomMessageQuery(pool, sql, params, limit, thenDo);
     }
   });
 }
@@ -1400,6 +1445,46 @@ function searchRoomMessages(roomId, query, thenDo) {
         }));
       }
     );
+  });
+}
+
+// Looks up a room's room-key-epoch envelope — e2eeclusters.md §3/Phase 1's
+// RoomCrypto.js. Each epoch is its own genesis object (state.kind:
+// 'room-key-epoch', state.roomId, state.epoch), never updated in place; a
+// membership change mints a brand new one rather than versioning an
+// existing objId, so "latest" means highest state.epoch, not latest-by-id
+// the way every other listing in this file reads "latest". Returns the FULL
+// envelope including record.recipients/sealedDek — a deliberate exception
+// to _runPostcardQuery's "metadata only" rule (see that function's own
+// comment): the entire point of this object is to ship sealed keys, so
+// there's no payload to protect by stripping it.
+// epoch: a specific epoch number, or null/undefined for the current
+// (highest) one. Calls thenDo(null, envelope|null).
+function getRoomKeyEpoch(roomId, epoch, thenDo) {
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    var sql, params;
+    if (epoch === null || epoch === undefined) {
+      sql =
+        'SELECT envelope FROM objects' +
+        ' WHERE type = \'postcard\'' +
+        '   AND (envelope #>> \'{state,kind}\') = \'room-key-epoch\'' +
+        '   AND (envelope #>> \'{state,roomId}\') = $1' +
+        ' ORDER BY (envelope #>> \'{state,epoch}\')::int DESC LIMIT 1';
+      params = [roomId];
+    } else {
+      sql =
+        'SELECT envelope FROM objects' +
+        ' WHERE type = \'postcard\'' +
+        '   AND (envelope #>> \'{state,kind}\') = \'room-key-epoch\'' +
+        '   AND (envelope #>> \'{state,roomId}\') = $1' +
+        '   AND (envelope #>> \'{state,epoch}\')::int = $2 LIMIT 1';
+      params = [roomId, epoch];
+    }
+    pool.query(sql, params, function (err, result) {
+      if (err) return thenDo(err);
+      thenDo(null, result.rows[0] ? result.rows[0].envelope : null);
+    });
   });
 }
 
@@ -2859,6 +2944,7 @@ module.exports = {
   listPostcardsForConstellation: listPostcardsForConstellation,
   listMessagesForRoom:           listMessagesForRoom,
   searchRoomMessages:            searchRoomMessages,
+  getRoomKeyEpoch:               getRoomKeyEpoch,
   getWikiPageObjId:              getWikiPageObjId,
   listWikiPages:                 listWikiPages,
   getWikiPageObjIdForUser:       getWikiPageObjIdForUser,
