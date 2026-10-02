@@ -93,6 +93,15 @@ Trait('lively.morphic.WorldStyleSheetTrait',
     openWorldCSSEditor: function() {
         module('lively.ide.tools.WorldCSSEditor').load(true);
         return lively.BuildSpec('lively.ide.tools.WorldCSSEditor').createMorph().openInWorld().comeForward();
+    },
+    openWorldThemeDialog: function() {
+        var self = this;
+        lively.require('lively.ide.tools.WorldThemeDialog').toRun(function() {
+            if (self.worldThemeDialog) { self.worldThemeDialog.remove(); }
+            var dlg = lively.BuildSpec('lively.ide.tools.WorldThemeDialog').createMorph();
+            dlg.openInWorldCenter().comeForward();
+            self.worldThemeDialog = dlg;
+        });
     }
 },
 'menu items', {
@@ -100,6 +109,7 @@ Trait('lively.morphic.WorldStyleSheetTrait',
         var items = proceed();
         for (var i = 0; i < items.length; i++) {
             if (items[i][0] === "Preferences") {
+                items[i][1].push(['Customize my world...', this.openWorldThemeDialog.bind(this)]);
                 items[i][1].push(['Edit world CSS', this.openWorldCSSEditor.bind(this)]);
             }
         }

@@ -132,6 +132,44 @@ lively.morphic.StyleSheetRule.subclass('lively.morphic.StyleSheetFontFaceRule',
     }
 });
 
+lively.morphic.StyleSheetRule.subclass('lively.morphic.StyleSheetKeyframesRule',
+'init', {
+    isStyleSheetKeyframesRule: true,
+    initialize: function($super, name, keyframes, styleSheet) {
+        this.setName(name);
+        this.setKeyframes(keyframes);
+        $super('', [], styleSheet);
+    }
+},
+'accessing', {
+    getText: function() {
+        // Returns the CSS formated text of the rule
+        var result = '';
+        result += '@keyframes ' + this.name + ' {\n';
+        this.keyframes.each(function(kf) {
+            result += '\t' + kf.keyText + ' {\n';
+            kf.declarations.each(function(decl) {
+                result += '\t\t' + decl.getText() + '\n';
+            });
+            result += '\t}\n';
+        });
+        result += '}';
+        return result;
+    },
+    setName: function(name) {
+        this.name = name || '';
+    },
+    getName: function() {
+        return this.name;
+    },
+    setKeyframes: function(keyframes) {
+        this.keyframes = keyframes || [];
+    },
+    getKeyframes: function() {
+        return this.keyframes;
+    }
+});
+
 Object.subclass('lively.morphic.StyleSheetDeclaration',
 'init', {
     isStyleSheetDeclaration: true,

@@ -63,6 +63,32 @@ Object.extend(apps.cssParser, {
             return new lively.morphic.StyleSheetComment('/* ' + msg + '\n' + rule.parsedCssText + '\n*/');
         };
 
+        var convertDeclarations = function (declarations) {
+            return declarations.collect(function (decl) {
+                if (decl.type === 1000) {
+                    var vals;
+                    if (apps.cssParser.isCommaSeparated(decl.property)) {
+                        vals = [decl.valueText]
+                    } else {
+                        vals = decl.values.collect(
+                            function (val) {
+                                return val.value
+                            });
+                    }
+                    if(apps.cssParser.isShorthand(decl.property)) {
+                        return new lively.morphic.StyleSheetShorthandDeclaration(
+                        decl.property, vals, null, decl.priority);
+                    } else {
+                        return new lively.morphic.StyleSheetDeclaration(
+                        decl.property, vals, null, decl.priority);
+                    }
+                } else {
+                    return new lively.morphic.StyleSheetInlineComment(
+                        decl.parsedCssText);
+                }
+            });
+        };
+
         return new lively.morphic.StyleSheet(styleSheet.cssRules.collect(function (rule) {
             switch(rule.type) {
                 case 0:
@@ -73,29 +99,7 @@ Object.extend(apps.cssParser, {
                 case 1:
                     return new lively.morphic.StyleSheetRule(
                     rule.selectorText(),
-                    rule.declarations.collect(function (decl) {
-                        if (decl.type === 1000) {
-                            var vals;
-                            if (apps.cssParser.isCommaSeparated(decl.property)) {
-                                vals = [decl.valueText]
-                            } else {
-                                vals = decl.values.collect(
-                                    function (val) {
-                                        return val.value
-                                    });
-                            }
-                            if(apps.cssParser.isShorthand(decl.property)) {
-                                return new lively.morphic.StyleSheetShorthandDeclaration(
-                                decl.property, vals, null, decl.priority);
-                            } else {
-                                return new lively.morphic.StyleSheetDeclaration(
-                                decl.property, vals, null, decl.priority);
-                            }
-                        } else {
-                            return new lively.morphic.StyleSheetInlineComment(
-                                decl.parsedCssText);
-                        }
-                    }));
+                    convertDeclarations(rule.declarations));
                 case 2:
                     return notSupportedRuleAsComment('Charset rules not supported yet, sry!', rule);
                 case 3:
@@ -116,7 +120,25 @@ Object.extend(apps.cssParser, {
                 case 6:
                     return notSupportedRuleAsComment('Page rules not supported yet, sry!', rule);
                 case 7:
+                    // @keyframes rule. rule.cssRules holds the individual
+                    // keyframe selectors (e.g. 'from'/'to'/'50%'), each with
+                    // its own .keyText and .declarations (plus the occasional
+                    // parsed comment, which has no .keyText and is skipped).
+                    return new lively.morphic.StyleSheetKeyframesRule(
+                        rule.name,
+                        rule.cssRules
+                            .select(function (kf) { return kf.keyText !== undefined; })
+                            .collect(function (kf) {
+                                return {
+                                    keyText: kf.keyText,
+                                    declarations: convertDeclarations(kf.declarations)
+                                };
+                            }));
                 case 8:
+                    // A lone keyframe selector outside of a @keyframes block
+                    // isn't valid CSS and shouldn't occur at the top level
+                    // (parseKeyframesRule only ever pushes the case-7 container
+                    // rule into the stylesheet's cssRules) -- fall back safely.
                     return notSupportedRuleAsComment('Keyframe rules not supported yet, sry!', rule);
                 case 100:
                     return notSupportedRuleAsComment('Namespace rules not supported yet, sry!', rule);

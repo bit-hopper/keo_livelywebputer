@@ -213,7 +213,7 @@ lively.morphic.Morph.addMethods(
             rules = optCssRules || this.getStyleSheetRules();
 
         rules.each(function (rule) {
-            if (rule.isStyleSheetFontFaceRule) {
+            if (rule.isStyleSheetFontFaceRule || rule.isStyleSheetKeyframesRule) {
                 output += rule.getText() + '\n';
             } else if (rule.isStyleSheetComment){
                 // do not include comments

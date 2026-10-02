@@ -1039,6 +1039,41 @@ TestCase.subclass('lively.morphic.tests.StyleSheets.CSSRuleInterface',
         this.assertEquals('text-shadow: 1px 1px black, 1px 1px black;',
             textShadowDecl.getText(),
             'Text shadow declaration values should not be split');
+    },
+    test09ParseKeyframesRule: function() {
+        var kfRule = '@keyframes spin {\n'
+                   + 'from {\n'
+                   + 'transform: rotate(0deg);\n'
+                   + '}\n'
+                   + 'to {\n'
+                   + 'transform: rotate(360deg);\n'
+                   + '}\n'
+                   + '}',
+
+            parsedCss = apps.cssParser.parse(kfRule);
+
+        this.assertEquals(1, parsedCss.getRules().length,
+            'Parsed keyframes rule sheet has not exactly one rule');
+
+        var k = parsedCss.getRules().first();
+
+        this.assert(k.isStyleSheetKeyframesRule,
+            'First rule is not a lively keyframes rule');
+
+        this.assertEquals('spin', k.getName(),
+            'Keyframes rule name is not "spin"');
+
+        this.assertEquals(2, k.getKeyframes().length,
+            'Keyframes rule does not have exactly two keyframe blocks');
+
+        this.assertEquals('from', k.getKeyframes()[0].keyText,
+            'First keyframe block is not "from"');
+        this.assertEquals('to', k.getKeyframes()[1].keyText,
+            'Second keyframe block is not "to"');
+
+        var doubleparsedCss = apps.cssParser.parse(parsedCss.getText());
+        this.assertEquals(parsedCss.getText(), doubleparsedCss.getText(),
+            'Keyframes rule output is not the same after repeated parsing');
     }
 
 });
