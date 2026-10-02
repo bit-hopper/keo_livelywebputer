@@ -9,9 +9,9 @@
  * the matching preset into the now-current $world, then strips the param via
  * history.replaceState so a plain reload of the same URL never re-triggers it.
  *
- * "shop" and "inventory" are implemented — WorldsBrowser.js's template
- * picker never sends any other key (gallery/movie/books/game are rendered
- * as inert placeholders there), so no other case is needed yet.
+ * "shop", "inventory" and "gallery" are implemented — WorldsBrowser.js's
+ * template picker never sends any other key (movie/books/game are still
+ * rendered as inert placeholders there), so no other case is needed yet.
  */
 
 module("lively.identity.WorldTemplateLauncher")
@@ -60,6 +60,18 @@ module("lively.identity.WorldTemplateLauncher")
           // explicit "Save world") is what makes anything worth persisting.
           lively.require("lively.identity.Inventory").toRun(function () {
             lively.identity.Inventory.open();
+          });
+        } else if (template === "gallery") {
+          // No _saveCurrentWorld() call here, unlike "shop" -- Gallery's
+          // backing folder is created asynchronously (a passkey/KEK
+          // ceremony), so saving immediately after .open() would capture
+          // the morph before galleryFolderObjId even exists on it (confirmed
+          // live: every reload then created a fresh orphan folder, since the
+          // saved envelope never had a pointer to reuse). Gallery.js's own
+          // _ensureFolder() calls _saveCurrentWorld() itself once the folder
+          // is actually created.
+          lively.require("lively.gallery.Gallery").toRun(function () {
+            lively.gallery.Gallery.open();
           });
         }
       },
