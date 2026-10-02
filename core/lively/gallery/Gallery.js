@@ -58,7 +58,7 @@ module("lively.gallery.Gallery")
     // reuse the exact hex/font values, not an approximation.
     var THEMES = {
       shop: {
-        label: "Shop Echo",
+        label: "Echo",
         bg: "#fdf0f5", surface: "#ffffff", card: "#fbe0ec",
         text: "#201e1d", textMuted: "#80676f", accent: "#e8497e", accent2: "#9a3a3a",
         divider: "rgba(32,30,29,0.14)", radiusSm: "8px", radiusMd: "16px", radiusLg: "26px",
@@ -68,7 +68,7 @@ module("lively.gallery.Gallery")
         fontImport: "family=Caprasimo:wght@400&family=Figtree:wght@400;600;700",
       },
       neutral: {
-        label: "Gallery Neutral",
+        label: "Neutral",
         bg: "#f6f3ee", surface: "#ffffff", card: "#efe9df",
         text: "#201d19", textMuted: "#79705f", accent: "#c2592f", accent2: "#8a3a2b",
         divider: "rgba(32,29,25,0.14)", radiusSm: "6px", radiusMd: "12px", radiusLg: "20px",
@@ -79,12 +79,12 @@ module("lively.gallery.Gallery")
       },
       darkroom: {
         label: "Darkroom",
-        bg: "#151210", surface: "#1f1b18", card: "#272220",
-        text: "#f3ece2", textMuted: "#a99c8e", accent: "#e2a227", accent2: "#c2583f",
+        bg: "#000000", surface: "#1f1b18", card: "#272220",
+        text: "#f3ece2", textMuted: "#a99c8e", accent: "#ff5c8a", accent2: "#c23d63",
         divider: "rgba(243,236,226,0.16)", radiusSm: "6px", radiusMd: "14px", radiusLg: "22px",
         shadowSm: "0 2px 10px rgba(0,0,0,0.45)", shadowLg: "0 22px 50px rgba(0,0,0,0.65)",
         fontHeading: "'Space Grotesk', system-ui, sans-serif", fontBody: "'IBM Plex Sans', system-ui, sans-serif",
-        headingWeight: "600", swatchA: "#e2a227", swatchB: "#c2583f",
+        headingWeight: "600", swatchA: "#ff5c8a", swatchB: "#c23d63",
         fontImport: "family=Space+Grotesk:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600",
       },
     };
@@ -224,6 +224,20 @@ module("lively.gallery.Gallery")
           $super(optExtent || lively.rect(0, 0, 1180, 780));
           this.setFill(null);
           this.setBorderWidth(0);
+          // A plain Box defaults to draggable/droppable/grabbable; this
+          // morph is a full-viewport app template (header buttons, tiles,
+          // pills all live as plain DOM inside its own single shapeNode,
+          // not as separate submorphs, so there's only this one set of
+          // flags to clear — see CLAUDE.md's "every visible child
+          // individually" note, which only applies to a real submorph
+          // tree). Without this, any click-with-a-twitch on a header
+          // button or photo tile risks being eaten as a drag of the whole
+          // gallery instead of firing its handler, and now that
+          // _fitToWorld()/onWorldResize keep it pinned to the world, a
+          // stray drag would visibly fight the pin on the next resize.
+          this.disableDragging();
+          this.disableDropping();
+          this.disableGrabbing();
         },
 
         _setup: function () {
@@ -242,6 +256,7 @@ module("lively.gallery.Gallery")
             isOwner: false,
             loaded: false,
           };
+          this._fitToWorld();
           this._buildChrome();
           this._renderAll();
           this._bindIdentity();
@@ -256,6 +271,26 @@ module("lively.gallery.Gallery")
         remove: function ($super) {
           this._unbindIdentity();
           $super();
+        },
+      },
+
+      "layout",
+      {
+        // Fills the whole world viewport rather than sitting at a fixed
+        // construction-time extent — matches the window-resize idiom
+        // MobileInterface.js's resizeWithWorld/MenuBar.js's onWorldResize
+        // already use elsewhere in this codebase. Run once up front (both
+        // fresh creation and every reload go through _setup) and again on
+        // every real onWorldResize dispatch (Events.js calls this on every
+        // morph in the world when the browser window resizes).
+        _fitToWorld: function () {
+          if (typeof $world === "undefined" || !$world) return;
+          var vb = $world.visibleBounds();
+          this.setPosition(vb.topLeft());
+          this.setExtent(vb.extent());
+        },
+        onWorldResize: function () {
+          lively.lang.fun.debounceNamed(this.id + "-gallery-world-resize", 150, this._fitToWorld.bind(this))();
         },
       },
 
@@ -289,6 +324,15 @@ module("lively.gallery.Gallery")
         _currentUser: function () {
           if (typeof lively === "undefined" || !lively.identity || !lively.identity.did) return null;
           return lively.identity.did.currentUser();
+        },
+        // $world.name is the plain Morph property the user picks at
+        // world-creation time (WorldTemplateLauncher.js's own
+        // stateMeta.name comment documents this same property) — read it
+        // live rather than hardcoding "Gallery", so a renamed world's
+        // header stays in sync on the next render.
+        _worldName: function () {
+          var w = this.world();
+          return (w && w.name) || "Gallery";
         },
         _bindIdentity: function () {
           if (typeof lively === "undefined" || !lively.bindings || !lively.identity || !lively.identity.did) return;
@@ -350,7 +394,7 @@ module("lively.gallery.Gallery")
           var hdr = this._el("div", "hdr", root);
 
           var top = this._el("div", "hdr-top", hdr);
-          this._text("h1", null, "Gallery", top);
+          this._dom.titleEl = this._text("h1", null, this._worldName(), top);
 
           this._dom.visibilityPill = this._el("span", "pill", top);
           this._dom.visibilityPill.addEventListener("click", function () { self._onClickVisibilityPill(); });
@@ -740,6 +784,7 @@ module("lively.gallery.Gallery")
 
         _renderHeader: function () {
           var self = this;
+          if (this._dom.titleEl) this._dom.titleEl.textContent = this._worldName();
           var isOwner = this.state.isOwner;
           var vis = this.state.visibility;
           var pill = this._dom.visibilityPill;
@@ -902,6 +947,17 @@ module("lively.gallery.Gallery")
       var m = new lively.gallery.Gallery(lively.rect(0, 0, 1180, 780));
       m.setName("Gallery");
       m.openInWorld(optPos || lively.morphic.World.current().visibleBounds().center().subPt(lively.pt(590, 390)));
+      // _setup() (and the _fitToWorld()/_buildHeader() it runs) fires via
+      // prepareForNewRenderContext as part of openInWorld()'s own addMorph
+      // step, before this morph is actually linked into the world's owner
+      // chain — confirmed live: this.world() returns null at that point,
+      // so the first-pass title falls back to "Gallery" and openInWorld's
+      // own explicit `optPos` re-centering (which runs after _setup, inside
+      // the same call) clobbers the fit-to-world position _fitToWorld just
+      // set, even though it leaves the extent it set alone. Re-running both
+      // now, with the morph genuinely attached, settles both for real.
+      m._fitToWorld();
+      m._renderHeader();
       return m;
     };
   }); // end module('lively.gallery.Gallery')
