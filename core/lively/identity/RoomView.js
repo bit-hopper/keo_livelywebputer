@@ -4557,7 +4557,23 @@ module("lively.identity.RoomView")
 
       // Makes controller's content the one shown in the shared window,
       // evicting whoever was shown before it (if different).
+      //
+      // open()'s boot chain (restoreSession -> XHR -> _register -> _start ->
+      // showView -> here) races the morphic world's own load sequence with
+      // no ordering guarantee -- same bug class as the currentUser()-read
+      // race open() already guards against via restoreSession(cb), just
+      // surfacing at the window-creation step instead of an identity read.
+      // Confirmed live: reopening a room whose detail-fetch chain resolves
+      // before $world exists crashed _ensureWindow on $world.visibleBounds().
+      // lively.whenLoaded queues safely pre-boot and fires immediately once
+      // the world is already up (same idiom MorphAddons.js's openInWorld
+      // deferral uses for the identical "might run before $world" situation).
       _showController: function (controller) {
+        if (typeof $world === "undefined" || !$world) {
+          var self = this;
+          lively.whenLoaded(function () { self._showController(controller); });
+          return;
+        }
         if (this._shown && this._shown !== controller) this._shown._onViewReplaced();
         this._ensureWindow();
         controller._viewRoot = this._viewRoot;
