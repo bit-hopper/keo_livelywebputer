@@ -573,6 +573,20 @@ module("lively.identity.WebAuthn")
         //
         // Subsequent calls with the same credentialId return the cached pair without
         // a new WebAuthn ceremony. The cache is cleared if the page is unloaded.
+        //
+        // Concurrent callers for the same credentialId (e.g. RoomView.js's
+        // _decryptFetchedMessages decrypting several room messages from a
+        // cold cache in one forEach pass, each needing its own getRoomDek ->
+        // deriveX25519KeyPair call) share one in-flight ceremony instead of
+        // each starting their own navigator.credentials.get() — same
+        // "second concurrent call rejects with 'A request is already
+        // pending'" hazard deriveKek already guards against above; this
+        // function was missing the equivalent pending-queue. Confirmed live
+        // 2026-10-02: reloading a page with 2+ undecrypted e2ee messages and
+        // letting RoomView.js decrypt them all at once reproduced exactly
+        // this failure, surfacing as every message rendering the neutral
+        // "Message unavailable" placeholder even though the viewer genuinely
+        // had access to that epoch.
         deriveX25519KeyPair: function (options, thenDo) {
           if (!this.isAvailable()) {
             return thenDo(
@@ -592,6 +606,19 @@ module("lively.identity.WebAuthn")
           if (!self._x25519Cache) self._x25519Cache = {};
           if (self._x25519Cache[credentialId]) {
             return thenDo(null, self._x25519Cache[credentialId]);
+          }
+
+          if (!self._x25519Pending) self._x25519Pending = {};
+          if (self._x25519Pending[credentialId]) {
+            self._x25519Pending[credentialId].push(thenDo);
+            return;
+          }
+          self._x25519Pending[credentialId] = [thenDo];
+
+          function settle(err, pair) {
+            var waiters = self._x25519Pending[credentialId] || [];
+            delete self._x25519Pending[credentialId];
+            waiters.forEach(function (waiter) { waiter(err, pair); });
           }
 
           var prfInput = new TextEncoder().encode(
@@ -623,7 +650,7 @@ module("lively.identity.WebAuthn")
             .then(function (credential) {
               var ext = credential.getClientExtensionResults();
               if (!ext.prf || !ext.prf.results || !ext.prf.results.first) {
-                return thenDo(
+                return settle(
                   new Error("PRF not available for X25519 key derivation"),
                 );
               }
@@ -634,7 +661,7 @@ module("lively.identity.WebAuthn")
               // The PRF output is the private scalar; crypto_scalarmult_base derives
               // the corresponding public key.
               lively.identity.crypto.withSodium(function (err, sodium) {
-                if (err) return thenDo(err);
+                if (err) return settle(err);
                 try {
                   // Clamp the private key as per X25519 spec
                   var privKey = new Uint8Array(prfBytes);
@@ -645,14 +672,14 @@ module("lively.identity.WebAuthn")
                   var pubKey = sodium.crypto_scalarmult_base(privKey);
                   var pair = { publicKey: pubKey, privateKey: privKey };
                   self._x25519Cache[credentialId] = pair;
-                  thenDo(null, pair);
+                  settle(null, pair);
                 } catch (e) {
-                  thenDo(e);
+                  settle(e);
                 }
               });
             })
             .catch(function (err) {
-              thenDo(err);
+              settle(err);
             });
         },
       },
