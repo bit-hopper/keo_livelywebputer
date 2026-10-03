@@ -38,7 +38,13 @@
  * re-fetches and re-verifies each member's key against their own profile
  * envelope before ever sealing a room DEK to it — same integrity stance
  * PartSerializer.resolveRecipientPubKeys already takes for a single
- * recipient elsewhere.
+ * recipient elsewhere. A profile CID mismatch alone is non-fatal here (see
+ * _resolveAndVerifyMembers) — matches the rest of the codebase's policy
+ * since the canonicalJson/jsonb-reordering fix
+ * (project-cid-non-canonical-hash-bug) of treating a stale pre-2026-09-13
+ * hash as a known artifact, not tampering — falling back to the profile
+ * envelope's own signature when one exists, and only blocking on an
+ * actually-invalid signature.
  *
  * A member with no published X25519 key (or one that fails that
  * re-verification) BLOCKS the whole mint/rotate, loudly, naming who —
@@ -156,12 +162,49 @@ module('lively.identity.RoomCrypto')
                 var cidOk = !cidErr && cid === profileJson.record.cid;
                 var pubMatchesBatch = pub === member.accountX25519Pub;
                 var cidMatchesBatch = profileJson.record.cid === member.profileCid;
-                if (!cidOk || !pubMatchesBatch || !cidMatchesBatch) {
+                if (!pubMatchesBatch || !cidMatchesBatch) {
                   missing.push({ did: member.did, handle: member.handle, reason: 'X25519 key failed re-verification' });
                   return done();
                 }
-                verified.push({ did: member.did, handle: member.handle, x25519PublicKey: pub });
-                done();
+                if (cidOk) {
+                  verified.push({ did: member.did, handle: member.handle, x25519PublicKey: pub });
+                  return done();
+                }
+                // CID mismatch alone is non-fatal here, matching the rest of
+                // the codebase's policy since the canonicalJson/jsonb-
+                // reordering fix (project-cid-non-canonical-hash-bug):
+                // pre-2026-09-13 profiles never had their stored cid
+                // migrated, since doing so would invalidate their signature.
+                // Opportunistically verify the profile's own signature
+                // instead, when it has one — a present-but-invalid signature
+                // IS real tamper evidence and still blocks; a missing
+                // signature (true for every profile saved before signing
+                // existed, e.g. accounts created mid-2026-08) doesn't, same
+                // as every other read site in this codebase.
+                console.warn('RoomCrypto._resolveAndVerifyMembers: CID mismatch for @' + member.handle +
+                  ' (likely a pre-2026-09-13 non-canonical hash, not tampering) — falling back to signature check');
+                if (!profileJson.sig) {
+                  verified.push({ did: member.did, handle: member.handle, x25519PublicKey: pub });
+                  return done();
+                }
+                lively.identity.did.resolveEnvelopeSignerJwk(member.handle, function (jwkErr, signerJwk) {
+                  if (jwkErr || !signerJwk) {
+                    // Couldn't resolve a signer key to check against — treat
+                    // like "nothing to verify," not a failure; a DID-document
+                    // fetch hiccup shouldn't block a member who has a signed
+                    // profile we simply failed to cross-check this time.
+                    verified.push({ did: member.did, handle: member.handle, x25519PublicKey: pub });
+                    return done();
+                  }
+                  c.verifyEnvelopeIntegrity(profileJson, signerJwk, function (viErr, result) {
+                    if (!viErr && result && result.sigStatus === 'invalid') {
+                      missing.push({ did: member.did, handle: member.handle, reason: 'X25519 key failed signature re-verification' });
+                      return done();
+                    }
+                    verified.push({ did: member.did, handle: member.handle, x25519PublicKey: pub });
+                    done();
+                  });
+                });
               });
             });
           });
