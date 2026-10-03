@@ -261,6 +261,18 @@ exports.signal = function (fromPeerId, toPeerId, signalPayload) {
   })).catch(function (e) { console.error('[room-peer-registry-redis] signal publish failed:', e.message); });
 };
 
+// Soft-cap enforcement only (RoomSignalingServer.js's signaling-token mint
+// route). A plain HLEN can run slightly ahead of reality for up to
+// HEARTBEAT_TTL_S after a crash -- a dead peer's roster entry hasn't been
+// swept yet -- the same staleness window the heartbeat sweep elsewhere in
+// this file already tolerates. Fine for a soft cap; don't reuse this for
+// anything that needs an exact live count.
+exports.count = function (roomId, thenDo) {
+  redisClient.getClient().hlen(peersKey(roomId)).then(function (n) {
+    thenDo(null, n);
+  }).catch(function (err) { thenDo(err); });
+};
+
 // Fire-and-forget: unregisters a peer (normal connection close) and
 // announces its departure.
 exports.leave = function (peerId) {

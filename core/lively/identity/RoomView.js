@@ -3748,7 +3748,28 @@ module("lively.identity.RoomView")
         xhr.open("POST", base + "/c/" + encodeURIComponent(this._name) + "/rooms/" + this._roomId + "/signaling-token", true);
         xhr.withCredentials = true;
         xhr.onload = function () {
-          if (xhr.status !== 200) { console.warn("[RoomView] Could not get signaling token (" + xhr.status + ")"); return; }
+          if (xhr.status !== 200) {
+            var info;
+            try { info = JSON.parse(xhr.responseText); } catch (e) {}
+            if (xhr.status === 403 && info && info.callFull) {
+              // Soft per-room call cap (e2eeclusters.md §10.6) -- no
+              // automatic retry here: _connectSignaling is only called
+              // again later by _onSignalingClosed/join-rejected, neither of
+              // which fires for a token mint that never succeeded, so this
+              // won't loop. A real retry happens naturally the next time
+              // the user reopens/rejoins the room.
+              console.warn("[RoomView] Room is full for calls (cap " + info.cap +
+                ", " + info.participantCount + " already in the call)");
+              if (!self._callFullAlertShown) {
+                self._callFullAlertShown = true;
+                $world.alert("This room is full for calls right now (max " +
+                  info.cap + " participants). You can still use text chat.");
+              }
+              return;
+            }
+            console.warn("[RoomView] Could not get signaling token (" + xhr.status + ")");
+            return;
+          }
           var data;
           try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
           self._openSignalingSocket(data.token, data.wsPath);

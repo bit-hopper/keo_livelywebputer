@@ -36,6 +36,16 @@ var constellationRegistry = require('./identity/ConstellationRegistry');
 var auth = require('./identity/AuthMiddleware');
 var tokenStore = require('./support/room-token-store');
 
+// Soft per-room call caps. The full mesh below (every participant opens a
+// direct RTCPeerConnection to every other participant) has O(n-1) upload
+// bandwidth per participant and no enforced ceiling today -- see
+// e2eeclusters.md §10.6 for the bandwidth/connection-count reasoning behind
+// these specific numbers. Deliberately conservative given today's
+// architecture (uncapped getUserMedia bitrate, STUN-only ICE, no SFU), not
+// a "real" product target -- revisit upward only once an SFU (§10.4) exists.
+var VIDEO_CALL_CAP = 8;
+var VOICE_CALL_CAP = 20;
+
 function uuid() { // helper, duplicated from support/websockets.js / WarpDropSignalingServer.js
     var id = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
         var r = Math.random()*16|0, v = c == 'x' ? r : (r&0x3|0x8); return v.toString(16); }).toUpperCase();
@@ -98,6 +108,9 @@ module.exports = function(route, app, subserver) {
                 if (!Object.keys(rooms[p.roomId]).length) delete rooms[p.roomId];
             }
             broadcastToRoom(p.roomId, peerId, {action: 'peer-left', data: {peerId: peerId}});
+        },
+        count: function (roomId, thenDo) {
+            thenDo(null, Object.keys(rooms[roomId] || {}).length);
         }
     };
 
@@ -166,10 +179,32 @@ module.exports = function(route, app, subserver) {
                 constellationRegistry.canJoinRoom(constellation, room, req.identity.did, function(err, allowed) {
                     if (err) return res.status(500).json({error: String(err)});
                     if (!allowed) return res.status(403).json({error: 'Forbidden: join not permitted for this room'});
-                    tokenStore.mintToken(req.identity.did, req.identity.handle, name, roomId).then(function (token) {
-                        res.json({token: token, wsPath: 'RoomSignalingServer/connect'});
-                    }).catch(function (err) {
-                        res.status(500).json({error: String(err)});
+
+                    function mint() {
+                        tokenStore.mintToken(req.identity.did, req.identity.handle, name, roomId).then(function (token) {
+                            res.json({token: token, wsPath: 'RoomSignalingServer/connect'});
+                        }).catch(function (err) {
+                            res.status(500).json({error: String(err)});
+                        });
+                    }
+
+                    // Video implies voice (RoomView.js's own _isCall/_callMediaKinds
+                    // framing), so a video room's cap applies first. Not a call room
+                    // at all (cap === null) shouldn't normally reach this route --
+                    // only call rooms open the signaling category client-side -- but
+                    // mint rather than invent a new error shape for an impossible case.
+                    var cap = room.isVideo ? VIDEO_CALL_CAP : (room.isVoice ? VOICE_CALL_CAP : null);
+                    if (cap === null) return mint();
+
+                    registry.count(roomId, function (err, n) {
+                        if (err) return res.status(500).json({error: String(err)});
+                        if (n >= cap) {
+                            return res.status(403).json({
+                                error: 'Room is full for calls', callFull: true,
+                                cap: cap, participantCount: n
+                            });
+                        }
+                        mint();
                     });
                 });
             });
