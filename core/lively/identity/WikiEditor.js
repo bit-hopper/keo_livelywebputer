@@ -84,6 +84,16 @@ module('lively.identity.WikiEditor')
       return style ? { style: style } : {};
     }
 
+    // Shared by link_preview_card's two parseDOM tag matchers — see
+    // PostCardEditor.js's identical copy for the full rationale (toDOM
+    // emits a div for the embed variant, an a for the static card).
+    function _getLinkPreviewCardAttrs(d) {
+      return { url: d.getAttribute('data-url'), title: d.getAttribute('data-title'),
+               description: d.getAttribute('data-description'),
+               image: d.getAttribute('data-image'), siteName: d.getAttribute('data-site-name'),
+               provider: d.getAttribute('data-provider'), embedUrl: d.getAttribute('data-embed-url') };
+    }
+
     var WikiEditorClass = lively.morphic.Box.subclass('lively.identity.WikiEditor',
 
     // ─── serialization guard ──────────────────────────────────────────────────────
@@ -273,7 +283,10 @@ module('lively.identity.WikiEditor')
             '.lively-embed-overlay{position:absolute;top:2px;right:2px;display:flex;gap:4px;z-index:10;}' +
             '.lively-embed-overlay button{font-size:10px;padding:2px 6px;cursor:pointer;' +
             'border:1px solid #ccc;border-radius:3px;background:#fff;}' +
-            '.lively-embed-overlay button.lively-embed-remove-btn{border-color:#c33;color:#c33;}';
+            '.lively-embed-overlay button.lively-embed-remove-btn{border-color:#c33;color:#c33;}' +
+            '.lively-link-preview-node{margin:4px 0;border-radius:8px;}' +
+            '.lively-link-preview-node.lively-link-preview-node-selected,' +
+            '.lively-link-preview-node.ProseMirror-selectednode{outline:2px solid #8cf;}';
           document.head.appendChild(styleEl);
         }
 
@@ -1278,6 +1291,7 @@ module('lively.identity.WikiEditor')
             math_inline:  function (node, view, getPos) { return self._mathNodeView(node, view, getPos); },
             math_display: function (node, view, getPos) { return self._mathNodeView(node, view, getPos); },
             embeddedPart: function (node, view, getPos) { return self._embeddedPartNodeView(node, view, getPos); },
+            link_preview_card: function (node, view, getPos) { return self._linkPreviewCardNodeView(node, view, getPos); },
             image:        function (node, view, getPos) { return self._attachmentImageNodeView(node, view, getPos); },
             video:        function (node, view, getPos) { return self._attachmentVideoNodeView(node, view, getPos); },
             audio:        function (node, view, getPos) { return self._attachmentAudioNodeView(node, view, getPos); },
@@ -1366,10 +1380,24 @@ module('lively.identity.WikiEditor')
         }
       },
 
-      // Live "link preview" card while composing — identical to
-      // PostCardEditor.js's (see that copy's header comment for the full
-      // rationale on why this needs a decoration widget rather than
-      // reusing PostCardUtils.js's hydrateLinkPreviews directly).
+      // Live "link preview" card while composing — mirrors
+      // PostCardEditor.js's own copy (see that file's header comment for
+      // the full rationale on the decoration -> persisted-node design)
+      // with two Yjs-specific additions neither needed in plain mode:
+      //   - a dedup claim-check in yDoc.getMap('linkPreviewInserts') before
+      //     ever dispatching the insert, narrowing (not fully closing) the
+      //     window where two collaborators both convert the same bare-url
+      //     paragraph at nearly the same moment — same Y.Map-alongside-the-
+      //     ySyncPlugin-fragment pattern as _embedStateApi's partState map.
+      //     blocksToHtml's/computeDecorations's adjacent-same-url collapse
+      //     (PostCardUtils.js, computeDecorations below) makes the residual
+      //     cross-client race cosmetic rather than a lasting duplicate.
+      //   - yUndoPluginKey's undoManager.stopCapturing() instead of
+      //     prosemirror-history's closeHistory(tr) — same goal (the insert
+      //     must not silently merge into — or get silently orphaned from —
+      //     whatever undo-group timing happens to be in progress), different
+      //     API because wiki mode's undo stack is Y.UndoManager, not
+      //     prosemirror-history.
       _buildLinkPreviewPlugin: function (prosemirror) {
         var self = this;
         var Plugin = prosemirror.state.Plugin;
@@ -1393,6 +1421,11 @@ module('lively.identity.WikiEditor')
           return m ? m[1] : null;
         }
 
+        function hasSiblingCard(doc, endPos, url) {
+          var next = doc.nodeAt(endPos);
+          return !!(next && next.type.name === 'link_preview_card' && next.attrs.url === url);
+        }
+
         function requestRefresh() {
           var view = self.editorView;
           if (!view) return;
@@ -1406,16 +1439,65 @@ module('lively.identity.WikiEditor')
             if (node.type.name !== 'paragraph') return true;
             var url = bareUrlOf(node);
             if (!url) return false;
+            var widgetPos = pos + node.nodeSize;
+            if (hasSiblingCard(state.doc, widgetPos, url)) return false;
             var cached = U.peekLinkPreview(url);
             if (cached === undefined) { U.fetchLinkPreview(url, requestRefresh); return false; }
             if (cached === null || cached.err || !cached.body || cached.body.error) return false;
-            var widgetPos = pos + node.nodeSize;
             decos.push(Decoration.widget(widgetPos, function () {
               return U.buildLinkPreviewCard(cached.body);
             }, { key: 'link-preview-' + url, side: 1, stopEvent: function () { return true; } }));
             return false;
           });
           return DecorationSet.create(state.doc, decos);
+        }
+
+        // Synchronous get()-then-set() claim on a url -- no await between
+        // the two, so no other code on THIS client can interleave. Fully
+        // prevents a single client's own debounced re-checks from double-
+        // inserting; narrows but can't fully close the cross-client window
+        // (see this function's own header comment).
+        function claimInsert(url) {
+          if (!self.yDoc) return true; // yDoc gone (editor tearing down) -- let the stale check below no-op harmlessly
+          var claims = self.yDoc.getMap('linkPreviewInserts');
+          if (claims.get(url)) return false;
+          claims.set(url, Date.now());
+          return true;
+        }
+
+        function maybeCommit(view) {
+          var state = view.state;
+          var U = lively.identity.postCardUtils;
+          var sel = state.selection;
+          var found = null;
+          state.doc.descendants(function (node, pos) {
+            if (found) return false;
+            if (node.type.name !== 'paragraph') return true;
+            var url = bareUrlOf(node);
+            if (!url) return false;
+            var start = pos, end = pos + node.nodeSize;
+            if (sel.from <= end && sel.to >= start) return false;
+            if (hasSiblingCard(state.doc, end, url)) return false;
+            var cached = U.peekLinkPreview(url);
+            if (!cached || cached.err || !cached.body || cached.body.error) return false;
+            found = { endPos: end, url: url, body: cached.body };
+            return false;
+          });
+          if (!found) return;
+          if (!claimInsert(found.url)) return;
+          var nodeType = state.schema.nodes.link_preview_card;
+          var tr = state.tr.insert(found.endPos, nodeType.create({
+            url: found.body.url || '', title: found.body.title || null,
+            description: found.body.description || null, image: found.body.image || null,
+            siteName: found.body.siteName || null, provider: found.body.provider || null,
+            embedUrl: found.body.embedUrl || null,
+          }));
+          var yPM = self._yProsemirror && self._yProsemirror();
+          if (yPM && yPM.yUndoPluginKey) {
+            var undoState = yPM.yUndoPluginKey.getState(state);
+            if (undoState && undoState.undoManager) undoState.undoManager.stopCapturing();
+          }
+          view.dispatch(tr);
         }
 
         return new Plugin({
@@ -1428,6 +1510,9 @@ module('lively.identity.WikiEditor')
           },
           props: {
             decorations: function (state) { return key.getState(state); },
+          },
+          view: function (editorView) {
+            return { update: function (view) { maybeCommit(view); } };
           },
         });
       },
@@ -2183,6 +2268,38 @@ module('lively.identity.WikiEditor')
         };
       },
 
+      // NodeView for the persisted link_preview_card node — mirrors
+      // PostCardEditor.js's own copy exactly (see that file's comment for
+      // the full rationale: modeled on _embeddedPartNodeView, not the
+      // click-to-edit _mathNodeView; click-swallowing comes from
+      // buildLinkPreviewCard's own internal listeners, not a NodeView-level
+      // stopEvent).
+      _linkPreviewCardNodeView: function (node, view, getPos) {
+        var U = lively.identity.postCardUtils;
+        var wrap = document.createElement('div');
+        wrap.className = 'lively-link-preview-node';
+
+        function render(currentNode) {
+          wrap.innerHTML = '';
+          wrap.appendChild(U.buildLinkPreviewCard(currentNode.attrs));
+        }
+        render(node);
+
+        return {
+          dom: wrap,
+          update: function (newNode) {
+            if (newNode.type !== node.type) return false;
+            var changed = newNode.attrs.url !== node.attrs.url || newNode.attrs.embedUrl !== node.attrs.embedUrl;
+            node = newNode;
+            if (changed) render(node);
+            return true;
+          },
+          selectNode: function () { wrap.classList.add('lively-link-preview-node-selected'); },
+          deselectNode: function () { wrap.classList.remove('lively-link-preview-node-selected'); },
+          ignoreMutation: function () { return true; },
+        };
+      },
+
       _attachmentImageNodeView: function (node, view, getPos) {
         var self = this;
         var destroyed = false;
@@ -2817,6 +2934,29 @@ module('lively.identity.WikiEditor')
                                 'data-cid':    n.attrs.cid    || '',
                                 'data-handle': n.attrs.handle || '',
                                 'data-embed-id': n.attrs.embedId || '' }];
+                            } },
+            // Persisted link-preview card — mirrors PostCardEditor.js's
+            // _buildSchema node-for-node (see that file's comment for the
+            // full rationale). embedUrl/provider set only for a recognized
+            // Spotify/YouTube/SoundCloud/Apple Music link.
+            link_preview_card: { group: 'block', atom: true,
+                            attrs: { url: { default: '' }, title: { default: null },
+                                     description: { default: null }, image: { default: null },
+                                     siteName: { default: null }, provider: { default: null },
+                                     embedUrl: { default: null } },
+                            parseDOM: [{ tag: 'div.lively-link-preview-card', getAttrs: _getLinkPreviewCardAttrs },
+                                       { tag: 'a.lively-link-preview-card', getAttrs: _getLinkPreviewCardAttrs }],
+                            toDOM: function(n) {
+                              var a = n.attrs;
+                              var dataAttrs = { 'data-url': a.url || '', 'data-title': a.title || '',
+                                'data-description': a.description || '', 'data-image': a.image || '',
+                                'data-site-name': a.siteName || '', 'data-provider': a.provider || '',
+                                'data-embed-url': a.embedUrl || '' };
+                              if (a.embedUrl) {
+                                return ['div', Object.assign({ class: 'lively-link-preview-card lively-link-preview-embed' }, dataAttrs)];
+                              }
+                              return ['a', Object.assign({ class: 'lively-link-preview-card', href: a.url || '',
+                                target: '_blank', rel: 'noopener noreferrer' }, dataAttrs)];
                             } },
             // Runnable Python cell (CodeEditorSpec.md §2.3) -- deliberately
             // its own atom node, not an overload of the plain-text

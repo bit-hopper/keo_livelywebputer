@@ -963,6 +963,59 @@ function _renderKatex(value, displayMode) {
   }
 }
 
+// Server-side mirror of PostCardUtils.js's EMBED_HOSTS/_embedHostInfo —
+// same "small per-module copy of a security-relevant list" tolerance
+// LinkPreviewServer.js's isPrivateAddress comment documents (these two
+// files run in different JS runtimes, browser vs. Node, so there's no
+// single module to share without a build step this codebase doesn't have).
+// Re-validated here even though LinkPreviewServer.js should only ever have
+// produced a known-good embedUrl in the first place — defense in depth
+// before this ever lands in an <iframe src> on a static-rendered page.
+var _EMBED_HOSTS = {
+  'open.spotify.com':      { label: 'Open in Spotify',      shape: 'audio' },
+  'www.youtube.com':       { label: 'Open in YouTube',      shape: 'video' },
+  'w.soundcloud.com':      { label: 'Open in SoundCloud',   shape: 'audio' },
+  'embed.music.apple.com': { label: 'Open in Apple Music',  shape: 'audio' },
+};
+function _embedHostInfo(embedUrl) {
+  try { return _EMBED_HOSTS[new URL(embedUrl).hostname.toLowerCase()] || null; }
+  catch (e) { return null; }
+}
+
+// String-emitting counterpart of PostCardUtils.js's linkPreviewCardHtml —
+// same three-way-duplication convention as every other node type in this
+// switch (see this file's/PostCardUtils.js's own header comments). No
+// feedMode/suppressEmbeds concept here: this function only ever renders a
+// full standalone page (buildWorldPage/static permalink rendering), never a
+// condensed multi-row feed, so there's no "noisy iframe per row" case to
+// guard against on this path.
+function _linkPreviewCardHtml(attrs) {
+  attrs = attrs || {};
+  var embedInfo = attrs.embedUrl ? _embedHostInfo(attrs.embedUrl) : null;
+  if (embedInfo) {
+    return '<div class="lively-link-preview-card lively-link-preview-embed" data-embed-shape="' +
+      escapeHtml(embedInfo.shape) + '">' +
+      '<iframe src="' + escapeHtml(attrs.embedUrl) + '" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" ' +
+      'sandbox="allow-scripts allow-same-origin allow-popups allow-presentation" allowfullscreen ' +
+      'allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen" ' +
+      'title="' + escapeHtml(attrs.title || embedInfo.label) + '"></iframe>' +
+      '<a class="lively-link-preview-card-openlink" href="' + escapeHtml(safeHref(attrs.url || '')) +
+      '" target="_blank" rel="noopener noreferrer">' +
+      escapeHtml(attrs.title ? (embedInfo.label + ' — ' + attrs.title) : embedInfo.label) + '</a>' +
+      '</div>';
+  }
+  var safeImage = attrs.image ? safeHref(attrs.image) : null;
+  var imgHtml = (safeImage && safeImage !== '#')
+    ? '<div class="lively-link-preview-card-image-wrap"><img src="' + escapeHtml(safeImage) + '" alt="" loading="lazy"></div>'
+    : '';
+  var textHtml = (attrs.siteName ? '<div class="lively-link-preview-card-site">' + escapeHtml(attrs.siteName) + '</div>' : '') +
+    (attrs.title ? '<div class="lively-link-preview-card-title">' + escapeHtml(attrs.title) + '</div>' : '') +
+    (attrs.description ? '<div class="lively-link-preview-card-desc">' + escapeHtml(attrs.description) + '</div>' : '');
+  return '<a class="lively-link-preview-card" href="' + escapeHtml(safeHref(attrs.url || '')) +
+    '" target="_blank" rel="noopener noreferrer">' + imgHtml +
+    '<div class="lively-link-preview-card-text">' + textHtml + '</div></a>';
+}
+
 // §10.1 align/indent (matches PostCardEditor.js's _alignIndentAttrs).
 function _alignIndentAttr(node) {
   var attrs = node.attrs || {};
@@ -1042,6 +1095,8 @@ function _pmNodeToHtml(node) {
              '" data-handle="' + escapeHtml(epAttrs.handle || '') +
              '" data-embed-id="' + escapeHtml(epAttrs.embedId || '') + '">' +
              '[embedded part: ' + escapeHtml(objId) + ']</div>';
+    case 'link_preview_card':
+      return _linkPreviewCardHtml(node.attrs);
     default: return inner;
   }
 }

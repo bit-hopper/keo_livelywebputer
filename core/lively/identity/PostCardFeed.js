@@ -299,7 +299,12 @@ module('lively.identity.PostCardFeed')
         }
 
         var U = lively.identity.postCardUtils;
-        var split = U.buildPreviewSplit(doc.content, {});
+        // feedMode: a condensed row never mounts a link-preview card/iframe
+        // for a persisted link_preview_card node — same "noisy and
+        // expensive per row" posture this file already has for media
+        // galleries, now also covering that node type (see
+        // PostCardUtils.js's blocksToHtml/buildPreviewSplit).
+        var split = U.buildPreviewSplit(doc.content, { feedMode: true });
         var html;
         if (split.hasMedia) {
           html = (split.leadExcerpt ? '<div class="lively-postcard-preview-lead">' + U.escapeHtml(split.leadExcerpt) + '</div>' : '') +

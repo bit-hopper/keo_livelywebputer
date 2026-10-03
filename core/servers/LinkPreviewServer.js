@@ -32,6 +32,14 @@
  * `image` is a URL the client hot-links directly from its original host
  * (not proxied through here, same tradeoff KlipyProxyServer.js documents
  * for GIF images) — client must still scheme-check it before use.
+ *
+ * Also detects (detectEmbed, pure string transform, no extra network call)
+ * whether the URL is a Spotify/YouTube/SoundCloud/Apple Music link and, if
+ * so, includes `provider`/`embedUrl` fields the client renders as a
+ * sandboxed <iframe> instead of (or alongside) the static card — see
+ * PostCardUtils.js's buildLinkPreviewCard. The client re-validates
+ * embedUrl's hostname against its own short allow-list before ever using it
+ * as an iframe src; this file is the one that decides which hosts qualify.
  */
 
 'use strict';
@@ -193,6 +201,54 @@ function safeAbsoluteUrl(raw, baseUrl) {
   } catch (e) { return null; }
 }
 
+// Pure pattern-matching against the pasted URL itself -- no network call, no
+// dependency on fetchOnce/extractMeta succeeding. Each of these four
+// providers' embed players can be reached by a direct string transform of
+// the original URL, so there's no need for a real oEmbed round-trip (and no
+// oEmbed proxy exists anywhere in this codebase -- see the module header).
+// Returns { provider, embedUrl } or null. The client (PostCardUtils.js)
+// keeps its own short hostname-only allow-list to re-validate embedUrl
+// before ever setting an <iframe src> -- same "small per-module copy of a
+// security-relevant list" tolerance this file's isPrivateAddress comment
+// already documents, not an oversight.
+function detectEmbed(targetUrl) {
+  var u;
+  try { u = new URL(targetUrl); } catch (e) { return null; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+  var host = u.hostname.toLowerCase();
+
+  if (host === 'open.spotify.com') {
+    var sm = /^\/(track|album|playlist|episode|show)\/([A-Za-z0-9]+)/.exec(u.pathname);
+    if (sm) return { provider: 'spotify', embedUrl: 'https://open.spotify.com/embed/' + sm[1] + '/' + sm[2] };
+    return null;
+  }
+  if (host === 'youtube.com' || host === 'www.youtube.com' || host === 'm.youtube.com') {
+    var vid = u.searchParams.get('v');
+    if (vid && /^[A-Za-z0-9_-]+$/.test(vid)) return { provider: 'youtube', embedUrl: 'https://www.youtube.com/embed/' + vid };
+    return null;
+  }
+  if (host === 'youtu.be') {
+    var ym = /^\/([A-Za-z0-9_-]+)/.exec(u.pathname);
+    if (ym) return { provider: 'youtube', embedUrl: 'https://www.youtube.com/embed/' + ym[1] };
+    return null;
+  }
+  if (host === 'soundcloud.com' || host === 'www.soundcloud.com') {
+    // SoundCloud's player widget resolves the track/set from the original
+    // URL itself (no id lookup needed) -- any soundcloud.com/<user>/<track>
+    // or /<user>/sets/<set> path is embeddable this way.
+    if (/^\/[^\/]+\/[^\/]+/.test(u.pathname)) {
+      return { provider: 'soundcloud', embedUrl: 'https://w.soundcloud.com/player/?url=' + encodeURIComponent(u.toString()) + '&auto_play=false' };
+    }
+    return null;
+  }
+  if (host === 'music.apple.com') {
+    // Swap host only -- same path/query, matching Apple's own documented
+    // embed convention (music.apple.com -> embed.music.apple.com).
+    return { provider: 'apple-music', embedUrl: 'https://embed.music.apple.com' + u.pathname + u.search };
+  }
+  return null;
+}
+
 // Naive-but-sufficient meta tag extraction (not a general HTML parser,
 // matching RssProxyServer.js's own naive-tag-strip pragmatism) — meta/title
 // tags are simple enough that this is reliable in practice, and a missed
@@ -224,13 +280,34 @@ function unfurl(targetUrl, thenDo) {
   var cached = cache.get(targetUrl);
   if (cached && cached.expiresAt > Date.now()) return thenDo(null, cached.status, cached.body);
 
+  // Embed detection is a pure string transform of targetUrl -- computed up
+  // front, independent of whatever fetchOnce below does. This matters: a
+  // real Spotify/YouTube/SoundCloud/Apple Music page is a plausible
+  // candidate for this crude scraper to fail against (consent walls, bot
+  // detection, JS-gated content, a non-200 from a CDN edge) and that must
+  // not take the embed down with it -- the whole point of the embed is that
+  // it doesn't need OG scraping to be useful.
+  var embed = detectEmbed(targetUrl);
+
+  function cacheAndReturn(status, body) {
+    if (cache.size >= CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value); // FIFO evict oldest
+    cache.set(targetUrl, { expiresAt: Date.now() + CACHE_TTL_MS, status: status, body: body });
+    thenDo(null, status, body);
+  }
+
   fetchOnce(targetUrl, MAX_REDIRECTS, function (err, result) {
-    if (err) return thenDo(err);
+    if (err) {
+      // Scrape failed outright -- still a usable response if we detected an
+      // embed (title/description/image just stay empty; the player itself
+      // carries that information once it loads).
+      if (embed) return cacheAndReturn(200, { url: targetUrl, provider: embed.provider, embedUrl: embed.embedUrl });
+      return thenDo(err);
+    }
     var meta = extractMeta(result.body);
     var hostname;
     try { hostname = new URL(result.finalUrl).hostname; } catch (e) { hostname = ''; }
 
-    if (!meta.title && !meta.description && !meta.image) {
+    if (!meta.title && !meta.description && !meta.image && !embed) {
       var emptyBody = { error: 'No preview metadata found' };
       cache.set(targetUrl, { expiresAt: Date.now() + CACHE_TTL_MS, status: 422, body: emptyBody });
       return thenDo(null, 422, emptyBody);
@@ -243,9 +320,8 @@ function unfurl(targetUrl, thenDo) {
       image: safeAbsoluteUrl(meta.image, result.finalUrl),
       siteName: meta.siteName || hostname,
     };
-    if (cache.size >= CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value); // FIFO evict oldest
-    cache.set(targetUrl, { expiresAt: Date.now() + CACHE_TTL_MS, status: 200, body: body });
-    thenDo(null, 200, body);
+    if (embed) { body.provider = embed.provider; body.embedUrl = embed.embedUrl; }
+    cacheAndReturn(200, body);
   });
 }
 

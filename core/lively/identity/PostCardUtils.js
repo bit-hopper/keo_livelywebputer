@@ -142,7 +142,18 @@ module('lively.identity.PostCardUtils')
         '.lively-link-preview-card-title{font-size:12.5px;font-weight:600;color:#222;margin-top:2px;' +
         'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}' +
         '.lively-link-preview-card-desc{font-size:11.5px;color:#666;margin-top:2px;' +
-        'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}';
+        'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}' +
+        // Playable embed variant (Spotify/YouTube/SoundCloud/Apple Music) —
+        // a plain div, not an <a>, since an <iframe> is interactive content
+        // and HTML forbids nesting that inside an anchor. buildLinkPreviewCard
+        // picks block vs. inline height per provider via a data attribute.
+        '.lively-link-preview-embed{display:block;margin:6px 0;max-width:480px;}' +
+        '.lively-link-preview-embed iframe{display:block;width:100%;border:0;border-radius:8px;}' +
+        '.lively-link-preview-embed[data-embed-shape="video"] iframe{aspect-ratio:16/9;height:auto;}' +
+        '.lively-link-preview-embed[data-embed-shape="audio"] iframe{height:152px;}' +
+        '.lively-link-preview-card-openlink{display:block;margin-top:4px;font-size:10.5px;color:#888;' +
+        'text-decoration:none;}' +
+        '.lively-link-preview-card-openlink:hover{text-decoration:underline;}';
       document.head.appendChild(styleEl);
     }
 
@@ -232,9 +243,20 @@ module('lively.identity.PostCardUtils')
       }
     }
 
-    function snapshotToHtml(snapshot) {
+    // opts.feedMode: thread through to blocksToHtml's opts.suppressEmbeds —
+    // for a condensed multi-row context rendering many snapshots at once
+    // (ConstellationLounge.js's reply list, PostCardView.js's no-other-media
+    // preview fallback) where a persisted link_preview_card node should
+    // render as a plain text link, never a card/iframe. Omit for a single
+    // full-card/page render (the common case), where the real card/embed is
+    // exactly what should show.
+    function snapshotToHtml(snapshot, opts) {
       if (!snapshot || !snapshot.content) return '';
-      return blocksToHtml(snapshot.content);
+      // Same feedMode -> suppressEmbeds translation as buildPreviewSplit's
+      // own blocksOpts -- public callers pass {feedMode: true} (matching
+      // buildPreviewSplit's option name), blocksToHtml's internal opts key
+      // is suppressEmbeds.
+      return blocksToHtml(snapshot.content, opts && opts.feedMode ? { suppressEmbeds: true } : undefined);
     }
 
     // A paragraph holding nothing but images (and blank text) is a photo row.
@@ -252,8 +274,30 @@ module('lively.identity.PostCardUtils')
       return imgs.length ? imgs : null;
     }
 
-    function blocksToHtml(nodes) {
+    // opts.suppressEmbeds: render a link_preview_card node as a plain text
+    // link, never a card/iframe (see pmNodeToHtml's 'link_preview_card'
+    // case) — set by buildPreviewSplit's feedMode for PostCardFeed.js's
+    // condensed rows, matching hydrateLinkPreviews's own long-standing "no
+    // preview card per row — noisy and expensive" posture (this file's
+    // comment on MAX_LINK_PREVIEWS_PER_CONTAINER), now also covering the
+    // persisted-node render path that posture didn't originally anticipate.
+    // Threaded as a module-level flag rather than a second argument to
+    // pmNodeToHtml (and every one of its recursive .map(pmNodeToHtml)
+    // call sites) since this is synchronous, non-reentrant top-to-bottom
+    // recursion — no risk of one caller's flag leaking into an unrelated
+    // concurrent call.
+    var _suppressEmbeds = false;
+
+    function blocksToHtml(nodes, opts) {
+      var prevSuppress = _suppressEmbeds;
+      if (opts && opts.suppressEmbeds) _suppressEmbeds = true;
       var out = '', pending = [];
+      var lastCardUrl = null; // dedup: collapse adjacent link_preview_card
+      // siblings sharing the same url -- the one residual symptom of the
+      // rare two-collaborators-insert-at-once Yjs race (WikiEditor.js's
+      // dedup claim-check narrows but can't fully close that window; see
+      // PostCardEditor.js's _buildLinkPreviewPlugin). Cosmetic only, and
+      // self-heals the moment anyone edits near the duplicate.
       function flush() {
         for (var i = 0; i < pending.length; i += 4) out += galleryHtml(pending.slice(i, i + 4));
         pending = [];
@@ -262,9 +306,17 @@ module('lively.identity.PostCardUtils')
         var imgs = imageOnlyParagraph(node);
         if (imgs) { pending = pending.concat(imgs); return; }
         flush();
+        if (node.type === 'link_preview_card') {
+          var url = (node.attrs && node.attrs.url) || '';
+          if (url && url === lastCardUrl) return; // skip duplicate
+          lastCardUrl = url;
+        } else {
+          lastCardUrl = null;
+        }
         out += pmNodeToHtml(node);
       });
       flush();
+      _suppressEmbeds = prevSuppress;
       return out;
     }
 
@@ -312,10 +364,16 @@ module('lively.identity.PostCardUtils')
     // hasMedia:false means the doc has no image/video content at all —
     // callers should ignore leadExcerpt/mediaHtml/restHtml entirely and
     // fall back to their own plain/unsplit rendering in that case.
+    //
+    // opts.feedMode: condensed-row context (PostCardFeed.js, ConstellationLounge's
+    // reel card) — suppresses link-preview cards/iframes in mediaHtml/restHtml
+    // (see blocksToHtml's opts.suppressEmbeds), same posture as this file's
+    // existing "no card in a condensed row" rule for hydrateLinkPreviews.
     function buildPreviewSplit(docContent, opts) {
       opts = opts || {};
       var leadBudget = opts.leadBudget || 140;
       var restBudget = opts.restBudget || 400;
+      var blocksOpts = opts.feedMode ? { suppressEmbeds: true } : undefined;
       var nodes = docContent || [];
 
       var leadPlain = '';
@@ -375,8 +433,8 @@ module('lively.identity.PostCardUtils')
       return {
         hasMedia: hasMedia,
         leadExcerpt: excerptText(leadPlain, leadBudget),
-        mediaHtml: hasMedia ? blocksToHtml(mediaNodes) : '',
-        restHtml: blocksToHtml(restNodes),
+        mediaHtml: hasMedia ? blocksToHtml(mediaNodes, blocksOpts) : '',
+        restHtml: blocksToHtml(restNodes, blocksOpts),
         restTruncated: restTruncated,
       };
     }
@@ -633,6 +691,14 @@ module('lively.identity.PostCardUtils')
       Array.prototype.forEach.call(blocks, function (block) {
         var url = _bareLinkUrlOf(block);
         if (!url || seen[url]) return;
+        // A persisted link_preview_card node (schema's toDOM, or this
+        // function's own _insertLinkPreviewCard below) already rendered as
+        // the next sibling — this is legacy-content territory only (a bare
+        // URL paragraph saved before the persisted-node change existed);
+        // once a real card already sits here, don't insert a second,
+        // separately-live-fetched one next to it.
+        var next = block.nextElementSibling;
+        if (next && next.classList && next.classList.contains('lively-link-preview-card')) return;
         seen[url] = true;
         out.push({ el: block, url: url });
       });
@@ -715,15 +781,41 @@ module('lively.identity.PostCardUtils')
       return { err: entry.err, body: entry.body };
     }
 
-    // data: { url, title, description, image, siteName } from
-    // LinkPreviewServer.js — all untrusted third-party strings, rendered
+    // Client-side re-validation allow-list for embedUrl's hostname — defense
+    // in depth on top of LinkPreviewServer.js's own detectEmbed, which is
+    // the one that actually decides provider/embedUrl (see that file's
+    // header). Never render an <iframe src> whose hostname isn't exactly
+    // one of these, even though the server should only ever send a
+    // known-good one. "shape" picks the embed's aspect ratio (video, 16:9)
+    // vs. fixed-height (audio) in the CSS above, and "label" is the
+    // "Open in ..." text link shown alongside the iframe.
+    var EMBED_HOSTS = {
+      'open.spotify.com':     { label: 'Open in Spotify',     shape: 'audio' },
+      'www.youtube.com':      { label: 'Open in YouTube',     shape: 'video' },
+      'w.soundcloud.com':     { label: 'Open in SoundCloud',  shape: 'audio' },
+      'embed.music.apple.com': { label: 'Open in Apple Music', shape: 'audio' },
+    };
+
+    function _embedHostInfo(embedUrl) {
+      try {
+        var host = new URL(embedUrl).hostname.toLowerCase();
+        return EMBED_HOSTS[host] || null;
+      } catch (e) { return null; }
+    }
+
+    // data: { url, title, description, image, siteName, provider, embedUrl }
+    // from LinkPreviewServer.js — all untrusted third-party strings, rendered
     // via textContent only (same rule as RssProxyServer's entries); `url`/
-    // `image` go through safeHref since the server only allow-lists
-    // http(s) at the scheme level, not full trust. Shared by
-    // _insertLinkPreviewCard (read-only renders) and PostCardEditor.js/
-    // WikiEditor.js's live-editor decoration widget (buildLinkPreviewCard,
-    // exported below) — one card builder, two insertion mechanisms.
+    // `image`/`embedUrl` go through safeHref/_embedHostInfo since the server
+    // only allow-lists http(s) at the scheme level, not full trust. Shared by
+    // _insertLinkPreviewCard (read-only renders), PostCardEditor.js/
+    // WikiEditor.js's live-editor decoration widget AND their
+    // _linkPreviewCardNodeView (the persisted-node render) — one card
+    // builder, several insertion mechanisms.
     function buildLinkPreviewCard(data) {
+      var embedInfo = data.embedUrl ? _embedHostInfo(data.embedUrl) : null;
+      if (embedInfo) return _buildLinkPreviewEmbed(data, embedInfo);
+
       var card = document.createElement('a');
       card.className = 'lively-link-preview-card';
       card.href = safeHref(data.url);
@@ -772,6 +864,56 @@ module('lively.identity.PostCardUtils')
         card.addEventListener(t, function (e) { e.stopPropagation(); });
       });
       return card;
+    }
+
+    // Playable-embed variant — a plain div, never an <a> (HTML forbids
+    // nesting an <iframe>, which is interactive content, inside an anchor).
+    // sandbox intentionally omits allow-top-navigation/allow-forms; allow-
+    // same-origin is needed for Spotify/YouTube/SoundCloud's own players to
+    // read their own storage, allow-popups for "open in app" links some of
+    // them show internally.
+    function _buildLinkPreviewEmbed(data, embedInfo) {
+      var wrap = document.createElement('div');
+      wrap.className = 'lively-link-preview-card lively-link-preview-embed';
+      wrap.setAttribute('data-embed-shape', embedInfo.shape);
+      wrap.contentEditable = 'false';
+
+      var iframe = document.createElement('iframe');
+      iframe.src = data.embedUrl;
+      iframe.loading = 'lazy';
+      // BUG FIX (caught live testing the YouTube embed): matches each
+      // provider's own documented embed snippet (YouTube's in particular)
+      // rather than a guessed minimal set -- without allowfullscreen +
+      // allow-presentation, the player's own fullscreen button silently
+      // doesn't work (no error, it just does nothing). strict-origin-when-
+      // cross-origin (the browser's own default) instead of no-referrer:
+      // no-referrer wasn't actually the cause of a real "Error 153" hit
+      // while testing (confirmed by removing it and still seeing the same
+      // error -- that one turned out to be YouTube's own embed-origin
+      // policy for a plain-http/localhost origin, unrelated to any
+      // attribute here), but there's no reason to strip more than the
+      // default, and matching each provider's own recommended snippet is
+      // the safer default to start from.
+      iframe.referrerPolicy = 'strict-origin-when-cross-origin';
+      iframe.sandbox = 'allow-scripts allow-same-origin allow-popups allow-presentation';
+      iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen';
+      iframe.setAttribute('allowfullscreen', '');
+      iframe.title = data.title || embedInfo.label;
+      if (embedInfo.shape === 'video') iframe.height = '270'; // overridden by aspect-ratio CSS once loaded
+      wrap.appendChild(iframe);
+
+      var openLink = document.createElement('a');
+      openLink.className = 'lively-link-preview-card-openlink';
+      openLink.href = safeHref(data.url);
+      openLink.target = '_blank';
+      openLink.rel = 'noopener noreferrer';
+      openLink.textContent = data.title ? (embedInfo.label + ' — ' + data.title) : embedInfo.label;
+      wrap.appendChild(openLink);
+
+      ['mousedown', 'click'].forEach(function (t) {
+        wrap.addEventListener(t, function (e) { e.stopPropagation(); });
+      });
+      return wrap;
     }
 
     function _insertLinkPreviewCard(afterEl, data) {
@@ -902,10 +1044,69 @@ module('lively.identity.PostCardUtils')
                  '" data-embed-id="' + escapeAttr(attrs.embedId || '') + '">' +
                  '[Embedded Part: ' + escapeHtml(partId) + ']</div>';
         }
+        case 'link_preview_card':
+          return linkPreviewCardHtml(node.attrs || {});
         default:
           if (node.content) return (node.content || []).map(pmNodeToHtml).join('');
           return '';
       }
+    }
+
+    // String-emitting counterpart of buildLinkPreviewCard (that one builds
+    // real DOM, for the live editor's NodeView and the DOM-scan hydration
+    // fallback; this one is used by pmNodeToHtml's string-concatenation
+    // render path) — kept visually in sync by hand, same three-way-
+    // duplication convention this file's header comment already documents
+    // for every other node type. data-* attrs round-trip through the
+    // schema's own toDOM/parseDOM (PostCardEditor.js/WikiEditor.js) exactly
+    // like .lively-embedded-part above.
+    //
+    // _suppressEmbeds (set by blocksToHtml's opts.suppressEmbeds, via
+    // buildPreviewSplit's feedMode): a condensed feed row never mounts a
+    // card or iframe for this node — just a plain text link — matching this
+    // file's pre-existing "no preview card per row" posture for
+    // hydrateLinkPreviews (see MAX_LINK_PREVIEWS_PER_CONTAINER's comment),
+    // which otherwise wouldn't apply here since this node is reachable from
+    // any generic doc-walk, not just hydrateLinkPreviews's own call sites.
+    function linkPreviewCardHtml(attrs) {
+      var dataAttrs = ' data-url="' + escapeAttr(attrs.url || '') +
+        '" data-title="' + escapeAttr(attrs.title || '') +
+        '" data-description="' + escapeAttr(attrs.description || '') +
+        '" data-image="' + escapeAttr(attrs.image || '') +
+        '" data-site-name="' + escapeAttr(attrs.siteName || '') +
+        '" data-provider="' + escapeAttr(attrs.provider || '') +
+        '" data-embed-url="' + escapeAttr(attrs.embedUrl || '') + '"';
+
+      if (_suppressEmbeds) {
+        var label = attrs.title || attrs.siteName || attrs.url || '';
+        return '<a href="' + escapeAttr(safeHref(attrs.url || '')) + '" rel="noopener noreferrer"' +
+          dataAttrs + '>' + escapeHtml(label) + '</a>';
+      }
+
+      var embedInfo = attrs.embedUrl ? _embedHostInfo(attrs.embedUrl) : null;
+      if (embedInfo) {
+        return '<div class="lively-link-preview-card lively-link-preview-embed" data-embed-shape="' +
+          escapeAttr(embedInfo.shape) + '"' + dataAttrs + '>' +
+          '<iframe src="' + escapeAttr(attrs.embedUrl) + '" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" ' +
+          'sandbox="allow-scripts allow-same-origin allow-popups allow-presentation" allowfullscreen ' +
+          'allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen" ' +
+          'title="' + escapeAttr(attrs.title || embedInfo.label) + '"></iframe>' +
+          '<a class="lively-link-preview-card-openlink" href="' + escapeAttr(safeHref(attrs.url || '')) +
+          '" target="_blank" rel="noopener noreferrer">' +
+          escapeHtml(attrs.title ? (embedInfo.label + ' — ' + attrs.title) : embedInfo.label) + '</a>' +
+          '</div>';
+      }
+
+      var safeImage = attrs.image ? safeHref(attrs.image) : null;
+      var imgHtml = (safeImage && safeImage !== '#')
+        ? '<div class="lively-link-preview-card-image-wrap"><img src="' + escapeAttr(safeImage) + '" alt="" loading="lazy"></div>'
+        : '';
+      var textHtml = (attrs.siteName ? '<div class="lively-link-preview-card-site">' + escapeHtml(attrs.siteName) + '</div>' : '') +
+        (attrs.title ? '<div class="lively-link-preview-card-title">' + escapeHtml(attrs.title) + '</div>' : '') +
+        (attrs.description ? '<div class="lively-link-preview-card-desc">' + escapeHtml(attrs.description) + '</div>' : '');
+      return '<a class="lively-link-preview-card" href="' + escapeAttr(safeHref(attrs.url || '')) +
+        '" target="_blank" rel="noopener noreferrer"' + dataAttrs + '>' +
+        imgHtml + '<div class="lively-link-preview-card-text">' + textHtml + '</div></a>';
     }
 
     // §10.1 align/indent (matches PostCardEditor.js's _alignIndentAttrs).

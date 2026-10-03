@@ -143,7 +143,7 @@ module('lively.identity.WikiSerializer')
 
         var title = params.title;
         if (!title && snapshot && snapshot.content && snapshot.content.length) {
-          title = self._extractFirstBlockText(snapshot.content[0]);
+          title = self._extractTitleFromBlocks(snapshot.content);
         }
 
         var payload = {
@@ -280,6 +280,25 @@ module('lively.identity.WikiSerializer')
           if (child.content) return child.content.map(function(c) { return c.text || ''; }).join('');
           return '';
         }).join('').trim().slice(0, 200);
+      },
+
+      // BUG FIX: title auto-extraction only ever tried content[0] — if the
+      // very first block is itself a bare atom node with no text (an
+      // image/video, or now a link_preview_card from pasting a bare URL as
+      // a page's opening line — see LinkPreviewServer.js),
+      // _extractFirstBlockText(content[0]) returns '' and the title
+      // silently falls back to "(untitled)" even though the doc has real
+      // text further down. Scan forward for the first block that actually
+      // yields non-empty text instead. Ported from PostCardSerializer.js's
+      // identical fix (_extractTitleFromBlocks) — that file got this fix
+      // when the same bug first showed up there; this copy never did.
+      _extractTitleFromBlocks: function (content) {
+        if (!content || !content.length) return '';
+        for (var i = 0; i < content.length; i++) {
+          var text = this._extractFirstBlockText(content[i]);
+          if (text) return text;
+        }
+        return '';
       },
 
     });

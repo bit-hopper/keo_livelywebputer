@@ -1023,9 +1023,21 @@ module("lively.identity.PostCardView")
             this._contentEl.innerHTML = U.snapshotToHtml(snapshot);
             return;
           }
-          var split = U.buildPreviewSplit(snapshot.content, {});
+          // feedMode: this branch only runs in _previewMode (ConstellationLounge's
+          // condensed reel card) — same "no preview card in a condensed row"
+          // posture as the hydrateLinkPreviews skip a few lines below, now
+          // also covering persisted link_preview_card nodes reachable from
+          // this generic doc-walk (see PostCardUtils.js's buildPreviewSplit).
+          var split = U.buildPreviewSplit(snapshot.content, { feedMode: true });
           if (!split.hasMedia) {
-            this._contentEl.innerHTML = U.snapshotToHtml(snapshot);
+            // BUG FIX (caught in testing, not in the original design): this
+            // fallback bypassed buildPreviewSplit entirely, so a doc whose
+            // only "media-like" content is a link_preview_card (no other
+            // image/video/audio -- the common case for a link-only post)
+            // fell all the way through to the un-suppressed full render,
+            // reintroducing a mounted card/iframe in this condensed row
+            // despite feedMode above. Needs the same suppression here.
+            this._contentEl.innerHTML = U.snapshotToHtml(snapshot, { feedMode: true });
             return;
           }
           var parts = [];

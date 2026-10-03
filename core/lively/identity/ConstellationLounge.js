@@ -3565,7 +3565,11 @@ module("lively.identity.ConstellationLounge")
         var payload = envelope.record && envelope.record.payload;
         var snapshot = payload &&
           (payload.format === "prosemirror-doc-v1" ? payload.doc : payload.snapshot);
-        return snapshot ? lively.identity.postCardUtils.snapshotToHtml(snapshot) : "";
+        // feedMode: this renders every reply's body at once in a condensed
+        // list — a persisted link_preview_card node must render as a plain
+        // text link here, never mount a card/iframe per reply (same
+        // "noisy and expensive per row" posture as PostCardFeed.js).
+        return snapshot ? lively.identity.postCardUtils.snapshotToHtml(snapshot, { feedMode: true }) : "";
       },
 
       // Same batch endpoint _resolveHandle already uses, generalized to

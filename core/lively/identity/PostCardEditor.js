@@ -73,6 +73,15 @@ module('lively.identity.PostCardEditor')
       return style ? { style: style } : {};
     }
 
+    // Shared by link_preview_card's two parseDOM tag matchers (div for the
+    // embed variant, a for the static card — see that node spec's comment).
+    function _getLinkPreviewCardAttrs(d) {
+      return { url: d.getAttribute('data-url'), title: d.getAttribute('data-title'),
+               description: d.getAttribute('data-description'),
+               image: d.getAttribute('data-image'), siteName: d.getAttribute('data-site-name'),
+               provider: d.getAttribute('data-provider'), embedUrl: d.getAttribute('data-embed-url') };
+    }
+
     var PostCardEditorClass = lively.morphic.Box.subclass('lively.identity.PostCardEditor',
 
     // ─── serialization guard ──────────────────────────────────────────────────────
@@ -395,7 +404,10 @@ module('lively.identity.PostCardEditor')
             '.lively-postcard-editor-container::-webkit-scrollbar-thumb{background:#f6b8cf;' +
             'border-radius:6px;border:2px solid transparent;background-clip:padding-box;}' +
             '.lively-postcard-editor-container::-webkit-scrollbar-thumb:hover{background:#E31361;' +
-            'background-clip:padding-box;}';
+            'background-clip:padding-box;}' +
+            '.lively-link-preview-node{margin:4px 0;border-radius:8px;}' +
+            '.lively-link-preview-node.lively-link-preview-node-selected,' +
+            '.lively-link-preview-node.ProseMirror-selectednode{outline:2px solid #8cf;}';
           document.head.appendChild(styleEl);
         }
 
@@ -1270,6 +1282,7 @@ module('lively.identity.PostCardEditor')
             math_inline:  function (node, view, getPos) { return self._mathNodeView(node, view, getPos); },
             math_display: function (node, view, getPos) { return self._mathNodeView(node, view, getPos); },
             embeddedPart: function (node, view, getPos) { return self._embeddedPartNodeView(node, view, getPos); },
+            link_preview_card: function (node, view, getPos) { return self._linkPreviewCardNodeView(node, view, getPos); },
             image:        function (node, view, getPos) { return self._attachmentImageNodeView(node, view, getPos); },
             video:        function (node, view, getPos) { return self._attachmentVideoNodeView(node, view, getPos); },
             audio:        function (node, view, getPos) { return self._attachmentAudioNodeView(node, view, getPos); },
@@ -1413,12 +1426,27 @@ module('lively.identity.PostCardEditor')
       // a no-op-to-the-doc transaction tagged with this plugin's key once
       // the fetch resolves, purely to force decorations to recompute with
       // the now-cached result.
+      //
+      // Decoration -> persisted node: the decoration above is deliberately
+      // ephemeral (it survives neither deleting the url text nor save/
+      // reload). Once the fetch has resolved AND the selection has moved
+      // out of that paragraph, this plugin's own `view()` hook (below)
+      // converts it into a REAL link_preview_card node via a dispatched
+      // transaction, so it survives both. Using `view().update(view)` to
+      // check "is the current selection outside paragraph P" against the
+      // CURRENT doc on every transition (rather than diffing against
+      // prevState/trying to map a captured position forward) sidesteps the
+      // staleness risk a setTimeout/rAF-based deferral would have against
+      // remote edits in WikiEditor.js's Yjs mode (not applicable to this
+      // plain-mode copy, but the two are hand-mirrored) — there's nothing
+      // to go stale since every check re-reads view.state.doc fresh.
       _buildLinkPreviewPlugin: function (prosemirror) {
         var self = this;
         var Plugin = prosemirror.state.Plugin;
         var PluginKey = prosemirror.state.PluginKey;
         var Decoration = prosemirror.view.Decoration;
         var DecorationSet = prosemirror.view.DecorationSet;
+        var closeHistory = prosemirror.history.closeHistory;
         var key = new PluginKey('postcardLinkPreview');
         var BARE_URL_RE = /^(https?:\/\/[^\s<>"']+)$/i;
 
@@ -1434,6 +1462,16 @@ module('lively.identity.PostCardEditor')
           }
           var m = BARE_URL_RE.exec((child.text || '').trim());
           return m ? m[1] : null;
+        }
+
+        // True when a link_preview_card for `url` already sits immediately
+        // after the paragraph ending at `endPos` — covers both "this
+        // plugin already converted it" and legacy content that happened to
+        // already have one. Shared by computeDecorations (skip the
+        // decoration) and maybeCommit (skip re-inserting).
+        function hasSiblingCard(doc, endPos, url) {
+          var next = doc.nodeAt(endPos);
+          return !!(next && next.type.name === 'link_preview_card' && next.attrs.url === url);
         }
 
         function requestRefresh() {
@@ -1462,16 +1500,58 @@ module('lively.identity.PostCardEditor')
             if (node.type.name !== 'paragraph') return true;
             var url = bareUrlOf(node);
             if (!url) return false;
+            var widgetPos = pos + node.nodeSize;
+            // Already converted to a real node (or legacy content already
+            // had one) — it renders itself via _linkPreviewCardNodeView,
+            // don't also show the derived decoration.
+            if (hasSiblingCard(state.doc, widgetPos, url)) return false;
             var cached = U.peekLinkPreview(url);
             if (cached === undefined) { U.fetchLinkPreview(url, requestRefresh); return false; }
             if (cached === null || cached.err || !cached.body || cached.body.error) return false;
-            var widgetPos = pos + node.nodeSize;
             decos.push(Decoration.widget(widgetPos, function () {
               return U.buildLinkPreviewCard(cached.body);
             }, { key: 'link-preview-' + url, side: 1, stopEvent: function () { return true; } }));
             return false;
           });
           return DecorationSet.create(state.doc, decos);
+        }
+
+        // Checks every bare-url paragraph in the CURRENT doc and converts
+        // the first one eligible (resolved cache, selection outside it, no
+        // sibling card yet) into a real node. Called after every
+        // transition (local or remote) via the `view()` hook below.
+        function maybeCommit(view) {
+          var state = view.state;
+          var U = lively.identity.postCardUtils;
+          var sel = state.selection;
+          var found = null;
+          state.doc.descendants(function (node, pos) {
+            if (found) return false;
+            if (node.type.name !== 'paragraph') return true;
+            var url = bareUrlOf(node);
+            if (!url) return false;
+            var start = pos, end = pos + node.nodeSize;
+            if (sel.from <= end && sel.to >= start) return false; // selection still touches this paragraph
+            if (hasSiblingCard(state.doc, end, url)) return false;
+            var cached = U.peekLinkPreview(url);
+            if (!cached || cached.err || !cached.body || cached.body.error) return false;
+            found = { endPos: end, body: cached.body };
+            return false;
+          });
+          if (!found) return;
+          var nodeType = state.schema.nodes.link_preview_card;
+          var tr = state.tr.insert(found.endPos, nodeType.create({
+            url: found.body.url || '', title: found.body.title || null,
+            description: found.body.description || null, image: found.body.image || null,
+            siteName: found.body.siteName || null, provider: found.body.provider || null,
+            embedUrl: found.body.embedUrl || null,
+          }));
+          // Without this, the insert lands outside prosemirror-history's
+          // ~500ms grouping window (the unfurl fetch alone can take
+          // seconds) and becomes its own silent undo step — pressing Undo
+          // once right after the card appears would do nothing visible.
+          if (closeHistory) closeHistory(tr);
+          view.dispatch(tr);
         }
 
         return new Plugin({
@@ -1484,6 +1564,9 @@ module('lively.identity.PostCardEditor')
           },
           props: {
             decorations: function (state) { return key.getState(state); },
+          },
+          view: function (editorView) {
+            return { update: function (view) { maybeCommit(view); } };
           },
         });
       },
@@ -2679,6 +2762,44 @@ module('lively.identity.PostCardEditor')
         };
       },
 
+      // NodeView for the persisted link_preview_card node (modeled on
+      // _embeddedPartNodeView just above, not the click-to-edit
+      // _mathNodeView — this node never has text to edit). Builds the card/
+      // embed DOM once via the shared buildLinkPreviewCard (same builder the
+      // read-only render's hydrateLinkPreviews and this node's own toDOM
+      // fallback round-trip to) and only rebuilds it if url/embedUrl
+      // actually changed, so an embed iframe doesn't reload on unrelated
+      // doc edits elsewhere. Click-swallowing matches embeddedPart's own
+      // convention (buildLinkPreviewCard's internal mousedown/click ->
+      // stopPropagation listeners) rather than a NodeView-level stopEvent —
+      // a cross-origin iframe's own internal clicks never bubble to the
+      // parent document regardless, so there's nothing stopEvent would add.
+      _linkPreviewCardNodeView: function (node, view, getPos) {
+        var U = lively.identity.postCardUtils;
+        var wrap = document.createElement('div');
+        wrap.className = 'lively-link-preview-node';
+
+        function render(currentNode) {
+          wrap.innerHTML = '';
+          wrap.appendChild(U.buildLinkPreviewCard(currentNode.attrs));
+        }
+        render(node);
+
+        return {
+          dom: wrap,
+          update: function (newNode) {
+            if (newNode.type !== node.type) return false;
+            var changed = newNode.attrs.url !== node.attrs.url || newNode.attrs.embedUrl !== node.attrs.embedUrl;
+            node = newNode;
+            if (changed) render(node);
+            return true;
+          },
+          selectNode: function () { wrap.classList.add('lively-link-preview-node-selected'); },
+          deselectNode: function () { wrap.classList.remove('lively-link-preview-node-selected'); },
+          ignoreMutation: function () { return true; },
+        };
+      },
+
       // NodeView for the image node (Encryption.md §6). Attachments uploaded
       // via FileCrypto never carry a real, permanently-fetchable src for a
       // private/shared postcard (its blob is encrypted) — this resolves the
@@ -3458,6 +3579,42 @@ module('lively.identity.PostCardEditor')
                                 'data-cid':    n.attrs.cid    || '',
                                 'data-handle': n.attrs.handle || '',
                                 'data-embed-id': n.attrs.embedId || '' }];
+                            } },
+            // Persisted link-preview card: unlike the old purely-derived
+            // decoration (still used while actively typing a URL — see
+            // _buildLinkPreviewPlugin), this is a REAL node once inserted,
+            // so it survives deleting the url text that produced it, both
+            // live and across save/reload. embedUrl/provider set only for a
+            // recognized Spotify/YouTube/SoundCloud/Apple Music link (see
+            // LinkPreviewServer.js's detectEmbed) — toDOM branches to a
+            // sandboxed <iframe> variant for those, matching
+            // buildLinkPreviewCard/pmNodeToHtml's 'link_preview_card' case
+            // in PostCardUtils.js exactly (div, not a, wrapping the iframe —
+            // HTML forbids interactive content inside <a>).
+            link_preview_card: { group: 'block', atom: true,
+                            attrs: { url: { default: '' }, title: { default: null },
+                                     description: { default: null }, image: { default: null },
+                                     siteName: { default: null }, provider: { default: null },
+                                     embedUrl: { default: null } },
+                            // Two tag matchers: toDOM emits a div for the embed
+                            // variant, an a for the static card (HTML forbids an
+                            // iframe inside an a) — parseDOM needs both or a
+                            // same-editor copy/paste of a static card (which
+                            // round-trips through the DOM clipboard) would lose
+                            // its node-ness and degrade to a plain link.
+                            parseDOM: [{ tag: 'div.lively-link-preview-card', getAttrs: _getLinkPreviewCardAttrs },
+                                       { tag: 'a.lively-link-preview-card', getAttrs: _getLinkPreviewCardAttrs }],
+                            toDOM: function(n) {
+                              var a = n.attrs;
+                              var dataAttrs = { 'data-url': a.url || '', 'data-title': a.title || '',
+                                'data-description': a.description || '', 'data-image': a.image || '',
+                                'data-site-name': a.siteName || '', 'data-provider': a.provider || '',
+                                'data-embed-url': a.embedUrl || '' };
+                              if (a.embedUrl) {
+                                return ['div', Object.assign({ class: 'lively-link-preview-card lively-link-preview-embed' }, dataAttrs)];
+                              }
+                              return ['a', Object.assign({ class: 'lively-link-preview-card', href: a.url || '',
+                                target: '_blank', rel: 'noopener noreferrer' }, dataAttrs)];
                             } },
             // Inline image attachments (§10.1's insert-attachment, image case —
             // non-image files fall back to a plain link, see _insertAttachmentLink).
