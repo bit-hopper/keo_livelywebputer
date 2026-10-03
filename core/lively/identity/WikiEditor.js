@@ -1257,6 +1257,7 @@ module('lively.identity.WikiEditor')
           yPM.ySyncPlugin(yXmlFragment),
           yPM.yUndoPlugin(), // sole undo/redo — do NOT add prosemirror history() alongside this
           this._buildHighlightPlugin(prosemirror),
+          this._buildLinkPreviewPlugin(prosemirror),
           prosemirror.keymap.keymap({ 'Mod-z': yPM.undo, 'Mod-y': yPM.redo, 'Mod-Shift-z': yPM.redo }),
           prosemirror.keymap.keymap({ 'Shift-Enter': hardBreakCmd }),
           prosemirror.keymap.keymap(prosemirror.commands.baseKeymap),
@@ -1363,6 +1364,72 @@ module('lively.identity.WikiEditor')
           });
           return DecorationSet.create(state.doc, decos);
         }
+      },
+
+      // Live "link preview" card while composing — identical to
+      // PostCardEditor.js's (see that copy's header comment for the full
+      // rationale on why this needs a decoration widget rather than
+      // reusing PostCardUtils.js's hydrateLinkPreviews directly).
+      _buildLinkPreviewPlugin: function (prosemirror) {
+        var self = this;
+        var Plugin = prosemirror.state.Plugin;
+        var PluginKey = prosemirror.state.PluginKey;
+        var Decoration = prosemirror.view.Decoration;
+        var DecorationSet = prosemirror.view.DecorationSet;
+        var key = new PluginKey('wikiLinkPreview');
+        var BARE_URL_RE = /^(https?:\/\/[^\s<>"']+)$/i;
+
+        function bareUrlOf(node) {
+          if (node.type.name !== 'paragraph' || node.childCount !== 1) return null;
+          var child = node.firstChild;
+          if (!child.isText) return null;
+          var linkType = node.type.schema.marks.link;
+          var mark = linkType && linkType.isInSet(child.marks || []);
+          if (mark) {
+            var href = mark.attrs.href || '';
+            return /^https?:\/\//i.test(href) ? href : null;
+          }
+          var m = BARE_URL_RE.exec((child.text || '').trim());
+          return m ? m[1] : null;
+        }
+
+        function requestRefresh() {
+          var view = self.editorView;
+          if (!view) return;
+          view.dispatch(view.state.tr.setMeta(key, true));
+        }
+
+        function computeDecorations(state) {
+          var U = lively.identity.postCardUtils;
+          var decos = [];
+          state.doc.descendants(function (node, pos) {
+            if (node.type.name !== 'paragraph') return true;
+            var url = bareUrlOf(node);
+            if (!url) return false;
+            var cached = U.peekLinkPreview(url);
+            if (cached === undefined) { U.fetchLinkPreview(url, requestRefresh); return false; }
+            if (cached === null || cached.err || !cached.body || cached.body.error) return false;
+            var widgetPos = pos + node.nodeSize;
+            decos.push(Decoration.widget(widgetPos, function () {
+              return U.buildLinkPreviewCard(cached.body);
+            }, { key: 'link-preview-' + url, side: 1, stopEvent: function () { return true; } }));
+            return false;
+          });
+          return DecorationSet.create(state.doc, decos);
+        }
+
+        return new Plugin({
+          key: key,
+          state: {
+            init: function (_config, state) { return computeDecorations(state); },
+            apply: function (tr, old, _oldState, newState) {
+              return (tr.docChanged || tr.getMeta(key)) ? computeDecorations(newState) : old;
+            },
+          },
+          props: {
+            decorations: function (state) { return key.getState(state); },
+          },
+        });
       },
 
       // NodeView for math_inline/math_display — identical to PostCardEditor.js's.
@@ -1665,6 +1732,7 @@ module('lively.identity.WikiEditor')
           this._previewContainer.innerHTML = snapshot ? lively.identity.postCardUtils.snapshotToHtml(snapshot) : '';
           lively.identity.postCardUtils.hydrateEmbeddedParts(this._previewContainer);
           lively.identity.postCardUtils.hydrateCodeCells(this._previewContainer);
+          lively.identity.postCardUtils.hydrateLinkPreviews(this._previewContainer);
           this._previewContainer.style.top = this._pmContainer.style.top;
           this._previewContainer.style.bottom = this._pmContainer.style.bottom;
           this._pmContainer.style.display = 'none';

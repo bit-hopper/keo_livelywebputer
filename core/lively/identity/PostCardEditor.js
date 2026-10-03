@@ -1239,6 +1239,7 @@ module('lively.identity.PostCardEditor')
           plugins = [
             prosemirror.history.history(),
             this._buildHighlightPlugin(prosemirror),
+            this._buildLinkPreviewPlugin(prosemirror),
             prosemirror.keymap.keymap({
               'Mod-z': prosemirror.history.undo,
               'Mod-y': prosemirror.history.redo,
@@ -1377,6 +1378,114 @@ module('lively.identity.PostCardEditor')
           });
           return DecorationSet.create(state.doc, decos);
         }
+      },
+
+      // Live "link preview" card while composing — the counterpart to
+      // PostCardUtils.js's hydrateLinkPreviews for the read-only render,
+      // but that function works by setting .innerHTML on a plain DOM
+      // container, which would fight ProseMirror for ownership of this
+      // editor's DOM (ProseMirror re-renders its own subtree from the doc
+      // model on every change; a sibling node spliced in by hand doesn't
+      // survive that). Decorations are the correct mechanism for "extra,
+      // non-document chrome inside the editor" — same idiom as
+      // _buildHighlightPlugin's syntax-highlight spans, here used for a
+      // block WIDGET decoration instead of inline ones.
+      //
+      // "Bare link paragraph" detection mirrors PostCardUtils.js's
+      // _bareLinkUrlOf exactly, just over the ProseMirror doc model instead
+      // of rendered HTML: a paragraph whose only child is a single text
+      // node that's either fully covered by a link mark, or itself looks
+      // like a bare URL (this editor has no autolink-on-paste input rule —
+      // see _promptLink's own header comment — so a pasted bare URL is
+      // plain, unmarked text; this intentionally does NOT add a real link
+      // mark for it, just a visual decoration + the preview widget, to
+      // avoid mutating the document as a side effect of rendering).
+      //
+      // Fetching is async (postCardUtils.fetchLinkPreview, shared cache
+      // with the read-only render and this editor's own earlier look at
+      // the same URL) but computing decorations must stay a pure,
+      // synchronous read of state — ProseMirror calls it on every
+      // keystroke. So: peekLinkPreview reads the cache without ever
+      // triggering an XHR itself; if a URL has no cache entry yet, this
+      // kicks off fetchLinkPreview as a side effect of computeDecorations
+      // (acceptable — it's idempotent and cheap, _fetchLinkPreview itself
+      // dedupes concurrent/duplicate calls for the same url) and dispatches
+      // a no-op-to-the-doc transaction tagged with this plugin's key once
+      // the fetch resolves, purely to force decorations to recompute with
+      // the now-cached result.
+      _buildLinkPreviewPlugin: function (prosemirror) {
+        var self = this;
+        var Plugin = prosemirror.state.Plugin;
+        var PluginKey = prosemirror.state.PluginKey;
+        var Decoration = prosemirror.view.Decoration;
+        var DecorationSet = prosemirror.view.DecorationSet;
+        var key = new PluginKey('postcardLinkPreview');
+        var BARE_URL_RE = /^(https?:\/\/[^\s<>"']+)$/i;
+
+        function bareUrlOf(node) {
+          if (node.type.name !== 'paragraph' || node.childCount !== 1) return null;
+          var child = node.firstChild;
+          if (!child.isText) return null;
+          var linkType = node.type.schema.marks.link;
+          var mark = linkType && linkType.isInSet(child.marks || []);
+          if (mark) {
+            var href = mark.attrs.href || '';
+            return /^https?:\/\//i.test(href) ? href : null;
+          }
+          var m = BARE_URL_RE.exec((child.text || '').trim());
+          return m ? m[1] : null;
+        }
+
+        function requestRefresh() {
+          // self.editorView is null until the constructor's `new
+          // EditorView(...)` call returns (see dispatchTransaction's own
+          // comment on this same race) — a cache hit resolving
+          // synchronously-ish during that window just gets skipped; the
+          // next real doc-changing transaction recomputes from the
+          // now-warm cache anyway, so nothing is lost, just not shown one
+          // keystroke early.
+          var view = self.editorView;
+          if (!view) return;
+          view.dispatch(view.state.tr.setMeta(key, true));
+        }
+
+        function computeDecorations(state) {
+          var U = lively.identity.postCardUtils;
+          var decos = [];
+          state.doc.descendants(function (node, pos) {
+            // BUG FIX (caught before ever landing): returning false here
+            // for every non-paragraph node — not just paragraphs — would
+            // stop ProseMirror's walk from descending into list_item/
+            // blockquote entirely, silently hiding previews for any link
+            // nested inside one. Only a paragraph is a dead end for this
+            // search; every other container must keep descending.
+            if (node.type.name !== 'paragraph') return true;
+            var url = bareUrlOf(node);
+            if (!url) return false;
+            var cached = U.peekLinkPreview(url);
+            if (cached === undefined) { U.fetchLinkPreview(url, requestRefresh); return false; }
+            if (cached === null || cached.err || !cached.body || cached.body.error) return false;
+            var widgetPos = pos + node.nodeSize;
+            decos.push(Decoration.widget(widgetPos, function () {
+              return U.buildLinkPreviewCard(cached.body);
+            }, { key: 'link-preview-' + url, side: 1, stopEvent: function () { return true; } }));
+            return false;
+          });
+          return DecorationSet.create(state.doc, decos);
+        }
+
+        return new Plugin({
+          key: key,
+          state: {
+            init: function (_config, state) { return computeDecorations(state); },
+            apply: function (tr, old, _oldState, newState) {
+              return (tr.docChanged || tr.getMeta(key)) ? computeDecorations(newState) : old;
+            },
+          },
+          props: {
+            decorations: function (state) { return key.getState(state); },
+          },
+        });
       },
 
       // NodeView for math_inline/math_display (§10.1): renders via KaTeX when

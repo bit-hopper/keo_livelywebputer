@@ -575,6 +575,7 @@ module("lively.identity.WikiView")
           // BUG FIX: see PostCardView.js's _renderContentArea — same fix.
           lively.identity.postCardUtils.hydrateEmbeddedParts(this._contentEl);
           lively.identity.postCardUtils.hydrateCodeCells(this._contentEl);
+          lively.identity.postCardUtils.hydrateLinkPreviews(this._contentEl);
           if (this._highlightQuery) this._applyHighlight(this._highlightQuery);
         },
 

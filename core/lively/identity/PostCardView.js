@@ -1058,6 +1058,10 @@ module("lively.identity.PostCardView")
             // "[Embedded Part: <objId>]" text stub here — nothing ever
             // turned the placeholder into the live morph it references.
             lively.identity.postCardUtils.hydrateEmbeddedParts(this._contentEl);
+            // Skipped in _previewMode (ConstellationLounge's condensed
+            // reel card) — same "no preview card in a condensed row"
+            // posture as PostCardFeed.js.
+            if (!this._previewMode) lively.identity.postCardUtils.hydrateLinkPreviews(this._contentEl);
             return;
           }
 
@@ -1134,6 +1138,7 @@ module("lively.identity.PostCardView")
             lively.identity.postCardUtils.hydrateAttachments(
               self._contentEl, self._handle, (payload && payload.attachments) || [],
             );
+            if (!self._previewMode) lively.identity.postCardUtils.hydrateLinkPreviews(self._contentEl);
           });
         },
 

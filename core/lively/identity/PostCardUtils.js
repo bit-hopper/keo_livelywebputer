@@ -32,6 +32,10 @@ module('lively.identity.PostCardUtils')
       hydrateEmbeddedParts: hydrateEmbeddedParts,
       hydrateAttachments:  hydrateAttachments,
       hydrateCodeCells:    hydrateCodeCells,
+      hydrateLinkPreviews: hydrateLinkPreviews,
+      fetchLinkPreview:    _fetchLinkPreview,
+      peekLinkPreview:     peekLinkPreview,
+      buildLinkPreviewCard: buildLinkPreviewCard,
       runCodeCell:         runCodeCell,
       stopCodeCell:        stopCodeCell,
       openImageViewer:     openImageViewer,
@@ -124,7 +128,21 @@ module('lively.identity.PostCardUtils')
         '.lively-postcard-preview-rest{font-size:11.5px;color:#333;}' +
         '.lively-postcard-preview-rest.lively-postcard-preview-rest-clamped{max-height:140px;overflow:hidden;' +
         '-webkit-mask-image:linear-gradient(#000 70%, transparent 100%);' +
-        'mask-image:linear-gradient(#000 70%, transparent 100%);}';
+        'mask-image:linear-gradient(#000 70%, transparent 100%);}' +
+        // Unfurled link-preview card (see hydrateLinkPreviews below) —
+        // inserted as a block right after a "bare link" paragraph.
+        '.lively-link-preview-card{display:flex;margin:6px 0;border:1px solid #ddd;border-radius:8px;' +
+        'overflow:hidden;text-decoration:none;color:inherit;background:#fff;max-width:480px;}' +
+        '.lively-link-preview-card:hover{border-color:#aaa;background:#fafafa;}' +
+        '.lively-link-preview-card-image-wrap{flex:0 0 96px;background:#eee;}' +
+        '.lively-link-preview-card-image-wrap img{display:block;width:96px;height:96px;object-fit:cover;}' +
+        '.lively-link-preview-card-text{flex:1 1 auto;min-width:0;padding:8px 10px;overflow:hidden;}' +
+        '.lively-link-preview-card-site{font-size:10.5px;color:#888;text-transform:uppercase;' +
+        'letter-spacing:0.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+        '.lively-link-preview-card-title{font-size:12.5px;font-weight:600;color:#222;margin-top:2px;' +
+        'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}' +
+        '.lively-link-preview-card-desc{font-size:11.5px;color:#666;margin-top:2px;' +
+        'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}';
       document.head.appendChild(styleEl);
     }
 
@@ -568,6 +586,197 @@ module('lively.identity.PostCardUtils')
       if (stopBtn) {
         stopBtn.addEventListener('click', function () { stopCodeCell(); setRunning(false, 'Stopped'); });
       }
+    }
+
+    // ── Link previews ───────────────────────────────────────────────────
+    // Scans a rendered container for "bare link" blocks — a <p>/<li> whose
+    // ENTIRE content is one URL, either already a <a> (a link mark applied
+    // over a selection, see PostCardEditor.js's _promptLink) or plain text
+    // that looks like a URL (PostCardEditor.js/WikiEditor.js have no
+    // autolink-on-paste input rule, so a pasted bare URL is otherwise inert
+    // text — this both auto-linkifies it for display and treats it as an
+    // unfurl candidate). Mirrors the common chat-app convention (Slack/
+    // Discord/iMessage): a URL inline within a sentence stays a plain
+    // hyperlink; a URL that IS its paragraph gets a title/description/image
+    // card fetched through LinkPreviewServer.js and inserted right after
+    // it. Call after hydrateEmbeddedParts/hydrateCodeCells, same "upgrade
+    // in place" convention as those — containerEl must already be in the
+    // document (card insertion is a plain DOM sibling-insert, no live-ness
+    // requirement beyond that).
+    //
+    // Capped at MAX_LINK_PREVIEWS_PER_CONTAINER fetches per call so a long
+    // document full of bare links can't fire off unbounded parallel
+    // requests. Not called from PostCardFeed.js's row rendering or
+    // WikiPlayback.js's version viewer — both render many condensed/
+    // historical entries at once (see PostCardFeed.js's own comment on why
+    // it deliberately limits hydration there), where a preview card per row
+    // would be noisy and expensive.
+    var MAX_LINK_PREVIEWS_PER_CONTAINER = 6;
+    var BARE_URL_RE = /^(https?:\/\/[^\s<>"']+)$/i;
+    var _linkPreviewCache = {}; // url -> array of pending callbacks, or {done:true, err, body}
+
+    function hydrateLinkPreviews(containerEl) {
+      if (!containerEl || typeof document === 'undefined') return;
+      var candidates = _findBareLinkBlocks(containerEl);
+      candidates.slice(0, MAX_LINK_PREVIEWS_PER_CONTAINER).forEach(function (c) {
+        _fetchLinkPreview(c.url, function (err, body) {
+          if (err || !body || body.error) return; // silent — no card, no error UI
+          _insertLinkPreviewCard(c.el, body);
+        });
+      });
+    }
+
+    function _findBareLinkBlocks(containerEl) {
+      var out = [];
+      var seen = {};
+      var blocks = containerEl.querySelectorAll('p, li');
+      Array.prototype.forEach.call(blocks, function (block) {
+        var url = _bareLinkUrlOf(block);
+        if (!url || seen[url]) return;
+        seen[url] = true;
+        out.push({ el: block, url: url });
+      });
+      return out;
+    }
+
+    // Returns the URL if `block`'s only meaningful child is a single link
+    // (ignoring whitespace-only text nodes), else null. A plain-text URL
+    // match is rewritten into a real <a> in place as a side effect, so it's
+    // clickable even while/if the preview fetch is still pending or fails.
+    function _bareLinkUrlOf(block) {
+      var kids = Array.prototype.filter.call(block.childNodes, function (n) {
+        return !(n.nodeType === 3 && !/\S/.test(n.textContent || ''));
+      });
+      if (kids.length !== 1) return null;
+      var only = kids[0];
+      if (only.nodeType === 1 && only.tagName === 'A') {
+        var href = safeHref(only.getAttribute('href') || '');
+        return /^https?:\/\//i.test(href) ? href : null;
+      }
+      if (only.nodeType === 3) {
+        var text = (only.textContent || '').trim();
+        var m = BARE_URL_RE.exec(text);
+        if (!m) return null;
+        var a = document.createElement('a');
+        a.href = m[1];
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        a.textContent = m[1];
+        block.replaceChild(a, only);
+        return m[1];
+      }
+      return null;
+    }
+
+    // Fetches (or reuses an in-flight/cached fetch of) url's preview
+    // metadata. thenDo(err, body) — body.error set means "fetched fine, but
+    // nothing worth showing" (e.g. a page with no OG tags at all), treated
+    // the same as a network error by callers (no card). Exported (below) as
+    // fetchLinkPreview — also used directly by PostCardEditor.js/
+    // WikiEditor.js's live-editor decoration plugin (via peekLinkPreview,
+    // next function), so a link previewed once while composing and once
+    // more after the card is saved/viewed hits the same cache.
+    function _fetchLinkPreview(url, thenDo) {
+      var entry = _linkPreviewCache[url];
+      if (entry && entry.done) return thenDo(entry.err, entry.body);
+      if (entry) { entry.waiters.push(thenDo); return; }
+      _linkPreviewCache[url] = { done: false, waiters: [thenDo] };
+
+      var base = lively.identity.did.baseUrl();
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', base + '/nodejs/LinkPreviewServer/unfurl?url=' + encodeURIComponent(url));
+      xhr.withCredentials = true;
+      function finish(err, body) {
+        var waiters = _linkPreviewCache[url].waiters;
+        _linkPreviewCache[url] = { done: true, err: err, body: body };
+        waiters.forEach(function (cb) { cb(err, body); });
+      }
+      xhr.onload = function () {
+        var body = null;
+        try { body = JSON.parse(xhr.responseText); } catch (e) {}
+        finish((xhr.status === 200 || xhr.status === 422) ? null : new Error('HTTP ' + xhr.status), body);
+      };
+      xhr.onerror = function () { finish(new Error('Network error'), null); };
+      xhr.send();
+    }
+
+    // Non-fetching read of the cache _fetchLinkPreview maintains: returns
+    // undefined if url has never been requested (caller should kick off a
+    // real fetchLinkPreview call), null while a fetch is in flight (ask
+    // again later — e.g. once the caller's own refresh hook fires), or
+    // { err, body } once settled. Lets a ProseMirror decorations() function
+    // (which must be a pure, synchronous read of state — see
+    // _buildLinkPreviewPlugin) check "is there something to render right
+    // now" without ever itself triggering an XHR as a side effect.
+    function peekLinkPreview(url) {
+      var entry = _linkPreviewCache[url];
+      if (!entry) return undefined;
+      if (!entry.done) return null;
+      return { err: entry.err, body: entry.body };
+    }
+
+    // data: { url, title, description, image, siteName } from
+    // LinkPreviewServer.js — all untrusted third-party strings, rendered
+    // via textContent only (same rule as RssProxyServer's entries); `url`/
+    // `image` go through safeHref since the server only allow-lists
+    // http(s) at the scheme level, not full trust. Shared by
+    // _insertLinkPreviewCard (read-only renders) and PostCardEditor.js/
+    // WikiEditor.js's live-editor decoration widget (buildLinkPreviewCard,
+    // exported below) — one card builder, two insertion mechanisms.
+    function buildLinkPreviewCard(data) {
+      var card = document.createElement('a');
+      card.className = 'lively-link-preview-card';
+      card.href = safeHref(data.url);
+      card.target = '_blank';
+      card.rel = 'noopener noreferrer';
+      // Belongs in a contenteditable ProseMirror doc as inert chrome, not
+      // editable/selectable text — harmless (and ignored) in the plain
+      // read-only-render call sites.
+      card.contentEditable = 'false';
+
+      var safeImage = data.image ? safeHref(data.image) : null;
+      if (safeImage && safeImage !== '#') {
+        var imgWrap = document.createElement('div');
+        imgWrap.className = 'lively-link-preview-card-image-wrap';
+        var img = document.createElement('img');
+        img.src = safeImage;
+        img.alt = '';
+        img.loading = 'lazy';
+        imgWrap.appendChild(img);
+        card.appendChild(imgWrap);
+      }
+
+      var textWrap = document.createElement('div');
+      textWrap.className = 'lively-link-preview-card-text';
+      if (data.siteName) {
+        var site = document.createElement('div');
+        site.className = 'lively-link-preview-card-site';
+        site.textContent = data.siteName;
+        textWrap.appendChild(site);
+      }
+      if (data.title) {
+        var title = document.createElement('div');
+        title.className = 'lively-link-preview-card-title';
+        title.textContent = data.title;
+        textWrap.appendChild(title);
+      }
+      if (data.description) {
+        var desc = document.createElement('div');
+        desc.className = 'lively-link-preview-card-desc';
+        desc.textContent = data.description;
+        textWrap.appendChild(desc);
+      }
+      card.appendChild(textWrap);
+
+      ['mousedown', 'click'].forEach(function (t) {
+        card.addEventListener(t, function (e) { e.stopPropagation(); });
+      });
+      return card;
+    }
+
+    function _insertLinkPreviewCard(afterEl, data) {
+      if (!afterEl.parentNode) return; // container was replaced/removed meanwhile
+      afterEl.parentNode.insertBefore(buildLinkPreviewCard(data), afterEl.nextSibling);
     }
 
     // Shared confirm-gate + Pyodide Worker orchestration for a Python code
