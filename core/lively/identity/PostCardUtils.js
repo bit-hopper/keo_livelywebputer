@@ -33,6 +33,7 @@ module('lively.identity.PostCardUtils')
       hydrateAttachments:  hydrateAttachments,
       hydrateCodeCells:    hydrateCodeCells,
       hydrateLinkPreviews: hydrateLinkPreviews,
+      hydrateLinkPreviewEmbeds: hydrateLinkPreviewEmbeds,
       fetchLinkPreview:    _fetchLinkPreview,
       peekLinkPreview:     peekLinkPreview,
       buildLinkPreviewCard: buildLinkPreviewCard,
@@ -143,14 +144,32 @@ module('lively.identity.PostCardUtils')
         'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}' +
         '.lively-link-preview-card-desc{font-size:11.5px;color:#666;margin-top:2px;' +
         'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}' +
-        // Playable embed variant (Spotify/YouTube/SoundCloud/Apple Music) —
-        // a plain div, not an <a>, since an <iframe> is interactive content
-        // and HTML forbids nesting that inside an anchor. buildLinkPreviewCard
-        // picks block vs. inline height per provider via a data attribute.
+        // Playable embed variant (Spotify/YouTube/SoundCloud/Apple Music/
+        // Instagram) — a plain div, not an <a>, since an <iframe> is
+        // interactive content and HTML forbids nesting that inside an
+        // anchor. buildLinkPreviewCard picks block vs. inline height per
+        // provider via a data attribute.
         '.lively-link-preview-embed{display:block;margin:6px 0;max-width:480px;}' +
         '.lively-link-preview-embed iframe{display:block;width:100%;border:0;border-radius:8px;}' +
         '.lively-link-preview-embed[data-embed-shape="video"] iframe{aspect-ratio:16/9;height:auto;}' +
         '.lively-link-preview-embed[data-embed-shape="audio"] iframe{height:152px;}' +
+        // Instagram's own /embed/captioned/ page has no fixed aspect ratio
+        // across square/portrait/landscape posts, so instead of a fixed-
+        // height iframe with ITS OWN internal (unstyleable — cross-origin)
+        // scrollbar, _wireInstagramEmbedResize below grows the iframe to its
+        // real content height (via a postMessage Instagram's embed page
+        // sends unprompted) and this wrapper does the scrolling instead, in
+        // a same-origin element we can actually style — confirmed live this
+        // removes Instagram's own internal scrollbar entirely. 500px is just
+        // the pre-resize fallback (avoids a zero-height flash before the
+        // first postMessage arrives); the real cap is max-height below.
+        '.lively-link-preview-embed[data-embed-shape="instagram"] iframe{height:500px;}' +
+        '.lively-link-preview-embed[data-embed-shape="instagram"]{max-height:700px;overflow-y:auto;}' +
+        '.lively-link-preview-embed[data-embed-shape="instagram"]::-webkit-scrollbar{width:10px;}' +
+        '.lively-link-preview-embed[data-embed-shape="instagram"]::-webkit-scrollbar-track{background:transparent;}' +
+        '.lively-link-preview-embed[data-embed-shape="instagram"]::-webkit-scrollbar-thumb' +
+        '{background:#f7c6d9;border-radius:6px;}' +
+        '.lively-link-preview-embed[data-embed-shape="instagram"]{scrollbar-width:thin;scrollbar-color:#f7c6d9 transparent;}' +
         // Bluesky post card — overrides the generic card's horizontal flex
         // layout (image-left/text-right) with a vertical stack, since this
         // is self-rendered post content, not a link-with-thumbnail.
@@ -701,6 +720,27 @@ module('lively.identity.PostCardUtils')
       });
     }
 
+    // Upgrades any already-inserted Instagram embed card's iframe with the
+    // same live auto-resize behavior _buildLinkPreviewEmbed wires up
+    // directly for the live-DOM path (editor NodeViews, hydrateLinkPreviews'
+    // own bare-link fallback above). Needed as a SEPARATE step here because
+    // linkPreviewCardHtml (used by snapshotToHtml/pmNodeToHtml for every
+    // read-only render — PostCardView, WikiView, WikiEditor's preview mode,
+    // WikiPlayback) emits plain inert markup via innerHTML, with no
+    // NodeView-equivalent hook to attach JS behavior at insertion time. A
+    // harmless no-op scan when containerEl has no Instagram embed in it —
+    // call after setting containerEl.innerHTML, same convention as
+    // hydrateEmbeddedParts/hydrateCodeCells/hydrateLinkPreviews.
+    function hydrateLinkPreviewEmbeds(containerEl) {
+      if (!containerEl || typeof document === 'undefined') return;
+      var frames = containerEl.querySelectorAll('.lively-link-preview-embed[data-embed-shape="instagram"] iframe');
+      Array.prototype.forEach.call(frames, function (iframe) {
+        if (iframe._ligResizeWired) return;
+        iframe._ligResizeWired = true;
+        _wireInstagramEmbedResize(iframe);
+      });
+    }
+
     function _findBareLinkBlocks(containerEl) {
       var out = [];
       var seen = {};
@@ -811,6 +851,7 @@ module('lively.identity.PostCardUtils')
       'www.youtube.com':      { label: 'Open in YouTube',     shape: 'video' },
       'w.soundcloud.com':     { label: 'Open in SoundCloud',  shape: 'audio' },
       'embed.music.apple.com': { label: 'Open in Apple Music', shape: 'audio' },
+      'www.instagram.com':    { label: 'Open in Instagram',   shape: 'instagram' },
     };
 
     function _embedHostInfo(embedUrl) {
@@ -890,6 +931,32 @@ module('lively.identity.PostCardUtils')
       return card;
     }
 
+    // Instagram's /embed/captioned/ page posts window.postMessage({type:
+    // "MEASURE", details:{height}}) to its parent unprompted, as soon as it
+    // mounts and whenever its content reflows -- confirmed live (not gated
+    // on Instagram's own official embed.js being loaded in the parent; any
+    // listening parent gets it). Used to size the iframe to its real content
+    // height so Instagram's own internal scrollbar never appears, letting
+    // the wrapper div's own (same-origin, styleable -- see the CSS above)
+    // scrollbar take over instead. A cross-origin iframe's internal
+    // scrollbar can't be restyled from the parent page at all, which is why
+    // this resize dance exists rather than just a fixed-height iframe.
+    function _wireInstagramEmbedResize(iframe) {
+      function onMsg(e) {
+        // Self-cleaning: once the card (and this iframe) is removed from the
+        // document -- e.g. the editor rebuilds this NodeView, or the user
+        // navigates away from this wiki version -- drop the listener rather
+        // than leaking it for the rest of the page's lifetime.
+        if (!iframe.isConnected) { window.removeEventListener('message', onMsg); return; }
+        if (e.source !== iframe.contentWindow) return;
+        var data = e.data;
+        if (typeof data === 'string') { try { data = JSON.parse(data); } catch (e2) { return; } }
+        if (!data || data.type !== 'MEASURE' || !data.details || typeof data.details.height !== 'number') return;
+        iframe.style.height = data.details.height + 'px';
+      }
+      window.addEventListener('message', onMsg);
+    }
+
     // Playable-embed variant — a plain div, never an <a> (HTML forbids
     // nesting an <iframe>, which is interactive content, inside an anchor).
     // sandbox intentionally omits allow-top-navigation/allow-forms; allow-
@@ -924,6 +991,19 @@ module('lively.identity.PostCardUtils')
       iframe.setAttribute('allowfullscreen', '');
       iframe.title = data.title || embedInfo.label;
       if (embedInfo.shape === 'video') iframe.height = '270'; // overridden by aspect-ratio CSS once loaded
+      if (embedInfo.shape === 'instagram') {
+        _wireInstagramEmbedResize(iframe);
+        // BUG FIX (caught live): resizing the iframe to its real content
+        // height (above) stops ITS content from needing to scroll, but
+        // Instagram's own page still forces a scrollbar gutter regardless
+        // (common anti-layout-shift CSS, e.g. `overflow-y:scroll` on its own
+        // html/body) -- confirmed live as a second, unstyleable gray classic
+        // scrollbar (complete with arrow buttons) rendered right next to our
+        // own pink one. The legacy `scrolling` attribute is enforced by the
+        // browser at the frame level, overriding whatever the framed page's
+        // own CSS wants, so it suppresses that regardless of origin.
+        iframe.setAttribute('scrolling', 'no');
+      }
       wrap.appendChild(iframe);
 
       // No separate "Open in <provider>" caption here -- every one of the
@@ -1215,6 +1295,11 @@ module('lively.identity.PostCardUtils')
           '<iframe src="' + escapeAttr(attrs.embedUrl) + '" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" ' +
           'sandbox="allow-scripts allow-same-origin allow-popups allow-presentation" allowfullscreen ' +
           'allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen" ' +
+          // scrolling="no" -- see _buildLinkPreviewEmbed's identical fix for
+          // why this is needed for Instagram specifically (suppresses a
+          // second, unstyleable scrollbar its own page forces regardless of
+          // the resize hydrateLinkPreviewEmbeds performs after insertion).
+          (embedInfo.shape === 'instagram' ? 'scrolling="no" ' : '') +
           'title="' + escapeAttr(attrs.title || embedInfo.label) + '"></iframe>' +
           '</div>';
       }

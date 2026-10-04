@@ -34,12 +34,18 @@
  * for GIF images) — client must still scheme-check it before use.
  *
  * Also detects (detectEmbed, pure string transform, no extra network call)
- * whether the URL is a Spotify/YouTube/SoundCloud/Apple Music link and, if
- * so, includes `provider`/`embedUrl` fields the client renders as a
- * sandboxed <iframe> instead of (or alongside) the static card — see
+ * whether the URL is a Spotify/YouTube/SoundCloud/Apple Music/Instagram
+ * link and, if so, includes `provider`/`embedUrl` fields the client renders
+ * as a sandboxed <iframe> instead of (or alongside) the static card — see
  * PostCardUtils.js's buildLinkPreviewCard. The client re-validates
  * embedUrl's hostname against its own short allow-list before ever using it
  * as an iframe src; this file is the one that decides which hosts qualify.
+ * Instagram's embed differs from the other four in one way worth noting:
+ * its embedUrl points at Instagram's own official, script-free "/embed/"
+ * page (same one their site's own "Embed" button generates for third-party
+ * use) rather than a purpose-built player -- confirmed live to render a
+ * complete self-contained post card (avatar, image, caption, like count)
+ * with no X-Frame-Options/frame-ancestors blocking it.
  *
  * For any other site, falls back to oEmbed autodiscovery (discoverOembedUrl)
  * to enrich a sparse OG scrape with title/thumbnail/author/provider —
@@ -310,6 +316,22 @@ function detectEmbed(targetUrl) {
     // Swap host only -- same path/query, matching Apple's own documented
     // embed convention (music.apple.com -> embed.music.apple.com).
     return { provider: 'apple-music', embedUrl: 'https://embed.music.apple.com' + u.pathname + u.search };
+  }
+  if (host === 'instagram.com' || host === 'www.instagram.com') {
+    // A post/reel/tv URL optionally carries a leading "/<username>/" segment
+    // (e.g. "/culturenightmarket/p/DdsDtFVv2_9/", confirmed live via a real
+    // post's own og:url) -- captured but discarded, since Instagram's embed
+    // endpoint 404s if given that prefix (confirmed live: /someuser/p/<id>/
+    // embed/ -> 404, /p/<id>/embed/ -> 200). "/embed/captioned/" (rather than
+    // plain "/embed/") is Instagram's own documented variant that includes
+    // the post's caption text -- same self-contained, script-free iframe
+    // page either way (confirmed live: no X-Frame-Options/frame-ancestors on
+    // the /embed/ response, so it's embeddable from any origin by design --
+    // this is the same endpoint Instagram's own official "Embed" button
+    // generates for third-party sites, not a scrape of internal data).
+    var igm = /^\/(?:[^\/]+\/)?(p|reel|tv)\/([A-Za-z0-9_-]+)/.exec(u.pathname);
+    if (igm) return { provider: 'instagram', embedUrl: 'https://www.instagram.com/' + igm[1] + '/' + igm[2] + '/embed/captioned/' };
+    return null;
   }
   return null;
 }

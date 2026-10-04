@@ -438,6 +438,7 @@ module('lively.identity.WikiPlayback')
         this._snapDiv.innerHTML = html;
         // BUG FIX: see PostCardView.js's _renderContentArea — same fix.
         lively.identity.postCardUtils.hydrateEmbeddedParts(this._snapDiv);
+        lively.identity.postCardUtils.hydrateLinkPreviewEmbeds(this._snapDiv);
       },
 
       _setVersionInfo: function (text) {

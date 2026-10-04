@@ -1843,6 +1843,7 @@ module('lively.identity.WikiEditor')
           this._previewContainer.innerHTML = snapshot ? lively.identity.postCardUtils.snapshotToHtml(snapshot) : '';
           lively.identity.postCardUtils.hydrateEmbeddedParts(this._previewContainer);
           lively.identity.postCardUtils.hydrateCodeCells(this._previewContainer);
+          lively.identity.postCardUtils.hydrateLinkPreviewEmbeds(this._previewContainer);
           lively.identity.postCardUtils.hydrateLinkPreviews(this._previewContainer);
           this._previewContainer.style.top = this._pmContainer.style.top;
           this._previewContainer.style.bottom = this._pmContainer.style.bottom;
