@@ -831,6 +831,11 @@ module('lively.identity.PostCardUtils')
         img.src = safeImage;
         img.alt = '';
         img.loading = 'lazy';
+        // LinkPreviewServer.js's image field now has a fallback chain that
+        // ends in an UNVERIFIED guessed "<origin>/favicon.ico" (not every
+        // site actually has one there) -- hide the whole image slot rather
+        // than show a broken-image icon when that guess 404s/errors.
+        img.onerror = function () { imgWrap.remove(); };
         imgWrap.appendChild(img);
         card.appendChild(imgWrap);
       }

@@ -275,11 +275,28 @@ function extractMeta(html) {
   var titleMatch = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
   var plainTitle = titleMatch ? decodeEntities(titleMatch[1]).replace(/\s+/g, ' ').trim() : null;
 
+  // Declared favicon (any rel containing "icon" -- covers "icon",
+  // "shortcut icon", "apple-touch-icon", "apple-touch-icon-precomposed")
+  // as a universal fallback image for pages with no og:image/twitter:image
+  // -- most plain articles/tools/docs sites have one of these even without
+  // ever setting up Open Graph tags at all. Takes the FIRST one found
+  // (typically the most generic "icon" link, listed before higher-res
+  // apple-touch variants in most sites' markup) rather than trying to pick
+  // the "best" one -- any real favicon beats no image at all for a small
+  // link-card thumbnail.
+  var iconMatch = /<link\s+([^>]*rel\s*=\s*["'][^"']*icon[^"']*["'][^>]*)>/i.exec(html);
+  var iconHref = null;
+  if (iconMatch) {
+    var hrefMatch = /href\s*=\s*["']([^"']+)["']/i.exec(iconMatch[1]);
+    if (hrefMatch) iconHref = decodeEntities(hrefMatch[1]);
+  }
+
   return {
     title: metas['og:title'] || metas['twitter:title'] || plainTitle || null,
     description: metas['og:description'] || metas['twitter:description'] || metas.description || null,
     image: metas['og:image:secure_url'] || metas['og:image'] || metas['twitter:image'] || null,
     siteName: metas['og:site_name'] || null,
+    favicon: iconHref,
   };
 }
 
@@ -311,10 +328,27 @@ function unfurl(targetUrl, thenDo) {
       return thenDo(err);
     }
     var meta = extractMeta(result.body);
-    var hostname;
-    try { hostname = new URL(result.finalUrl).hostname; } catch (e) { hostname = ''; }
+    var hostname = '', origin = '';
+    try {
+      var finalU = new URL(result.finalUrl);
+      hostname = finalU.hostname;
+      origin = finalU.protocol + '//' + finalU.host;
+    } catch (e) { /* leave both blank -- result.finalUrl already round-tripped through fetchOnce's own URL parse, so this is unreachable in practice */ }
 
-    if (!meta.title && !meta.description && !meta.image && !embed) {
+    // Universal fallback chain for the card's image: a real og:image/
+    // twitter:image wins, then the page's own declared favicon, then a
+    // guessed /favicon.ico at the same origin -- unverified (not every
+    // site actually has one there), but harmless either way since the
+    // client hotlinks it directly and hides the image slot on a load
+    // error (see buildLinkPreviewCard's onerror handler), degrading to a
+    // text-only card rather than a broken-image icon. This is what makes
+    // "paste literally any link" reliably produce SOME visual card instead
+    // of only the subset of pages that happen to set up Open Graph tags.
+    var image = safeAbsoluteUrl(meta.image, result.finalUrl) ||
+      safeAbsoluteUrl(meta.favicon, result.finalUrl) ||
+      (origin ? origin + '/favicon.ico' : null);
+
+    if (!meta.title && !meta.description && !image && !embed) {
       var emptyBody = { error: 'No preview metadata found' };
       cache.set(targetUrl, { expiresAt: Date.now() + CACHE_TTL_MS, status: 422, body: emptyBody });
       return thenDo(null, 422, emptyBody);
@@ -324,7 +358,7 @@ function unfurl(targetUrl, thenDo) {
       url: result.finalUrl,
       title: truncate(meta.title, MAX_TITLE_LEN),
       description: truncate(meta.description, MAX_DESC_LEN),
-      image: safeAbsoluteUrl(meta.image, result.finalUrl),
+      image: image,
       siteName: meta.siteName || hostname,
     };
     if (embed) { body.provider = embed.provider; body.embedUrl = embed.embedUrl; }
