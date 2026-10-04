@@ -634,6 +634,11 @@ module("lively.identity.ConstellationLounge")
         var frontNode = this._frontCardBox.renderContext().shapeNode;
         frontNode.style.transformOrigin = "50% 50%";
         frontNode.style.transition = "transform 260ms ease, opacity 260ms ease";
+        // Scopes the pink reel-scrollbar rule (_ensureCommentBodyStyle) to
+        // just this box's embedded PostCardView, not every other
+        // .lively-postcard-view-content on the page (the full standalone
+        // view opened from elsewhere keeps the browser's default scrollbar).
+        frontNode.classList.add("lounge-reel-card");
 
         this._navBox = new lively.morphic.Box(lively.rect(0, 0, 120, 32));
         this._navBox.applyStyle({ fill: null, borderWidth: 0 });
@@ -675,6 +680,10 @@ module("lively.identity.ConstellationLounge")
         this._spacesBox.setFill(Color.white);
         this._spacesBox.applyStyle({ borderWidth: 1, borderColor: Color.rgb(238, 238, 238), borderRadius: 8 });
         this._spacesBox.renderContext().shapeNode.style.overflowY = "auto";
+        // Same light-pink pill-thumb treatment as the reel card's content
+        // area (_ensureCommentBodyStyle) — these two listing panels were
+        // still using the browser's plain default scrollbar.
+        this._spacesBox.renderContext().shapeNode.classList.add("lounge-listing-panel");
         $world.addMorph(this._spacesBox);
 
         this._rooms = [];
@@ -686,6 +695,7 @@ module("lively.identity.ConstellationLounge")
         // radius) instead of the plain left-border-only strip it had before.
         this._membersBox.applyStyle({ borderWidth: 1, borderColor: Color.rgb(238, 238, 238), borderRadius: 8 });
         this._membersBox.renderContext().shapeNode.style.overflowY = "auto";
+        this._membersBox.renderContext().shapeNode.classList.add("lounge-listing-panel");
         $world.addMorph(this._membersBox);
 
         // Only turns the stack when no Lively text field currently has
@@ -780,7 +790,25 @@ module("lively.identity.ConstellationLounge")
           ".lounge-comment-thread::-webkit-scrollbar{width:10px;}" +
           ".lounge-comment-thread::-webkit-scrollbar-track{background:#f2f2f3;}" +
           ".lounge-comment-thread::-webkit-scrollbar-thumb{background:#a52c58;border-radius:999px;border:2px solid #f2f2f3;}" +
-          ".lounge-comment-thread::-webkit-scrollbar-thumb:hover{background:#742040;}";
+          ".lounge-comment-thread::-webkit-scrollbar-thumb:hover{background:#742040;}" +
+          // Reel card's content area (PostCardView._contentEl, already
+          // overflow-y:auto — see PostCardView.js) gets the same pill-thumb
+          // treatment, but a literal light pink (not the deepened rose
+          // above) since this sits on the card's own white face, not a
+          // comment panel. Hover darkens to COMMENT_ACCENT for affordance.
+          ".lounge-reel-card .lively-postcard-view-content{scrollbar-width:thin;scrollbar-color:#f4a7c6 #f7f2f4;}" +
+          ".lounge-reel-card .lively-postcard-view-content::-webkit-scrollbar{width:10px;}" +
+          ".lounge-reel-card .lively-postcard-view-content::-webkit-scrollbar-track{background:#f7f2f4;}" +
+          ".lounge-reel-card .lively-postcard-view-content::-webkit-scrollbar-thumb{background:#f4a7c6;border-radius:999px;border:2px solid #f7f2f4;}" +
+          ".lounge-reel-card .lively-postcard-view-content::-webkit-scrollbar-thumb:hover{background:#e8497e;}" +
+          // Same light-pink treatment for the cluster's own listing panels
+          // (_spacesBox's Spaces/rooms list, _membersBox's Members list) —
+          // both were still on the browser's plain default scrollbar.
+          ".lounge-listing-panel{scrollbar-width:thin;scrollbar-color:#f4a7c6 #f7f2f4;}" +
+          ".lounge-listing-panel::-webkit-scrollbar{width:10px;}" +
+          ".lounge-listing-panel::-webkit-scrollbar-track{background:#f7f2f4;}" +
+          ".lounge-listing-panel::-webkit-scrollbar-thumb{background:#f4a7c6;border-radius:999px;border:2px solid #f7f2f4;}" +
+          ".lounge-listing-panel::-webkit-scrollbar-thumb:hover{background:#e8497e;}";
         document.head.appendChild(styleEl);
       },
     },
