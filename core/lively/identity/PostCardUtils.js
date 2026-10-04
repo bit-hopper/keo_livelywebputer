@@ -168,7 +168,9 @@ module('lively.identity.PostCardUtils')
         '.lively-bsky-images[data-count="2"]{grid-template-columns:1fr 1fr;}' +
         '.lively-bsky-images[data-count="3"],.lively-bsky-images[data-count="4"]{grid-template-columns:1fr 1fr;}' +
         '.lively-bsky-images img{display:block;width:100%;height:140px;object-fit:cover;background:#eee;}' +
-        '.lively-bsky-stats{display:flex;gap:14px;margin-top:8px;font-size:11px;color:#888;}';
+        '.lively-bsky-stats{display:flex;gap:14px;margin-top:8px;font-size:11px;color:#888;}' +
+        '.lively-bsky-stats span{display:inline-flex;align-items:center;gap:3px;}' +
+        '.lively-bsky-stats .material-symbols-rounded{font-size:14px;}';
       document.head.appendChild(styleEl);
     }
 
@@ -1014,15 +1016,19 @@ module('lively.identity.PostCardUtils')
       if (hasStats) {
         var stats = document.createElement('div');
         stats.className = 'lively-bsky-stats';
-        function stat(count, label) {
+        function stat(count, icon) {
           if (!count) return;
           var span = document.createElement('span');
-          span.textContent = label + ' ' + count;
+          var iconSpan = document.createElement('span');
+          iconSpan.className = 'material-symbols-rounded';
+          iconSpan.textContent = icon;
+          span.appendChild(iconSpan);
+          span.appendChild(document.createTextNode(' ' + count));
           stats.appendChild(span);
         }
-        stat(b.likeCount, '♥');
-        stat(b.repostCount, '🔁');
-        stat(b.replyCount, '💬');
+        stat(b.likeCount, 'favorite');
+        stat(b.repostCount, 'repeat');
+        stat(b.replyCount, 'chat_bubble');
         card.appendChild(stats);
       }
 
@@ -1245,9 +1251,9 @@ module('lively.identity.PostCardUtils')
       }).join('');
       var imagesHtml = images ? '<div class="lively-bsky-images" data-count="' + (b.images || []).length + '">' + images + '</div>' : '';
       var statsParts = [];
-      if (b.likeCount) statsParts.push('<span>♥ ' + b.likeCount + '</span>');
-      if (b.repostCount) statsParts.push('<span>🔁 ' + b.repostCount + '</span>');
-      if (b.replyCount) statsParts.push('<span>💬 ' + b.replyCount + '</span>');
+      if (b.likeCount) statsParts.push('<span><span class="material-symbols-rounded">favorite</span> ' + b.likeCount + '</span>');
+      if (b.repostCount) statsParts.push('<span><span class="material-symbols-rounded">repeat</span> ' + b.repostCount + '</span>');
+      if (b.replyCount) statsParts.push('<span><span class="material-symbols-rounded">chat_bubble</span> ' + b.replyCount + '</span>');
       var statsHtml = statsParts.length ? '<div class="lively-bsky-stats">' + statsParts.join('') + '</div>' : '';
 
       return '<a class="lively-link-preview-card lively-link-preview-bluesky" href="' +

@@ -1010,9 +1010,9 @@ function _blueskyCardHtml(attrs) {
   }).join('');
   var imagesHtml = images ? '<div class="lively-bsky-images" data-count="' + (b.images || []).length + '">' + images + '</div>' : '';
   var statsParts = [];
-  if (b.likeCount) statsParts.push('<span>♥ ' + b.likeCount + '</span>');
-  if (b.repostCount) statsParts.push('<span>🔁 ' + b.repostCount + '</span>');
-  if (b.replyCount) statsParts.push('<span>💬 ' + b.replyCount + '</span>');
+  if (b.likeCount) statsParts.push('<span><span class="material-symbols-rounded">favorite</span> ' + b.likeCount + '</span>');
+  if (b.repostCount) statsParts.push('<span><span class="material-symbols-rounded">repeat</span> ' + b.repostCount + '</span>');
+  if (b.replyCount) statsParts.push('<span><span class="material-symbols-rounded">chat_bubble</span> ' + b.replyCount + '</span>');
   var statsHtml = statsParts.length ? '<div class="lively-bsky-stats">' + statsParts.join('') + '</div>' : '';
 
   return '<a class="lively-link-preview-card lively-link-preview-bluesky" href="' +
