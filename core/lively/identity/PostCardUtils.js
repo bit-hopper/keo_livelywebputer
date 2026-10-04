@@ -832,33 +832,51 @@ module('lively.identity.PostCardUtils')
       return out;
     }
 
-    // Returns the URL if `block`'s only meaningful child is a single link
-    // (ignoring whitespace-only text nodes), else null. A plain-text URL
-    // match is rewritten into a real <a> in place as a side effect, so it's
+    // Returns the URL if `block`'s only meaningful content, once you strip
+    // away any nesting of plain inline formatting wrappers (ignoring
+    // whitespace-only text nodes at each level), is a single link or a
+    // single bare-URL text run — else null. A plain-text URL match is
+    // rewritten into a real <a> in place as a side effect, so it's
     // clickable even while/if the preview fetch is still pending or fails.
+    //
+    // The descent through INLINE_WRAPPER_TAGS matters for real content:
+    // a URL pasted from a rich-text source (e.g. Google Docs) typically
+    // arrives as a lone text node buried under several layers of
+    // <span style="font-family:...">/<strong> wrappers rather than sitting
+    // directly in the <p> — the single-level check this used to do missed
+    // that shape entirely (silently skipped it, no card, no error) while a
+    // plain-typed URL in the same document matched fine.
+    var INLINE_WRAPPER_TAGS = { SPAN: 1, STRONG: 1, B: 1, EM: 1, I: 1, U: 1 };
     function _bareLinkUrlOf(block) {
-      var kids = Array.prototype.filter.call(block.childNodes, function (n) {
-        return !(n.nodeType === 3 && !/\S/.test(n.textContent || ''));
-      });
-      if (kids.length !== 1) return null;
-      var only = kids[0];
-      if (only.nodeType === 1 && only.tagName === 'A') {
-        var href = safeHref(only.getAttribute('href') || '');
-        return /^https?:\/\//i.test(href) ? href : null;
+      var node = block;
+      for (;;) {
+        var kids = Array.prototype.filter.call(node.childNodes, function (n) {
+          return !(n.nodeType === 3 && !/\S/.test(n.textContent || ''));
+        });
+        if (kids.length !== 1) return null;
+        var only = kids[0];
+        if (only.nodeType === 1 && only.tagName === 'A') {
+          var href = safeHref(only.getAttribute('href') || '');
+          return /^https?:\/\//i.test(href) ? href : null;
+        }
+        if (only.nodeType === 3) {
+          var text = (only.textContent || '').trim();
+          var m = BARE_URL_RE.exec(text);
+          if (!m) return null;
+          var a = document.createElement('a');
+          a.href = m[1];
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+          a.textContent = m[1];
+          node.replaceChild(a, only);
+          return m[1];
+        }
+        if (only.nodeType === 1 && INLINE_WRAPPER_TAGS[only.tagName]) {
+          node = only;
+          continue;
+        }
+        return null;
       }
-      if (only.nodeType === 3) {
-        var text = (only.textContent || '').trim();
-        var m = BARE_URL_RE.exec(text);
-        if (!m) return null;
-        var a = document.createElement('a');
-        a.href = m[1];
-        a.target = '_blank';
-        a.rel = 'noopener noreferrer';
-        a.textContent = m[1];
-        block.replaceChild(a, only);
-        return m[1];
-      }
-      return null;
     }
 
     // Fetches (or reuses an in-flight/cached fetch of) url's preview
