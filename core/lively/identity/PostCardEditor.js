@@ -76,10 +76,14 @@ module('lively.identity.PostCardEditor')
     // Shared by link_preview_card's two parseDOM tag matchers (div for the
     // embed variant, a for the static card — see that node spec's comment).
     function _getLinkPreviewCardAttrs(d) {
+      var rawBluesky = d.getAttribute('data-bluesky');
+      var bluesky = null;
+      if (rawBluesky) { try { bluesky = JSON.parse(rawBluesky); } catch (e) { bluesky = null; } }
       return { url: d.getAttribute('data-url'), title: d.getAttribute('data-title'),
                description: d.getAttribute('data-description'),
                image: d.getAttribute('data-image'), siteName: d.getAttribute('data-site-name'),
-               provider: d.getAttribute('data-provider'), embedUrl: d.getAttribute('data-embed-url') };
+               provider: d.getAttribute('data-provider'), embedUrl: d.getAttribute('data-embed-url'),
+               bluesky: bluesky };
     }
 
     var PostCardEditorClass = lively.morphic.Box.subclass('lively.identity.PostCardEditor',
@@ -1583,7 +1587,7 @@ module('lively.identity.PostCardEditor')
             url: found.body.url || '', title: found.body.title || null,
             description: found.body.description || null, image: found.body.image || null,
             siteName: found.body.siteName || null, provider: found.body.provider || null,
-            embedUrl: found.body.embedUrl || null,
+            embedUrl: found.body.embedUrl || null, bluesky: found.body.bluesky || null,
           }));
           // Without this, the insert lands outside prosemirror-history's
           // ~500ms grouping window (the unfurl fetch alone can take
@@ -3634,13 +3638,15 @@ module('lively.identity.PostCardEditor')
                             attrs: { url: { default: '' }, title: { default: null },
                                      description: { default: null }, image: { default: null },
                                      siteName: { default: null }, provider: { default: null },
-                                     embedUrl: { default: null } },
+                                     embedUrl: { default: null }, bluesky: { default: null } },
                             // Two tag matchers: toDOM emits a div for the embed
-                            // variant, an a for the static card (HTML forbids an
-                            // iframe inside an a) — parseDOM needs both or a
-                            // same-editor copy/paste of a static card (which
-                            // round-trips through the DOM clipboard) would lose
-                            // its node-ness and degrade to a plain link.
+                            // variant, an a for the static card AND the Bluesky
+                            // card (HTML forbids an iframe inside an a, but a
+                            // Bluesky card has no iframe so it's fine as an a) —
+                            // parseDOM needs both or a same-editor copy/paste of
+                            // a static/Bluesky card (which round-trips through
+                            // the DOM clipboard) would lose its node-ness and
+                            // degrade to a plain link.
                             parseDOM: [{ tag: 'div.lively-link-preview-card', getAttrs: _getLinkPreviewCardAttrs },
                                        { tag: 'a.lively-link-preview-card', getAttrs: _getLinkPreviewCardAttrs }],
                             toDOM: function(n) {
@@ -3648,11 +3654,13 @@ module('lively.identity.PostCardEditor')
                               var dataAttrs = { 'data-url': a.url || '', 'data-title': a.title || '',
                                 'data-description': a.description || '', 'data-image': a.image || '',
                                 'data-site-name': a.siteName || '', 'data-provider': a.provider || '',
-                                'data-embed-url': a.embedUrl || '' };
+                                'data-embed-url': a.embedUrl || '',
+                                'data-bluesky': a.bluesky ? JSON.stringify(a.bluesky) : '' };
                               if (a.embedUrl) {
                                 return ['div', Object.assign({ class: 'lively-link-preview-card lively-link-preview-embed' }, dataAttrs)];
                               }
-                              return ['a', Object.assign({ class: 'lively-link-preview-card', href: a.url || '',
+                              var cls = a.bluesky ? 'lively-link-preview-card lively-link-preview-bluesky' : 'lively-link-preview-card';
+                              return ['a', Object.assign({ class: cls, href: a.url || '',
                                 target: '_blank', rel: 'noopener noreferrer' }, dataAttrs)];
                             } },
             // Inline image attachments (§10.1's insert-attachment, image case —

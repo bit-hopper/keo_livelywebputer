@@ -40,6 +40,17 @@
  * PostCardUtils.js's buildLinkPreviewCard. The client re-validates
  * embedUrl's hostname against its own short allow-list before ever using it
  * as an iframe src; this file is the one that decides which hosts qualify.
+ *
+ * For any other site, falls back to oEmbed autodiscovery (discoverOembedUrl)
+ * to enrich a sparse OG scrape with title/thumbnail/author/provider —
+ * metadata only, never the oEmbed spec's `html` field (untrusted third-party
+ * markup, a real XSS vector if rendered directly).
+ *
+ * Bluesky posts (bsky.app/profile/.../post/...) are a third, separate path:
+ * a dedicated card built from Bluesky's own public AT Protocol API rather
+ * than oEmbed, since Bluesky's oEmbed `html` is a <script>-tag embed (not a
+ * sandboxed iframe) that this file won't render for the same XSS reason —
+ * see the "Bluesky posts" section below.
  */
 
 'use strict';
@@ -53,12 +64,14 @@ var MAX_RESPONSE_BYTES = 512 * 1024;
 var MAX_REDIRECTS = 3;
 var MAX_TITLE_LEN = 200;
 var MAX_DESC_LEN = 300;
-// oEmbed enrichment (see discoverOembedUrl/fetchOembed below) is a second,
-// smaller follow-up fetch -- kept short and tightly bounded since it's
-// purely a nice-to-have on top of an already-successful primary fetch, not
-// load-bearing the way fetchOnce is.
+// Shared by every small-JSON-API follow-up fetch (oEmbed enrichment, the
+// Bluesky post lookup below) -- each is a second, smaller fetch kept short
+// and tightly bounded since none of them are load-bearing the way
+// fetchOnce's primary page fetch is; a failure in any of them just means
+// falling back to a plainer card, never a broken one.
 var OEMBED_FETCH_TIMEOUT_MS = 4000;
 var MAX_OEMBED_BYTES = 64 * 1024;
+var MAX_BSKY_IMAGES = 4;
 
 var CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h — previews rarely change
 var CACHE_MAX_ENTRIES = 1000;
@@ -204,10 +217,13 @@ function fetchOnce(targetUrl, redirectsLeft, thenDo) {
   }, thenDo);
 }
 
-// Fetches an oEmbed JSON endpoint (see discoverOembedUrl below) — small,
-// read to completion (no early-stop heuristic; oEmbed responses are a
-// single flat JSON object, nowhere near MAX_OEMBED_BYTES in practice).
-function fetchOembed(targetUrl, redirectsLeft, thenDo) {
+// Fetches a small bounded JSON endpoint — read to completion (no early-stop
+// heuristic; every caller's response is a single flat JSON object, nowhere
+// near MAX_OEMBED_BYTES in practice). Shared by discoverOembedUrl's follow-up
+// fetch below AND the Bluesky post-lookup calls further down (both are
+// "small JSON API response" shaped, so one helper covers both rather than
+// naming this oEmbed-specifically).
+function fetchJson(targetUrl, redirectsLeft, thenDo) {
   _ssrfSafeGet(targetUrl, redirectsLeft, {
     timeoutMs: OEMBED_FETCH_TIMEOUT_MS,
     maxBytes: MAX_OEMBED_BYTES,
@@ -387,18 +403,109 @@ function parseOembedBody(rawBody) {
   };
 }
 
+// ─── Bluesky posts: a dedicated, self-rendered card instead of oEmbed ──────
+//
+// Bluesky's own oEmbed response (https://embed.bsky.app/oembed) would have
+// been picked up automatically by the generic enrichment above, but its
+// `html` field is NOT a sandboxed <iframe> the way Spotify/YouTube/
+// SoundCloud/Apple Music's embeds are -- it's a <blockquote> plus a
+// `<script async src="https://embed.bsky.app/static/embed.js">` tag meant
+// to run with full page privileges and rewrite the DOM client-side. Since
+// this file never renders oEmbed's `html` field at all (see parseOembedBody
+// above), a Bluesky post would otherwise only ever get the plain OG-scraped
+// static card. Confirmed live 2026-10-04: Bluesky's post pages already
+// carry good og:title/og:description/og:image, so the enrichment gate never
+// even fires for them -- the static card IS the correct current behavior,
+// just not an "embed".
+//
+// Instead, this builds its own safe structured card from Bluesky's public,
+// unauthenticated AT Protocol API (public.api.bsky.app -- a fixed, hardcoded
+// host, never derived from the pasted URL or any fetched page content, so
+// none of the SSRF concerns that apply to oEmbed's attacker-named endpoint
+// apply here). Every field pulled from the API response is individually
+// type-checked and whitelisted (see extractBlueskyPostFields) -- same
+// discipline as parseOembedBody, no raw HTML/script from Bluesky is ever
+// touched.
+
+// https://bsky.app/profile/<handle-or-did>/post/<rkey> -- the only bsky.app
+// URL shape this targets (profile pages, feed pages, etc. all fall through
+// to the normal OG-scrape path, same as any other site).
+function parseBlueskyPostUrl(targetUrl) {
+  var u;
+  try { u = new URL(targetUrl); } catch (e) { return null; }
+  if (u.hostname.toLowerCase() !== 'bsky.app') return null;
+  var m = /^\/profile\/([^\/]+)\/post\/([^\/]+)/.exec(u.pathname);
+  if (!m) return null;
+  var handleOrDid = decodeURIComponent(m[1]);
+  var rkey = decodeURIComponent(m[2]);
+  // Handles are domain-shaped, DIDs are "did:plc:..." / "did:web:...";
+  // record keys are a base32-sortable charset. Reject anything else outright
+  // -- these two strings get interpolated into an at:// URI and an API query
+  // string below, so this is as much an input-shape guard as a safety net.
+  if (!/^[A-Za-z0-9._:-]+$/.test(handleOrDid)) return null;
+  if (!/^[A-Za-z0-9._~-]+$/.test(rkey)) return null;
+  return { handleOrDid: handleOrDid, rkey: rkey };
+}
+
+// Handles already shaped like a DID skip the lookup entirely (bsky.app
+// itself links profile/post URLs by handle when one is set, but a DID-only
+// account -- or just someone copying the DID-shaped URL -- is valid too).
+function resolveBlueskyDid(handleOrDid, thenDo) {
+  if (/^did:/i.test(handleOrDid)) return thenDo(null, handleOrDid);
+  var url = 'https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=' + encodeURIComponent(handleOrDid);
+  fetchJson(url, MAX_REDIRECTS, function (err, result) {
+    if (err) return thenDo(err);
+    var json;
+    try { json = JSON.parse(result.body); } catch (e) { return thenDo(new Error('Bad JSON from resolveHandle')); }
+    if (!json || typeof json.did !== 'string' || !/^did:/i.test(json.did)) return thenDo(new Error('No DID in resolveHandle response'));
+    thenDo(null, json.did);
+  });
+}
+
+function fetchBlueskyPostByDid(did, rkey, thenDo) {
+  var atUri = 'at://' + did + '/app.bsky.feed.post/' + rkey;
+  var url = 'https://public.api.bsky.app/xrpc/app.bsky.feed.getPosts?uris=' + encodeURIComponent(atUri);
+  fetchJson(url, MAX_REDIRECTS, function (err, result) {
+    if (err) return thenDo(err);
+    var json;
+    try { json = JSON.parse(result.body); } catch (e) { return thenDo(new Error('Bad JSON from getPosts')); }
+    var post = json && Array.isArray(json.posts) && json.posts[0];
+    if (!post) return thenDo(new Error('Post not found'));
+    thenDo(null, extractBlueskyPostFields(post));
+  });
+}
+
+// Whitelist of individually-type-checked plain fields -- never passes
+// through the raw `post`/`record`/`embed` objects themselves, same
+// discipline as parseOembedBody. `images` is capped at MAX_BSKY_IMAGES and
+// each entry's `thumb` URL is validated via safeAbsoluteUrl before the
+// client ever hotlinks it.
+function extractBlueskyPostFields(post) {
+  function str(v) { return typeof v === 'string' && v.trim() ? v.trim() : null; }
+  function num(v) { return typeof v === 'number' && isFinite(v) ? v : 0; }
+  var author = (post && post.author) || {};
+  var record = (post && post.record) || {};
+  var embedImages = (post && post.embed && post.embed.$type === 'app.bsky.embed.images#view' && Array.isArray(post.embed.images))
+    ? post.embed.images : [];
+  var images = embedImages.slice(0, MAX_BSKY_IMAGES).map(function (img) {
+    return { thumb: safeAbsoluteUrl(str(img && img.thumb), 'https://cdn.bsky.app/'), alt: str(img && img.alt) || '' };
+  }).filter(function (img) { return img.thumb; });
+
+  return {
+    authorHandle: str(author.handle),
+    authorDisplayName: str(author.displayName) || str(author.handle),
+    authorAvatar: safeAbsoluteUrl(str(author.avatar), 'https://cdn.bsky.app/'),
+    text: truncate(str(record.text), MAX_DESC_LEN * 2), // post text runs longer than a typical og:description
+    images: images,
+    likeCount: num(post && post.likeCount),
+    repostCount: num(post && post.repostCount),
+    replyCount: num(post && post.replyCount),
+  };
+}
+
 function unfurl(targetUrl, thenDo) {
   var cached = cache.get(targetUrl);
   if (cached && cached.expiresAt > Date.now()) return thenDo(null, cached.status, cached.body);
-
-  // Embed detection is a pure string transform of targetUrl -- computed up
-  // front, independent of whatever fetchOnce below does. This matters: a
-  // real Spotify/YouTube/SoundCloud/Apple Music page is a plausible
-  // candidate for this crude scraper to fail against (consent walls, bot
-  // detection, JS-gated content, a non-200 from a CDN edge) and that must
-  // not take the embed down with it -- the whole point of the embed is that
-  // it doesn't need OG scraping to be useful.
-  var embed = detectEmbed(targetUrl);
 
   function cacheAndReturn(status, body) {
     if (cache.size >= CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value); // FIFO evict oldest
@@ -406,81 +513,110 @@ function unfurl(targetUrl, thenDo) {
     thenDo(null, status, body);
   }
 
-  fetchOnce(targetUrl, MAX_REDIRECTS, function (err, result) {
-    if (err) {
-      // Scrape failed outright -- still a usable response if we detected an
-      // embed (title/description/image just stay empty; the player itself
-      // carries that information once it loads).
-      if (embed) return cacheAndReturn(200, { url: targetUrl, provider: embed.provider, embedUrl: embed.embedUrl });
-      return thenDo(err);
-    }
-    var meta = extractMeta(result.body);
-
-    function finish(meta) {
-      var hostname = '', origin = '';
-      try {
-        var finalU = new URL(result.finalUrl);
-        hostname = finalU.hostname;
-        origin = finalU.protocol + '//' + finalU.host;
-      } catch (e) { /* leave both blank -- result.finalUrl already round-tripped through fetchOnce's own URL parse, so this is unreachable in practice */ }
-
-      // Universal fallback chain for the card's image: a real og:image/
-      // twitter:image wins, then an oEmbed thumbnail_url (if the page
-      // offered one and OG/Twitter didn't), then the page's own declared
-      // favicon, then a guessed /favicon.ico at the same origin --
-      // unverified (not every site actually has one there), but harmless
-      // either way since the client hotlinks it directly and hides the
-      // image slot on a load error (see buildLinkPreviewCard's onerror
-      // handler), degrading to a text-only card rather than a broken-image
-      // icon. This is what makes "paste literally any link" reliably
-      // produce SOME visual card instead of only the subset of pages that
-      // happen to set up Open Graph tags.
-      var image = safeAbsoluteUrl(meta.image, result.finalUrl) ||
-        safeAbsoluteUrl(meta.oembedThumbnail, result.finalUrl) ||
-        safeAbsoluteUrl(meta.favicon, result.finalUrl) ||
-        (origin ? origin + '/favicon.ico' : null);
-
-      if (!meta.title && !meta.description && !image && !embed) {
-        var emptyBody = { error: 'No preview metadata found' };
-        cache.set(targetUrl, { expiresAt: Date.now() + CACHE_TTL_MS, status: 422, body: emptyBody });
-        return thenDo(null, 422, emptyBody);
-      }
-
-      var body = {
-        url: result.finalUrl,
-        title: truncate(meta.title, MAX_TITLE_LEN),
-        description: truncate(meta.description, MAX_DESC_LEN),
-        image: image,
-        siteName: meta.siteName || hostname,
-      };
-      if (embed) { body.provider = embed.provider; body.embedUrl = embed.embedUrl; }
-      cacheAndReturn(200, body);
-    }
-
-    // oEmbed enrichment only kicks in when the primary OG/Twitter/<title>
-    // scrape came up short (no title, or no image to show) -- most
-    // well-known sites already have good OG tags and don't need a second
-    // network round-trip at all. A failure here (no oEmbed link, fetch
-    // error, bad JSON, rate limit, timeout) is never fatal -- it just means
-    // `finish` runs with whatever the primary scrape already found, same
-    // as before this feature existed.
-    var needsEnrichment = !meta.title || !(meta.image || meta.favicon);
-    var oembedUrl = needsEnrichment ? discoverOembedUrl(result.body, result.finalUrl) : null;
-    if (!oembedUrl) return finish(meta);
-
-    fetchOembed(oembedUrl, MAX_REDIRECTS, function (oembedErr, oembedResult) {
-      var parsed = oembedErr ? null : parseOembedBody(oembedResult.body);
-      if (!parsed) return finish(meta);
-      finish({
-        title: meta.title || parsed.title,
-        description: meta.description || (parsed.authorName ? 'By ' + parsed.authorName : null),
-        image: meta.image,
-        oembedThumbnail: parsed.thumbnailUrl,
-        favicon: meta.favicon,
-        siteName: meta.siteName || parsed.providerName,
+  // Bluesky posts get their own dedicated, self-rendered card (see the
+  // "Bluesky posts" section above) instead of the generic OG-scrape path
+  // below -- checked first, but ANY failure (not a post URL, API error, bad
+  // JSON, post deleted/private) falls straight through to the normal path,
+  // which already produces a perfectly good static card for a bsky.app page
+  // (confirmed live: it has real og:title/og:description/og:image).
+  var bsky = parseBlueskyPostUrl(targetUrl);
+  if (bsky) {
+    return resolveBlueskyDid(bsky.handleOrDid, function (didErr, did) {
+      if (didErr) return proceedWithScrape();
+      fetchBlueskyPostByDid(did, bsky.rkey, function (postErr, post) {
+        if (postErr || !post) return proceedWithScrape();
+        cacheAndReturn(200, { url: targetUrl, provider: 'bluesky', bluesky: post });
       });
     });
-  });
+  }
+  return proceedWithScrape();
+
+  function proceedWithScrape() {
+    // Embed detection is a pure string transform of targetUrl -- computed up
+    // front, independent of whatever fetchOnce below does. This matters: a
+    // real Spotify/YouTube/SoundCloud/Apple Music page is a plausible
+    // candidate for this crude scraper to fail against (consent walls, bot
+    // detection, JS-gated content, a non-200 from a CDN edge) and that must
+    // not take the embed down with it -- the whole point of the embed is that
+    // it doesn't need OG scraping to be useful.
+    var embed = detectEmbed(targetUrl);
+
+    fetchOnce(targetUrl, MAX_REDIRECTS, function (err, result) {
+      if (err) {
+        // Scrape failed outright -- still a usable response if we detected an
+        // embed (title/description/image just stay empty; the player itself
+        // carries that information once it loads).
+        if (embed) return cacheAndReturn(200, { url: targetUrl, provider: embed.provider, embedUrl: embed.embedUrl });
+        return thenDo(err);
+      }
+      var meta = extractMeta(result.body);
+
+      function finish(meta) {
+        var hostname = '', origin = '';
+        try {
+          var finalU = new URL(result.finalUrl);
+          hostname = finalU.hostname;
+          origin = finalU.protocol + '//' + finalU.host;
+        } catch (e) { /* leave both blank -- result.finalUrl already round-tripped through fetchOnce's own URL parse, so this is unreachable in practice */ }
+
+        // Universal fallback chain for the card's image: a real og:image/
+        // twitter:image wins, then an oEmbed thumbnail_url (if the page
+        // offered one and OG/Twitter didn't), then the page's own declared
+        // favicon, then a guessed /favicon.ico at the same origin --
+        // unverified (not every site actually has one there), but harmless
+        // either way since the client hotlinks it directly and hides the
+        // image slot on a load error (see buildLinkPreviewCard's onerror
+        // handler), degrading to a text-only card rather than a broken-image
+        // icon. This is what makes "paste literally any link" reliably
+        // produce SOME visual card instead of only the subset of pages that
+        // happen to set up Open Graph tags.
+        var image = safeAbsoluteUrl(meta.image, result.finalUrl) ||
+          safeAbsoluteUrl(meta.oembedThumbnail, result.finalUrl) ||
+          safeAbsoluteUrl(meta.favicon, result.finalUrl) ||
+          (origin ? origin + '/favicon.ico' : null);
+
+        if (!meta.title && !meta.description && !image && !embed) {
+          var emptyBody = { error: 'No preview metadata found' };
+          cache.set(targetUrl, { expiresAt: Date.now() + CACHE_TTL_MS, status: 422, body: emptyBody });
+          return thenDo(null, 422, emptyBody);
+        }
+
+        var body = {
+          url: result.finalUrl,
+          title: truncate(meta.title, MAX_TITLE_LEN),
+          description: truncate(meta.description, MAX_DESC_LEN),
+          image: image,
+          siteName: meta.siteName || hostname,
+        };
+        if (embed) { body.provider = embed.provider; body.embedUrl = embed.embedUrl; }
+        cacheAndReturn(200, body);
+      }
+
+      // oEmbed enrichment only kicks in when the primary OG/Twitter/<title>
+      // scrape came up short (no title, or no image to show) -- most
+      // well-known sites already have good OG tags and don't need a second
+      // network round-trip at all. A failure here (no oEmbed link, fetch
+      // error, bad JSON, rate limit, timeout) is never fatal -- it just means
+      // `finish` runs with whatever the primary scrape already found, same
+      // as before this feature existed.
+      var needsEnrichment = !meta.title || !(meta.image || meta.favicon);
+      var oembedUrl = needsEnrichment ? discoverOembedUrl(result.body, result.finalUrl) : null;
+      if (!oembedUrl) return finish(meta);
+
+      fetchJson(oembedUrl, MAX_REDIRECTS, function (oembedErr, oembedResult) {
+        var parsed = oembedErr ? null : parseOembedBody(oembedResult.body);
+        if (!parsed) return finish(meta);
+        finish({
+          title: meta.title || parsed.title,
+          description: meta.description || (parsed.authorName ? 'By ' + parsed.authorName : null),
+          image: meta.image,
+          oembedThumbnail: parsed.thumbnailUrl,
+          favicon: meta.favicon,
+          siteName: meta.siteName || parsed.providerName,
+        });
+      });
+    });
+  }
 }
 
 module.exports = function (route, app) {

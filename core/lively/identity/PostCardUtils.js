@@ -150,7 +150,25 @@ module('lively.identity.PostCardUtils')
         '.lively-link-preview-embed{display:block;margin:6px 0;max-width:480px;}' +
         '.lively-link-preview-embed iframe{display:block;width:100%;border:0;border-radius:8px;}' +
         '.lively-link-preview-embed[data-embed-shape="video"] iframe{aspect-ratio:16/9;height:auto;}' +
-        '.lively-link-preview-embed[data-embed-shape="audio"] iframe{height:152px;}';
+        '.lively-link-preview-embed[data-embed-shape="audio"] iframe{height:152px;}' +
+        // Bluesky post card — overrides the generic card's horizontal flex
+        // layout (image-left/text-right) with a vertical stack, since this
+        // is self-rendered post content, not a link-with-thumbnail.
+        '.lively-link-preview-bluesky{display:block;padding:10px 12px;}' +
+        '.lively-bsky-header{display:flex;align-items:center;gap:8px;}' +
+        '.lively-bsky-avatar{width:32px;height:32px;border-radius:50%;object-fit:cover;flex:0 0 auto;}' +
+        '.lively-bsky-authorblock{min-width:0;overflow:hidden;}' +
+        '.lively-bsky-displayname{font-size:12.5px;font-weight:600;color:#222;white-space:nowrap;' +
+        'overflow:hidden;text-overflow:ellipsis;}' +
+        '.lively-bsky-handle{font-size:11px;color:#888;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+        '.lively-bsky-text{font-size:12.5px;color:#333;margin-top:6px;white-space:pre-wrap;' +
+        'overflow-wrap:break-word;}' +
+        '.lively-bsky-images{display:grid;gap:3px;margin-top:8px;border-radius:8px;overflow:hidden;}' +
+        '.lively-bsky-images[data-count="1"]{grid-template-columns:1fr;}' +
+        '.lively-bsky-images[data-count="2"]{grid-template-columns:1fr 1fr;}' +
+        '.lively-bsky-images[data-count="3"],.lively-bsky-images[data-count="4"]{grid-template-columns:1fr 1fr;}' +
+        '.lively-bsky-images img{display:block;width:100%;height:140px;object-fit:cover;background:#eee;}' +
+        '.lively-bsky-stats{display:flex;gap:14px;margin-top:8px;font-size:11px;color:#888;}';
       document.head.appendChild(styleEl);
     }
 
@@ -810,6 +828,8 @@ module('lively.identity.PostCardUtils')
     // _linkPreviewCardNodeView (the persisted-node render) — one card
     // builder, several insertion mechanisms.
     function buildLinkPreviewCard(data) {
+      if (data.provider === 'bluesky' && data.bluesky) return _buildBlueskyCard(data);
+
       var embedInfo = data.embedUrl ? _embedHostInfo(data.embedUrl) : null;
       if (embedInfo) return _buildLinkPreviewEmbed(data, embedInfo);
 
@@ -917,6 +937,99 @@ module('lively.identity.PostCardUtils')
         wrap.addEventListener(t, function (e) { e.stopPropagation(); });
       });
       return wrap;
+    }
+
+    // Bluesky post variant — a self-rendered card from LinkPreviewServer.js's
+    // own AT Protocol API lookup (see that file's "Bluesky posts" section),
+    // NOT an embed/iframe: Bluesky's own oEmbed response is a <script>-tag
+    // widget, not a sandboxed iframe, and this codebase never renders
+    // third-party markup directly (see buildLinkPreviewCard's oEmbed
+    // handling) — so this builds plain DOM from individually-whitelisted
+    // fields instead, the same trust posture as the generic static card
+    // just above. A real <a> (not a div) is fine here, unlike the iframe
+    // embed case — nothing inside needs to be interactive content.
+    function _buildBlueskyCard(data) {
+      var b = data.bluesky;
+      var card = document.createElement('a');
+      card.className = 'lively-link-preview-card lively-link-preview-bluesky';
+      card.href = safeHref(data.url);
+      card.target = '_blank';
+      card.rel = 'noopener noreferrer';
+      card.contentEditable = 'false';
+
+      var header = document.createElement('div');
+      header.className = 'lively-bsky-header';
+      var safeAvatar = b.authorAvatar ? safeHref(b.authorAvatar) : null;
+      if (safeAvatar && safeAvatar !== '#') {
+        var avatar = document.createElement('img');
+        avatar.className = 'lively-bsky-avatar';
+        avatar.src = safeAvatar;
+        avatar.alt = '';
+        avatar.loading = 'lazy';
+        avatar.onerror = function () { avatar.remove(); };
+        header.appendChild(avatar);
+      }
+      var authorBlock = document.createElement('div');
+      authorBlock.className = 'lively-bsky-authorblock';
+      if (b.authorDisplayName) {
+        var displayName = document.createElement('div');
+        displayName.className = 'lively-bsky-displayname';
+        displayName.textContent = b.authorDisplayName;
+        authorBlock.appendChild(displayName);
+      }
+      if (b.authorHandle) {
+        var handle = document.createElement('div');
+        handle.className = 'lively-bsky-handle';
+        handle.textContent = '@' + b.authorHandle;
+        authorBlock.appendChild(handle);
+      }
+      header.appendChild(authorBlock);
+      card.appendChild(header);
+
+      if (b.text) {
+        var text = document.createElement('div');
+        text.className = 'lively-bsky-text';
+        text.textContent = b.text;
+        card.appendChild(text);
+      }
+
+      if (b.images && b.images.length) {
+        var imgGrid = document.createElement('div');
+        imgGrid.className = 'lively-bsky-images';
+        imgGrid.setAttribute('data-count', String(b.images.length));
+        b.images.forEach(function (im) {
+          var safeThumb = im.thumb ? safeHref(im.thumb) : null;
+          if (!safeThumb || safeThumb === '#') return;
+          var thumbImg = document.createElement('img');
+          thumbImg.src = safeThumb;
+          thumbImg.alt = im.alt || '';
+          thumbImg.loading = 'lazy';
+          thumbImg.onerror = function () { thumbImg.remove(); };
+          imgGrid.appendChild(thumbImg);
+        });
+        if (imgGrid.childNodes.length) card.appendChild(imgGrid);
+      }
+
+      var hasStats = b.likeCount || b.repostCount || b.replyCount;
+      if (hasStats) {
+        var stats = document.createElement('div');
+        stats.className = 'lively-bsky-stats';
+        function stat(count, label) {
+          if (!count) return;
+          var span = document.createElement('span');
+          span.textContent = label + ' ' + count;
+          stats.appendChild(span);
+        }
+        stat(b.likeCount, '♥');
+        stat(b.repostCount, '🔁');
+        stat(b.replyCount, '💬');
+        card.appendChild(stats);
+      }
+
+      ['mousedown', 'click'].forEach(function (t) {
+        card.addEventListener(t, function (e) { e.stopPropagation(); });
+      });
+      return card;
     }
 
     function _insertLinkPreviewCard(afterEl, data) {
@@ -1078,13 +1191,16 @@ module('lively.identity.PostCardUtils')
         '" data-image="' + escapeAttr(attrs.image || '') +
         '" data-site-name="' + escapeAttr(attrs.siteName || '') +
         '" data-provider="' + escapeAttr(attrs.provider || '') +
-        '" data-embed-url="' + escapeAttr(attrs.embedUrl || '') + '"';
+        '" data-embed-url="' + escapeAttr(attrs.embedUrl || '') +
+        '" data-bluesky="' + escapeAttr(attrs.bluesky ? JSON.stringify(attrs.bluesky) : '') + '"';
 
       if (_suppressEmbeds) {
         var label = attrs.title || attrs.siteName || attrs.url || '';
         return '<a href="' + escapeAttr(safeHref(attrs.url || '')) + '" rel="noopener noreferrer"' +
           dataAttrs + '>' + escapeHtml(label) + '</a>';
       }
+
+      if (attrs.provider === 'bluesky' && attrs.bluesky) return blueskyCardHtml(attrs, dataAttrs);
 
       var embedInfo = attrs.embedUrl ? _embedHostInfo(attrs.embedUrl) : null;
       if (embedInfo) {
@@ -1107,6 +1223,37 @@ module('lively.identity.PostCardUtils')
       return '<a class="lively-link-preview-card" href="' + escapeAttr(safeHref(attrs.url || '')) +
         '" target="_blank" rel="noopener noreferrer"' + dataAttrs + '>' +
         imgHtml + '<div class="lively-link-preview-card-text">' + textHtml + '</div></a>';
+    }
+
+    // String-emitting counterpart of _buildBlueskyCard above — see that
+    // function's header comment for why this is self-rendered DOM from
+    // whitelisted fields rather than an embed/iframe.
+    function blueskyCardHtml(attrs, dataAttrs) {
+      var b = attrs.bluesky;
+      var safeAvatar = b.authorAvatar ? safeHref(b.authorAvatar) : null;
+      var avatarHtml = (safeAvatar && safeAvatar !== '#')
+        ? '<img class="lively-bsky-avatar" src="' + escapeAttr(safeAvatar) + '" alt="" loading="lazy">' : '';
+      var authorBlockHtml = '<div class="lively-bsky-authorblock">' +
+        (b.authorDisplayName ? '<div class="lively-bsky-displayname">' + escapeHtml(b.authorDisplayName) + '</div>' : '') +
+        (b.authorHandle ? '<div class="lively-bsky-handle">@' + escapeHtml(b.authorHandle) + '</div>' : '') +
+        '</div>';
+      var textHtml = b.text ? '<div class="lively-bsky-text">' + escapeHtml(b.text) + '</div>' : '';
+      var images = (b.images || []).map(function (im) {
+        var safeThumb = im.thumb ? safeHref(im.thumb) : null;
+        if (!safeThumb || safeThumb === '#') return '';
+        return '<img src="' + escapeAttr(safeThumb) + '" alt="' + escapeAttr(im.alt || '') + '" loading="lazy">';
+      }).join('');
+      var imagesHtml = images ? '<div class="lively-bsky-images" data-count="' + (b.images || []).length + '">' + images + '</div>' : '';
+      var statsParts = [];
+      if (b.likeCount) statsParts.push('<span>♥ ' + b.likeCount + '</span>');
+      if (b.repostCount) statsParts.push('<span>🔁 ' + b.repostCount + '</span>');
+      if (b.replyCount) statsParts.push('<span>💬 ' + b.replyCount + '</span>');
+      var statsHtml = statsParts.length ? '<div class="lively-bsky-stats">' + statsParts.join('') + '</div>' : '';
+
+      return '<a class="lively-link-preview-card lively-link-preview-bluesky" href="' +
+        escapeAttr(safeHref(attrs.url || '')) + '" target="_blank" rel="noopener noreferrer"' + dataAttrs + '>' +
+        '<div class="lively-bsky-header">' + avatarHtml + authorBlockHtml + '</div>' +
+        textHtml + imagesHtml + statsHtml + '</a>';
     }
 
     // §10.1 align/indent (matches PostCardEditor.js's _alignIndentAttrs).

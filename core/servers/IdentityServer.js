@@ -989,8 +989,41 @@ function _embedHostInfo(embedUrl) {
 // full standalone page (buildWorldPage/static permalink rendering), never a
 // condensed multi-row feed, so there's no "noisy iframe per row" case to
 // guard against on this path.
+// String-emitting counterpart of PostCardUtils.js's _buildBlueskyCard/
+// blueskyCardHtml — see that file's header comment on _buildBlueskyCard for
+// why this is self-rendered DOM from whitelisted fields, never Bluesky's own
+// oEmbed <script>-tag markup.
+function _blueskyCardHtml(attrs) {
+  var b = attrs.bluesky;
+  var safeAvatar = b.authorAvatar ? safeHref(b.authorAvatar) : null;
+  var avatarHtml = (safeAvatar && safeAvatar !== '#')
+    ? '<img class="lively-bsky-avatar" src="' + escapeHtml(safeAvatar) + '" alt="" loading="lazy">' : '';
+  var authorBlockHtml = '<div class="lively-bsky-authorblock">' +
+    (b.authorDisplayName ? '<div class="lively-bsky-displayname">' + escapeHtml(b.authorDisplayName) + '</div>' : '') +
+    (b.authorHandle ? '<div class="lively-bsky-handle">@' + escapeHtml(b.authorHandle) + '</div>' : '') +
+    '</div>';
+  var textHtml = b.text ? '<div class="lively-bsky-text">' + escapeHtml(b.text) + '</div>' : '';
+  var images = (b.images || []).map(function (im) {
+    var safeThumb = im.thumb ? safeHref(im.thumb) : null;
+    if (!safeThumb || safeThumb === '#') return '';
+    return '<img src="' + escapeHtml(safeThumb) + '" alt="' + escapeHtml(im.alt || '') + '" loading="lazy">';
+  }).join('');
+  var imagesHtml = images ? '<div class="lively-bsky-images" data-count="' + (b.images || []).length + '">' + images + '</div>' : '';
+  var statsParts = [];
+  if (b.likeCount) statsParts.push('<span>♥ ' + b.likeCount + '</span>');
+  if (b.repostCount) statsParts.push('<span>🔁 ' + b.repostCount + '</span>');
+  if (b.replyCount) statsParts.push('<span>💬 ' + b.replyCount + '</span>');
+  var statsHtml = statsParts.length ? '<div class="lively-bsky-stats">' + statsParts.join('') + '</div>' : '';
+
+  return '<a class="lively-link-preview-card lively-link-preview-bluesky" href="' +
+    escapeHtml(safeHref(attrs.url || '')) + '" target="_blank" rel="noopener noreferrer">' +
+    '<div class="lively-bsky-header">' + avatarHtml + authorBlockHtml + '</div>' +
+    textHtml + imagesHtml + statsHtml + '</a>';
+}
+
 function _linkPreviewCardHtml(attrs) {
   attrs = attrs || {};
+  if (attrs.provider === 'bluesky' && attrs.bluesky) return _blueskyCardHtml(attrs);
   var embedInfo = attrs.embedUrl ? _embedHostInfo(attrs.embedUrl) : null;
   if (embedInfo) {
     return '<div class="lively-link-preview-card lively-link-preview-embed" data-embed-shape="' +

@@ -88,10 +88,14 @@ module('lively.identity.WikiEditor')
     // PostCardEditor.js's identical copy for the full rationale (toDOM
     // emits a div for the embed variant, an a for the static card).
     function _getLinkPreviewCardAttrs(d) {
+      var rawBluesky = d.getAttribute('data-bluesky');
+      var bluesky = null;
+      if (rawBluesky) { try { bluesky = JSON.parse(rawBluesky); } catch (e) { bluesky = null; } }
       return { url: d.getAttribute('data-url'), title: d.getAttribute('data-title'),
                description: d.getAttribute('data-description'),
                image: d.getAttribute('data-image'), siteName: d.getAttribute('data-site-name'),
-               provider: d.getAttribute('data-provider'), embedUrl: d.getAttribute('data-embed-url') };
+               provider: d.getAttribute('data-provider'), embedUrl: d.getAttribute('data-embed-url'),
+               bluesky: bluesky };
     }
 
     var WikiEditorClass = lively.morphic.Box.subclass('lively.identity.WikiEditor',
@@ -1512,7 +1516,7 @@ module('lively.identity.WikiEditor')
             url: found.body.url || '', title: found.body.title || null,
             description: found.body.description || null, image: found.body.image || null,
             siteName: found.body.siteName || null, provider: found.body.provider || null,
-            embedUrl: found.body.embedUrl || null,
+            embedUrl: found.body.embedUrl || null, bluesky: found.body.bluesky || null,
           }));
           var yPM = self._yProsemirror && self._yProsemirror();
           if (yPM && yPM.yUndoPluginKey) {
@@ -2965,7 +2969,7 @@ module('lively.identity.WikiEditor')
                             attrs: { url: { default: '' }, title: { default: null },
                                      description: { default: null }, image: { default: null },
                                      siteName: { default: null }, provider: { default: null },
-                                     embedUrl: { default: null } },
+                                     embedUrl: { default: null }, bluesky: { default: null } },
                             parseDOM: [{ tag: 'div.lively-link-preview-card', getAttrs: _getLinkPreviewCardAttrs },
                                        { tag: 'a.lively-link-preview-card', getAttrs: _getLinkPreviewCardAttrs }],
                             toDOM: function(n) {
@@ -2973,11 +2977,13 @@ module('lively.identity.WikiEditor')
                               var dataAttrs = { 'data-url': a.url || '', 'data-title': a.title || '',
                                 'data-description': a.description || '', 'data-image': a.image || '',
                                 'data-site-name': a.siteName || '', 'data-provider': a.provider || '',
-                                'data-embed-url': a.embedUrl || '' };
+                                'data-embed-url': a.embedUrl || '',
+                                'data-bluesky': a.bluesky ? JSON.stringify(a.bluesky) : '' };
                               if (a.embedUrl) {
                                 return ['div', Object.assign({ class: 'lively-link-preview-card lively-link-preview-embed' }, dataAttrs)];
                               }
-                              return ['a', Object.assign({ class: 'lively-link-preview-card', href: a.url || '',
+                              var cls = a.bluesky ? 'lively-link-preview-card lively-link-preview-bluesky' : 'lively-link-preview-card';
+                              return ['a', Object.assign({ class: cls, href: a.url || '',
                                 target: '_blank', rel: 'noopener noreferrer' }, dataAttrs)];
                             } },
             // Runnable Python cell (CodeEditorSpec.md §2.3) -- deliberately
