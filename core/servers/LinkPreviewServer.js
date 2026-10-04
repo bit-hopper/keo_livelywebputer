@@ -261,6 +261,18 @@ function safeAbsoluteUrl(raw, baseUrl) {
   } catch (e) { return null; }
 }
 
+// True when `title` is just the site's own brand name with no other
+// content -- e.g. "Reddit" against hostname "www.reddit.com". Used to spot
+// a bot-blocking/challenge-page title (see extractMeta's titleFromPlainTag)
+// that gives the card nothing to show beyond what the bare URL's own
+// hostname already conveys.
+function isGenericSiteTitle(title, hostname) {
+  if (!title || !hostname) return false;
+  var t = title.toLowerCase().replace(/[^a-z0-9]/g, '');
+  var bareHost = hostname.toLowerCase().replace(/^www\./, '').split('.')[0];
+  return !!bareHost && t === bareHost;
+}
+
 // Pure pattern-matching against the pasted URL itself -- no network call, no
 // dependency on fetchOnce/extractMeta succeeding. Each of these four
 // providers' embed players can be reached by a direct string transform of
@@ -371,8 +383,19 @@ function extractMeta(html) {
     if (hrefMatch) iconHref = decodeEntities(hrefMatch[1]);
   }
 
+  var ogOrTwitterTitle = metas['og:title'] || metas['twitter:title'] || null;
+
   return {
-    title: metas['og:title'] || metas['twitter:title'] || plainTitle || null,
+    title: ogOrTwitterTitle || plainTitle || null,
+    // True when `title` above fell all the way back to the bare <title>
+    // tag -- no og:title/twitter:title was declared. A bot-blocking/
+    // challenge/login-wall page (confirmed live for reddit.com: ANY
+    // reddit.com URL, not just a /s/ share link, since reddit now serves a
+    // JS-challenge page to this scraper's plain HTTP GET) typically has
+    // nothing in <head> but a generic <title>SiteName</title> -- this flag
+    // lets finish() below tell that case apart from a real page that
+    // simply never set up Open Graph tags.
+    titleFromPlainTag: !ogOrTwitterTitle,
     description: metas['og:description'] || metas['twitter:description'] || metas.description || null,
     image: metas['og:image:secure_url'] || metas['og:image'] || metas['twitter:image'] || null,
     siteName: metas['og:site_name'] || null,
@@ -592,12 +615,34 @@ function unfurl(targetUrl, thenDo) {
         // icon. This is what makes "paste literally any link" reliably
         // produce SOME visual card instead of only the subset of pages that
         // happen to set up Open Graph tags.
-        var image = safeAbsoluteUrl(meta.image, result.finalUrl) ||
-          safeAbsoluteUrl(meta.oembedThumbnail, result.finalUrl) ||
+        var realImage = safeAbsoluteUrl(meta.image, result.finalUrl) ||
+          safeAbsoluteUrl(meta.oembedThumbnail, result.finalUrl);
+        var image = realImage ||
           safeAbsoluteUrl(meta.favicon, result.finalUrl) ||
           (origin ? origin + '/favicon.ico' : null);
 
-        if (!meta.title && !meta.description && !image && !embed) {
+        // BUG FIX: a page that blocks/challenges server-side scraping
+        // (confirmed live for reddit.com -- ANY reddit.com URL, not just a
+        // /s/ share link, gets served a JS-challenge page instead of real
+        // content) typically leaves nothing in <head> but a generic
+        // <title>SiteName</title> and a declared favicon. The ORIGINAL gate
+        // here only suppressed the card when title/description/image were
+        // ALL empty, so that combination (title: "Reddit", no description,
+        // favicon-as-image) still passed it and produced a real card -- one
+        // with no content beyond the site's own brand name and icon, i.e.
+        // nothing the bare URL's own hostname didn't already convey. Next
+        // to the still-visible bare-link text (PostCardUtils.js's
+        // hydrateLinkPreviews/_buildLinkPreviewPlugin insert the card AS A
+        // SIBLING of the link, never replacing it), this reads as the same
+        // link shown twice -- confirmed live via chrome-devtools-mcp:
+        // https://www.reddit.com/r/<sub>/s/<token> produced exactly this
+        // card. Treat a plain-<title>-tag fallback that's just the site's
+        // own name, with no description and no real (non-favicon) image, as
+        // no better than the empty case below -- this generalizes to any
+        // site with the same bot-blocking shape, not only Reddit.
+        var titleIsJustSiteName = meta.titleFromPlainTag && isGenericSiteTitle(meta.title, hostname);
+        var hasRealContent = !!meta.description || !!realImage || !!embed;
+        if (!hasRealContent && (!meta.title || titleIsJustSiteName)) {
           var emptyBody = { error: 'No preview metadata found' };
           cache.set(targetUrl, { expiresAt: Date.now() + CACHE_TTL_MS, status: 422, body: emptyBody });
           return thenDo(null, 422, emptyBody);
