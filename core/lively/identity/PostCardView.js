@@ -1051,21 +1051,20 @@ module("lively.identity.PostCardView")
             this._contentEl.innerHTML = U.snapshotToHtml(snapshot);
             return;
           }
-          // feedMode: this branch only runs in _previewMode (ConstellationLounge's
-          // condensed reel card) — same "no preview card in a condensed row"
-          // posture as the hydrateLinkPreviews skip a few lines below, now
-          // also covering persisted link_preview_card nodes reachable from
-          // this generic doc-walk (see PostCardUtils.js's buildPreviewSplit).
-          var split = U.buildPreviewSplit(snapshot.content, { feedMode: true });
+          // feedMode (split layout) still applies in _previewMode (the
+          // ConstellationLounge reel card) — lead/media/rest reordering so
+          // the card reads media-forward. suppressEmbeds: false overrides
+          // feedMode's default "no card in a condensed row" posture: the
+          // reel shows one full card at a time (not a many-rows list like
+          // PostCardFeed.js/the reply list), so a real link-preview
+          // card/iframe is exactly what should show here too.
+          var split = U.buildPreviewSplit(snapshot.content, { feedMode: true, suppressEmbeds: false });
           if (!split.hasMedia) {
-            // BUG FIX (caught in testing, not in the original design): this
-            // fallback bypassed buildPreviewSplit entirely, so a doc whose
-            // only "media-like" content is a link_preview_card (no other
-            // image/video/audio -- the common case for a link-only post)
-            // fell all the way through to the un-suppressed full render,
-            // reintroducing a mounted card/iframe in this condensed row
-            // despite feedMode above. Needs the same suppression here.
-            this._contentEl.innerHTML = U.snapshotToHtml(snapshot, { feedMode: true });
+            // Doc's only "media-like" content is a link_preview_card (no
+            // other image/video/audio -- the common case for a link-only
+            // post) — render the real card via the same suppressEmbeds:
+            // false override, not the plain-link fallback.
+            this._contentEl.innerHTML = U.snapshotToHtml(snapshot, { feedMode: true, suppressEmbeds: false });
             return;
           }
           var parts = [];
@@ -1099,10 +1098,12 @@ module("lively.identity.PostCardView")
             // turned the placeholder into the live morph it references.
             lively.identity.postCardUtils.hydrateEmbeddedParts(this._contentEl);
             lively.identity.postCardUtils.hydrateLinkPreviewEmbeds(this._contentEl);
-            // Skipped in _previewMode (ConstellationLounge's condensed
-            // reel card) — same "no preview card in a condensed row"
-            // posture as PostCardFeed.js.
-            if (!this._previewMode) lively.identity.postCardUtils.hydrateLinkPreviews(this._contentEl);
+            // Now runs in _previewMode too (the reel shows one full card at
+            // a time, not a condensed many-rows list — see
+            // _renderContentHtml's suppressEmbeds override above) so a
+            // legacy bare-URL post (saved before link_preview_card existed)
+            // still gets a real card there.
+            lively.identity.postCardUtils.hydrateLinkPreviews(this._contentEl);
             return;
           }
 
@@ -1180,7 +1181,7 @@ module("lively.identity.PostCardView")
               self._contentEl, self._handle, (payload && payload.attachments) || [],
             );
             lively.identity.postCardUtils.hydrateLinkPreviewEmbeds(self._contentEl);
-            if (!self._previewMode) lively.identity.postCardUtils.hydrateLinkPreviews(self._contentEl);
+            lively.identity.postCardUtils.hydrateLinkPreviews(self._contentEl);
           });
         },
 

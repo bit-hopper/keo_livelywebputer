@@ -347,18 +347,18 @@ module('lively.identity.PostCardUtils')
 
     // opts.feedMode: thread through to blocksToHtml's opts.suppressEmbeds —
     // for a condensed multi-row context rendering many snapshots at once
-    // (ConstellationLounge.js's reply list, PostCardView.js's no-other-media
-    // preview fallback) where a persisted link_preview_card node should
-    // render as a plain text link, never a card/iframe. Omit for a single
-    // full-card/page render (the common case), where the real card/embed is
-    // exactly what should show.
+    // (ConstellationLounge.js's reply list, PostCardFeed.js's rows) where a
+    // persisted link_preview_card node should render as a plain text link,
+    // never a card/iframe. Omit for a single full-card/page render (the
+    // common case), where the real card/embed is exactly what should show.
+    // opts.suppressEmbeds, when explicitly set (true or false), overrides
+    // the feedMode-derived default -- lets a caller that wants feedMode's
+    // other behavior (PostCardView.js's reel, via buildPreviewSplit) opt
+    // back into real cards/embeds without reimplementing the split.
     function snapshotToHtml(snapshot, opts) {
       if (!snapshot || !snapshot.content) return '';
-      // Same feedMode -> suppressEmbeds translation as buildPreviewSplit's
-      // own blocksOpts -- public callers pass {feedMode: true} (matching
-      // buildPreviewSplit's option name), blocksToHtml's internal opts key
-      // is suppressEmbeds.
-      return blocksToHtml(snapshot.content, opts && opts.feedMode ? { suppressEmbeds: true } : undefined);
+      var suppress = (opts && opts.suppressEmbeds !== undefined) ? opts.suppressEmbeds : !!(opts && opts.feedMode);
+      return blocksToHtml(snapshot.content, suppress ? { suppressEmbeds: true } : undefined);
     }
 
     // A paragraph holding nothing but images (and blank text) is a photo row.
@@ -467,15 +467,19 @@ module('lively.identity.PostCardUtils')
     // callers should ignore leadExcerpt/mediaHtml/restHtml entirely and
     // fall back to their own plain/unsplit rendering in that case.
     //
-    // opts.feedMode: condensed-row context (PostCardFeed.js, ConstellationLounge's
-    // reel card) — suppresses link-preview cards/iframes in mediaHtml/restHtml
-    // (see blocksToHtml's opts.suppressEmbeds), same posture as this file's
-    // existing "no card in a condensed row" rule for hydrateLinkPreviews.
+    // opts.feedMode: condensed-row context (PostCardFeed.js) — suppresses
+    // link-preview cards/iframes in mediaHtml/restHtml (see blocksToHtml's
+    // opts.suppressEmbeds), same posture as this file's existing "no card in
+    // a condensed row" rule for hydrateLinkPreviews. opts.suppressEmbeds,
+    // when explicitly set, overrides the feedMode-derived default — lets a
+    // caller keep the media-forward split (PostCardView.js's reel) without
+    // also suppressing link-preview cards/embeds.
     function buildPreviewSplit(docContent, opts) {
       opts = opts || {};
       var leadBudget = opts.leadBudget || 140;
       var restBudget = opts.restBudget || 400;
-      var blocksOpts = opts.feedMode ? { suppressEmbeds: true } : undefined;
+      var suppressEmbeds = opts.suppressEmbeds !== undefined ? opts.suppressEmbeds : !!opts.feedMode;
+      var blocksOpts = suppressEmbeds ? { suppressEmbeds: true } : undefined;
       var nodes = docContent || [];
 
       var leadPlain = '';
