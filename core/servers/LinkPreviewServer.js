@@ -33,13 +33,20 @@
  * (not proxied through here, same tradeoff KlipyProxyServer.js documents
  * for GIF images) — client must still scheme-check it before use.
  *
- * Also detects (detectEmbed, pure string transform, no extra network call)
- * whether the URL is a Spotify/YouTube/SoundCloud/Apple Music/Instagram
- * link and, if so, includes `provider`/`embedUrl` fields the client renders
- * as a sandboxed <iframe> instead of (or alongside) the static card — see
- * PostCardUtils.js's buildLinkPreviewCard. The client re-validates
- * embedUrl's hostname against its own short allow-list before ever using it
- * as an iframe src; this file is the one that decides which hosts qualify.
+ * Also detects (detectEmbed, pure string transform, no extra network call
+ * for the common case) whether the URL is a Spotify/YouTube/SoundCloud/
+ * Apple Music/Instagram/Reddit link and, if so, includes `provider`/
+ * `embedUrl` fields the client renders as a sandboxed <iframe> instead of
+ * (or alongside) the static card — see PostCardUtils.js's
+ * buildLinkPreviewCard. The client re-validates embedUrl's hostname against
+ * its own short allow-list before ever using it as an iframe src; this file
+ * is the one that decides which hosts qualify. Reddit is the one exception
+ * to "no extra network call": a share-link URL (/r/<sub>/s/<token>) has no
+ * post id of its own to transform, so detectEmbed is re-run against
+ * fetchOnce's already-redirect-resolved result.finalUrl as a fallback (see
+ * proceedWithScrape below) — this reuses the redirect-following fetchOnce
+ * does anyway for its (for Reddit, doomed — see below) OG-scrape attempt,
+ * rather than a dedicated resolution round-trip.
  * Instagram's embed differs from the other four in one way worth noting:
  * its embedUrl points at Instagram's own official, script-free "/embed/"
  * page (same one their site's own "Embed" button generates for third-party
@@ -329,6 +336,28 @@ function detectEmbed(targetUrl) {
     // embed convention (music.apple.com -> embed.music.apple.com).
     return { provider: 'apple-music', embedUrl: 'https://embed.music.apple.com' + u.pathname + u.search };
   }
+  if (host === 'reddit.com' || host === 'www.reddit.com' || host === 'old.reddit.com' || host === 'new.reddit.com' || host === 'm.reddit.com') {
+    // Reddit's own embed.reddit.com is the official, script-free-to-us
+    // iframe endpoint their site's own "Embed" button generates (same
+    // provenance as Instagram's /embed/captioned/ above) -- confirmed live:
+    // `frame-ancestors * chrome-extension://*` in its CSP, so it's
+    // embeddable from any origin by design, and it server/client-renders a
+    // complete self-contained post card (title, author, image/carousel,
+    // score, comment count) once its own JS mounts inside the iframe.
+    // Only the canonical /r/<sub>/comments/<id>/... shape transforms
+    // directly -- a share link (/r/<sub>/s/<token>) carries no post id of
+    // its own and 301s through reddit.com to the canonical shape, so it
+    // can't be resolved here without a network call. detectEmbed is called
+    // again against fetchOnce's resolved result.finalUrl in
+    // proceedWithScrape below specifically to catch that case (and the
+    // same redd.it-style shortlink case) once the redirect's already been
+    // followed for the OG-scrape attempt anyway.
+    var rm = /^\/r\/([^\/]+)\/comments\/([A-Za-z0-9]+)(?:\/([^\/?#]*))?/.exec(u.pathname);
+    if (rm) {
+      return { provider: 'reddit', embedUrl: 'https://embed.reddit.com/r/' + rm[1] + '/comments/' + rm[2] + '/' + (rm[3] ? rm[3] + '/' : '') };
+    }
+    return null;
+  }
   if (host === 'instagram.com' || host === 'www.instagram.com') {
     // A post/reel/tv URL optionally carries a leading "/<username>/" segment
     // (e.g. "/culturenightmarket/p/DdsDtFVv2_9/", confirmed live via a real
@@ -594,6 +623,14 @@ function unfurl(targetUrl, thenDo) {
         if (embed) return cacheAndReturn(200, { url: targetUrl, provider: embed.provider, embedUrl: embed.embedUrl });
         return thenDo(err);
       }
+      // Fallback for a share-link-shaped URL (e.g. Reddit's
+      // /r/<sub>/s/<token>, or a redd.it shortlink) that detectEmbed
+      // couldn't transform up front, with no post id of its own to work
+      // with -- fetchOnce already followed its redirect chain down to a
+      // real final URL, so re-run detectEmbed against THAT instead. A
+      // no-op for every other provider (result.finalUrl === targetUrl when
+      // nothing redirected, or detectEmbed(targetUrl) already matched).
+      if (!embed && result.finalUrl !== targetUrl) embed = detectEmbed(result.finalUrl);
       var meta = extractMeta(result.body);
 
       function finish(meta) {

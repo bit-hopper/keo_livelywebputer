@@ -976,6 +976,15 @@ var _EMBED_HOSTS = {
   'www.youtube.com':       { label: 'Open in YouTube',      shape: 'video' },
   'w.soundcloud.com':      { label: 'Open in SoundCloud',   shape: 'audio' },
   'embed.music.apple.com': { label: 'Open in Apple Music',  shape: 'audio' },
+  // BUG FIX: 'www.instagram.com' (shape: 'instagram') was missing from this
+  // map entirely -- a static-rendered permalink page (buildWorldPage) with
+  // an Instagram link preview silently fell back to the plain OG-scraped
+  // card instead of the iframe embed PostCardUtils.js's live client render
+  // already shows for the same card, since _embedHostInfo here returned
+  // null for a perfectly valid embedUrl. Caught while adding Reddit to this
+  // same map, not something introduced by that change.
+  'www.instagram.com':     { label: 'Open in Instagram',    shape: 'instagram' },
+  'embed.reddit.com':      { label: 'Open in Reddit',       shape: 'reddit' },
 };
 function _embedHostInfo(embedUrl) {
   try { return _EMBED_HOSTS[new URL(embedUrl).hostname.toLowerCase()] || null; }

@@ -1543,14 +1543,31 @@ module('lively.identity.PostCardEditor')
             var url = bareUrlOf(node);
             if (!url) return false;
             var widgetPos = pos + node.nodeSize;
-            // Already converted to a real node (or legacy content already
-            // had one) — it renders itself via _linkPreviewCardNodeView,
-            // don't also show the derived decoration.
-            if (hasSiblingCard(state.doc, widgetPos, url)) return false;
             var cached = U.peekLinkPreview(url);
-            if (cached === undefined) { scheduleFetch(pos, url); return false; }
+            if (cached === undefined) {
+              // Cache cold -- can't yet know the server-resolved url (see
+              // the BUG FIX note below), but a sibling card at this
+              // position can only exist from an earlier resolution of this
+              // same paragraph, so the bare-url check is a safe (if
+              // occasionally over-cautious — see that note) early bail.
+              if (hasSiblingCard(state.doc, widgetPos, url)) return false;
+              scheduleFetch(pos, url);
+              return false;
+            }
             if (_fetchDebounceTimers[pos]) { clearTimeout(_fetchDebounceTimers[pos]); delete _fetchDebounceTimers[pos]; }
             if (cached === null || cached.err || !cached.body || cached.body.error) return false;
+            // BUG FIX (caught live: a pasted Reddit share link duplicated
+            // its own card endlessly): match against the server-RESOLVED
+            // url (cached.body.url), not the originally pasted/typed text.
+            // LinkPreviewServer.js always returns result.finalUrl, which
+            // for a redirecting link (a Reddit /r/<sub>/s/<token> share
+            // link, any shortlink, etc.) differs from what's still sitting
+            // in the paragraph. Comparing against the bare text here used
+            // to never match the already-inserted card's own attrs.url
+            // (set from that same resolved value by maybeCommit below), so
+            // every transition saw "no sibling card yet" and inserted
+            // ANOTHER one — same mismatch, same fix, in maybeCommit itself.
+            if (hasSiblingCard(state.doc, widgetPos, cached.body.url)) return false;
             decos.push(Decoration.widget(widgetPos, function () {
               return U.buildLinkPreviewCard(cached.body);
             }, { key: 'link-preview-' + url, side: 1, stopEvent: function () { return true; } }));
@@ -1575,9 +1592,13 @@ module('lively.identity.PostCardEditor')
             if (!url) return false;
             var start = pos, end = pos + node.nodeSize;
             if (sel.from <= end && sel.to >= start) return false; // selection still touches this paragraph
-            if (hasSiblingCard(state.doc, end, url)) return false;
             var cached = U.peekLinkPreview(url);
             if (!cached || cached.err || !cached.body || cached.body.error) return false;
+            // BUG FIX: see computeDecorations' identical fix above — match
+            // against the resolved cached.body.url, not the bare pasted
+            // text, or a redirecting link never recognizes its own
+            // already-inserted card and re-inserts another one forever.
+            if (hasSiblingCard(state.doc, end, cached.body.url)) return false;
             found = { endPos: end, body: cached.body };
             return false;
           });

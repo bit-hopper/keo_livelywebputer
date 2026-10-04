@@ -1465,11 +1465,29 @@ module('lively.identity.WikiEditor')
             var url = bareUrlOf(node);
             if (!url) return false;
             var widgetPos = pos + node.nodeSize;
-            if (hasSiblingCard(state.doc, widgetPos, url)) return false;
             var cached = U.peekLinkPreview(url);
-            if (cached === undefined) { scheduleFetch(pos, url); return false; }
+            if (cached === undefined) {
+              // Cache cold -- the resolved url isn't known yet (see the BUG
+              // FIX note below), but a sibling card here can only exist
+              // from an earlier resolution of this same paragraph, so the
+              // bare-url check is a safe (if occasionally over-cautious)
+              // early bail.
+              if (hasSiblingCard(state.doc, widgetPos, url)) return false;
+              scheduleFetch(pos, url);
+              return false;
+            }
             if (_fetchDebounceTimers[pos]) { clearTimeout(_fetchDebounceTimers[pos]); delete _fetchDebounceTimers[pos]; }
             if (cached === null || cached.err || !cached.body || cached.body.error) return false;
+            // BUG FIX (hand-mirrored from PostCardEditor.js's identical
+            // fix — caught live there: a pasted Reddit share link
+            // duplicated its own card endlessly, masked here only by
+            // maybeCommit's claimInsert Yjs guard below, which happens to
+            // be keyed by the bare url rather than this mismatch): match
+            // against the server-RESOLVED url (cached.body.url), not the
+            // originally pasted/typed text — a redirecting link (Reddit
+            // share links, any shortlink) resolves to a different final
+            // url than what's still sitting in the paragraph.
+            if (hasSiblingCard(state.doc, widgetPos, cached.body.url)) return false;
             decos.push(Decoration.widget(widgetPos, function () {
               return U.buildLinkPreviewCard(cached.body);
             }, { key: 'link-preview-' + url, side: 1, stopEvent: function () { return true; } }));
@@ -1503,9 +1521,18 @@ module('lively.identity.WikiEditor')
             if (!url) return false;
             var start = pos, end = pos + node.nodeSize;
             if (sel.from <= end && sel.to >= start) return false;
-            if (hasSiblingCard(state.doc, end, url)) return false;
             var cached = U.peekLinkPreview(url);
             if (!cached || cached.err || !cached.body || cached.body.error) return false;
+            // BUG FIX: see computeDecorations' identical fix above — match
+            // against the resolved cached.body.url, not the bare pasted
+            // text, or a redirecting link never recognizes its own
+            // already-inserted card. claimInsert below (keyed by the bare
+            // url) happens to prevent runaway duplication from this same
+            // mismatch within one client session, but shouldn't be relied
+            // on as the only guard — a remote client's own insert lands
+            // here as a doc change too, and this check is what recognizes
+            // it as already-done rather than racing claimInsert again.
+            if (hasSiblingCard(state.doc, end, cached.body.url)) return false;
             found = { endPos: end, url: url, body: cached.body };
             return false;
           });

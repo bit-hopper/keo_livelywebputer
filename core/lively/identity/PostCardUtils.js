@@ -153,6 +153,72 @@ module('lively.identity.PostCardUtils')
         '.lively-link-preview-embed iframe{display:block;width:100%;border:0;border-radius:8px;}' +
         '.lively-link-preview-embed[data-embed-shape="video"] iframe{aspect-ratio:16/9;height:auto;}' +
         '.lively-link-preview-embed[data-embed-shape="audio"] iframe{height:152px;}' +
+        // Reddit's embed.reddit.com post page ALSO has no fixed aspect ratio
+        // (text posts vs. image/carousel posts vs. long comment counts all
+        // render very different heights) -- the same shape of problem
+        // Instagram's embed has, below -- but confirmed live it never sends
+        // Instagram's resize postMessage (listened for 9s, nothing), and
+        // neither does Reddit's OWN official widgets.js embed snippet
+        // (tested directly against the real <blockquote>+<script> markup
+        // their "Embed" button generates -- it just statically applies
+        // whatever height the page author declares up front, same
+        // limitation this file has). No oEmbed fallback either --
+        // www.reddit.com/oembed is behind the same bot-wall as everything
+        // else (see LinkPreviewServer.js's header comment). So there is no
+        // real content height available to grow to, from any angle, ever --
+        // reuses Instagram's "generous iframe + scrolling wrapper" trick
+        // anyway (styleable pink scrollbar > Reddit's own unstyleable one),
+        // with a STATIC iframe height standing in for a measured one.
+        // BUG FIX (caught live): this was originally a much more generous
+        // 1200px/600px split, sized to comfortably fit the one image-heavy
+        // post this feature launched with -- but confirmed live across
+        // several real posts of different kinds (sampled directly via
+        // embed.reddit.com, not guessed): a plain text post is only
+        // ~240-320px (Reddit's own embed clamps body text behind a "Read
+        // more" toggle, so even a long post never renders tall), a single-
+        // or multi-image post is ~715-740px, and a linked video is ~530px.
+        // 1200px left most real posts (anything but an image) scrollable
+        // down into several hundred px of true dead space below their real
+        // content -- exactly the "empty scroll space" this now fixes.
+        // 780px (a small margin over the ~740px image-post ceiling actually
+        // observed) covers every sampled case with no clipping -- kept at
+        // the generous end deliberately, since clipping loses real content
+        // permanently (scrolling="no" means content past the iframe's own
+        // box, not just past the visible window, is genuinely unreachable)
+        // while a bit of blank space is only a cosmetic annoyance; there's
+        // no way to rule out an even longer real post without the
+        // measurement signal Reddit doesn't provide, so the ceiling stays
+        // on the safe side. The VISIBLE window is the one actually tuned
+        // for the common case instead: 320px, tight enough that a text post
+        // (~240-320px real) shows with ~0-80px of slack rather than
+        // hundreds, at the cost of needing a bit more scrolling than a
+        // taller window would for video (~530px) and image (~715-740px)
+        // posts -- never clipping either, just more of a "preview, scroll
+        // for the rest" card for those two.
+        // BUG FIX (caught live): overflow-y:auto on the wrapper below
+        // reserves a real ~10-11px gutter for the scrollbar, shrinking the
+        // iframe's own 100% width to fit beside it -- confirmed live via
+        // getBoundingClientRect (iframe right edge landed at 500.7px vs. the
+        // wrapper's 511.3px). Reddit's own content (a blurred-backdrop fill
+        // behind the actual post image, not something this file renders)
+        // then ends abruptly at that shrunk edge, well short of the card's
+        // real border, with the scrollbar's gutter as a visibly different-
+        // colored strip beyond it -- reads as two separate cards side by
+        // side rather than one card with a scrollbar. Fix: let the iframe
+        // overlap that gutter instead of yielding to it -- width wider than
+        // the shrunk 100% by the scrollbar's own declared width, pulled back
+        // with an equal negative right margin so its content still ends
+        // exactly at the wrapper's true (unshrunk) right edge. The pink
+        // thumb then draws on top of the iframe's own content as a real
+        // overlay, same visual result as a native overlay scrollbar, without
+        // relying on the overflow:overlay CSS value (removed from Chromium).
+        '.lively-link-preview-embed[data-embed-shape="reddit"] iframe{height:780px;width:calc(100% + 10px);margin-right:-10px;}' +
+        '.lively-link-preview-embed[data-embed-shape="reddit"]{max-height:320px;overflow-y:auto;}' +
+        '.lively-link-preview-embed[data-embed-shape="reddit"]::-webkit-scrollbar{width:10px;}' +
+        '.lively-link-preview-embed[data-embed-shape="reddit"]::-webkit-scrollbar-track{background:transparent;}' +
+        '.lively-link-preview-embed[data-embed-shape="reddit"]::-webkit-scrollbar-thumb' +
+        '{background:#f7c6d9;border-radius:6px;}' +
+        '.lively-link-preview-embed[data-embed-shape="reddit"]{scrollbar-width:thin;scrollbar-color:#f7c6d9 transparent;}' +
         // Instagram's own /embed/captioned/ page has no fixed aspect ratio
         // across square/portrait/landscape posts, so instead of a fixed-
         // height iframe with ITS OWN internal (unstyleable — cross-origin)
@@ -852,6 +918,7 @@ module('lively.identity.PostCardUtils')
       'w.soundcloud.com':     { label: 'Open in SoundCloud',  shape: 'audio' },
       'embed.music.apple.com': { label: 'Open in Apple Music', shape: 'audio' },
       'www.instagram.com':    { label: 'Open in Instagram',   shape: 'instagram' },
+      'embed.reddit.com':     { label: 'Open in Reddit',      shape: 'reddit' },
     };
 
     function _embedHostInfo(embedUrl) {
@@ -1004,6 +1071,13 @@ module('lively.identity.PostCardUtils')
         // own CSS wants, so it suppresses that regardless of origin.
         iframe.setAttribute('scrolling', 'no');
       }
+      // Reddit gets the same legacy-`scrolling` suppression as Instagram
+      // above, for the same reason: an exceptionally long post (taller than
+      // the 780px static guess in the CSS above) would otherwise show its
+      // OWN internal scrollbar nested inside the wrapper's already-scrolling
+      // pink one. The content past 780px becomes unreachable either way —
+      // see that CSS comment — this just avoids a double scrollbar for it.
+      if (embedInfo.shape === 'reddit') iframe.setAttribute('scrolling', 'no');
       wrap.appendChild(iframe);
 
       // No separate "Open in <provider>" caption here -- every one of the
@@ -1296,10 +1370,12 @@ module('lively.identity.PostCardUtils')
           'sandbox="allow-scripts allow-same-origin allow-popups allow-presentation" allowfullscreen ' +
           'allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen" ' +
           // scrolling="no" -- see _buildLinkPreviewEmbed's identical fix for
-          // why this is needed for Instagram specifically (suppresses a
-          // second, unstyleable scrollbar its own page forces regardless of
-          // the resize hydrateLinkPreviewEmbeds performs after insertion).
-          (embedInfo.shape === 'instagram' ? 'scrolling="no" ' : '') +
+          // why this is needed for Instagram (suppresses a second,
+          // unstyleable scrollbar its own page forces regardless of the
+          // resize hydrateLinkPreviewEmbeds performs after insertion) and
+          // for Reddit (suppresses a nested scrollbar inside the wrapper's
+          // own pink one for a post taller than its static height guess).
+          (embedInfo.shape === 'instagram' || embedInfo.shape === 'reddit' ? 'scrolling="no" ' : '') +
           'title="' + escapeAttr(attrs.title || embedInfo.label) + '"></iframe>' +
           '</div>';
       }
