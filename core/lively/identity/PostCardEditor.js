@@ -1449,6 +1449,44 @@ module('lively.identity.PostCardEditor')
         var closeHistory = prosemirror.history.closeHistory;
         var key = new PluginKey('postcardLinkPreview');
         var BARE_URL_RE = /^(https?:\/\/[^\s<>"']+)$/i;
+        var LINK_PREVIEW_FETCH_DEBOUNCE_MS = 600;
+        // pos (paragraph start) -> pending setTimeout id. Debounces the
+        // real network fetch computeDecorations would otherwise kick off on
+        // EVERY keystroke -- confirmed live (chrome-devtools, typing a
+        // 44-char YouTube URL one character at a time): without this, each
+        // keystroke's in-progress substring is itself a distinct cache key
+        // (e.g. ".../watch?v=d", ".../watch?v=dQ", ...), so each one fires
+        // its own real outbound fetchLinkPreview call -- 35 real requests
+        // for one pasted/typed link, 14 of them 502ing, easily blowing
+        // through LinkPreviewServer.js's 20-req/min-per-IP rate limit after
+        // a single link. Worse, once the in-progress text happens to look
+        // like a YouTube watch URL with ANY non-empty `v=` value --
+        // including a garbage one-or-two-character mid-typed fragment, since
+        // detectEmbed's old regex accepted any non-empty id -- that keystroke
+        // resolves to a real (bogus) embedUrl and, if the user pauses there
+        // even briefly, renders a genuine heavyweight YouTube iframe (ads/
+        // tracking calls and all) for a video that doesn't exist. Normal
+        // human typing (with natural pauses) hits this; fast scripted typing
+        // doesn't, which is why it didn't show up until tested with
+        // realistic pacing. Keyed by paragraph start position (stable while
+        // typing within one paragraph) rather than by url (which changes
+        // every keystroke and so can't dedupe against itself).
+        var _fetchDebounceTimers = {};
+
+        function scheduleFetch(pos, url) {
+          if (_fetchDebounceTimers[pos]) clearTimeout(_fetchDebounceTimers[pos]);
+          _fetchDebounceTimers[pos] = setTimeout(function () {
+            delete _fetchDebounceTimers[pos];
+            var view = self.editorView;
+            if (!view) return;
+            var node = view.state.doc.nodeAt(pos);
+            // Bail if the paragraph moved on since this was scheduled (more
+            // typing, or the paragraph is simply gone) -- only ever fetch
+            // for text that's still actually current.
+            if (!node || bareUrlOf(node) !== url) return;
+            lively.identity.postCardUtils.fetchLinkPreview(url, requestRefresh);
+          }, LINK_PREVIEW_FETCH_DEBOUNCE_MS);
+        }
 
         function bareUrlOf(node) {
           if (node.type.name !== 'paragraph' || node.childCount !== 1) return null;
@@ -1506,7 +1544,8 @@ module('lively.identity.PostCardEditor')
             // don't also show the derived decoration.
             if (hasSiblingCard(state.doc, widgetPos, url)) return false;
             var cached = U.peekLinkPreview(url);
-            if (cached === undefined) { U.fetchLinkPreview(url, requestRefresh); return false; }
+            if (cached === undefined) { scheduleFetch(pos, url); return false; }
+            if (_fetchDebounceTimers[pos]) { clearTimeout(_fetchDebounceTimers[pos]); delete _fetchDebounceTimers[pos]; }
             if (cached === null || cached.err || !cached.body || cached.body.error) return false;
             decos.push(Decoration.widget(widgetPos, function () {
               return U.buildLinkPreviewCard(cached.body);

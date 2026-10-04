@@ -224,11 +224,18 @@ function detectEmbed(targetUrl) {
   }
   if (host === 'youtube.com' || host === 'www.youtube.com' || host === 'm.youtube.com') {
     var vid = u.searchParams.get('v');
-    if (vid && /^[A-Za-z0-9_-]+$/.test(vid)) return { provider: 'youtube', embedUrl: 'https://www.youtube.com/embed/' + vid };
+    // Exactly 11 chars -- YouTube's video ids are always this length.
+    // BUG FIX: the old /^[A-Za-z0-9_-]+$/ (any non-empty length) accepted
+    // a mid-typed, not-yet-complete id (e.g. "d", "dQ", ... while someone
+    // is still typing/pasting a full watch URL into the editor) as a
+    // "valid" embed, which could briefly render a real (bogus) heavyweight
+    // YouTube iframe for a nonexistent video every time the client's
+    // debounce window happened to land mid-id -- confirmed live.
+    if (vid && /^[A-Za-z0-9_-]{11}$/.test(vid)) return { provider: 'youtube', embedUrl: 'https://www.youtube.com/embed/' + vid };
     return null;
   }
   if (host === 'youtu.be') {
-    var ym = /^\/([A-Za-z0-9_-]+)/.exec(u.pathname);
+    var ym = /^\/([A-Za-z0-9_-]{11})(?:[/?]|$)/.exec(u.pathname);
     if (ym) return { provider: 'youtube', embedUrl: 'https://www.youtube.com/embed/' + ym[1] };
     return null;
   }

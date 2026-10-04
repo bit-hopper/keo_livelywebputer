@@ -999,9 +999,6 @@ function _linkPreviewCardHtml(attrs) {
       'sandbox="allow-scripts allow-same-origin allow-popups allow-presentation" allowfullscreen ' +
       'allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen" ' +
       'title="' + escapeHtml(attrs.title || embedInfo.label) + '"></iframe>' +
-      '<a class="lively-link-preview-card-openlink" href="' + escapeHtml(safeHref(attrs.url || '')) +
-      '" target="_blank" rel="noopener noreferrer">' +
-      escapeHtml(attrs.title ? (embedInfo.label + ' — ' + attrs.title) : embedInfo.label) + '</a>' +
       '</div>';
   }
   var safeImage = attrs.image ? safeHref(attrs.image) : null;

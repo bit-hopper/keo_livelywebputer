@@ -1406,6 +1406,27 @@ module('lively.identity.WikiEditor')
         var DecorationSet = prosemirror.view.DecorationSet;
         var key = new PluginKey('wikiLinkPreview');
         var BARE_URL_RE = /^(https?:\/\/[^\s<>"']+)$/i;
+        var LINK_PREVIEW_FETCH_DEBOUNCE_MS = 600;
+        // Mirrors PostCardEditor.js's own copy of this same fix -- see that
+        // file's header comment for the full rationale (confirmed live:
+        // typing a 44-char YouTube URL fired 35 real outbound requests, one
+        // per keystroke, 14 of them 502ing, and a mid-typed garbage video id
+        // could briefly resolve to a real-but-bogus heavyweight embed).
+        // Keyed by paragraph start position, not url (which changes every
+        // keystroke and so can't dedupe against itself).
+        var _fetchDebounceTimers = {};
+
+        function scheduleFetch(pos, url) {
+          if (_fetchDebounceTimers[pos]) clearTimeout(_fetchDebounceTimers[pos]);
+          _fetchDebounceTimers[pos] = setTimeout(function () {
+            delete _fetchDebounceTimers[pos];
+            var view = self.editorView;
+            if (!view) return;
+            var node = view.state.doc.nodeAt(pos);
+            if (!node || bareUrlOf(node) !== url) return;
+            lively.identity.postCardUtils.fetchLinkPreview(url, requestRefresh);
+          }, LINK_PREVIEW_FETCH_DEBOUNCE_MS);
+        }
 
         function bareUrlOf(node) {
           if (node.type.name !== 'paragraph' || node.childCount !== 1) return null;
@@ -1442,7 +1463,8 @@ module('lively.identity.WikiEditor')
             var widgetPos = pos + node.nodeSize;
             if (hasSiblingCard(state.doc, widgetPos, url)) return false;
             var cached = U.peekLinkPreview(url);
-            if (cached === undefined) { U.fetchLinkPreview(url, requestRefresh); return false; }
+            if (cached === undefined) { scheduleFetch(pos, url); return false; }
+            if (_fetchDebounceTimers[pos]) { clearTimeout(_fetchDebounceTimers[pos]); delete _fetchDebounceTimers[pos]; }
             if (cached === null || cached.err || !cached.body || cached.body.error) return false;
             decos.push(Decoration.widget(widgetPos, function () {
               return U.buildLinkPreviewCard(cached.body);

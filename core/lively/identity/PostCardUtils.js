@@ -150,10 +150,7 @@ module('lively.identity.PostCardUtils')
         '.lively-link-preview-embed{display:block;margin:6px 0;max-width:480px;}' +
         '.lively-link-preview-embed iframe{display:block;width:100%;border:0;border-radius:8px;}' +
         '.lively-link-preview-embed[data-embed-shape="video"] iframe{aspect-ratio:16/9;height:auto;}' +
-        '.lively-link-preview-embed[data-embed-shape="audio"] iframe{height:152px;}' +
-        '.lively-link-preview-card-openlink{display:block;margin-top:4px;font-size:10.5px;color:#888;' +
-        'text-decoration:none;}' +
-        '.lively-link-preview-card-openlink:hover{text-decoration:underline;}';
+        '.lively-link-preview-embed[data-embed-shape="audio"] iframe{height:152px;}';
       document.head.appendChild(styleEl);
     }
 
@@ -902,13 +899,14 @@ module('lively.identity.PostCardUtils')
       if (embedInfo.shape === 'video') iframe.height = '270'; // overridden by aspect-ratio CSS once loaded
       wrap.appendChild(iframe);
 
-      var openLink = document.createElement('a');
-      openLink.className = 'lively-link-preview-card-openlink';
-      openLink.href = safeHref(data.url);
-      openLink.target = '_blank';
-      openLink.rel = 'noopener noreferrer';
-      openLink.textContent = data.title ? (embedInfo.label + ' — ' + data.title) : embedInfo.label;
-      wrap.appendChild(openLink);
+      // No separate "Open in <provider>" caption here -- every one of the
+      // four embeddable providers' own official players (Spotify/YouTube/
+      // SoundCloud/Apple Music) already carries its own "open externally"
+      // affordance inside the iframe itself (confirmed live for YouTube:
+      // title/channel links and a "Watch on YouTube" badge all present in
+      // the embedded player's own UI), so a redundant link alongside it was
+      // pure visual clutter that didn't do anything the embed itself didn't
+      // already offer.
 
       ['mousedown', 'click'].forEach(function (t) {
         wrap.addEventListener(t, function (e) { e.stopPropagation(); });
@@ -1091,9 +1089,6 @@ module('lively.identity.PostCardUtils')
           'sandbox="allow-scripts allow-same-origin allow-popups allow-presentation" allowfullscreen ' +
           'allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen" ' +
           'title="' + escapeAttr(attrs.title || embedInfo.label) + '"></iframe>' +
-          '<a class="lively-link-preview-card-openlink" href="' + escapeAttr(safeHref(attrs.url || '')) +
-          '" target="_blank" rel="noopener noreferrer">' +
-          escapeHtml(attrs.title ? (embedInfo.label + ' — ' + attrs.title) : embedInfo.label) + '</a>' +
           '</div>';
       }
 
