@@ -3593,11 +3593,13 @@ module("lively.identity.ConstellationLounge")
         var payload = envelope.record && envelope.record.payload;
         var snapshot = payload &&
           (payload.format === "prosemirror-doc-v1" ? payload.doc : payload.snapshot);
-        // feedMode: this renders every reply's body at once in a condensed
-        // list — a persisted link_preview_card node must render as a plain
-        // text link here, never mount a card/iframe per reply (same
-        // "noisy and expensive per row" posture as PostCardFeed.js).
-        return snapshot ? lively.identity.postCardUtils.snapshotToHtml(snapshot, { feedMode: true }) : "";
+        // Every comment renders fully inline here (no condensed-feed-row
+        // collapsing, unlike PostCardFeed.js) — matches the reel's own
+        // suppressEmbeds override (see [[project-link-preview-reel-cards]]):
+        // a persisted link_preview_card node (or a legacy bare-URL
+        // paragraph, picked up by hydrateLinkPreviews below) renders as a
+        // real card/iframe, not a plain text link.
+        return snapshot ? lively.identity.postCardUtils.snapshotToHtml(snapshot, { suppressEmbeds: false }) : "";
       },
 
       // Same batch endpoint _resolveHandle already uses, generalized to
@@ -3754,17 +3756,34 @@ module("lively.identity.ConstellationLounge")
           bodyNode = bodyBox.renderContext().shapeNode;
           bodyNode.className = (bodyNode.className ? bodyNode.className + " " : "") + "lounge-comment-body";
           bodyNode.innerHTML = reply._bodyHtml || "";
+          lively.identity.postCardUtils.hydrateEmbeddedParts(bodyNode);
+          // Upgrades a persisted link_preview_card's embed iframe (resize
+          // wiring) and, separately, a legacy bare-URL paragraph (fetches
+          // via PostCardUtils.js's own module-level cache and inserts a
+          // real card) — same two calls PostCardView.js/WikiView.js already
+          // make after setting their own content HTML. Called BEFORE the
+          // measurement just below — PostCardUtils.js's _fetchLinkPreview
+          // resolves synchronously from cache on every render after the
+          // first (confirmed live: the actions row overlapped the card
+          // when this ran after the measurement, since a warm-cache card
+          // mounts synchronously and a stale pre-card bodyH was already
+          // captured). _watchLinkPreviewCardInsert below is still needed
+          // for the first, genuinely-async fetch of a given URL.
+          lively.identity.postCardUtils.hydrateLinkPreviewEmbeds(bodyNode);
+          lively.identity.postCardUtils.hydrateLinkPreviews(bodyNode);
           // Measure-the-real-DOM, same technique as this file's own text-
           // sizing convention elsewhere — the body's height genuinely
           // depends on its (rich, possibly multi-paragraph) content, not a
           // guessed constant, so it's read back off the live node after
-          // the HTML and width are both already set. Wrong the moment any
-          // embedded media hasn't loaded yet — _watchMediaLoad corrects
-          // cached.height (and reflows) once it has.
+          // the HTML, width, and any synchronously-hydrated content are
+          // all already in place. Still wrong the moment any embedded
+          // media/link card hasn't loaded yet — _watchMediaLoad/
+          // _watchLinkPreviewCardInsert correct cached.height (and reflow)
+          // once they have.
           bodyH = Math.max(14, bodyNode.scrollHeight);
-          lively.identity.postCardUtils.hydrateEmbeddedParts(bodyNode);
           cached = self._bodyBoxCache[cacheKey] = { box: bodyBox, html: reply._bodyHtml || "", width: textW, height: bodyH };
           self._watchMediaLoad(bodyNode, cached);
+          self._watchLinkPreviewCardInsert(bodyNode, cached);
         }
         bodyBox.setPosition(lively.pt(textX, y + 20));
         bodyBox.setExtent(lively.pt(textW, bodyH));
@@ -3879,6 +3898,28 @@ module("lively.identity.ConstellationLounge")
           el.addEventListener(readyEvt, settle, { once: true });
           el.addEventListener("error", settle, { once: true });
         });
+      },
+
+      // Mirrors _watchMediaLoad just above, for the other async-after-the-
+      // fact case: hydrateLinkPreviews (called right after bodyNode's
+      // innerHTML is set) inserts a link-preview card via a real network
+      // fetch the first time a given URL is seen, which lands too late for
+      // the synchronous bodyH = bodyNode.scrollHeight measurement a few
+      // lines up to see. A MutationObserver — not a guessed timeout, see
+      // CLAUDE.md's measured-not-guessed sizing rule — catches that
+      // insertion whenever it actually happens and corrects cached.height
+      // + reflows via the same _scheduleThreadRerender debounce. No-op
+      // when nothing ever gets inserted (a comment with no bare-URL
+      // paragraph) past its own timeout below.
+      _watchLinkPreviewCardInsert: function (bodyNode, cached) {
+        var self = this;
+        var mo = new MutationObserver(function () {
+          mo.disconnect();
+          cached.height = Math.max(14, bodyNode.scrollHeight);
+          self._scheduleThreadRerender();
+        });
+        mo.observe(bodyNode, { childList: true, subtree: true });
+        setTimeout(function () { mo.disconnect(); }, 8000);
       },
 
       _scheduleThreadRerender: function () {

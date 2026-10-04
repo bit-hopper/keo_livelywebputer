@@ -270,6 +270,7 @@ module("lively.identity.RoomView")
         this._messages = [];      // [{objId, did, handle, text, created}], real (see "chat" category)
         this._mutedExpanded = {}; // key -> true, see _renderMessages' mute-collapse handling
         this._mediaDims = {};     // media msg.text (its URL) -> {w, h} once loaded, see _renderMessages' media branch
+        this._linkPreviewRowH = {}; // msg.text -> real body height once a link-preview card has settled, see _watchLinkPreviewInsert
         this._messagePollTimer = null;
         this._searchActive = false; // persistent rooms only — see _toggleSearch/_performSearch
         this._searchQuery = "";
@@ -2474,6 +2475,35 @@ module("lively.identity.RoomView")
         }).join("");
       },
 
+      // hydrateLinkPreviews (called right after bodyNode.innerHTML is set,
+      // see _renderMessages' body branch) inserts a link-preview card
+      // asynchronously — the first time a given URL is seen, via a real
+      // network fetch; PostCardUtils.js's own _linkPreviewCache means every
+      // later call (e.g. this room's own 4s message poll re-rendering the
+      // same message) resolves synchronously from cache, but the FIRST
+      // render still needs a way to notice the card landed after
+      // bodyNode.scrollHeight was already read. A MutationObserver (rather
+      // than a guessed timeout — see CLAUDE.md's measured-not-guessed
+      // sizing rule) catches that insertion whenever it happens and caches
+      // the real settled height by msg.text (same keying convention as
+      // _mediaDims), then triggers one _renderMessages() reflow so this
+      // row — and every row below it — gets the correct final layout.
+      // No-ops once a height is already cached for this key, so a message
+      // with no link (nothing ever inserted) doesn't leave a dangling
+      // observer past its own timeout below.
+      _watchLinkPreviewInsert: function (bodyNode, cacheKey) {
+        var self = this;
+        if (self._linkPreviewRowH[cacheKey] !== undefined) return;
+        var mo = new MutationObserver(function () {
+          var real = Math.max(18, bodyNode.scrollHeight);
+          mo.disconnect();
+          self._linkPreviewRowH[cacheKey] = real;
+          self._renderMessages();
+        });
+        mo.observe(bodyNode, { childList: true, subtree: true });
+        setTimeout(function () { mo.disconnect(); }, 8000);
+      },
+
       _formatTime: function (isoOrTs) {
         var d = new Date(isoOrTs);
         var h = d.getHours(), m = d.getMinutes();
@@ -2958,41 +2988,43 @@ module("lively.identity.RoomView")
             });
             row.addMorph(mediaM);
           } else {
+            // Always the raw-HTML Box path now, flags or not — a flag
+            // <img> needs to sit inline in native text flow (see
+            // _messageBodyHtml's own comment), and a message that's
+            // NOTHING but a bare URL needs the same innerHTML scan
+            // hydrateLinkPreviews already runs for postcards/wiki pages/
+            // cluster comments (PostCardUtils.js's "legacy bare-URL
+            // paragraph" fallback — no schema change needed here, chat
+            // messages are already plain strings). A mixed message
+            // ("check this out: https://...") intentionally gets no card,
+            // same posture as that existing fallback everywhere else.
             var flagSegments = self._splitFlagRuns(msg.text);
-            var hasFlag = flagSegments.some(function (s) { return s.flag; });
-            if (hasFlag) {
-              // Raw-HTML path (see _messageBodyHtml's own comment) — a
-              // plain Box, not a Text morph, since the flag <img>s need to
-              // sit inline in the browser's own native text flow.
-              var bodyBox = noDrag(new lively.morphic.Box(lively.rect(PAD + AVATAR_MSG + 8, contentTop + HEAD_H + HEAD_GAP, bw, 1)));
-              bodyBox.applyStyle({ fill: null, borderWidth: 0 });
-              bodyBox.eventsAreIgnored = true;
-              row.addMorph(bodyBox);
-              var flagNode = bodyBox.renderContext().shapeNode;
-              flagNode.style.fontFamily = "Helvetica";
-              flagNode.style.fontSize = "13px";
-              flagNode.style.color = "rgb(43, 20, 63)";
-              flagNode.style.wordBreak = "break-word";
-              flagNode.innerHTML = self._messageBodyHtml(flagSegments);
-              bh = flagNode.scrollHeight || 18;
-              bodyBox.setExtent(lively.pt(bw, bh + 4));
-              bh = bh + 4;
-            } else {
-              var bodyM = noDrag(lively.morphic.Text.makeLabel(msg.text, {
-                fontSize: 13, textColor: CHAT_TEXT_PRIMARY, fixedWidth: true, fixedHeight: true,
-                // makeLabel's default is white-space:pre, which never wraps: a long
-                // message ran off the panel edge instead of wrapping onto more lines.
-                whiteSpaceHandling: "pre-wrap",
-              }));
-              bodyM.eventsAreIgnored = true;
-              bodyM.setExtent(lively.pt(bw, 1));
-              row.addMorph(bodyM);
-              var inner = bodyM.renderContext().shapeNode.querySelector("div");
-              bh = inner ? inner.offsetHeight : 18;
-              bodyM.setExtent(lively.pt(bw, bh + 4));
-              bodyM.setPosition(lively.pt(PAD + AVATAR_MSG + 8, contentTop + HEAD_H + HEAD_GAP));
-              bh = bh + 4;
-            }
+            var bodyBox = noDrag(new lively.morphic.Box(lively.rect(PAD + AVATAR_MSG + 8, contentTop + HEAD_H + HEAD_GAP, bw, 1)));
+            bodyBox.applyStyle({ fill: null, borderWidth: 0 });
+            bodyBox.eventsAreIgnored = true;
+            row.addMorph(bodyBox);
+            var bodyNode = bodyBox.renderContext().shapeNode;
+            bodyNode.style.fontFamily = "Helvetica";
+            bodyNode.style.fontSize = "13px";
+            bodyNode.style.color = "rgb(43, 20, 63)";
+            // pre-wrap: preserves real newlines/spaces in a multi-line
+            // message (matching the old Text-morph path's whiteSpaceHandling)
+            // while still wrapping long lines instead of overflowing bw.
+            bodyNode.style.whiteSpace = "pre-wrap";
+            bodyNode.style.wordBreak = "break-word";
+            // Wrapped in its own <p> so hydrateLinkPreviews' bare-link scan
+            // (querySelectorAll('p, li'), checking each block's ONLY child)
+            // has a block element to test — a bare top-level text node
+            // isn't itself a candidate.
+            bodyNode.innerHTML = "<p style=\"margin:0;\">" + self._messageBodyHtml(flagSegments) + "</p>";
+            lively.identity.postCardUtils.hydrateLinkPreviews(bodyNode);
+            lively.identity.postCardUtils.hydrateLinkPreviewEmbeds(bodyNode);
+            var linkCacheKey = msg.text;
+            var cachedLinkH = self._linkPreviewRowH[linkCacheKey];
+            bh = cachedLinkH != null ? cachedLinkH : (bodyNode.scrollHeight || 18);
+            bodyBox.setExtent(lively.pt(bw, bh + 4));
+            self._watchLinkPreviewInsert(bodyNode, linkCacheKey);
+            bh = bh + 4;
           }
 
           // Reaction pill row, below the body — 0 extra height when there
