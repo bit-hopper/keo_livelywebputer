@@ -345,6 +345,22 @@ module("lively.identity.WikiView")
           ].join(";");
           wrapper.appendChild(content);
           this._contentEl = content;
+
+          // BUG FIX: same native-wheel-scroll-does-nothing bug confirmed
+          // live on PostCardView.js's content div (see its own matching
+          // fix for the full writeup) — this div has the identical risk
+          // shape: overflow-y:auto nested inside an overflow:hidden
+          // ancestor (`shapeNode.style.overflow = "hidden"`, _buildChrome)
+          // within a transformed/composited morph chain, which a real
+          // ConstellationLounge-reel-style embedding (opts.target set,
+          // _autoHeight false) puts this exact overflow-y:auto branch into
+          // play. Not independently confirmed broken here — fixed
+          // preemptively since the structural cause is the same.
+          content.addEventListener("wheel", function (e) {
+            if (getComputedStyle(content).overflowY !== "auto") return; // _autoHeight: no scroll area
+            content.scrollTop += e.deltaY;
+            e.preventDefault();
+          }, { passive: false });
         },
 
         _toggleDetails: function () {

@@ -293,6 +293,34 @@ module("lively.identity.PostCardView")
             "color:#333",
             "box-sizing:border-box",
           ].join(";");
+          // BUG FIX: native mouse-wheel scrolling of this div silently did
+          // nothing — confirmed live (real hardware wheel, not a synthetic
+          // event) on the ConstellationLounge reel: genuine overflow
+          // (scrollHeight > clientHeight), a real trusted 'wheel' event
+          // correctly reaching this element with defaultPrevented:false and
+          // a normal deltaY, zero 'scroll' events ever fired, yet a direct
+          // `content.scrollTop = n` JS write worked instantly. Isolated to
+          // this div's specific DOM position — a sibling morph's own
+          // shapeNode with the identical overflow-y:auto pattern
+          // (ConstellationLounge.js's _spacesBox/_membersBox) scrolls fine
+          // with real wheel input; the difference is that THIS div sits two
+          // levels inside the morph's own hand-built chrome, with an
+          // overflow:hidden parent (`.lively-postcard-view-face.front`,
+          // _buildChrome) wrapping it inside a transformed/composited
+          // ancestor chain (frontCardBox's `.lounge-reel-card`, the view's
+          // own shapeNode) — a known class of Chromium compositor
+          // "non-fast scrollable region" bug where that combination isn't
+          // registered for hardware-wheel fast-path scrolling, even though
+          // JS scrollTop writes and CDP-injected synthetic wheel events
+          // (which is why this never showed up in automated testing) both
+          // work fine. Fix: don't rely on the browser's native wheel
+          // default action here — scroll it ourselves from the event and
+          // prevent the (broken) native attempt from doing anything.
+          content.addEventListener("wheel", function (e) {
+            content.scrollTop += e.deltaY;
+            e.preventDefault();
+          }, { passive: false });
+
           // Click a photo to view it whole inside the card; the viewer's own
           // full-screen icon opens the full-screen one (PostCardUtils.openImageViewer).
           content.addEventListener("click", function (e) {
