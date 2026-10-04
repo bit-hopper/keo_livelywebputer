@@ -53,6 +53,12 @@ var MAX_RESPONSE_BYTES = 512 * 1024;
 var MAX_REDIRECTS = 3;
 var MAX_TITLE_LEN = 200;
 var MAX_DESC_LEN = 300;
+// oEmbed enrichment (see discoverOembedUrl/fetchOembed below) is a second,
+// smaller follow-up fetch -- kept short and tightly bounded since it's
+// purely a nice-to-have on top of an already-successful primary fetch, not
+// load-bearing the way fetchOnce is.
+var OEMBED_FETCH_TIMEOUT_MS = 4000;
+var MAX_OEMBED_BYTES = 64 * 1024;
 
 var CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h — previews rarely change
 var CACHE_MAX_ENTRIES = 1000;
@@ -105,11 +111,19 @@ function isPrivateAddress(address, family) {
   return false;
 }
 
-// Fetches targetUrl's HTML as text (stopping early once </head> is seen),
-// following up to redirectsLeft redirects (each hop re-validated). Calls
-// thenDo(err, { finalUrl, body }). Rejects non-HTML content types outright
-// via the response headers, before reading any body.
-function fetchOnce(targetUrl, redirectsLeft, thenDo) {
+// Shared SSRF-safe GET core (dns.lookup()-then-check-then-connect-to-the-
+// checked-address, same pattern as RssProxyServer.js's own fetch) — used by
+// both fetchOnce (the primary HTML scrape) and fetchOembed (the smaller
+// oEmbed follow-up below). Kept as ONE function within this file (rather
+// than this file's usual per-module-copy tolerance for the SSRF guard
+// itself) since both call sites need the exact same network-level
+// protection and there's no reason to risk a second copy drifting out of
+// sync with the first.
+//
+// opts: { timeoutMs, maxBytes, accept (Accept header value),
+//   checkContentType(contentType) -> bool, shouldStopEarly(size, bodySoFar) -> bool }
+// Calls thenDo(err, { finalUrl, body }).
+function _ssrfSafeGet(targetUrl, redirectsLeft, opts, thenDo) {
   var parsed;
   try { parsed = new URL(targetUrl); } catch (e) { return thenDo(new Error('Invalid URL')); }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
@@ -135,37 +149,32 @@ function fetchOnce(targetUrl, redirectsLeft, thenDo) {
       headers: {
         Host: hostname,
         'User-Agent': 'LivelyKernel-LinkPreview/1.0 (+link unfurling)',
-        Accept: 'text/html,application/xhtml+xml',
+        Accept: opts.accept,
       },
-      timeout: FETCH_TIMEOUT_MS,
+      timeout: opts.timeoutMs,
     }, function (res) {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectsLeft > 0) {
         res.resume();
         var nextUrl;
         try { nextUrl = new URL(res.headers.location, targetUrl).toString(); } catch (e) { return done(new Error('Invalid redirect target')); }
-        return fetchOnce(nextUrl, redirectsLeft - 1, done);
+        return _ssrfSafeGet(nextUrl, redirectsLeft - 1, opts, done);
       }
       if (res.statusCode !== 200) {
         res.resume();
         return done(new Error('Server responded HTTP ' + res.statusCode));
       }
       var contentType = String(res.headers['content-type'] || '');
-      // Lenient on a missing content-type (some servers omit it), but an
-      // explicit non-text one (image/video/pdf/etc.) is rejected before
-      // reading the body at all.
-      if (contentType && !/^text\/|html|xml/i.test(contentType)) {
+      if (!opts.checkContentType(contentType)) {
         res.resume();
-        return done(new Error('Not an HTML page (' + contentType + ')'));
+        return done(new Error('Unexpected content type (' + contentType + ')'));
       }
       var chunks = [];
       var size = 0;
       res.on('data', function (chunk) {
         size += chunk.length;
         chunks.push(chunk);
-        if (size > MAX_RESPONSE_BYTES) { req.destroy(); return done(null, { finalUrl: targetUrl, body: Buffer.concat(chunks).toString('utf8') }); }
-        // Early-stop once we've seen the closing </head> — metadata never
-        // lives past it, and pages can run to many MB beyond that point.
-        if (size > 512 && /<\/head\s*>/i.test(Buffer.concat(chunks).toString('utf8'))) {
+        if (size > opts.maxBytes) { req.destroy(); return done(null, { finalUrl: targetUrl, body: Buffer.concat(chunks).toString('utf8') }); }
+        if (opts.shouldStopEarly(size, Buffer.concat(chunks).toString('utf8'))) {
           req.destroy();
           return done(null, { finalUrl: targetUrl, body: Buffer.concat(chunks).toString('utf8') });
         }
@@ -177,6 +186,35 @@ function fetchOnce(targetUrl, redirectsLeft, thenDo) {
     req.on('error', function (err) { done(err); });
     req.end();
   });
+}
+
+// Fetches targetUrl's HTML as text (stopping early once </head> is seen) —
+// metadata never lives past it, and pages can run to many MB beyond that
+// point. Rejects non-HTML content types outright via the response headers,
+// before reading any body.
+function fetchOnce(targetUrl, redirectsLeft, thenDo) {
+  _ssrfSafeGet(targetUrl, redirectsLeft, {
+    timeoutMs: FETCH_TIMEOUT_MS,
+    maxBytes: MAX_RESPONSE_BYTES,
+    accept: 'text/html,application/xhtml+xml',
+    // Lenient on a missing content-type (some servers omit it), but an
+    // explicit non-text one (image/video/pdf/etc.) is rejected.
+    checkContentType: function (ct) { return !ct || /^text\/|html|xml/i.test(ct); },
+    shouldStopEarly: function (size, bodySoFar) { return size > 512 && /<\/head\s*>/i.test(bodySoFar); },
+  }, thenDo);
+}
+
+// Fetches an oEmbed JSON endpoint (see discoverOembedUrl below) — small,
+// read to completion (no early-stop heuristic; oEmbed responses are a
+// single flat JSON object, nowhere near MAX_OEMBED_BYTES in practice).
+function fetchOembed(targetUrl, redirectsLeft, thenDo) {
+  _ssrfSafeGet(targetUrl, redirectsLeft, {
+    timeoutMs: OEMBED_FETCH_TIMEOUT_MS,
+    maxBytes: MAX_OEMBED_BYTES,
+    accept: 'application/json',
+    checkContentType: function (ct) { return !ct || /json/i.test(ct); },
+    shouldStopEarly: function () { return false; },
+  }, thenDo);
 }
 
 function decodeEntities(s) {
@@ -222,7 +260,11 @@ function detectEmbed(targetUrl) {
     if (sm) return { provider: 'spotify', embedUrl: 'https://open.spotify.com/embed/' + sm[1] + '/' + sm[2] };
     return null;
   }
-  if (host === 'youtube.com' || host === 'www.youtube.com' || host === 'm.youtube.com') {
+  // music.youtube.com shares youtube.com's exact video-id space (a YT Music
+  // watch URL's ?v= is the same 11-char id a regular youtube.com/watch?v=
+  // URL would use) and has no public iframe-embed widget of its own, so it
+  // reuses the regular YouTube player rather than needing a new provider.
+  if (host === 'youtube.com' || host === 'www.youtube.com' || host === 'm.youtube.com' || host === 'music.youtube.com') {
     var vid = u.searchParams.get('v');
     // Exactly 11 chars -- YouTube's video ids are always this length.
     // BUG FIX: the old /^[A-Za-z0-9_-]+$/ (any non-empty length) accepted
@@ -300,6 +342,51 @@ function extractMeta(html) {
   };
 }
 
+// oEmbed autodiscovery (https://oembed.com) — a <link rel="alternate"
+// type="application/json+oembed" href="..."> tag most real-world embed-
+// style providers (Vimeo, Flickr, CodePen, Reddit, Twitter/X, TikTok,
+// Imgur, and many more that aren't worth hand-coding into detectEmbed
+// individually) declare in their own page markup. This is what makes the
+// metadata enrichment below "universal" rather than another hardcoded
+// per-provider list: any site that follows the oEmbed spec is picked up
+// automatically. JSON format only (the legacy XML variant isn't supported
+// here). Resolves a relative href against baseUrl; returns null if no tag
+// is found or the href doesn't parse.
+function discoverOembedUrl(html, baseUrl) {
+  var linkRe = /<link\s+([^>]*)>/gi;
+  var m;
+  while ((m = linkRe.exec(html))) {
+    var attrs = m[1];
+    if (!/rel\s*=\s*["']alternate["']/i.test(attrs)) continue;
+    if (!/type\s*=\s*["']application\/json\+oembed["']/i.test(attrs)) continue;
+    var hrefMatch = /href\s*=\s*["']([^"']+)["']/i.exec(attrs);
+    if (!hrefMatch) continue;
+    try { return new URL(decodeEntities(hrefMatch[1]), baseUrl).toString(); } catch (e) { return null; }
+  }
+  return null;
+}
+
+// Parses a fetched oEmbed response body and returns ONLY a whitelist of
+// individually-type-checked string fields: title, author_name,
+// thumbnail_url, provider_name. Deliberately never looks at (let alone
+// returns) the spec's `html` field — that's arbitrary third-party markup
+// from whatever host the oEmbed endpoint itself names, and rendering it
+// directly into a card would be a real XSS vector. This file only ever
+// turns oEmbed data into plain text/attributes, the same way every other
+// piece of scraped metadata here is treated.
+function parseOembedBody(rawBody) {
+  var json;
+  try { json = JSON.parse(rawBody); } catch (e) { return null; }
+  if (!json || typeof json !== 'object') return null;
+  function str(v) { return typeof v === 'string' && v.trim() ? v.trim() : null; }
+  return {
+    title: str(json.title),
+    authorName: str(json.author_name),
+    thumbnailUrl: str(json.thumbnail_url),
+    providerName: str(json.provider_name),
+  };
+}
+
 function unfurl(targetUrl, thenDo) {
   var cached = cache.get(targetUrl);
   if (cached && cached.expiresAt > Date.now()) return thenDo(null, cached.status, cached.body);
@@ -328,41 +415,71 @@ function unfurl(targetUrl, thenDo) {
       return thenDo(err);
     }
     var meta = extractMeta(result.body);
-    var hostname = '', origin = '';
-    try {
-      var finalU = new URL(result.finalUrl);
-      hostname = finalU.hostname;
-      origin = finalU.protocol + '//' + finalU.host;
-    } catch (e) { /* leave both blank -- result.finalUrl already round-tripped through fetchOnce's own URL parse, so this is unreachable in practice */ }
 
-    // Universal fallback chain for the card's image: a real og:image/
-    // twitter:image wins, then the page's own declared favicon, then a
-    // guessed /favicon.ico at the same origin -- unverified (not every
-    // site actually has one there), but harmless either way since the
-    // client hotlinks it directly and hides the image slot on a load
-    // error (see buildLinkPreviewCard's onerror handler), degrading to a
-    // text-only card rather than a broken-image icon. This is what makes
-    // "paste literally any link" reliably produce SOME visual card instead
-    // of only the subset of pages that happen to set up Open Graph tags.
-    var image = safeAbsoluteUrl(meta.image, result.finalUrl) ||
-      safeAbsoluteUrl(meta.favicon, result.finalUrl) ||
-      (origin ? origin + '/favicon.ico' : null);
+    function finish(meta) {
+      var hostname = '', origin = '';
+      try {
+        var finalU = new URL(result.finalUrl);
+        hostname = finalU.hostname;
+        origin = finalU.protocol + '//' + finalU.host;
+      } catch (e) { /* leave both blank -- result.finalUrl already round-tripped through fetchOnce's own URL parse, so this is unreachable in practice */ }
 
-    if (!meta.title && !meta.description && !image && !embed) {
-      var emptyBody = { error: 'No preview metadata found' };
-      cache.set(targetUrl, { expiresAt: Date.now() + CACHE_TTL_MS, status: 422, body: emptyBody });
-      return thenDo(null, 422, emptyBody);
+      // Universal fallback chain for the card's image: a real og:image/
+      // twitter:image wins, then an oEmbed thumbnail_url (if the page
+      // offered one and OG/Twitter didn't), then the page's own declared
+      // favicon, then a guessed /favicon.ico at the same origin --
+      // unverified (not every site actually has one there), but harmless
+      // either way since the client hotlinks it directly and hides the
+      // image slot on a load error (see buildLinkPreviewCard's onerror
+      // handler), degrading to a text-only card rather than a broken-image
+      // icon. This is what makes "paste literally any link" reliably
+      // produce SOME visual card instead of only the subset of pages that
+      // happen to set up Open Graph tags.
+      var image = safeAbsoluteUrl(meta.image, result.finalUrl) ||
+        safeAbsoluteUrl(meta.oembedThumbnail, result.finalUrl) ||
+        safeAbsoluteUrl(meta.favicon, result.finalUrl) ||
+        (origin ? origin + '/favicon.ico' : null);
+
+      if (!meta.title && !meta.description && !image && !embed) {
+        var emptyBody = { error: 'No preview metadata found' };
+        cache.set(targetUrl, { expiresAt: Date.now() + CACHE_TTL_MS, status: 422, body: emptyBody });
+        return thenDo(null, 422, emptyBody);
+      }
+
+      var body = {
+        url: result.finalUrl,
+        title: truncate(meta.title, MAX_TITLE_LEN),
+        description: truncate(meta.description, MAX_DESC_LEN),
+        image: image,
+        siteName: meta.siteName || hostname,
+      };
+      if (embed) { body.provider = embed.provider; body.embedUrl = embed.embedUrl; }
+      cacheAndReturn(200, body);
     }
 
-    var body = {
-      url: result.finalUrl,
-      title: truncate(meta.title, MAX_TITLE_LEN),
-      description: truncate(meta.description, MAX_DESC_LEN),
-      image: image,
-      siteName: meta.siteName || hostname,
-    };
-    if (embed) { body.provider = embed.provider; body.embedUrl = embed.embedUrl; }
-    cacheAndReturn(200, body);
+    // oEmbed enrichment only kicks in when the primary OG/Twitter/<title>
+    // scrape came up short (no title, or no image to show) -- most
+    // well-known sites already have good OG tags and don't need a second
+    // network round-trip at all. A failure here (no oEmbed link, fetch
+    // error, bad JSON, rate limit, timeout) is never fatal -- it just means
+    // `finish` runs with whatever the primary scrape already found, same
+    // as before this feature existed.
+    var needsEnrichment = !meta.title || !(meta.image || meta.favicon);
+    var oembedUrl = needsEnrichment ? discoverOembedUrl(result.body, result.finalUrl) : null;
+    if (!oembedUrl) return finish(meta);
+
+    fetchOembed(oembedUrl, MAX_REDIRECTS, function (oembedErr, oembedResult) {
+      var parsed = oembedErr ? null : parseOembedBody(oembedResult.body);
+      if (!parsed) return finish(meta);
+      finish({
+        title: meta.title || parsed.title,
+        description: meta.description || (parsed.authorName ? 'By ' + parsed.authorName : null),
+        image: meta.image,
+        oembedThumbnail: parsed.thumbnailUrl,
+        favicon: meta.favicon,
+        siteName: meta.siteName || parsed.providerName,
+      });
+    });
   });
 }
 
