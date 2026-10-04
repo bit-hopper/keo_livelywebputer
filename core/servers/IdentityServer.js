@@ -985,6 +985,7 @@ var _EMBED_HOSTS = {
   // same map, not something introduced by that change.
   'www.instagram.com':     { label: 'Open in Instagram',    shape: 'instagram' },
   'embed.reddit.com':      { label: 'Open in Reddit',       shape: 'reddit' },
+  'platform.twitter.com':  { label: 'Open in Twitter',      shape: 'twitter' },
 };
 function _embedHostInfo(embedUrl) {
   try { return _EMBED_HOSTS[new URL(embedUrl).hostname.toLowerCase()] || null; }
@@ -1041,6 +1042,9 @@ function _linkPreviewCardHtml(attrs) {
       'sandbox="allow-scripts allow-same-origin allow-popups allow-presentation" allowfullscreen ' +
       'allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen" ' +
       'title="' + escapeHtml(attrs.title || embedInfo.label) + '"></iframe>' +
+      // Covers Twitter's own brand-logo link -- see PostCardUtils.js's
+      // _buildLinkPreviewEmbed for why this exists and its measurements.
+      (embedInfo.shape === 'twitter' ? '<div class="lively-link-preview-embed-twitter-cover"></div>' : '') +
       '</div>';
   }
   var safeImage = attrs.image ? safeHref(attrs.image) : null;

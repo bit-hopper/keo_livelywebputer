@@ -64,6 +64,24 @@
  * than oEmbed, since Bluesky's oEmbed `html` is a <script>-tag embed (not a
  * sandboxed iframe) that this file won't render for the same XSS reason —
  * see the "Bluesky posts" section below.
+ *
+ * Twitter status links (x.com/twitter.com -- the latter 301s to the former,
+ * already handled by fetchOnce's ordinary redirect-following) get a real
+ * embed via detectEmbed, same category as Spotify/YouTube/SoundCloud/
+ * Apple Music/Reddit/Instagram above -- see detectEmbed's own Twitter
+ * section for why platform.twitter.com/embed/Tweet.html (Twitter's own
+ * internal embed renderer, confirmed live) is used instead of either
+ * Twitter's public oEmbed `html` (a <blockquote>+`widgets.js` embed, same
+ * XSS-relevant shape as Bluesky's -- never rendered directly for the same
+ * reason) or a dedicated API card (Twitter, unlike Bluesky, has no public
+ * unauthenticated post-lookup API to build one from). A plain Twitter link
+ * that ISN'T a status URL (a profile page, a search, etc.) has no embed and
+ * falls through to the generic OG-scrape path below like any other site --
+ * confirmed live 2026-10-04 to already carry real og:title/og:description/
+ * og:image with no bot-UA spoofing needed. The one override applied there
+ * is cosmetic: `finish()` below replaces Twitter's own verbose og:site_name
+ * ("X (formerly Twitter)") with a plain "Twitter", matching every other
+ * provider's short brand-name siteName.
  */
 
 'use strict';
@@ -374,6 +392,26 @@ function detectEmbed(targetUrl) {
     if (igm) return { provider: 'instagram', embedUrl: 'https://www.instagram.com/' + igm[1] + '/' + igm[2] + '/embed/captioned/' };
     return null;
   }
+  if (host === 'x.com' || host === 'www.x.com' || host === 'twitter.com' || host === 'www.twitter.com' || host === 'mobile.twitter.com') {
+    // platform.twitter.com/embed/Tweet.html is Twitter's own internal embed
+    // renderer -- not a documented public API, but confirmed live 2026-10-04
+    // to be exactly what their official <blockquote>+widgets.js snippet
+    // loads into an iframe under the hood (same id param, same response: a
+    // tiny HTML shell that pulls in the real tweet via its own bundled JS,
+    // no X-Frame-Options/frame-ancestors blocking it, Access-Control-Allow-
+    // Origin: * on the shell itself). Using it directly here -- rather than
+    // constructing the public blockquote+script snippet ourselves -- avoids
+    // ever putting a third-party <script src> into markup this file emits;
+    // this way the ONLY thing that touches platform.twitter.com's JS is an
+    // iframe's own already-isolated browsing context, the same trust
+    // boundary Reddit/Instagram/YouTube/Spotify's embeds already rely on.
+    // Being undocumented, Twitter could change this shape without notice --
+    // same risk class as Reddit's share-link redirect handling above, not a
+    // new category of fragility for this file.
+    var tm = /^\/[^\/]+\/status\/(\d+)/.exec(u.pathname);
+    if (tm) return { provider: 'twitter', embedUrl: 'https://platform.twitter.com/embed/Tweet.html?id=' + tm[1] + '&dnt=true' };
+    return null;
+  }
   return null;
 }
 
@@ -434,7 +472,7 @@ function extractMeta(html) {
 
 // oEmbed autodiscovery (https://oembed.com) — a <link rel="alternate"
 // type="application/json+oembed" href="..."> tag most real-world embed-
-// style providers (Vimeo, Flickr, CodePen, Reddit, Twitter/X, TikTok,
+// style providers (Vimeo, Flickr, CodePen, Reddit, Twitter, TikTok,
 // Imgur, and many more that aren't worth hand-coding into detectEmbed
 // individually) declare in their own page markup. This is what makes the
 // metadata enrichment below "universal" rather than another hardcoded
@@ -685,12 +723,24 @@ function unfurl(targetUrl, thenDo) {
           return thenDo(null, 422, emptyBody);
         }
 
+        // Twitter (twitter.com redirects here -- see fetchOnce's redirect
+        // following) declares itself as og:site_name "X (formerly Twitter)",
+        // which reads as a clunky, overlong fragment once rendered uppercase
+        // by the card's own CSS ("X (FORMERLY TWITTER)") -- confirmed live.
+        // Every other provider's og:site_name is already just a plain brand
+        // name (e.g. "YouTube", "Reddit"), so this is the one host that
+        // needs its own override to match that convention.
+        var siteName = meta.siteName || hostname;
+        if (hostname === 'x.com' || hostname === 'www.x.com' || hostname === 'twitter.com' || hostname === 'www.twitter.com') {
+          siteName = 'Twitter';
+        }
+
         var body = {
           url: result.finalUrl,
           title: truncate(meta.title, MAX_TITLE_LEN),
           description: truncate(meta.description, MAX_DESC_LEN),
           image: image,
-          siteName: meta.siteName || hostname,
+          siteName: siteName,
         };
         if (embed) { body.provider = embed.provider; body.embedUrl = embed.embedUrl; }
         cacheAndReturn(200, body);

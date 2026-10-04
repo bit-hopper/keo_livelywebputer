@@ -219,6 +219,52 @@ module('lively.identity.PostCardUtils')
         '.lively-link-preview-embed[data-embed-shape="reddit"]::-webkit-scrollbar-thumb' +
         '{background:#f7c6d9;border-radius:6px;}' +
         '.lively-link-preview-embed[data-embed-shape="reddit"]{scrollbar-width:thin;scrollbar-color:#f7c6d9 transparent;}' +
+        // Twitter's embed (platform.twitter.com/embed/Tweet.html, see
+        // LinkPreviewServer.js's detectEmbed) has the exact same shape of
+        // problem as Reddit just above: no fixed aspect ratio (text-only vs.
+        // media-heavy tweets render very different heights) and, confirmed
+        // live (listened for 4s after load), no resize postMessage the way
+        // Instagram's embed sends — so this reuses Reddit's "generous static
+        // iframe height + scrollable, pink-scrollbar wrapper" treatment
+        // rather than Instagram's resize-driven one. Heights were measured
+        // live, not guessed: a short text-only tweet ("just setting up my
+        // twttr") rendered ~330px, a longer tweet with a 4-image grid
+        // rendered ~470px. 900px covers real headroom beyond both samples
+        // (a single large portrait image or a long multi-paragraph tweet
+        // wasn't sampled, so this stays on the generous side for the same
+        // reason Reddit's own height comment does — clipping loses real
+        // content permanently, a bit of blank space doesn't). 460px for the
+        // visible window shows the richer sampled tweet (~470px) almost
+        // fully with barely any scroll, while a short text tweet (~330px)
+        // just shows with some slack, same tradeoff Reddit's own window
+        // sizing makes.
+        '.lively-link-preview-embed[data-embed-shape="twitter"] iframe{height:900px;width:calc(100% + 10px);margin-right:-10px;}' +
+        '.lively-link-preview-embed[data-embed-shape="twitter"]{max-height:460px;overflow-y:auto;}' +
+        '.lively-link-preview-embed[data-embed-shape="twitter"]::-webkit-scrollbar{width:10px;}' +
+        '.lively-link-preview-embed[data-embed-shape="twitter"]::-webkit-scrollbar-track{background:transparent;}' +
+        '.lively-link-preview-embed[data-embed-shape="twitter"]::-webkit-scrollbar-thumb' +
+        '{background:#f7c6d9;border-radius:6px;}' +
+        '.lively-link-preview-embed[data-embed-shape="twitter"]{scrollbar-width:thin;scrollbar-color:#f7c6d9 transparent;}' +
+        // Opaque patch over Twitter's own brand-logo link in the embed's
+        // header (top-right corner) -- see _buildLinkPreviewEmbed's comment
+        // on the cover element itself for the live-measured numbers this
+        // box is based on and why a cover (not real removal) is the only
+        // option for cross-origin iframe content. position:relative on the
+        // wrap makes it the cover's containing block; since the cover is a
+        // normal child of the SAME element that scrolls (the wrap itself,
+        // per the overflow-y:auto rule above), it scrolls together with the
+        // iframe rather than staying pinned mid-content.
+        '.lively-link-preview-embed[data-embed-shape="twitter"]{position:relative;}' +
+        // Flush against the card's own top-right corner (matching its
+        // border-top-right-radius so the patch's own corner follows the
+        // same curve rather than sticking out as a sharp square nub) and
+        // sized generously -- 60x60, vs. the logo's own live-measured
+        // ~28px glyph -- after a first, tighter attempt (44x44, inset from
+        // the edges) still left a sliver of one of the X's diagonal strokes
+        // poking out past its bottom-left corner, confirmed live via a
+        // cropped screenshot of the rendered iframe.
+        '.lively-link-preview-embed-twitter-cover{position:absolute;top:0;right:0;width:60px;height:60px;' +
+        'background:#fff;border-top-right-radius:8px;pointer-events:none;}' +
         // Instagram's own /embed/captioned/ page has no fixed aspect ratio
         // across square/portrait/landscape posts, so instead of a fixed-
         // height iframe with ITS OWN internal (unstyleable — cross-origin)
@@ -941,6 +987,7 @@ module('lively.identity.PostCardUtils')
       'embed.music.apple.com': { label: 'Open in Apple Music', shape: 'audio' },
       'www.instagram.com':    { label: 'Open in Instagram',   shape: 'instagram' },
       'embed.reddit.com':     { label: 'Open in Reddit',      shape: 'reddit' },
+      'platform.twitter.com': { label: 'Open in Twitter',    shape: 'twitter' },
     };
 
     function _embedHostInfo(embedUrl) {
@@ -1093,14 +1140,38 @@ module('lively.identity.PostCardUtils')
         // own CSS wants, so it suppresses that regardless of origin.
         iframe.setAttribute('scrolling', 'no');
       }
-      // Reddit gets the same legacy-`scrolling` suppression as Instagram
-      // above, for the same reason: an exceptionally long post (taller than
-      // the 780px static guess in the CSS above) would otherwise show its
-      // OWN internal scrollbar nested inside the wrapper's already-scrolling
-      // pink one. The content past 780px becomes unreachable either way —
-      // see that CSS comment — this just avoids a double scrollbar for it.
-      if (embedInfo.shape === 'reddit') iframe.setAttribute('scrolling', 'no');
+      // Reddit (and Twitter, same static-height treatment — see its CSS
+      // comment above) gets the same legacy-`scrolling` suppression as
+      // Instagram above, for the same reason: an exceptionally long post
+      // (taller than the static height guess) would otherwise show its OWN
+      // internal scrollbar nested inside the wrapper's already-scrolling
+      // pink one. Content past that static height becomes unreachable
+      // either way — see that CSS comment — this just avoids a double
+      // scrollbar for it.
+      if (embedInfo.shape === 'reddit' || embedInfo.shape === 'twitter') iframe.setAttribute('scrolling', 'no');
       wrap.appendChild(iframe);
+
+      // Twitter's embed draws its own small brand-logo link (top-right of
+      // the header row, "Visit this post on X") that isn't user content.
+      // There's no query param on platform.twitter.com/embed/Tweet.html to
+      // suppress it (unlike Instagram/Reddit's embeds, which have no
+      // equivalent mark at all), and it's cross-origin content this file
+      // can't reach with CSS/JS -- so this covers it with a plain opaque
+      // patch matching the embed's own white background instead of
+      // removing it. Sized/positioned generously (flush with the card's
+      // own top-right corner, 60x60 vs. the glyph's own live-measured
+      // ~28px) rather than tightly around the live-measured glyph itself —
+      // see this shape's CSS comment for why a tighter first attempt still
+      // left a visible sliver. Well clear of the avatar/name/Follow row
+      // (which ends well short of 370px) and the "2:02 PM · ..." row
+      // further down. Scrolls together with the iframe (both are normal
+      // children of the same scrollable wrap -- see this shape's CSS)
+      // rather than staying pinned mid-content as the card scrolls.
+      if (embedInfo.shape === 'twitter') {
+        var logoCover = document.createElement('div');
+        logoCover.className = 'lively-link-preview-embed-twitter-cover';
+        wrap.appendChild(logoCover);
+      }
 
       // No separate "Open in <provider>" caption here -- every one of the
       // four embeddable providers' own official players (Spotify/YouTube/
@@ -1395,10 +1466,14 @@ module('lively.identity.PostCardUtils')
           // why this is needed for Instagram (suppresses a second,
           // unstyleable scrollbar its own page forces regardless of the
           // resize hydrateLinkPreviewEmbeds performs after insertion) and
-          // for Reddit (suppresses a nested scrollbar inside the wrapper's
-          // own pink one for a post taller than its static height guess).
-          (embedInfo.shape === 'instagram' || embedInfo.shape === 'reddit' ? 'scrolling="no" ' : '') +
+          // for Reddit/Twitter (suppresses a nested scrollbar inside the
+          // wrapper's own pink one for a post taller than its static height
+          // guess).
+          (embedInfo.shape === 'instagram' || embedInfo.shape === 'reddit' || embedInfo.shape === 'twitter' ? 'scrolling="no" ' : '') +
           'title="' + escapeAttr(attrs.title || embedInfo.label) + '"></iframe>' +
+          // Covers Twitter's own brand-logo link -- see _buildLinkPreviewEmbed's
+          // identical element for why this exists and the measurements it's based on.
+          (embedInfo.shape === 'twitter' ? '<div class="lively-link-preview-embed-twitter-cover"></div>' : '') +
           '</div>';
       }
 
