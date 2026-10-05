@@ -187,6 +187,12 @@ module("lively.identity.ConstellationLounge")
     // edge aligned with the search box's top edge, but shorter than the
     // search box itself — height hugs the label the same way width does.
     var CREATE_BTN_W = 150, CREATE_BTN_H = 34;
+    // Degraded form once the full pill no longer fits the gap (see
+    // _layout's createBtnFits) — a plain "+" circle instead of disappearing
+    // entirely. A perfect circle (not just a smaller pill) since the box's
+    // border-radius is already fixed at CREATE_BTN_H/2 — width === height
+    // is what turns that into a circle rather than a short pill.
+    var CREATE_BTN_CIRCLE_W = CREATE_BTN_H;
 
     // "Map ↗" / "Canvas ↗" pills in the quick-info panel — same pill shape as
     // "+ Postcard" (but green), label + arrow_outward glyph. Sized from a
@@ -538,11 +544,13 @@ module("lively.identity.ConstellationLounge")
         // live: it was already ~65px short of createBtnW even before
         // searchX's own minSearchX floor above, which then shrinks it
         // further) — rather than let the button overlap the search box or
-        // the members column, hide it entirely once it no longer fits,
-        // same "degrade by disappearing" precedent as _renderEventCard's
-        // own no-room bail-out. A menu bar "New postcard" entry
+        // the members column, it degrades in two steps: first to a compact
+        // "+" circle (createBtnFitsCircle, _setCreateBtnCompact), and only
+        // once even that doesn't fit does it disappear entirely, same
+        // "degrade by disappearing" precedent as _renderEventCard's own
+        // no-room bail-out. A menu bar "New postcard" entry
         // (MenuBarEntry.js) already offers the same action, so hiding
-        // this shortcut isn't a functionality loss.
+        // this shortcut at that final extreme isn't a functionality loss.
         // Reel/Scroll view toggle sits in the same gap, right after the
         // search box — additive to this gap's own math (doesn't touch
         // searchW itself), just claims its own slice before "+ Postcard"'s
@@ -554,6 +562,11 @@ module("lively.identity.ConstellationLounge")
         var createGapEnd = membersX;
         var createBtnFits = (createGapEnd - createGapStart) >= createBtnW + GUTTER * 2;
         var createBtnX = createGapStart + (createGapEnd - createGapStart - createBtnW) / 2;
+        // Circle fit needs far less breathing room than the full pill — a
+        // single GUTTER's worth rather than GUTTER*2 — since there's no
+        // label to protect from looking cramped against its neighbors.
+        var createBtnFitsCircle = (createGapEnd - createGapStart) >= CREATE_BTN_CIRCLE_W + GUTTER;
+        var createBtnCircleX = createGapStart + (createGapEnd - createGapStart - CREATE_BTN_CIRCLE_W) / 2;
 
         var g = this._geom = {
           searchX: searchX, searchY: TOP, searchW: searchW,
@@ -572,6 +585,7 @@ module("lively.identity.ConstellationLounge")
           spacesX: rightColX, spacesY: spacesY, spacesW: quickInfoW, spacesH: threadBottom - spacesY,
           membersX: membersX, membersY: TOP, membersW: membersW, membersH: Math.max(120, threadBottom - TOP),
           createBtnX: createBtnX, createBtnY: TOP, createBtnFits: createBtnFits,
+          createBtnCircleX: createBtnCircleX, createBtnFitsCircle: createBtnFitsCircle,
         };
 
         if (this._searchBox) {
@@ -581,12 +595,23 @@ module("lively.identity.ConstellationLounge")
         if (this._viewToggleBox) this._viewToggleBox.setPosition(lively.pt(g.toggleX, g.toggleY));
         if (this._sortByBox) this._sortByBox.setPosition(lively.pt(g.sortByX, g.sortByY));
         if (this._createPostcardBtn) {
-          this._createPostcardBtn.setPosition(lively.pt(g.createBtnX, g.createBtnY));
           // Combines with the sign-in/write-permission gate set once in
           // _buildChrome (this._canWrite) — that flag doesn't change on
           // resize, so re-apply it here alongside the fits-in-the-gap
-          // check rather than letting this overwrite it unconditionally.
-          this._createPostcardBtn.setVisible(!!this._canWrite && g.createBtnFits);
+          // checks rather than letting this overwrite it unconditionally.
+          // Two-step degrade: full pill if it fits, else the compact "+"
+          // circle if THAT fits, else hidden entirely.
+          if (!!this._canWrite && g.createBtnFits) {
+            this._createPostcardBtn.setPosition(lively.pt(g.createBtnX, g.createBtnY));
+            this._setCreateBtnCompact(false);
+            this._createPostcardBtn.setVisible(true);
+          } else if (!!this._canWrite && g.createBtnFitsCircle) {
+            this._createPostcardBtn.setPosition(lively.pt(g.createBtnCircleX, g.createBtnY));
+            this._setCreateBtnCompact(true);
+            this._createPostcardBtn.setVisible(true);
+          } else {
+            this._createPostcardBtn.setVisible(false);
+          }
         }
         if (this._sortByDropdown) {
           this._sortByDropdown.setPosition(lively.pt(g.sortByX, g.sortByY + SORT_H + 4));
@@ -698,6 +723,7 @@ module("lively.identity.ConstellationLounge")
         $world.addMorph(this._createPostcardBtn);
         this._createPostcardBtn.setVisible(!!this._canWrite);
         this._fitCreatePostcardButton();
+        this._fitCreatePostcardCircle();
 
         this._quickInfoBox = new lively.morphic.Box(lively.rect(0, 0, 10, 10));
         this._quickInfoBox.setFill(Color.white);
@@ -1188,6 +1214,22 @@ module("lively.identity.ConstellationLounge")
         box.addMorph(label);
         this._createBtnLabel = label;
 
+        // Compact fallback for when the full pill no longer fits the gap
+        // (_layout's createBtnFits) — a bare "+" glyph, centered in the
+        // circle via _fitCreatePostcardCircle (same measure-the-live-DOM
+        // idiom as the pill label above, not a guessed position). Hidden
+        // by default; _setCreateBtnCompact toggles which of the two shows.
+        var plusLabel = lively.morphic.Text.makeLabel("+", {
+          fontSize: 20, fontWeight: "700", textColor: Color.rgb(255, 255, 255),
+        });
+        plusLabel.setExtent(lively.pt(30, 26));
+        plusLabel.applyStyle({ borderWidth: 0 });
+        plusLabel.eventsAreIgnored = true;
+        plusLabel.setVisible(false);
+        box.addMorph(plusLabel);
+        this._createBtnPlusLabel = plusLabel;
+        this._createBtnCompact = false;
+
         box.onMouseDown = function () { self._openCreatePostcard(); };
 
         return box;
@@ -1252,6 +1294,57 @@ module("lively.identity.ConstellationLounge")
 
         this._createBtnW = boxW;   // read by _layout to keep the button's right edge anchored to the members column
         this._layout();
+      },
+
+      // Centers the compact "+" glyph inside the circle variant
+      // (CREATE_BTN_CIRCLE_W square) — same "measure the live DOM, don't
+      // guess" idiom as _fitCreatePostcardButton above, since a Text
+      // morph's own shapeNode padding isn't symmetric and a guessed offset
+      // reliably misses by a few px (CLAUDE.md). Horizontal centering uses
+      // the fixed CREATE_BTN_CIRCLE_W, not the box's current (possibly
+      // full-pill-width) extent, so this is safe to call once at build
+      // time regardless of which mode the button starts in — the "+"
+      // glyph itself never changes, so there's nothing to re-measure later.
+      _fitCreatePostcardCircle: function () {
+        var box = this._createPostcardBtn, label = this._createBtnPlusLabel;
+        if (!box || !label) return;
+        var LINE_H = 26;
+        // Same fixed ~4px shapeNode left-padding compensation as
+        // _fitCreatePostcardButton's TEXT_PAD above — without it the glyph
+        // renders a few px right of center (confirmed live: 34px circle,
+        // glyph measured ~3.8px off).
+        var TEXT_PAD = 4;
+        var labelW = this._realTextWidth(label);
+        label.setExtent(lively.pt(labelW + TEXT_PAD * 2, LINE_H));
+        var x = (CREATE_BTN_CIRCLE_W - labelW) / 2 - TEXT_PAD;
+        label.setPosition(lively.pt(x, (CREATE_BTN_H - LINE_H) / 2));
+
+        var boxNode = box.renderContext().shapeNode;
+        var labelSpan = label.renderContext().shapeNode.querySelector("span");
+        if (boxNode && labelSpan) {
+          var boxRect = boxNode.getBoundingClientRect();
+          var spanRect = labelSpan.getBoundingClientRect();
+          var topGap = spanRect.top - boxRect.top;
+          var bottomGap = boxRect.bottom - spanRect.bottom;
+          var correction = (topGap - bottomGap) / 2;
+          if (Math.abs(correction) > 0.25) {
+            label.setPosition(lively.pt(label.getPosition().x, label.getPosition().y - correction));
+          }
+        }
+      },
+
+      // Toggles between the full "+ Postcard" pill and the compact "+"
+      // circle (_layout decides which fits, via createBtnFits/
+      // createBtnFitsCircle) — guarded so a resize tick that doesn't
+      // actually change the mode skips the DOM churn.
+      _setCreateBtnCompact: function (compact) {
+        if (this._createBtnCompact === compact) return;
+        this._createBtnCompact = compact;
+        var box = this._createPostcardBtn;
+        if (!box) return;
+        box.setExtent(lively.pt(compact ? CREATE_BTN_CIRCLE_W : this._createBtnW, CREATE_BTN_H));
+        this._createBtnLabel.setVisible(!compact);
+        this._createBtnPlusLabel.setVisible(compact);
       },
 
       // Opens a new PostCardEditor compose window preset to post into this
