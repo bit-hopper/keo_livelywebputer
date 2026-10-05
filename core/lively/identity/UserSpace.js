@@ -525,7 +525,12 @@ module("lively.identity.UserSpace")
             // silently wipe a previously-published encryption key on every
             // profile edit, breaking new shared-postcard sends to this user
             // from that point on (postcard-audit F26).
-            var mergedPayload = Object.assign({}, existing.record.payload || {}, payload);
+            //
+            // updatedAt keeps every version's cid unique: profiles are
+            // public plaintext, so editing a field X->Y->X would otherwise
+            // reproduce an earlier version's exact payload/cid and be
+            // rejected by ObjectRepository as a cid collision.
+            var mergedPayload = Object.assign({}, existing.record.payload || {}, payload, { updatedAt: new Date().toISOString() });
 
             c.computeCid(mergedPayload, function (err, cid) {
               if (err) return thenDo(err);

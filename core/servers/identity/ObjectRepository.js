@@ -420,16 +420,30 @@ function put(envelope, thenDo) {
               ],
               function (err, result) {
                 if (err) {
-                  // UNIQUE constraint on (obj_id, cid) — the advisory lock
-                  // above already serializes every writer for this objId,
-                  // so this is now a defensive backstop (e.g. a stale
-                  // retried request resubmitting an already-stored cid)
-                  // rather than the primary defense it was under SQLite.
+                  // UNIQUE constraint on (obj_id, cid). The same-cid-as-tip
+                  // case already returned above, so reaching here means the
+                  // incoming cid equals an EARLIER, non-tip version of this
+                  // object — i.e. the payload reverted to an exact prior
+                  // state (public/plaintext payloads only; encrypted ones
+                  // hash a random-nonce ciphertext). The prevCid check
+                  // above passed, so the client believes this is a valid
+                  // new tip, but the row can't be inserted. This used to be
+                  // swallowed as a no-op duplicate ({ok:true, changed:'none'}),
+                  // silently dropping the write while the client saw
+                  // success (confirmed live: renaming a public folder A->B->A
+                  // left it named B). Surface it as a conflict instead; the
+                  // client-side fix is to make every public payload unique
+                  // per save (an `updatedAt` field), see FileCrypto.js.
                   if (err.code === '23505') {
-                    return client.query('ROLLBACK', function () {
-                      release();
-                      thenDo(null, { objId: envelope.objId, cid: envelope.record.cid, duplicate: true, changed: 'none' });
-                    });
+                    var collisionErr = new Error(
+                      'cid collision: payload of ' + envelope.objId + ' matches an earlier version (' +
+                      envelope.record.cid + ') but is not the current tip (' + currentTipCid +
+                      '); a save that reverts to an exact prior state must include a unique field such as updatedAt'
+                    );
+                    collisionErr.isConflict = true;
+                    collisionErr.isCidCollision = true;
+                    collisionErr.currentCid = currentTipCid;
+                    return _rollbackAndRelease(client, release, collisionErr, thenDo);
                   }
                   return _rollbackAndRelease(client, release, err, thenDo);
                 }

@@ -772,7 +772,13 @@ module('lively.identity.FileCrypto')
         var c = lively.identity.crypto;
         var user = lively.identity.did.currentUser();
         if (!user) return thenDo(new Error('_saveFolderVersion: no identity session active'));
-        var payload = { name: name, files: files, albums: albums || [] };
+        // updatedAt keeps every public version's cid unique -- without it, a
+        // save that reverts the folder to an exact earlier state (rename
+        // A->B->A, add then remove a file) reproduces that old version's cid,
+        // collides with ObjectRepository's (obj_id, cid) unique index, and is
+        // rejected as a cid collision. Never read by the UI; encrypted
+        // versions are already unique via their random nonce.
+        var payload = { name: name, files: files, albums: albums || [], updatedAt: new Date().toISOString() };
         var isPublic = prevEnvelope.visibility === 'public';
 
         function withRecord(cb) {
@@ -1273,7 +1279,10 @@ module('lively.identity.FileCrypto')
 
               withRecipientWraps(function (err, recipientWraps) {
                 if (err) return thenDo(err);
-                var payload = { name: folder.name, files: newFiles, albums: folder.albums };
+                // updatedAt: see _saveFolderVersion -- public->private->public
+                // with no other change otherwise reproduces the first
+                // public version's exact payload/cid.
+                var payload = { name: folder.name, files: newFiles, albums: folder.albums, updatedAt: new Date().toISOString() };
 
                 function withRecord(cb) {
                   if (isNewPublic) {

@@ -1790,6 +1790,7 @@ module.exports = function (route, app) {
     if (envelope.type !== "profile")
       return res.status(400).json({ error: 'Envelope type must be "profile"' });
     objectRepo.put(envelope, function (err, result) {
+      if (err && err.isConflict) return res.status(409).json({ error: String(err), currentCid: err.currentCid });
       if (err) return res.status(500).json({ error: String(err) });
       res.json({ ok: true, objId: result.objId, cid: result.cid, changed: result.changed });
     });
@@ -3108,6 +3109,7 @@ module.exports = function (route, app) {
       });
     }
     objectRepo.put(envelope, function (err, result) {
+      if (err && err.isConflict) return res.status(409).json({ error: String(err), currentCid: err.currentCid });
       if (err) return res.status(500).json({ error: String(err) });
       res.json({ ok: true, objId: result.objId, cid: result.cid, changed: result.changed });
     });
