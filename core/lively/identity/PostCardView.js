@@ -159,7 +159,7 @@ module("lively.identity.PostCardView")
           var shapeNode = this.renderContext().shapeNode;
           shapeNode.innerHTML = ""; // idempotent: safe if _setup() ever runs twice on one instance
           shapeNode.style.borderRadius = "10px";
-          shapeNode.style.boxShadow = "0 4px 14px rgba(0,0,0,0.2)";
+          shapeNode.style.boxShadow = this._compactMode ? "0 2px 10px rgba(0,0,0,.10)" : "0 4px 14px rgba(0,0,0,0.2)";
           shapeNode.style.overflow = "visible"; // perspective needs room, not clipping
 
           var wrapper = document.createElement("div");
@@ -183,10 +183,16 @@ module("lively.identity.PostCardView")
           this._cardEl = card;
 
           this._frontEl = this._buildFace(card, false);
-          this._backEl = this._buildFace(card, true);
-
           this._buildFrontContents(this._frontEl);
-          this._buildBackContents(this._backEl);
+          // A compact "mini card" (ConstellationLounge.js's Scroll view)
+          // never flips — skip building the back face/verify-badge DOM
+          // entirely rather than building it dead. _renderEnvelope guards
+          // the calls (_renderBackMeta/_verify) that would otherwise touch
+          // these never-built elements.
+          if (!this._compactMode) {
+            this._backEl = this._buildFace(card, true);
+            this._buildBackContents(this._backEl);
+          }
 
           ["mousedown", "click", "dblclick"].forEach(function (t) {
             wrapper.addEventListener(t, function (e) {
@@ -280,7 +286,22 @@ module("lively.identity.PostCardView")
 
           var content = document.createElement("div");
           content.className = "lively-postcard-view-content selectable";
-          content.style.cssText = [
+          // Compact ("mini card") content is a plain-text excerpt clamped
+          // to 2 lines instead of an internally-scrolling rich area — see
+          // _renderContentHtml's compact branch. setCommentsExpanded toggles
+          // the clamp class off while this card's comment accordion is open
+          // (the caption un-clamps alongside the comment thread appearing).
+          content.style.cssText = self._compactMode ? [
+            "position:absolute",
+            "top:76px",
+            "left:14px",
+            "right:14px",
+            "bottom:32px",
+            "font-size:13px",
+            "line-height:1.5",
+            "color:#333",
+            "box-sizing:border-box",
+          ].join(";") : [
             "position:absolute",
             "top:76px",
             "left:0",
@@ -293,6 +314,10 @@ module("lively.identity.PostCardView")
             "color:#333",
             "box-sizing:border-box",
           ].join(";");
+          if (self._compactMode) {
+            self._ensureCompactContentStyle();
+            content.classList.add("pcv-compact-clamped");
+          }
           // BUG FIX: native mouse-wheel scrolling of this div silently did
           // nothing — confirmed live (real hardware wheel, not a synthetic
           // event) on the ConstellationLounge reel: genuine overflow
@@ -316,25 +341,37 @@ module("lively.identity.PostCardView")
           // work fine. Fix: don't rely on the browser's native wheel
           // default action here — scroll it ourselves from the event and
           // prevent the (broken) native attempt from doing anything.
-          content.addEventListener("wheel", function (e) {
-            content.scrollTop += e.deltaY;
-            e.preventDefault();
-          }, { passive: false });
+          // Compact mode never shows rich content (plain-text excerpt only,
+          // see _renderContentHtml) so there's no embedded media to scroll
+          // past or click into — skip both listeners entirely.
+          if (!this._compactMode) {
+            content.addEventListener("wheel", function (e) {
+              content.scrollTop += e.deltaY;
+              e.preventDefault();
+            }, { passive: false });
 
-          // Click a photo to view it whole inside the card; the viewer's own
-          // full-screen icon opens the full-screen one (PostCardUtils.openImageViewer).
-          content.addEventListener("click", function (e) {
-            var t = e.target;
-            if (!t || t.tagName !== "IMG" || !/lively-postcard-image/.test(t.className) || !t.src) return;
-            var imgs = Array.prototype.filter.call(
-              content.querySelectorAll("img.lively-postcard-image"),
-              function (i) { return !!i.src; });
-            lively.identity.postCardUtils.openImageViewer(imgs, imgs.indexOf(t), { container: content.parentNode });
-          });
+            // Click a photo to view it whole inside the card; the viewer's own
+            // full-screen icon opens the full-screen one (PostCardUtils.openImageViewer).
+            content.addEventListener("click", function (e) {
+              var t = e.target;
+              if (!t || t.tagName !== "IMG" || !/lively-postcard-image/.test(t.className) || !t.src) return;
+              var imgs = Array.prototype.filter.call(
+                content.querySelectorAll("img.lively-postcard-image"),
+                function (i) { return !!i.src; });
+              lively.identity.postCardUtils.openImageViewer(imgs, imgs.indexOf(t), { container: content.parentNode });
+            });
+          }
           front.appendChild(content);
           this._contentEl = content;
 
           this._buildReactionsFooter(front);
+
+          // A compact "mini card" never flips (no back face/verify badge —
+          // see _buildChrome) and hides the "more" menu (Edit/Save/Share/
+          // Delete stays reachable via the Reel or opening the card
+          // directly) — confirmed decision, ConstellationLounge.js's Scroll
+          // view plan.
+          if (this._compactMode) return;
 
           var flipBtn = this._buildIconButton(
             "front",
@@ -490,6 +527,19 @@ module("lively.identity.PostCardView")
           return btn;
         },
 
+        // One-time stylesheet for the compact content area's 2-line clamp
+        // (webkit-line-clamp needs display:-webkit-box, which is simplest
+        // applied via a toggleable class — see setCommentsExpanded — rather
+        // than juggling several inline style properties in sync).
+        _ensureCompactContentStyle: function () {
+          if (document.getElementById("lively-postcard-view-compact-style")) return;
+          var st = document.createElement("style");
+          st.id = "lively-postcard-view-compact-style";
+          st.textContent =
+            ".lively-postcard-view-content.pcv-compact-clamped{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}";
+          document.head.appendChild(st);
+        },
+
         // Reactions footer (PostcardDesignSpec-v2.md §5.1) — a thin strip
         // along the bottom of the front face, below the content area. Built
         // empty here; populated/shown or hidden per-envelope in
@@ -540,6 +590,17 @@ module("lively.identity.PostCardView")
           pillsWrap.style.cssText = "flex:none;display:flex;align-items:center;gap:4px;margin-left:auto;";
           footer.appendChild(pillsWrap);
           this._pillsWrapEl = pillsWrap;
+
+          // Compact-mode-only comment chip (ConstellationLounge.js's Scroll
+          // view) — a third sub-area right after pillsWrap, inheriting the
+          // same right-alignment pillsWrap's margin-left:auto already
+          // established for the group. Built unconditionally (cheap, empty
+          // span) so _renderCommentChip has somewhere to render into
+          // without needing its own first-use guard.
+          var commentChipWrap = document.createElement("span");
+          commentChipWrap.style.cssText = "flex:none;display:flex;align-items:center;margin-left:4px;";
+          footer.appendChild(commentChipWrap);
+          this._commentChipWrapEl = commentChipWrap;
         },
       },
 
@@ -845,9 +906,15 @@ module("lively.identity.PostCardView")
 
           this._renderContentArea(envelope);
           this._renderMembershipActions(envelope);
-          this._renderBackMeta(envelope);
+          // _renderBackMeta/_verify both touch back-face DOM
+          // (_verifyBadgeEl etc.) that _buildChrome never builds in
+          // compact mode (see the back-face skip there) — a mini card
+          // never flips, so there's nothing to verify-badge either.
+          if (!this._compactMode) {
+            this._renderBackMeta(envelope);
+            this._verify(envelope);
+          }
           this._renderReactionsFooter(envelope);
-          this._verify(envelope);
           this._checkCollectionsState();
         },
 
@@ -861,6 +928,11 @@ module("lively.identity.PostCardView")
         // already uses for its own owner-or-canWrite gate.
         _renderMembershipActions: function (envelope) {
           var self = this;
+          // A compact mini card's content is plain textContent (see
+          // _renderContentHtml/_renderContentArea) — insertBefore-ing a
+          // real action bar into it doesn't apply, and this action belongs
+          // to the Reel/standalone view anyway.
+          if (this._compactMode) return;
           var state = envelope.state || {};
           if (state.kind !== "constellation-join-request" || !envelope.constellation) return;
 
@@ -1047,6 +1119,18 @@ module("lively.identity.PostCardView")
         _renderContentHtml: function (snapshot) {
           var U = lively.identity.postCardUtils;
           if (!snapshot) { this._contentEl.innerHTML = ""; return; }
+          if (this._compactMode) {
+            // Plain-text excerpt only — a compact mini card doesn't embed
+            // media/link-preview cards (PostcardDesignSpec-v2.md's Mini
+            // Card Stack layout); leadExcerpt is the same lead-paragraph
+            // excerpt buildPreviewSplit already computes for every other
+            // condensed-row caller (PostCardFeed.js), reused verbatim here
+            // rather than inventing new excerpt logic. textContent (not
+            // innerHTML) since this is plain text, not markup.
+            var split = U.buildPreviewSplit(snapshot.content, { feedMode: true });
+            this._contentEl.textContent = split.leadExcerpt || "";
+            return;
+          }
           if (!this._previewMode) {
             this._contentEl.innerHTML = U.snapshotToHtml(snapshot);
             return;
@@ -1093,6 +1177,10 @@ module("lively.identity.PostCardView")
             var snapshot = payload &&
               (payload.format === "prosemirror-doc-v1" ? payload.doc : payload.snapshot);
             this._renderContentHtml(snapshot);
+            // Compact mode's content is plain textContent (see
+            // _renderContentHtml) — no markup to hydrate embeds/link
+            // previews into.
+            if (this._compactMode) return;
             // BUG FIX: embedded Lively parts used to render as a permanent
             // "[Embedded Part: <objId>]" text stub here — nothing ever
             // turned the placeholder into the live morph it references.
@@ -1104,6 +1192,16 @@ module("lively.identity.PostCardView")
             // legacy bare-URL post (saved before link_preview_card existed)
             // still gets a real card there.
             lively.identity.postCardUtils.hydrateLinkPreviews(this._contentEl);
+            return;
+          }
+
+          // Compact mode shows a plain lock label, no decrypt button — a
+          // mini card doesn't offer the inline-decrypt affordance (no
+          // WebAuthn prompt from a feed row), matching
+          // ConstellationLounge._extractReplyBodyHtml's identical posture
+          // for encrypted replies.
+          if (this._compactMode) {
+            this._contentEl.textContent = "🔒 Encrypted";
             return;
           }
 
@@ -1250,9 +1348,16 @@ module("lively.identity.PostCardView")
         // actually lists a user's own authored cards is that mailbox tab.
         _renderReactionsFooter: function (envelope) {
           var reactionsOn = !(envelope.state && envelope.state.reactionsEnabled === false);
-          var tipJarAddress = (envelope.state && envelope.state.tipJarAddress) || null;
+          // Tip jar is skipped entirely in compact mode (plan's confirmed
+          // decision) — a mini card's footer is reserved for reactions +
+          // the new comment chip.
+          var tipJarAddress = this._compactMode ? null : ((envelope.state && envelope.state.tipJarAddress) || null);
 
-          if (!reactionsOn && !tipJarAddress) {
+          // Compact mode always shows the footer, even with reactions off
+          // and no tip jar — the comment chip (_renderCommentChip below)
+          // must always be reachable there, unlike the full card's footer
+          // which hides entirely when it would otherwise be empty.
+          if (!this._compactMode && !reactionsOn && !tipJarAddress) {
             this._footerEl.style.display = "none";
             this._tipJarChipEl.innerHTML = "";
             this._pillsWrapEl.innerHTML = "";
@@ -1271,6 +1376,72 @@ module("lively.identity.PostCardView")
             this._pillsWrapEl.style.display = "none";
             this._pillsWrapEl.innerHTML = "";
           }
+
+          if (this._compactMode) this._renderCommentChip();
+        },
+
+        // The comment-icon chip (ConstellationLounge.js's Scroll view,
+        // compact mode only) — same DOM-button + inline-style idiom as
+        // _renderTipJarChip/_renderReactionPills above, with the locked
+        // pill styling from the mockup. this._commentCount/
+        // this._commentsExpanded are set by open()/setCommentCount/
+        // setCommentsExpanded — this method only ever reads them, never
+        // fetches on its own (the caller owns both the count and the
+        // expand/collapse state, per the plan's single-select-accordion
+        // design).
+        _renderCommentChip: function () {
+          if (!this._commentChipWrapEl) return;
+          var self = this;
+          this._commentChipWrapEl.innerHTML = "";
+          var expanded = !!this._commentsExpanded;
+          var chip = document.createElement("button");
+          var countTxt = this._commentCount ? this._abbreviateCount(this._commentCount) : "";
+          chip.innerHTML =
+            '<span class="material-symbols-rounded" style="font-size:14px;line-height:1;vertical-align:middle;">mode_comment</span>' +
+            (countTxt ? '<span style="margin-left:3px;vertical-align:middle;">' + countTxt + '</span>' : '');
+          chip.style.cssText = [
+            "flex:none",
+            "display:flex",
+            "align-items:center",
+            "font-size:14px",
+            "padding:2px 9px",
+            "border-radius:13px",
+            "cursor:pointer",
+            "border:1px solid " + (expanded ? "#e8497e" : "#ddd"),
+            "background:" + (expanded ? "#fdeef3" : "#fafafa"),
+            "color:" + (expanded ? "#e8497e" : "#333"),
+          ].join(";");
+          ["mousedown", "click"].forEach(function (t) {
+            chip.addEventListener(t, function (e) {
+              e.preventDefault();
+              e.stopPropagation();
+              if (t !== "click" || !self._onToggleComments) return;
+              self._onToggleComments(self._objId);
+            });
+          });
+          this._commentChipWrapEl.appendChild(chip);
+        },
+
+        // Called by the caller (ConstellationLounge.js) once its own
+        // parallel reply-count fetch resolves — may land before or after
+        // this envelope has rendered, so this just re-renders the chip
+        // with whatever count is current rather than assuming an order.
+        setCommentCount: function (n) {
+          this._commentCount = n || 0;
+          if (this._compactMode) this._renderCommentChip();
+        },
+
+        // Flips the chip's active styling and un-clamps/re-clamps the
+        // caption — expand/collapse STATE lives in the caller (single-
+        // select accordion across many rows), this just reflects it.
+        setCommentsExpanded: function (expanded) {
+          this._commentsExpanded = !!expanded;
+          if (this._compactMode && this._contentEl) {
+            // force=true adds the clamp class (collapsed), false removes it
+            // (expanded, caption reads in full above the comment thread).
+            this._contentEl.classList.toggle("pcv-compact-clamped", !this._commentsExpanded);
+          }
+          if (this._compactMode) this._renderCommentChip();
         },
 
         // Tip jar (§5.3) — display-and-copy only, no wallet integration.
@@ -1647,6 +1818,17 @@ module("lively.identity.PostCardView")
       //   _renderContentHtml) — default false, so every existing caller
       //   keeps rendering in plain natural document order unchanged.
       //   ConstellationLounge.js's reel is the only caller that passes this.
+      // options.compactMode -> opt-in "mini card" chrome (ConstellationLounge.js's
+      //   Scroll view): no flip/back face/more-menu, a plain-text 2-line-
+      //   clamp excerpt instead of rich content, and a comment-icon chip in
+      //   the reactions footer instead of the tip jar. Default false, so
+      //   every existing caller keeps its full card chrome unchanged.
+      // options.commentCount     -> initial count shown on the comment chip
+      //   (compactMode only) — the caller fetches this once up front so the
+      //   chip doesn't flip from blank to a number after the fact.
+      // options.onToggleComments -> fired with this._objId when the comment
+      //   chip is clicked (compactMode only) — expand/collapse state lives
+      //   in the caller, not in this view.
       open: function (handle, objId, options) {
         var opts = options || {};
         var view = new lively.identity.PostCardView(
@@ -1657,6 +1839,10 @@ module("lively.identity.PostCardView")
         view._cid = opts.cid || null;
         view._envelope = opts.envelope || null;
         view._previewMode = !!opts.previewMode;
+        view._compactMode = !!opts.compactMode;
+        view._commentCount = opts.commentCount || 0;
+        view._commentsExpanded = false;
+        view._onToggleComments = opts.onToggleComments || null;
         if (opts.target) {
           opts.target.addMorph(view);
           view._setup();

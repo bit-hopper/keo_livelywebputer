@@ -276,6 +276,15 @@ module("lively.identity.ConstellationLounge")
     var COMMENT_META_COLOR = Color.rgb(120, 120, 120);
     var COMMENT_ACCENT = "#e8497e";  // same pink accent as lively.commerce.Shop's --color-accent
 
+    // Scroll view (Option B "Mini Card Stack") — a vertical list of compact
+    // postcard rows, alongside the default Reel. MINI_CARD_H is a flat
+    // measured constant (not derived from fontSize math — CLAUDE.md), sized
+    // to fit PostCardView's compact chrome: 76px header + a 2-line clamp
+    // caption (~40px) + the 32px reactions footer, plus a little headroom.
+    var MINI_CARD_H = 160;
+    var MINI_ROW_PAD_X = 12, MINI_ROW_PAD_TOP = 12, MINI_ROW_GAP = 14;
+    var VIEW_TOGGLE_W = 72, VIEW_TOGGLE_H = 32, VIEW_TOGGLE_GAP = 10;
+
     Object.subclass("lively.identity.ConstellationLoungeController",
 
     "initializing", {
@@ -306,6 +315,12 @@ module("lively.identity.ConstellationLounge")
         this._frontCardBox = null;
         this._backCardBox = null;
         this._spacesBox = null;
+
+        this._viewMode = "reel";        // "reel" (default) or "scroll"
+        this._scrollListBox = null;     // built lazily on first switch to Scroll
+        this._scrollRows = {};          // objId -> {box, objId, cardH, expanded, threadWrap, threadH, miniThread, commentCount}
+        this._scrollExpandedObjId = null;   // single-select accordion — only one row's comments open at a time
+        this._scrollLoadingMore = false;
 
         this._presenceByDid = {};  // did -> true while online
 
@@ -528,14 +543,21 @@ module("lively.identity.ConstellationLounge")
         // own no-room bail-out. A menu bar "New postcard" entry
         // (MenuBarEntry.js) already offers the same action, so hiding
         // this shortcut isn't a functionality loss.
+        // Reel/Scroll view toggle sits in the same gap, right after the
+        // search box — additive to this gap's own math (doesn't touch
+        // searchW itself), just claims its own slice before "+ Postcard"'s
+        // centering runs over whatever's left.
+        var toggleX = searchX + searchW + VIEW_TOGGLE_GAP;
+
         var createBtnW = this._createBtnW || CREATE_BTN_W;
-        var createGapStart = searchX + searchW;
+        var createGapStart = toggleX + VIEW_TOGGLE_W + VIEW_TOGGLE_GAP;
         var createGapEnd = membersX;
         var createBtnFits = (createGapEnd - createGapStart) >= createBtnW + GUTTER * 2;
         var createBtnX = createGapStart + (createGapEnd - createGapStart - createBtnW) / 2;
 
         var g = this._geom = {
           searchX: searchX, searchY: TOP, searchW: searchW,
+          toggleX: toggleX, toggleY: TOP + (SEARCH_H - VIEW_TOGGLE_H) / 2,
           // Sits in the gap between the postcard's top-right corner and the
           // search box's left edge, same row.
           sortByX: searchX - GUTTER - SORT_W, sortByY: TOP,
@@ -556,6 +578,7 @@ module("lively.identity.ConstellationLounge")
           this._searchBox.setPosition(lively.pt(g.searchX, g.searchY));
           this._applySearchWidth(g.searchW);
         }
+        if (this._viewToggleBox) this._viewToggleBox.setPosition(lively.pt(g.toggleX, g.toggleY));
         if (this._sortByBox) this._sortByBox.setPosition(lively.pt(g.sortByX, g.sortByY));
         if (this._createPostcardBtn) {
           this._createPostcardBtn.setPosition(lively.pt(g.createBtnX, g.createBtnY));
@@ -589,6 +612,15 @@ module("lively.identity.ConstellationLounge")
         if (this._threadContainer) {
           this._threadContainer.setPosition(lively.pt(g.threadX, g.threadY));
           this._threadContainer.setExtent(lively.pt(g.threadW, g.threadH));
+        }
+        // Scroll view's list sits at exactly the Reel+nav+thread cluster's
+        // footprint (no new column math) — same left edge/width as the
+        // reel card, spanning down to where the comment thread normally
+        // bottoms out.
+        if (this._scrollListBox) {
+          this._scrollListBox.setPosition(lively.pt(g.reelX, g.reelY));
+          this._scrollListBox.setExtent(lively.pt(g.cardW, threadBottom - g.reelY));
+          this._resizeScrollRowsWidth();
         }
         if (this._spacesBox) {
           this._spacesBox.setPosition(lively.pt(g.spacesX, g.spacesY));
@@ -653,6 +685,10 @@ module("lively.identity.ConstellationLounge")
 
         this._searchBox = this._buildSearchField();
         $world.addMorph(this._searchBox);
+
+        this._viewToggleBox = this._buildViewToggle();
+        $world.addMorph(this._viewToggleBox);
+        this._updateViewToggleStyle();
 
         this._sortSelection = SORT_OPTIONS[0];
         this._sortByBox = this._buildSortByButton();
@@ -772,7 +808,7 @@ module("lively.identity.ConstellationLounge")
         // Recurses into submorphs since dragging is a per-morph flag, not
         // inherited from a container.
         [
-          this._searchBox, this._sortByBox, this._createPostcardBtn, this._quickInfoBox,
+          this._searchBox, this._viewToggleBox, this._sortByBox, this._createPostcardBtn, this._quickInfoBox,
           this._backCardBox, this._frontCardBox,
           this._navBox, this._threadContainer, this._spacesBox, this._membersBox,
         ].forEach(this._disableDragging, this);
@@ -3366,6 +3402,17 @@ module("lively.identity.ConstellationLounge")
           self._feedCursor = data.cursor || null;
           self._activeIndex = self._feedCards.length ? 0 : -1;
           self._showActiveCard();
+          // _feedCards was just wholesale replaced (a fresh search/sort),
+          // not appended to — the Scroll view's rows have to be torn down
+          // and rebuilt from scratch too, not just appended onto (see
+          // _maybeLoadMore below for the append case). No-op while Scroll
+          // mode has never been opened (_scrollListBox still null).
+          if (self._scrollListBox) {
+            (self._scrollListBox.submorphs || []).slice().forEach(function (m) { m.remove(); });
+            self._scrollRows = {};
+            self._scrollExpandedObjId = null;
+            self._renderScrollList();
+          }
         };
         xhr.onerror = function () { self._showError("Network error loading feed"); };
         xhr.send();
@@ -3386,6 +3433,11 @@ module("lively.identity.ConstellationLounge")
           try { data = JSON.parse(xhr.responseText); } catch (e) { return thenDo(false); }
           self._feedCards = self._feedCards.concat(data.postcards || []);
           self._feedCursor = data.cursor || null;
+          // Append-only: _renderScrollList only ever creates rows for
+          // _feedCards entries that don't already have a _scrollRows
+          // entry, so this never re-mounts/re-fetches an already-rendered
+          // row — just adds rows for whatever this page just added.
+          if (self._scrollListBox) self._renderScrollList();
           thenDo((data.postcards || []).length > 0);
         };
         xhr.onerror = function () { thenDo(false); };
@@ -3589,7 +3641,13 @@ module("lively.identity.ConstellationLounge")
       // result. Without it, two quick renders (e.g. two map-pin clicks) each
       // clear the box up front and then both embed once their async fetches
       // return, stacking two cards.
-      _renderCardInto: function (box, objId) {
+      // extraOpts (additive 3rd param, Scroll view only — the Reel's own
+      // call sites below pass none, so they're unaffected): merged into
+      // PostCardView/WikiView.open's own opts, e.g. {compactMode: true,
+      // commentCount, onToggleComments}. The created view is stashed on
+      // box._renderedView so a caller (e.g. the mini-thread accordion) can
+      // reach it later without threading it through another callback.
+      _renderCardInto: function (box, objId, extraOpts) {
         var self = this;
         var token = box._cardRenderToken = (box._cardRenderToken || 0) + 1;
         (box.submorphs || []).slice().forEach(function (m) { m.remove(); });
@@ -3598,17 +3656,21 @@ module("lively.identity.ConstellationLounge")
           self._resolveHandle(envelope.did, function (handle) {
             if (box._cardRenderToken !== token) return;
             var opts = { target: box, envelope: envelope, bounds: lively.rect(0, 0, box.getExtent().x, box.getExtent().y) };
+            if (extraOpts) Object.keys(extraOpts).forEach(function (k) { opts[k] = extraOpts[k]; });
             if (envelope.type === "wikipage") {
-              lively.identity.WikiView.open(handle, objId, opts);
+              box._renderedView = lively.identity.WikiView.open(handle, objId, opts);
             } else {
               // previewMode: this reel is the one place a postcard renders
               // as a compact "browse many" preview rather than being opened
               // directly — reorder its content media-forward (see
               // PostCardView._renderContentHtml). Every other
               // PostCardView.open call site in the app keeps natural
-              // document order (opt-in flag, default false).
+              // document order (opt-in flag, default false). Harmless for a
+              // compactMode row too — PostCardView._renderContentHtml's
+              // compact branch short-circuits before previewMode is ever
+              // consulted.
               opts.previewMode = true;
-              lively.identity.PostCardView.open(handle, objId, opts);
+              box._renderedView = lively.identity.PostCardView.open(handle, objId, opts);
             }
             if (box === self._frontCardBox) {
               // Content may still be laying out / decrypting right after
@@ -3685,6 +3747,594 @@ module("lively.identity.ConstellationLounge")
         };
         xhr.onerror = function () { thenDo(null); };
         xhr.send();
+      },
+    },
+
+    // ─── Scroll view — a second, user-selectable postcard layout ──────────
+    // A vertical list of compact "mini cards" (PostcardDesignSpec-v2.md's
+    // Mini Card Stack), alongside the default Reel. Reuses _feedCards/
+    // _fetchFeed/_maybeLoadMore directly (no parallel fetch path) and
+    // PostCardView.open's compactMode flag for the card chrome itself —
+    // this section is almost entirely new UI, not new data plumbing. Each
+    // row gets its own comment-icon chip; clicking it expands an inline
+    // accordion below that row (single-select — expanding one collapses
+    // whichever other row was open). The accordion deliberately does NOT
+    // reuse _loadThread/_renderThreadTree (the "thread" section below) —
+    // those mutate singleton instance fields (_threadContainer,
+    // _draftText[key] with bare keys) that would collide across N
+    // simultaneously-expandable rows. Instead it reuses the *stateless*
+    // data-fetch helpers from that section verbatim (_loadReplyLevel,
+    // _fetchReplies, _hydrateReplies, _resolveHandlesBatch,
+    // _extractReplyBodyHtml, _submitReply) and keeps its own state in
+    // row.miniThread.
+    "scroll view", {
+      _buildViewToggle: function () {
+        var self = this;
+        var box = new lively.morphic.Box(lively.rect(0, 0, VIEW_TOGGLE_W, VIEW_TOGGLE_H));
+        box.applyStyle({
+          fill: Color.white, borderWidth: 1, borderColor: Color.rgb(224, 224, 224),
+          borderRadius: VIEW_TOGGLE_H / 2, clipMode: "hidden",
+        });
+
+        function makeBtn(glyph, mode, x, tip) {
+          var BW = VIEW_TOGGLE_W / 2, GLYPH_PX = 18;
+          var btn = new lively.morphic.Text(lively.rect(x, 0, BW, VIEW_TOGGLE_H), glyph);
+          btn.applyStyle({
+            fontFamily: "'Material Symbols Rounded'",
+            fontSize: GLYPH_PX * 0.75,
+            textColor: Color.rgb(90, 90, 90),
+            fill: null,
+            borderWidth: 0,
+            align: "center",
+            padding: lively.Rectangle.inset(0, Math.round((VIEW_TOGGLE_H - GLYPH_PX) / 2), 0, 0),
+            allowInput: false,
+            selectable: false,
+            clipMode: "hidden",
+            whiteSpaceHandling: "pre",
+            handStyle: "pointer",
+          });
+          btn.toolTip = tip;
+          btn._mode = mode;
+          btn.onMouseUp = function (evt) {
+            self._switchViewMode(mode);
+            evt.stop();
+            return true;
+          };
+          box.addMorph(btn);
+          return btn;
+        }
+
+        this._reelToggleBtn = makeBtn("view_carousel", "reel", 0, "Reel view");
+        this._scrollToggleBtn = makeBtn("view_list", "scroll", VIEW_TOGGLE_W / 2, "Scroll view");
+        return box;
+      },
+
+      _updateViewToggleStyle: function () {
+        var active = Color.rgb(232, 73, 126), activeBg = Color.rgb(253, 238, 243);
+        var inactive = Color.rgb(90, 90, 90);
+        [this._reelToggleBtn, this._scrollToggleBtn].forEach(function (btn) {
+          if (!btn) return;
+          var isActive = btn._mode === this._viewMode;
+          btn.applyStyle({ textColor: isActive ? active : inactive, fill: isActive ? activeBg : null });
+        }, this);
+      },
+
+      // Toggles visibility of the two mutually-exclusive clusters — Reel
+      // (_frontCardBox/_backCardBox/_navBox/_threadContainer) vs. Scroll
+      // (_scrollListBox, built lazily on first switch). Both keep being
+      // driven by _fetchFeed/_turn/etc. regardless of which is currently
+      // visible (cheap, keeps either one "warm" so switching back shows
+      // up to date content) — this only ever touches visibility + (for
+      // Scroll) the lazy build/initial render.
+      _switchViewMode: function (mode) {
+        if (this._viewMode === mode) return;
+        this._viewMode = mode;
+        var showReel = mode === "reel";
+        [this._frontCardBox, this._backCardBox, this._navBox, this._threadContainer].forEach(function (m) {
+          if (m) m.setVisible(showReel);
+        });
+        if (mode === "scroll") {
+          if (!this._scrollListBox) this._buildScrollListBox();
+          this._scrollListBox.setVisible(true);
+          this._layout();
+          this._renderScrollList();
+        } else if (this._scrollListBox) {
+          this._scrollListBox.setVisible(false);
+        }
+        this._updateViewToggleStyle();
+      },
+
+      _buildScrollListBox: function () {
+        var self = this;
+        var box = new lively.morphic.Box(lively.rect(0, 0, 10, 10));
+        box.setFill(Color.white);
+        box.applyStyle({ borderWidth: 1, borderColor: Color.rgb(238, 238, 238), borderRadius: 8 });
+        box.renderContext().shapeNode.style.overflowY = "auto";
+        // Same light-pink pill-thumb scrollbar treatment as _spacesBox/
+        // _membersBox (_ensureCommentBodyStyle) — no new CSS needed.
+        box.renderContext().shapeNode.classList.add("lounge-listing-panel");
+        this._disableDragging(box);
+        $world.addMorph(box);
+        this._scrollListBox = box;
+
+        var node = box.renderContext().shapeNode;
+        node.addEventListener("scroll", function () {
+          if (self._viewMode !== "scroll" || self._scrollLoadingMore) return;
+          if (node.scrollTop + node.clientHeight < node.scrollHeight - 300) return;
+          self._scrollLoadingMore = true;
+          self._maybeLoadMore(function () { self._scrollLoadingMore = false; });
+        });
+      },
+
+      // Append-only: only creates rows for _feedCards entries that don't
+      // already have a _scrollRows entry — never re-mounts/re-fetches an
+      // already-rendered row. Called after every _fetchFeed (having first
+      // cleared _scrollRows itself — see there) and after every
+      // _maybeLoadMore, so this is the single place new rows get created
+      // regardless of which triggered the feed to grow.
+      _renderScrollList: function () {
+        var self = this;
+        if (!this._scrollListBox) return;
+        var w = Math.max(100, this._scrollListBox.getExtent().x - MINI_ROW_PAD_X * 2);
+        this._feedCards.forEach(function (card) {
+          if (self._scrollRows[card.objId]) return;
+          var rowBox = new lively.morphic.Box(lively.rect(0, 0, w, MINI_CARD_H));
+          rowBox.applyStyle({ fill: null, borderWidth: 0, clipMode: "visible" });
+          self._disableDragging(rowBox);
+          self._scrollListBox.addMorph(rowBox);
+          var row = self._scrollRows[card.objId] = {
+            box: rowBox, objId: card.objId, cardH: MINI_CARD_H, expanded: false,
+            threadWrap: null, threadH: 0, miniThread: null, commentCount: 0,
+          };
+          // extraOpts is passed BY REFERENCE into _renderCardInto, which
+          // doesn't actually read it until its own async envelope+handle
+          // fetch resolves (inside that later callback) — so mutating
+          // commentCount on this same object below, whenever the parallel
+          // replies-count fetch resolves, is picked up correctly regardless
+          // of which of the two fetches finishes first. Without this, a
+          // replies fetch that happens to resolve before the (two-hop)
+          // envelope+handle fetch would silently drop its count: the
+          // rowBox._renderedView guard below finds no view yet to call
+          // setCommentCount on, and a plain value (snapshotted at call
+          // time) would stay stuck at 0 forever once the view does open.
+          var extraOpts = {
+            compactMode: true,
+            commentCount: 0,
+            onToggleComments: self._onMiniCommentToggle.bind(self, card.objId),
+          };
+          self._renderCardInto(rowBox, card.objId, extraOpts);
+          self._fetchReplies(card.objId, function (err, replies) {
+            var count = (!err && replies) ? replies.length : 0;
+            row.commentCount = count;
+            extraOpts.commentCount = count;
+            if (rowBox._renderedView && rowBox._renderedView.setCommentCount) {
+              rowBox._renderedView.setCommentCount(count);
+            }
+          });
+        });
+        this._relayoutScrollRows();
+      },
+
+      // Re-tracks every row's width (and the embedded card's own extent —
+      // PostCardView's internal DOM is fluid CSS, same as the Reel card)
+      // whenever _scrollListBox's own extent changes (_layout, on every
+      // resize tick) — cheap position/extent writes, no rebuild.
+      _resizeScrollRowsWidth: function () {
+        if (!this._scrollListBox) return;
+        var w = Math.max(100, this._scrollListBox.getExtent().x - MINI_ROW_PAD_X * 2);
+        Object.keys(this._scrollRows).forEach(function (objId) {
+          var row = this._scrollRows[objId];
+          row.box.setExtent(lively.pt(w, row.box.getExtent().y));
+          if (row.box._renderedView) row.box._renderedView.setExtent(lively.pt(w, row.cardH));
+          if (row.threadWrap) row.threadWrap.setExtent(lively.pt(w, row.threadWrap.getExtent().y));
+        }, this);
+        this._relayoutScrollRows();
+      },
+
+      // Recomputes every row's y from accumulated heights, in _feedCards
+      // order — "free" list reflow since rows are laid out by accumulating
+      // y (same idiom _renderCommentLevel/_renderThreadTree already use
+      // within one container, applied here across sibling row boxes
+      // instead). A row's own height is cardH, plus its thread accordion's
+      // height when expanded.
+      _relayoutScrollRows: function () {
+        var y = MINI_ROW_PAD_TOP;
+        this._feedCards.forEach(function (card) {
+          var row = this._scrollRows[card.objId];
+          if (!row) return;
+          row.box.setPosition(lively.pt(MINI_ROW_PAD_X, y));
+          var h = row.cardH + (row.expanded ? row.threadH : 0);
+          y += h + MINI_ROW_GAP;
+        }, this);
+      },
+
+      // Single-select accordion: collapses whichever other row was open
+      // (if any) before expanding this one; a second click on the already-
+      // expanded row just collapses it.
+      _onMiniCommentToggle: function (objId) {
+        var row = this._scrollRows[objId];
+        if (!row) return;
+        if (this._scrollExpandedObjId === objId) {
+          this._collapseMiniRow(row);
+          this._scrollExpandedObjId = null;
+          this._relayoutScrollRows();
+          return;
+        }
+        if (this._scrollExpandedObjId && this._scrollRows[this._scrollExpandedObjId]) {
+          this._collapseMiniRow(this._scrollRows[this._scrollExpandedObjId]);
+        }
+        this._scrollExpandedObjId = objId;
+        this._expandMiniRow(row);
+      },
+
+      _expandMiniRow: function (row) {
+        var self = this;
+        row.expanded = true;
+        var view = row.box._renderedView;
+        if (view && view.setCommentsExpanded) view.setCommentsExpanded(true);
+        if (!row.threadWrap) {
+          row.threadWrap = new lively.morphic.Box(lively.rect(0, row.cardH, row.box.getExtent().x, 10));
+          row.threadWrap.applyStyle({ fill: null, borderWidth: 0, clipMode: "visible" });
+          this._disableDragging(row.threadWrap);
+          row.box.addMorph(row.threadWrap);
+        } else {
+          row.threadWrap.setPosition(lively.pt(0, row.cardH));
+          row.threadWrap.setVisible(true);
+        }
+        if (!row.miniThread) {
+          row.miniThread = {
+            replies: [], childrenCache: {}, expanded: {}, replyBoxOpenFor: null,
+            draftText: {}, bodyBoxCache: {}, rerenderTimer: null,
+          };
+          this._renderMiniThreadLoading(row);
+          this._loadReplyLevel(row.objId, function (err, replies) {
+            row.miniThread.replies = err ? [] : replies;
+            self._renderMiniThread(row);
+          });
+        } else {
+          this._renderMiniThread(row);
+        }
+      },
+
+      // Hides (doesn't discard — row.miniThread stays cached across
+      // re-expands) the accordion and shrinks the row's box back down.
+      _collapseMiniRow: function (row) {
+        row.expanded = false;
+        var view = row.box._renderedView;
+        if (view && view.setCommentsExpanded) view.setCommentsExpanded(false);
+        if (row.threadWrap) row.threadWrap.setVisible(false);
+        row.box.setExtent(lively.pt(row.box.getExtent().x, row.cardH));
+      },
+
+      _renderMiniThreadLoading: function (row) {
+        if (this._scrollExpandedObjId !== row.objId || !row.threadWrap) return;
+        (row.threadWrap.submorphs || []).slice().forEach(function (m) { m.remove(); });
+        var loading = lively.morphic.Text.makeLabel("Loading comments…", { fontSize: 12, textColor: Color.gray });
+        loading.setPosition(lively.pt(COMMENT_PAD_X, COMMENT_TOP_MARGIN));
+        row.threadWrap.addMorph(loading);
+        var h = COMMENT_TOP_MARGIN + 26;
+        row.threadH = h;
+        row.threadWrap.setExtent(lively.pt(row.threadWrap.getExtent().x, h));
+        row.box.setExtent(lively.pt(row.box.getExtent().x, row.cardH + h));
+        this._relayoutScrollRows();
+      },
+
+      // Mirrors _renderThreadTree's visual layout (same constants/avatar/
+      // header/body/reply-toggle idiom, same empty-state copy) but writes
+      // into row.threadWrap and reads/writes row.miniThread.* instead of
+      // this._thread*/this._draftText — see the "thread" section's
+      // _renderThreadTree for the original this mirrors. Guards against a
+      // stale async callback firing after this row was collapsed (or a
+      // different row expanded) in the meantime.
+      _renderMiniThread: function (row) {
+        if (this._scrollExpandedObjId !== row.objId || !row.threadWrap) return;
+        var mt = row.miniThread;
+        var container = row.threadWrap;
+        (container.submorphs || []).slice().forEach(function (m) { m.remove(); });
+        var w = (container.getExtent().x || THREAD_W) - COMMENT_PAD_X * 2;
+
+        var y = this._renderMiniComposerIfSignedIn(
+          row, container, "ROOT", row.objId, COMMENT_PAD_X, COMMENT_TOP_MARGIN, w, "Start conversation");
+        y += 10;
+
+        if (!mt.replies.length) {
+          var empty = lively.morphic.Text.makeLabel("No comments yet — be the first to reply.", { fontSize: 12, textColor: Color.gray });
+          empty.setPosition(lively.pt(COMMENT_PAD_X, y));
+          empty.setExtent(lively.pt(w, 16));
+          container.addMorph(empty);
+          y += 26;
+        } else {
+          y = this._renderMiniCommentLevel(row, container, mt.replies, 0, y, w);
+        }
+        this._disableDragging(container);
+
+        var h = y + 10;
+        row.threadH = h;
+        container.setExtent(lively.pt(container.getExtent().x, h));
+        row.box.setExtent(lively.pt(row.box.getExtent().x, row.cardH + h));
+        this._relayoutScrollRows();
+      },
+
+      _renderMiniCommentLevel: function (row, container, replies, depth, y, w) {
+        var self = this;
+        replies.forEach(function (reply) {
+          y = self._renderMiniCommentNode(row, container, reply, depth, y, w);
+        });
+        return y;
+      },
+
+      // Mirrors _renderCommentNode exactly (geometry, caching, reply/
+      // replies-toggle behavior) — only the state it reads/writes differs
+      // (row.miniThread.* instead of this.*) and recursive re-renders call
+      // _renderMiniThread(row) instead of _renderThreadTree().
+      _renderMiniCommentNode: function (row, container, reply, depth, y, w) {
+        var self = this;
+        var mt = row.miniThread;
+        var x = COMMENT_PAD_X + depth * COMMENT_INDENT;
+        var rowW = w - depth * COMMENT_INDENT;
+        var topY = y;
+
+        var avatar = new lively.morphic.Image(lively.rect(0, 0, COMMENT_AVATAR, COMMENT_AVATAR));
+        avatar.setImageURL(lively.identity.postCardUtils.identiconDataUrl(reply.did, COMMENT_AVATAR));
+        avatar.applyStyle({ borderRadius: COMMENT_AVATAR / 2, borderWidth: 0, clipMode: "hidden" });
+        container.addMorph(avatar);
+        avatar.setPosition(lively.pt(x, y));
+
+        var textX = x + COMMENT_AVATAR + 4;
+        var textW = Math.max(60, rowW - COMMENT_AVATAR - 4);
+
+        var header = lively.morphic.Text.makeLabel(
+          "@" + (reply._handle || (reply.did || "").slice(0, 10) + "…") + "  ·  " + self._formatRelativeTime(reply.created),
+          { fontSize: 10.5, textColor: COMMENT_META_COLOR });
+        container.addMorph(header);
+        header.setPosition(lively.pt(textX, y + 2));
+        header.setExtent(lively.pt(textW, 18));
+
+        var cacheKey = reply.objId;
+        var cached = mt.bodyBoxCache[cacheKey];
+        var bodyBox, bodyNode, bodyH;
+        if (cached && cached.html === (reply._bodyHtml || "") && cached.width === textW) {
+          bodyBox = cached.box;
+          bodyNode = bodyBox.renderContext().shapeNode;
+          bodyH = cached.height;
+          container.addMorph(bodyBox);
+        } else {
+          bodyBox = new lively.morphic.Box(lively.rect(0, 0, textW, 10));
+          bodyBox.applyStyle({ fill: null, borderWidth: 0 });
+          container.addMorph(bodyBox);
+          bodyNode = bodyBox.renderContext().shapeNode;
+          bodyNode.className = (bodyNode.className ? bodyNode.className + " " : "") + "lounge-comment-body";
+          bodyNode.innerHTML = reply._bodyHtml || "";
+          lively.identity.postCardUtils.hydrateEmbeddedParts(bodyNode);
+          lively.identity.postCardUtils.hydrateLinkPreviewEmbeds(bodyNode);
+          lively.identity.postCardUtils.hydrateLinkPreviews(bodyNode);
+          bodyH = Math.max(14, bodyNode.scrollHeight);
+          cached = mt.bodyBoxCache[cacheKey] = { box: bodyBox, html: reply._bodyHtml || "", width: textW, height: bodyH };
+          self._watchMiniMediaLoad(bodyNode, cached, row);
+          self._watchMiniLinkPreviewCardInsert(bodyNode, cached, row);
+        }
+        bodyBox.setPosition(lively.pt(textX, y + 20));
+        bodyBox.setExtent(lively.pt(textW, bodyH));
+
+        var actionsY = y + 20 + bodyH + 4;
+        var actionsX = textX;
+        if (lively.identity.did.currentUser()) {
+          var replyBtn = self._buildIconLabel("reply", "Reply", COMMENT_META_COLOR, function () {
+            mt.replyBoxOpenFor = (mt.replyBoxOpenFor === reply.objId) ? null : reply.objId;
+            self._renderMiniThread(row);
+          });
+          container.addMorph(replyBtn);
+          replyBtn.setPosition(lively.pt(actionsX, actionsY));
+          actionsX += replyBtn.getExtent().x + 10;
+        }
+
+        var expanded = !!mt.expanded[reply.objId];
+        var toggleBtn = self._buildIconLabel(
+          expanded ? "expand_more" : "chevron_right",
+          expanded ? "Hide replies" : "Replies",
+          COMMENT_META_COLOR,
+          function () {
+            mt.expanded[reply.objId] = !mt.expanded[reply.objId];
+            if (mt.expanded[reply.objId] && !mt.childrenCache[reply.objId]) {
+              self._loadReplyLevel(reply.objId, function (err, children) {
+                mt.childrenCache[reply.objId] = err ? [] : children;
+                self._renderMiniThread(row);
+              });
+            }
+            self._renderMiniThread(row);
+          });
+        container.addMorph(toggleBtn);
+        toggleBtn.setPosition(lively.pt(actionsX, actionsY));
+
+        var rowBottom = actionsY + 20;
+
+        if (mt.replyBoxOpenFor === reply.objId) {
+          rowBottom = self._renderMiniComposerIfSignedIn(
+            row, container, reply.objId, reply.objId, textX, rowBottom, w - textX + COMMENT_PAD_X,
+            "Replying to @" + (reply._handle || "…"));
+        }
+
+        var childrenBottom = rowBottom;
+        if (expanded) {
+          var children = mt.childrenCache[reply.objId];
+          if (children) {
+            if (children.length) {
+              childrenBottom = self._renderMiniCommentLevel(row, container, children, depth + 1, rowBottom + 6, w);
+            }
+          } else {
+            var loading = lively.morphic.Text.makeLabel("Loading…", { fontSize: 11, textColor: Color.gray });
+            container.addMorph(loading);
+            loading.setPosition(lively.pt(x + COMMENT_INDENT, rowBottom + 6));
+            loading.setExtent(lively.pt(Math.max(30, w - x - COMMENT_INDENT), 16));
+            childrenBottom = rowBottom + 26;
+          }
+        }
+
+        if (childrenBottom > rowBottom + 2) {
+          var lineTop = topY + COMMENT_AVATAR + 2;
+          var line = new lively.morphic.Box(lively.rect(0, 0, 2, Math.max(0, (childrenBottom - 6) - lineTop)));
+          line.setFill(THREAD_LINE_COLOR);
+          line.applyStyle({ borderWidth: 0 });
+          container.addMorph(line);
+          line.setPosition(lively.pt(x + COMMENT_AVATAR / 2 - 1, lineTop));
+        }
+
+        return childrenBottom + 10;
+      },
+
+      // Mirror of _watchMediaLoad/_watchLinkPreviewCardInsert, scoped to
+      // this row instead of the singleton thread container — see those for
+      // the full rationale (an <img>/<video> or an async link-preview-card
+      // insertion has no synchronously-knowable height, so the cached
+      // bodyH measured at render time needs correcting once either
+      // actually resolves).
+      _watchMiniMediaLoad: function (bodyNode, cached, row) {
+        var self = this;
+        var media = bodyNode.querySelectorAll("img, video");
+        Array.prototype.forEach.call(media, function (el) {
+          var isLoaded = el.tagName === "IMG" ? el.complete : el.readyState >= 1;
+          if (isLoaded) return;
+          var settle = function () {
+            cached.height = Math.max(14, bodyNode.scrollHeight);
+            self._scheduleMiniThreadRerender(row);
+          };
+          var readyEvt = el.tagName === "IMG" ? "load" : "loadedmetadata";
+          el.addEventListener(readyEvt, settle, { once: true });
+          el.addEventListener("error", settle, { once: true });
+        });
+      },
+
+      _watchMiniLinkPreviewCardInsert: function (bodyNode, cached, row) {
+        var self = this;
+        var mo = new MutationObserver(function () {
+          mo.disconnect();
+          cached.height = Math.max(14, bodyNode.scrollHeight);
+          self._scheduleMiniThreadRerender(row);
+        });
+        mo.observe(bodyNode, { childList: true, subtree: true });
+        setTimeout(function () { mo.disconnect(); }, 8000);
+      },
+
+      _scheduleMiniThreadRerender: function (row) {
+        var self = this;
+        if (row.miniThread.rerenderTimer) return;
+        row.miniThread.rerenderTimer = setTimeout(function () {
+          row.miniThread.rerenderTimer = null;
+          self._renderMiniThread(row);
+        }, 60);
+      },
+
+      // Mirrors _renderComposerIfSignedIn's layout (bordered COMMENT_ACCENT
+      // box, same placeholder/field/post-button idiom) but reads/writes
+      // row.miniThread.draftText — no collision with the singleton
+      // this._draftText (already per-row by construction here). Drops the
+      // attachment-upload toolbar (image/video/GIF icons): wiring that up
+      // would mean duplicating _stageAttachmentUpload/_renderAttachmentPreview
+      // too (both touch the singleton this._renderThreadTree), which isn't
+      // worth it for a first pass — a mini-card reply is text-only; the
+      // full composer (with attachments) is still reachable via Reel mode.
+      _renderMiniComposerIfSignedIn: function (row, container, key, parentObjId, x, y, w, placeholderText) {
+        if (!lively.identity.did.currentUser() || !parentObjId) return y;
+        var self = this;
+        var mt = row.miniThread;
+        var isRoot = key === "ROOT";
+        var PAD = 14, TOOLBAR_H = 30, BOTTOM_PAD = 12;
+        var H = isRoot ? 82 : 70;
+        var fieldH = H - PAD - TOOLBAR_H - BOTTOM_PAD - 6;
+        var toolbarY = H - BOTTOM_PAD - TOOLBAR_H;
+
+        var box = new lively.morphic.Box(lively.rect(0, 0, w, H));
+        box.setFill(Color.white);
+        box.applyStyle({ borderWidth: 1, borderColor: Color.rgb(232, 73, 126), borderRadius: 16 });
+        container.addMorph(box);
+        box.setPosition(lively.pt(x, y));
+
+        var placeholder = lively.morphic.Text.makeLabel(placeholderText, { fontSize: 12, textColor: Color.rgb(170, 170, 170) });
+        placeholder.eventsAreIgnored = true;
+        box.addMorph(placeholder);
+        placeholder.setPosition(lively.pt(PAD, PAD - 2));
+        placeholder.setExtent(lively.pt(w - PAD * 2, fieldH));
+
+        var field = new lively.morphic.Text(lively.rect(PAD, PAD - 2, w - PAD * 2, fieldH), mt.draftText[key] || "");
+        field.applyStyle({ allowInput: true, fixedWidth: true, fixedHeight: true, fontSize: 12, fill: null, borderWidth: 0 });
+        placeholder.setVisible(!field.textString);
+        var superKeyDown = field.onKeyDown;
+        field.onKeyDown = function (evt) {
+          var result = superKeyDown.call(this, evt);
+          mt.draftText[key] = field.textString;
+          placeholder.setVisible(!field.textString);
+          return result;
+        };
+        box.addMorph(field);
+
+        var postLabel = isRoot ? "Comment" : "Reply";
+        var postW = Math.max(56, postLabel.length * 7.5 + 32);
+        var postBtn = new lively.morphic.Button(lively.rect(0, 0, postW, TOOLBAR_H));
+        box.addMorph(postBtn);
+        postBtn.setPosition(lively.pt(w - PAD - postW, toolbarY));
+        this._paintPillButton(postBtn, {
+          label: postLabel, fillCss: COMMENT_ACCENT, textColor: Color.rgb(255, 255, 255), radius: TOOLBAR_H / 2,
+        });
+
+        var sending = false;
+        postBtn.onMouseDown = function () {
+          if (sending) return;
+          var text = (field.textString || "").trim();
+          if (!text) return;
+          sending = true;
+          self._paintPillButton(postBtn, { label: "Sending…", fillCss: COMMENT_ACCENT, textColor: Color.rgb(255, 255, 255), radius: TOOLBAR_H / 2 });
+          self._submitReply(parentObjId, text, null, function (err) {
+            sending = false;
+            if (err) {
+              self._paintPillButton(postBtn, { label: postLabel, fillCss: COMMENT_ACCENT, textColor: Color.rgb(255, 255, 255), radius: TOOLBAR_H / 2 });
+              return self._showError("Could not send reply: " + err.message);
+            }
+            delete mt.draftText[key];
+            if (!isRoot) mt.replyBoxOpenFor = null;
+            self._reloadMiniAfterReply(row, parentObjId);
+          });
+        };
+
+        if (!isRoot) {
+          var cancelW = 64;
+          var cancelBtn = new lively.morphic.Button(lively.rect(0, 0, cancelW, TOOLBAR_H));
+          box.addMorph(cancelBtn);
+          cancelBtn.setPosition(lively.pt(w - PAD - postW - 8 - cancelW, toolbarY));
+          this._paintPillButton(cancelBtn, {
+            label: "Cancel", fillCss: "rgb(244,244,245)", textColor: Color.rgb(80, 80, 80), radius: TOOLBAR_H / 2,
+            borderCss: "1px solid rgb(224,224,224)",
+          });
+          cancelBtn.onMouseDown = function () {
+            mt.replyBoxOpenFor = null;
+            self._renderMiniThread(row);
+          };
+        }
+
+        return y + H;
+      },
+
+      // Mirrors _reloadAfterReply, row-scoped — refreshes just the level a
+      // new reply landed in (root, or a specific comment's children) and,
+      // for a root-level reply, bumps the comment chip's count too.
+      _reloadMiniAfterReply: function (row, parentObjId) {
+        var self = this;
+        var mt = row.miniThread;
+        if (parentObjId === row.objId) {
+          this._loadReplyLevel(parentObjId, function (err, replies) {
+            mt.replies = err ? [] : replies;
+            row.commentCount = mt.replies.length;
+            if (row.box._renderedView && row.box._renderedView.setCommentCount) {
+              row.box._renderedView.setCommentCount(row.commentCount);
+            }
+            self._renderMiniThread(row);
+          });
+        } else {
+          mt.expanded[parentObjId] = true;
+          this._loadReplyLevel(parentObjId, function (err, children) {
+            mt.childrenCache[parentObjId] = err ? [] : children;
+            self._renderMiniThread(row);
+          });
+        }
       },
     },
 
