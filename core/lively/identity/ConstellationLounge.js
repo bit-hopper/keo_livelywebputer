@@ -161,6 +161,11 @@ module("lively.identity.ConstellationLounge")
     var SEARCH_W = 490, SEARCH_H = 45;
     var NAV_H = 40;
     var ROW_GAP = 16;
+    // Prev/next-turn cluster below the reel card: two circular icon buttons
+    // flanking a pill-shaped "N / M" badge, the whole group centered under
+    // the card rather than left-anchored at the card's own edge.
+    var NAV_BTN_D = 34, NAV_GAP = 10, NAV_PILL_W = 78;
+    var NAV_CLUSTER_W = NAV_BTN_D + NAV_GAP + NAV_PILL_W + NAV_GAP + NAV_BTN_D;
 
     // "Sort by" placeholder dropdown, sitting in the gap between the
     // postcard's top-right corner and the search box's left edge.
@@ -498,7 +503,10 @@ module("lively.identity.ConstellationLounge")
           // Sits beside the postcard, below the search row.
           quickInfoX: rightColX, quickInfoY: quickInfoY, quickInfoW: quickInfoW, quickInfoH: QUICK_INFO_H,
           reelX: GUTTER, reelY: reelY, cardW: cardW,
-          navX: GUTTER, navY: reelY + cardH + 6,
+          // Centered under the card rather than left-anchored at the
+          // card's own edge — falls back to the card's left edge if the
+          // card column ever shrinks narrower than the cluster itself.
+          navX: GUTTER + Math.max(0, Math.round((cardW - NAV_CLUSTER_W) / 2)), navY: reelY + cardH + 6,
           threadX: GUTTER, threadY: threadY, threadW: threadW, threadH: threadH,
           spacesX: rightColX, spacesY: spacesY, spacesW: quickInfoW, spacesH: threadBottom - spacesY,
           membersX: membersX, membersY: TOP, membersW: MEMBERS_W, membersH: Math.max(120, threadBottom - TOP),
@@ -640,26 +648,25 @@ module("lively.identity.ConstellationLounge")
         // view opened from elsewhere keeps the browser's default scrollbar).
         frontNode.classList.add("lounge-reel-card");
 
-        this._navBox = new lively.morphic.Box(lively.rect(0, 0, 120, 32));
+        this._navBox = new lively.morphic.Box(lively.rect(0, 0, NAV_CLUSTER_W, NAV_BTN_D));
         this._navBox.applyStyle({ fill: null, borderWidth: 0 });
         $world.addMorph(this._navBox);
 
-        var prevBtn = new lively.morphic.Button(lively.rect(0, 0, 32, 32));
-        prevBtn.setLabel("←");
-        prevBtn.onMouseDown = function () { self._turn(-1); };
-        this._navBox.addMorph(prevBtn);
-        prevBtn.renderContext().shapeNode.style.borderRadius = "16px";
+        this._prevBtn = this._buildNavChevronButton("chevron_left", -1, 0);
+        this._navBox.addMorph(this._prevBtn);
 
-        this._navLabel = lively.morphic.Text.makeLabel("", { fontSize: 13 });
-        this._navLabel.setPosition(lively.pt(40, 8));
-        this._navLabel.setExtent(lively.pt(40, 18));
+        this._navLabel = this._buildNavCountPill();
+        this._navLabel.setPosition(lively.pt(NAV_BTN_D + NAV_GAP, (NAV_BTN_D - 18) / 2));
         this._navBox.addMorph(this._navLabel);
+        var pillBg = new lively.morphic.Box(lively.rect(NAV_BTN_D + NAV_GAP, 0, NAV_PILL_W, NAV_BTN_D));
+        pillBg.applyStyle({
+          fill: Color.rgb(0xF7, 0xF2, 0xF4), borderWidth: 1, borderColor: Color.rgb(0xF0, 0xCE, 0xDC),
+          borderRadius: NAV_BTN_D / 2,
+        });
+        this._navBox.addMorphBack(pillBg);
 
-        var nextBtn = new lively.morphic.Button(lively.rect(88, 0, 32, 32));
-        nextBtn.setLabel("→");
-        nextBtn.onMouseDown = function () { self._turn(1); };
-        this._navBox.addMorph(nextBtn);
-        nextBtn.renderContext().shapeNode.style.borderRadius = "16px";
+        this._nextBtn = this._buildNavChevronButton("chevron_right", 1, NAV_BTN_D + NAV_GAP + NAV_PILL_W + NAV_GAP);
+        this._navBox.addMorph(this._nextBtn);
 
         this._threadContainer = new lively.morphic.Box(lively.rect(0, 0, 10, 10));
         this._threadContainer.setFill(Color.white);
@@ -702,11 +709,18 @@ module("lively.identity.ConstellationLounge")
         // input focus (activeInstance covers the search field and any
         // other Text morph, not just this one) — a global handler, not
         // scoped to a DOM tag check, since none of these fields are raw
-        // <input>s anymore.
+        // <input>s anymore. "A"/"D" are a WASD-style alias for the same
+        // prev/next turn as the arrow keys, guarded against modifier keys
+        // so Cmd/Ctrl+A ("select all") and Ctrl+D ("bookmark") still reach
+        // the browser untouched.
         document.addEventListener("keydown", function (evt) {
           if (lively.morphic.Text.activeInstance && lively.morphic.Text.activeInstance()) return;
-          if (evt.key === "ArrowLeft") self._turn(-1);
-          else if (evt.key === "ArrowRight") self._turn(1);
+          if (evt.key === "ArrowLeft") return self._turn(-1);
+          if (evt.key === "ArrowRight") return self._turn(1);
+          if (evt.ctrlKey || evt.metaKey || evt.altKey) return;
+          var key = evt.key.toLowerCase();
+          if (key === "a") self._turn(-1);
+          else if (key === "d") self._turn(1);
         });
 
         // This is fixed-layout chrome — nothing here should be draggable.
@@ -3305,16 +3319,31 @@ module("lively.identity.ConstellationLounge")
       // card is snapped into a smaller "just-revealed" state and eased up
       // to full size/opacity, mimicking a card being promoted off the
       // bottom of a stack.
+      // Cycles past either end instead of dead-ending: going past the
+      // newest card wraps to the last loaded (oldest) one, and going past
+      // the last loaded card — once _maybeLoadMore confirms there's
+      // genuinely nothing further to page in — wraps back to the newest.
+      // A single-card feed has nothing to wrap to, so it no-ops both ways,
+      // same as the old non-cyclic behavior did at either boundary.
       _turn: function (direction) {
         var self = this;
         var nextIndex = this._activeIndex + direction;
-        if (nextIndex < 0) return;
+        if (nextIndex < 0) {
+          if (this._feedCards.length <= 1) return;
+          return this._animateTurn(direction, this._feedCards.length - 1);
+        }
         if (nextIndex >= this._feedCards.length) {
           return this._maybeLoadMore(function (loaded) {
-            if (loaded) self._turn(direction);
+            if (loaded) return self._turn(direction);
+            if (self._feedCards.length <= 1) return;
+            self._animateTurn(direction, 0);
           });
         }
+        this._animateTurn(direction, nextIndex);
+      },
 
+      _animateTurn: function (direction, nextIndex) {
+        var self = this;
         var exitSign = direction > 0 ? -1 : 1;
         var frontNode = this._frontCardBox.renderContext().shapeNode;
         frontNode.style.transition = "transform 260ms cubic-bezier(.4,0,1,1), opacity 260ms ease-in";
@@ -3384,6 +3413,83 @@ module("lively.identity.ConstellationLounge")
 
       _renderNavPosition: function () {
         this._navLabel.textString = (this._activeIndex + 1) + " / " + this._feedCards.length + (this._feedCursor ? "+" : "");
+        // Cosmetic only — _turn already no-ops when there's truly nothing
+        // to cycle to, this just greys the arrow out instead of leaving it
+        // looking clickable when it can't do anything. With wraparound,
+        // position within the loaded set no longer matters: prev can
+        // always reach the last loaded card as long as there's more than
+        // one, and next can always either advance/wrap or page in more.
+        var hasMoreThanOne = this._feedCards.length > 1;
+        this._setNavBtnEnabled(this._prevBtn, hasMoreThanOne);
+        this._setNavBtnEnabled(this._nextBtn, hasMoreThanOne || !!this._feedCursor);
+      },
+
+      // Circular Material-Symbols icon button for the reel's prev/next
+      // turn controls — same "Text morph styled as a round icon button"
+      // idiom as _renderQuickInfoMap's "arrow_back" button (white fill,
+      // hairline border, pointer cursor, hover shade), just chevron glyphs
+      // instead of a single fixed back action.
+      _buildNavChevronButton: function (glyph, direction, x) {
+        var self = this;
+        var D = NAV_BTN_D, GLYPH_PX = 18;
+        var btn = new lively.morphic.Text(lively.rect(x, 0, D, D));
+        btn.textString = glyph;
+        btn._navFill = Color.white;
+        btn._navFillHover = Color.rgb(0xF7, 0xF2, 0xF4);
+        btn.applyStyle({
+          fontFamily: "'Material Symbols Rounded'",
+          fontSize: GLYPH_PX * 0.75,
+          textColor: Color.rgb(90, 90, 90),
+          fill: btn._navFill,
+          borderRadius: D / 2,
+          borderWidth: 1,
+          borderColor: Color.rgb(224, 224, 224),
+          align: "center",
+          padding: lively.Rectangle.inset(0, Math.round((D - GLYPH_PX) / 2), 0, 0),
+          allowInput: false,
+          selectable: false,
+          clipMode: "hidden",
+          whiteSpaceHandling: "pre",
+          handStyle: "pointer",
+        });
+        btn.toolTip = direction < 0 ? "Previous postcard" : "Next postcard";
+        btn.onMouseOver = function () { if (!btn._navDisabled) btn.applyStyle({ fill: btn._navFillHover }); };
+        btn.onMouseOut = function () { if (!btn._navDisabled) btn.applyStyle({ fill: btn._navFill }); };
+        btn.onMouseUp = function (evt) {
+          if (!btn._navDisabled) self._turn(direction);
+          evt.stop();
+          return true;
+        };
+        return btn;
+      },
+
+      // Greys an arrow out (and drops the pointer cursor/click) once it's
+      // at a real boundary, instead of leaving it looking live forever —
+      // _turn itself already no-ops there, this is purely visual.
+      _setNavBtnEnabled: function (btn, enabled) {
+        if (!btn) return;
+        btn._navDisabled = !enabled;
+        btn.applyStyle({
+          textColor: enabled ? Color.rgb(90, 90, 90) : Color.rgb(205, 205, 205),
+          fill: btn._navFill,
+          handStyle: enabled ? "pointer" : "default",
+        });
+      },
+
+      // The "N / M" badge between the two chevrons — a plain centered Text
+      // label; the pink pill background behind it is a separate sibling
+      // Box (_buildChrome adds it via addMorphBack) so this label itself
+      // only ever needs fill:null/no border, same split already used
+      // elsewhere in this file for text-over-painted-background morphs.
+      _buildNavCountPill: function () {
+        var label = lively.morphic.Text.makeLabel("", {
+          fontSize: 13, fontWeight: "600", textColor: Color.rgb(90, 90, 90), fixedWidth: true, fixedHeight: true,
+        });
+        label.setExtent(lively.pt(NAV_PILL_W, 18));
+        label.applyStyle({ align: "center", fill: null, borderWidth: 0 });
+        label.allowInput = false;
+        label.selectable = false;
+        return label;
       },
 
       // Fetches the full envelope via the constellation-scoped, handle-free
