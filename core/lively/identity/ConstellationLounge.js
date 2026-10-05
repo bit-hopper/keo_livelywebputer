@@ -142,7 +142,13 @@ module("lively.identity.ConstellationLounge")
     // at any width; this just stops setExtent from ever seeing a
     // zero/negative width.
     var MIN_CARD_COL_W = 60;
-    var MEMBERS_W = 220;       // outer slot width
+    var MEMBERS_W = 220;       // outer slot width (design width — shrinks under MIN_MEMBERS_W, see _layout)
+    // Bare structural safety floor for the members column — same
+    // "not a comfortable minimum" philosophy as MIN_QUICK_INFO_W/
+    // MIN_CARD_COL_W above. Keeps room for the avatar + handle + status
+    // pill a row renders (_renderMemberSection bottoms the badge out at
+    // w2-66..w2-4) without the pill overlapping the handle text.
+    var MIN_MEMBERS_W = 160;
     var GUTTER = 20;           // column gutter, also the gap before the members column and the page's right edge
     // Shared by _renderEventCard/_renderEmptyEventCard (the card's own max
     // width) AND _renderQuickInfo (to compute the card's real left edge so
@@ -381,6 +387,7 @@ module("lively.identity.ConstellationLounge")
         // already exists (_buildChrome's own final _layout() call set it).
         this._lastRenderedQuickInfoW = this._geom.quickInfoW;
         this._lastRenderedCardW = this._geom.cardW;
+        this._lastRenderedMembersW = this._geom.membersW;
         this._fetchFeed(null);
         this._fetchRooms();
         this._startRoomsPoll();
@@ -398,29 +405,55 @@ module("lively.identity.ConstellationLounge")
       // happen where the underlying data changes, not here.
       _layout: function () {
         var W = window.innerWidth, H = window.innerHeight;
-        // GUTTER-width margin on the right too, matching every other
-        // column gap instead of running the members list flush to the edge.
-        var membersX = W - MEMBERS_W - GUTTER;
-        // Total width shared between the card/thread column and the
-        // quick-info/rooms column, based on the real space left after the
-        // members column and all four gutters (left margin, gap before
-        // quick-info, gap before members, right margin). Split
-        // proportionally to their original design widths
-        // (CARD_W:QUICK_INFO_W) once that combined budget no longer fits,
-        // each floored at its own bare safety minimum — same "degrade,
-        // don't force overlap" lesson learned fixing MIN_QUICK_INFO_W
-        // earlier this session (a floor must never exceed what's actually
-        // available, or it guarantees overlap instead of preventing it).
-        var DESIGN_MIDDLE_TOTAL = CARD_W + QUICK_INFO_W;
-        var middleAvail = Math.max(0, W - MEMBERS_W - GUTTER * 4);
-        var cardW, quickInfoW;
-        if (middleAvail >= DESIGN_MIDDLE_TOTAL) {
+        // Three flexible columns (card/thread, quick-info/rooms, members)
+        // share whatever width is actually left after all four gutters
+        // (left margin, gap before quick-info, gap before members, right
+        // margin). Split proportionally to their original design widths
+        // once that combined budget no longer fits, each floored at its
+        // own bare safety minimum — same "degrade, don't force overlap"
+        // lesson learned fixing MIN_QUICK_INFO_W earlier this session (a
+        // floor must never exceed what's actually available, or it
+        // guarantees overlap instead of preventing it). The members column
+        // used to be pinned at MEMBERS_W regardless of window width (the
+        // other two already flexed) — it now shrinks right along with
+        // them instead of forcing the other two to absorb the whole
+        // deficit on a narrow window.
+        var DESIGN_TOTAL_W = CARD_W + QUICK_INFO_W + MEMBERS_W;
+        var totalAvail = Math.max(0, W - GUTTER * 4);
+        var cardW, quickInfoW, membersW;
+        if (totalAvail >= DESIGN_TOTAL_W) {
           cardW = CARD_W;
           quickInfoW = QUICK_INFO_W;
+          membersW = MEMBERS_W;
         } else {
-          cardW = Math.max(MIN_CARD_COL_W, Math.round(middleAvail * CARD_W / DESIGN_MIDDLE_TOTAL));
-          quickInfoW = Math.max(MIN_QUICK_INFO_W, middleAvail - cardW);
+          // Reserve each column's floor first, then hand out whatever's left
+          // above that combined floor proportionally to each column's own
+          // "design width above its floor" — NOT a plain independent
+          // max(floor, proportional-of-total) per column, which can't see
+          // the other columns' floors and so can overshoot totalAvail (e.g.
+          // members hitting MIN_MEMBERS_W can by itself force cardW+
+          // quickInfoW+membersW past totalAvail, overlapping the members
+          // column onto quick-info — confirmed live at a 1100px window,
+          // ~17px of real DOM overlap). This way the three widths always
+          // sum to exactly totalAvail (members takes the rounding
+          // remainder), so a floor can never force a sibling past its own
+          // edge.
+          var sumFloors = MIN_CARD_COL_W + MIN_QUICK_INFO_W + MIN_MEMBERS_W;
+          if (totalAvail <= sumFloors) {
+            cardW = MIN_CARD_COL_W;
+            quickInfoW = MIN_QUICK_INFO_W;
+            membersW = MIN_MEMBERS_W;
+          } else {
+            var extra = totalAvail - sumFloors;
+            var designExtraTotal = (CARD_W - MIN_CARD_COL_W) + (QUICK_INFO_W - MIN_QUICK_INFO_W) + (MEMBERS_W - MIN_MEMBERS_W);
+            cardW = MIN_CARD_COL_W + Math.round(extra * (CARD_W - MIN_CARD_COL_W) / designExtraTotal);
+            quickInfoW = MIN_QUICK_INFO_W + Math.round(extra * (QUICK_INFO_W - MIN_QUICK_INFO_W) / designExtraTotal);
+            membersW = totalAvail - cardW - quickInfoW;
+          }
         }
+        // GUTTER-width margin on the right too, matching every other
+        // column gap instead of running the members list flush to the edge.
+        var membersX = W - membersW - GUTTER;
         // Right column (the about panel) starts one gutter past the
         // postcard's (now possibly shrunk) right edge.
         var rightColX = GUTTER + cardW + GUTTER;
@@ -515,7 +548,7 @@ module("lively.identity.ConstellationLounge")
           navX: GUTTER + Math.max(0, Math.round((cardW - NAV_CLUSTER_W) / 2)), navY: reelY + cardH + 6,
           threadX: GUTTER, threadY: threadY, threadW: threadW, threadH: threadH,
           spacesX: rightColX, spacesY: spacesY, spacesW: quickInfoW, spacesH: threadBottom - spacesY,
-          membersX: membersX, membersY: TOP, membersW: MEMBERS_W, membersH: Math.max(120, threadBottom - TOP),
+          membersX: membersX, membersY: TOP, membersW: membersW, membersH: Math.max(120, threadBottom - TOP),
           createBtnX: createBtnX, createBtnY: TOP, createBtnFits: createBtnFits,
         };
 
@@ -581,22 +614,26 @@ module("lively.identity.ConstellationLounge")
       // onWorldResize (this controller is a plain Object.subclass, not a
       // morph, so there's no this.id — this._name is this instance's
       // natural unique key throughout the file already). Skipped entirely
-      // unless this._geom.quickInfoW/cardW — the quantities that actually
-      // affect these panels' content — have genuinely changed since the
-      // last real re-render, so a pure-height-only resize triggers no
-      // rebuild at all.
+      // unless this._geom.quickInfoW/cardW/membersW — the quantities that
+      // actually affect these panels' content — have genuinely changed
+      // since the last real re-render, so a pure-height-only resize
+      // triggers no rebuild at all.
       _onWindowResize: function () {
         this._layout();
         var quickInfoW = this._geom.quickInfoW;
         var cardW = this._geom.cardW;
-        if (quickInfoW === this._lastRenderedQuickInfoW && cardW === this._lastRenderedCardW) return;
+        var membersW = this._geom.membersW;
+        if (quickInfoW === this._lastRenderedQuickInfoW && cardW === this._lastRenderedCardW
+          && membersW === this._lastRenderedMembersW) return;
         lively.lang.fun.debounceNamed("constellation-lounge-resize-render-" + this._name, 150,
           function () {
             this._lastRenderedQuickInfoW = quickInfoW;
             this._lastRenderedCardW = cardW;
+            this._lastRenderedMembersW = membersW;
             this._renderQuickInfo();
             this._renderSpaces();
             if (this._threadContainer) this._renderThreadTree();
+            if (this._membersBox) this._renderMemberList();
           }.bind(this))();
       },
     },
