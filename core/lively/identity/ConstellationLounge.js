@@ -8,9 +8,9 @@
  * now the only UI for a constellation. A visitor to /c/:name sees:
  *
  *   - a search field (top, horizontally centered across the full page width
- *     as its own row, styled after PartsBin/iPadWidgets/SearchField.json
- *     — white rounded pill, magnifying-glass icon, blue "Go" button, same
- *     embedded icon asset), searching this constellation's postcard titles
+ *     as its own row, resizing with the viewport — white rounded pill with
+ *     a pink border, magnifying-glass icon, Enter-to-search, no separate
+ *     "Go" button), searching this constellation's postcard titles
  *     (server-side, via GET /c/:name/feed?q=)
  *   - a quick-info panel (name, visibility, member count, created date,
  *     co-creator) beside the postcard reel, below the search row, at a
@@ -87,12 +87,6 @@ module("lively.identity.ConstellationLounge")
     "lively.morphic.Complete",
   )
   .toRun(function () {
-
-    // Same embedded icon asset as PartsBin/iPadWidgets/SearchField.json's
-    // magnifying-glass image morph, reused verbatim so the rebuilt search
-    // field is visually identical, not just similar.
-    var SEARCH_ICON_DATA_URL =
-      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABYAAAAWCAYAAADEtGw7AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAACxMAAAsTAQCanBgAAAPbSURBVEhLrVVdTxtXED13d/0RB+zFFCp4KkI1ThBCAgGVIhHUP8D/5SXqI1F5AFUVJHwEEihfsTFQY+/X7Zm5XpP0Ode68mrv3JkzZ87MmvPrr3b0RQWVchl+gOGyFkgzC88zMAbIbKZnnvFg+dNnGFgx5DJixJWmKXzfh1cLX6JQNPB8iyTJkLn76ix3ml8cOqHDfIlDeZ/xouzh+8Sm1vCF53mMJgh99Hp9tFotXN/c4O7uTs+q1SomJiYwNjaGSqWs9+3g3nOez08ms7F18T3drdYdjo6OcHh4iKvra8RxrKkFQYB6vY7Z2Vk0XzUQ1kJkTFuWnOfZ5NmZOO1ZnzyCWfT6Kd6//xMHBwfK2U9EODk5qZduiP7q6grFYhFzc3NYWFhAdfSlUie0DShWOiRDIo6I2Gj0k09f8O7dH4iiCMvLy/hlZkYpEMNOp4PT01Nsb28rwo2NDTTnGq6wdE4T1ijRzDR/A6ahnHtKwe3tLX5tNPB6fh5hGKJcLhJlgFqtpkgXFxfVRoIkaTbQR17w56IyjsjH7fPzf5SCGSIdGamoQ1GKFFWeR5n69PQ0SqWSOg4C3qPaBG0UJZpJvqRiDjpPHx8fSYpPdGOu6rxkqFuRXb7Gx8fVQbfb1aBChdhJ4G+XJ/IWtGIR1uoa4OHhgSj/XxQRv1UahEuRne87XEni1CGFy9UxRCw0T/w8iThNsL+/j/v7BzVWRFIg7qcoxt8HH5Qu0bQsCeYHPrv0e57VcWakCBbNZgNTU1M4OTnB3t4ezs4umHKfMkxwcXGJnZ0dPZOiNpvNAYWu5YVnyTbvPsrN2oSyEBRplNLhX9jd3VXJSbriRNBKJ7bbba3DNDPb3NzkWXVAgfBsEfiGXdujksqiY2vTfKgw5273CcfHn9h5H7QLW50WkThFVKshLi8vdND8trKKpaUl1W2h4LsZQ0/aHARpUptZo9V/nlS9fozOfRtf2x0i6LJIBRRKASVYpeNLbZL+Uw+rq6tYW1tDgRxz5Eib0VYUpJ1ndVZYsm8GVdaikB5JzzKgG5UMzt0hFV/OPmNra0vVsbKygt/frrvK0T5JImZQ0snDNBKHmM7T2G1jPQScdIHoWG1UlKiNjGC++Qrrb9YRjobwaMfrSFXTBEHaVE1RltoCL3/Xmy6+A+GAOMTyL9JLGIRNdvjxmIOqzmEU6kzPZ4Y6/jeO7QsWQIaQR1RGdJO3kwxwYUy1JIJ2fLBGkoM6cpzKePsGjchPqqoFZSsbmUySrwqT//KJCQY3xJt+hpiy2rBQnBXkQp3mszl3b1gg99H6wWvY0j/YL/4DF1XopJQ13lsAAAAASUVORK5CYII=";
 
     // Every panel below is a fixed pixel size (not derived from
     // window.innerWidth/innerHeight) per the reference layout — sized off
@@ -474,8 +468,20 @@ module("lively.identity.ConstellationLounge")
         // rightColX (already one gutter clear of the postcard's real
         // right edge), matching this row's own documented intent of
         // sitting in the gap after the postcard, not on top of it.
+        // Search box width now scales with the row's own available space
+        // instead of staying pinned at the fixed SEARCH_W design constant
+        // (the same "flexible middle column" treatment already given to
+        // cardW/quickInfoW above) — floored at SEARCH_MIN_W so the field
+        // never gets too cramped to use, capped at SEARCH_W so it doesn't
+        // balloon past its original design width on very wide windows.
+        var SEARCH_MIN_W = 260;
+        var searchRowAvail = Math.max(0, membersX - GUTTER - (rightColX + GUTTER + SORT_W + GUTTER));
+        var searchW = Math.max(SEARCH_MIN_W, Math.min(SEARCH_W, searchRowAvail));
         var minSearchX = rightColX + GUTTER + SORT_W;
-        var searchX = Math.max(minSearchX, (W - SEARCH_W) / 2 + 100);
+        var searchX = Math.max(minSearchX, (W - searchW) / 2 + 100);
+        // Keep the box clear of the members column even when the centering
+        // formula above would otherwise push it past that edge.
+        searchX = Math.max(minSearchX, Math.min(searchX, membersX - GUTTER - searchW));
         // "+ Postcard" sits centered in the horizontal gap between the
         // search box's right edge and the members column's left edge,
         // rather than pinned to either one — width comes from
@@ -490,13 +496,13 @@ module("lively.identity.ConstellationLounge")
         // (MenuBarEntry.js) already offers the same action, so hiding
         // this shortcut isn't a functionality loss.
         var createBtnW = this._createBtnW || CREATE_BTN_W;
-        var createGapStart = searchX + SEARCH_W;
+        var createGapStart = searchX + searchW;
         var createGapEnd = membersX;
         var createBtnFits = (createGapEnd - createGapStart) >= createBtnW + GUTTER * 2;
         var createBtnX = createGapStart + (createGapEnd - createGapStart - createBtnW) / 2;
 
         var g = this._geom = {
-          searchX: searchX, searchY: TOP,
+          searchX: searchX, searchY: TOP, searchW: searchW,
           // Sits in the gap between the postcard's top-right corner and the
           // search box's left edge, same row.
           sortByX: searchX - GUTTER - SORT_W, sortByY: TOP,
@@ -513,7 +519,10 @@ module("lively.identity.ConstellationLounge")
           createBtnX: createBtnX, createBtnY: TOP, createBtnFits: createBtnFits,
         };
 
-        if (this._searchBox) this._searchBox.setPosition(lively.pt(g.searchX, g.searchY));
+        if (this._searchBox) {
+          this._searchBox.setPosition(lively.pt(g.searchX, g.searchY));
+          this._applySearchWidth(g.searchW);
+        }
         if (this._sortByBox) this._sortByBox.setPosition(lively.pt(g.sortByX, g.sortByY));
         if (this._createPostcardBtn) {
           this._createPostcardBtn.setPosition(lively.pt(g.createBtnX, g.createBtnY));
@@ -607,7 +616,6 @@ module("lively.identity.ConstellationLounge")
 
         this._searchBox = this._buildSearchField();
         $world.addMorph(this._searchBox);
-        this._styleSearchGoButton();
 
         this._sortSelection = SORT_OPTIONS[0];
         this._sortByBox = this._buildSortByButton();
@@ -830,18 +838,63 @@ module("lively.identity.ConstellationLounge")
     // ─── search — rebuild of PartsBin/iPadWidgets/SearchField.json as real morphs ──
 
     "search", {
+      // Field extent only (icon stays fixed at the box's left edge) —
+      // shared by _buildSearchField and _applySearchWidth (called from
+      // _layout whenever the row's available width changes) so the field
+      // and its placeholder always track the box's current width instead
+      // of staying pinned at the box's build-time width. No Go button any
+      // more, so the field runs all the way to the box's right edge minus
+      // a flat 12px margin, instead of leaving room for the old button.
+      _searchFieldRect: function (boxW) {
+        return lively.rect(42, 6, boxW - 42 - 12, SEARCH_H - 12);
+      },
+
       _buildSearchField: function () {
         var self = this;
         var box = new lively.morphic.Box(lively.rect(0, 0, SEARCH_W, SEARCH_H));
         box.setFill(Color.white);
-        box.applyStyle({ borderWidth: 1, borderColor: Color.rgb(112, 112, 112), borderRadius: 22 });
+        // Pink border, matching the Comment/+ Postcard accent elsewhere in
+        // this chrome — Color.rgb(...), not the raw COMMENT_ACCENT string,
+        // per this file's own convention for applyStyle({borderColor}) vs.
+        // a direct DOM-node style write (confirmed live: passing the plain
+        // CSS string here threw "fill.toCSSString is not a function").
+        box.applyStyle({ borderWidth: 3, borderColor: Color.rgb(232, 73, 126), borderRadius: 22 });   // COMMENT_ACCENT (#e8497e)
 
-        var icon = new lively.morphic.Image(lively.rect(11, 12, 22, 20));
-        icon.setImageURL(SEARCH_ICON_DATA_URL);
-        icon.applyStyle({ borderWidth: 0 });
+        // Material Symbols Rounded glyph instead of the old embedded raster
+        // PNG — per CLAUDE.md's icon convention, this lets the glyph take
+        // a real textColor (pink, matching the border) with no
+        // image-tinting workaround, and enlarges cleanly via fontSize
+        // rather than scaling a bitmap. Same icon idiom as
+        // _buildClustersTitlePill's glyph: fixed-rect Text (so
+        // align:'center' isn't a no-op — it's a hug-content no-op
+        // otherwise), vertical centering via top padding, fontSize in pt
+        // (px * 0.75), box baked into the constructor rect since it never
+        // moves after this.
+        var SEARCH_ICON_BOX = 30, SEARCH_ICON_PX = 24;
+        var iconX = Math.round((42 - SEARCH_ICON_BOX) / 2);
+        // -3: live-measured correction (getBoundingClientRect on the real
+        // glyph vs. its box, per CLAUDE.md's icon-font baseline gotcha) —
+        // naive centering left an 11px gap above the glyph vs. 4.7px below,
+        // since the font's own line-height sits the glyph low in its box.
+        var iconY = Math.round((SEARCH_H - SEARCH_ICON_BOX) / 2) - 3;
+        var icon = new lively.morphic.Text(lively.rect(iconX, iconY, SEARCH_ICON_BOX, SEARCH_ICON_BOX));
+        icon.textString = "search";
+        icon.applyStyle({
+          fontFamily: "'Material Symbols Rounded'",
+          fontSize: SEARCH_ICON_PX * 0.75,
+          textColor: Color.rgb(232, 73, 126),   // COMMENT_ACCENT (#e8497e)
+          fill: null,
+          borderWidth: 0,
+          align: "center",
+          padding: lively.Rectangle.inset(0, Math.round((SEARCH_ICON_BOX - SEARCH_ICON_PX) / 2), 0, 0),
+          allowInput: false,
+          selectable: false,
+          clipMode: "hidden",
+          whiteSpaceHandling: "pre",
+        });
         box.addMorph(icon);
 
-        var fieldRect = lively.rect(42, 6, SEARCH_W - 42 - 74, SEARCH_H - 12);
+        var fieldRect = this._searchFieldRect(SEARCH_W);
 
         // Plain Text morphs have no native placeholder — a second, purely
         // decorative label sits behind the real field (added first, so the
@@ -876,26 +929,20 @@ module("lively.identity.ConstellationLounge")
         box.addMorph(field);
         this._searchField = field;
 
-        var go = new lively.morphic.Button(lively.rect(SEARCH_W - 64, 3, 60, SEARCH_H - 6));
-        go.setLabel("Go");
-        if (go.label && go.label.setTextColor) go.label.setTextColor(Color.rgb(230, 230, 230));
-        go.onMouseDown = function () { self.search(field.textString); };
-        box.addMorph(go);
-        this._searchGoBtn = go;
-
         return box;
       },
 
-      // Button's fill/borderRadius only take effect once the morph has a
-      // live render context (setFill/setBorderRadius silently no-op on a
-      // still-detached Button, confirmed by testing — applyStyle({fill:...})
-      // hits the exact same setFill path per Core.js and no-ops the same
-      // way), so this runs after $world.addMorph, not at construction time.
-      _styleSearchGoButton: function () {
-        var node = this._searchGoBtn && this._searchGoBtn.renderContext().shapeNode;
-        if (!node) return;
-        node.style.background = COMMENT_ACCENT;   // pink accent, matching the Comment/+ Postcard buttons
-        node.style.borderRadius = "19px";
+      // Called from _layout whenever the row's available width changes the
+      // search box's own width (same "resize the box, then propagate the
+      // new size to its fluid children" pattern _layout already uses for
+      // quickInfoBox/frontCardBox/threadContainer/spacesBox) — keeps the
+      // field and its placeholder filling the box instead of staying
+      // pinned at whatever width the box was first built with.
+      _applySearchWidth: function (w) {
+        if (this._searchBox) this._searchBox.setExtent(lively.pt(w, SEARCH_H));
+        var fr = this._searchFieldRect(w);
+        if (this._searchField) this._searchField.setExtent(fr.extent());
+        if (this._searchPlaceholder) this._searchPlaceholder.setExtent(fr.extent());
       },
 
       _updateSearchPlaceholder: function () {
