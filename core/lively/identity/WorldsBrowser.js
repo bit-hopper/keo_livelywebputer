@@ -705,7 +705,7 @@ module("lively.identity.WorldsBrowser")
           { icon: "inventory_2",    title: "Import from Inventory",  subtitle: "Browse your parts and drag one in.",       enabled: true,  key: "inventory" },
           { icon: "photo_library",  title: "Gallery",                subtitle: "Organize and display photos.",             enabled: true,  key: "gallery" },
           { icon: "movie",          title: "Movie",                  subtitle: "Organize your favorite movies.",           enabled: false, key: "movie" },
-          { icon: "menu_book",      title: "Books",                  subtitle: "Organize your book collection.",           enabled: false, key: "books" },
+          { icon: "menu_book",      title: "Books",                  subtitle: "Organize your book collection.",           enabled: true,  key: "books" },
           { icon: "sports_esports", title: "Game",                   subtitle: "Organize your video games.",               enabled: false, key: "game" },
         ];
 

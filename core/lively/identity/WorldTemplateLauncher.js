@@ -9,9 +9,10 @@
  * the matching preset into the now-current $world, then strips the param via
  * history.replaceState so a plain reload of the same URL never re-triggers it.
  *
- * "shop", "inventory" and "gallery" are implemented — WorldsBrowser.js's
- * template picker never sends any other key (movie/books/game are still
- * rendered as inert placeholders there), so no other case is needed yet.
+ * "shop", "inventory", "gallery" and "books" are implemented —
+ * WorldsBrowser.js's template picker never sends any other key (movie/game
+ * are still rendered as inert placeholders there), so no other case is
+ * needed yet.
  */
 
 module("lively.identity.WorldTemplateLauncher")
@@ -72,6 +73,17 @@ module("lively.identity.WorldTemplateLauncher")
           // is actually created.
           lively.require("lively.gallery.Gallery").toRun(function () {
             lively.gallery.Gallery.open();
+          });
+        } else if (template === "books") {
+          // Same async-backing-storage reasoning as "gallery" above -- Books'
+          // library folder is created asynchronously (a passkey/KEK
+          // ceremony for a private/shared folder, though the library folder
+          // itself is always public and needs none -- see Books.js's
+          // _ensureLibrary), so no _saveCurrentWorld() call here. Books.js's
+          // own _ensureLibrary() calls it once booksLibraryObjId actually
+          // exists.
+          lively.require("lively.books.Books").toRun(function () {
+            lively.books.Books.open();
           });
         }
       },

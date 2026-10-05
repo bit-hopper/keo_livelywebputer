@@ -1561,6 +1561,178 @@ module('lively.identity.FileCrypto')
         });
       },
 
+    },
+
+    // ─── book (books-template.md) ────────────────────────────────────────
+    // A Book is a small, always-PUBLIC (plaintext) envelope -- one per
+    // shelved book, type:'book', addressable by its own objId so a List (a
+    // folder, via addPointerToFolder/addFileToFolder's pointer convention
+    // above) can reference it via refObjId. Unlike a folder/file, a book
+    // never goes through a KEK/dek ceremony at all: title/author/shelf/
+    // rating/cover are meant to be visible on the owner's public shelf the
+    // same way a public Inventory listing is, and prompting a passkey touch
+    // on every single "add a book"/"rate a book" action would be bad UX for
+    // what's meant to be a lightweight, frequent-interaction tracker.
+    //
+    // The per-book `isPublic` field inside the payload (and the
+    // cascade-from-Lists computation ported into lively.books.Books from
+    // the approved mockup) is a plain-data DISPLAY preference gating only
+    // whether the Reviews & Notes section (a separate mechanism -- see
+    // below) is shown to a non-owner viewer. It is not real end-to-end
+    // encryption -- the same non-cryptographic-privacy precedent already
+    // established by Inventory's own 'public' item listings elsewhere in
+    // this codebase. A determined visitor reading the raw envelope JSON
+    // could still see isPublic:false; this only hides it in the normal UI.
+    // See books-template.md for the full reasoning.
+    //
+    // Reviews/notes themselves are NOT stored in this envelope at all --
+    // they reuse the existing generic `/@:handle/:objId/comments` REST
+    // routes (IdentityServer.js, originally built for Inventory items) via
+    // plain fetch calls in Books.js, keyed by the book's own objId. That
+    // route already works for any objId whose envelope passes
+    // _canReadEnvelope (true for every book, since books are always
+    // public), lets ANY signed-in viewer post a review (not just the
+    // owner -- matching the mockup's seed data showing other people's
+    // comments on a book), and needed zero server changes to reuse.
+    //
+    // Every payload below carries `updatedAt` (bumped on every save, never
+    // read by the UI). This is NOT cosmetic -- confirmed live 2026-10-05:
+    // ObjectRepository.js's put() de-dupes by (objId, cid), where cid is a
+    // canonical hash of the payload alone. Toggling `isPublic` off then
+    // back ON, with no other field changed in between, reproduces the
+    // EXACT payload (and therefore cid) of an earlier version in the same
+    // object's history -- the second PUT's prevCid chain-check correctly
+    // passes, but the INSERT then collides with that old row's (objId,
+    // cid) uniqueness constraint, and put() treats it as a no-op duplicate
+    // ({duplicate:true, changed:'none'}) rather than moving the tip --
+    // even though the client-sent payload was genuinely isPublic:true
+    // again. The toggle's own PUT reports {ok:true}, so this fails
+    // completely silently; only a fresh fetchBook (or a different browser
+    // profile) reveals the stale value survived. `updatedAt` guarantees
+    // every save's canonical payload is unique, so this collision can
+    // never occur. (Folders -- Lists/Gallery -- share this same
+    // content-addressed-store property and could in principle hit the
+    // identical bug on a value that cycles back to an exact prior state;
+    // not fixed here since it's shared infra outside Books' scope and
+    // hasn't been reproduced for folders specifically -- flagged for a
+    // separate pass.)
+    'book', {
+
+      // data: { title, author, shelf, rating, description, coverUrl,
+      //         coverSource, isbn, isPublic }. Calls thenDo(null, { objId }).
+      createBook: function (data, thenDo) {
+        var self = this;
+        var c = lively.identity.crypto;
+        var user = lively.identity.did.currentUser();
+        if (!user) return thenDo(new Error('createBook: no identity session active'));
+
+        var payload = Object.assign({
+          title: '', author: '', shelf: 'want', rating: 0, description: '',
+          coverUrl: null, coverSource: null, isbn: null, isPublic: true,
+        }, data, { updatedAt: new Date().toISOString() });
+
+        c.computeCid(payload, function (err, cid) {
+          if (err) return thenDo(err);
+          lively.identity.webKey.generateGenesisObjId(user.did, function (err, gen) {
+            if (err) return thenDo(err);
+            var envelope = {
+              objId: gen.objId, did: user.did, genesisNonce: gen.genesisNonce,
+              type: 'book', visibility: 'public', created: new Date().toISOString(),
+              record: { cid: cid, prevCid: null, payload: payload, nonce: null, wrappedDek: null, recipients: [] },
+              blobCids: [], state: { title: payload.title },
+            };
+            self._signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
+              if (signErr) return thenDo(signErr);
+              self._putEnvelope(user.handle, signed || envelope, function (err) {
+                if (err) return thenDo(err);
+                thenDo(null, { objId: envelope.objId });
+              });
+            });
+          });
+        });
+      },
+
+      // Calls thenDo(null, { objId, book: <payload>, isOwner, envelope }).
+      fetchBook: function (handle, bookObjId, thenDo) {
+        var user = lively.identity.did.currentUser();
+        this._getEnvelope(handle, bookObjId, function (err, envelope) {
+          if (err) return thenDo(err);
+          if (envelope.type !== 'book') return thenDo(new Error('fetchBook: ' + bookObjId + ' is not a book'));
+          thenDo(null, {
+            objId: envelope.objId,
+            book: envelope.record.payload,
+            isOwner: !!(user && user.did === envelope.did),
+            envelope: envelope,
+          });
+        });
+      },
+
+      // Shallow-merges patch into the book's payload and re-saves a new
+      // envelope version (owner-only -- the server's mandatory signature
+      // check would 403 a non-owner's PUT anyway, this is just a clearer
+      // client-side error). Calls thenDo(null, { objId }).
+      updateBook: function (handle, bookObjId, patch, thenDo) {
+        var self = this;
+        var c = lively.identity.crypto;
+        var user = lively.identity.did.currentUser();
+        if (!user) return thenDo(new Error('updateBook: no identity session active'));
+
+        self.fetchBook(handle, bookObjId, function (err, result) {
+          if (err) return thenDo(err);
+          if (!result.isOwner) return thenDo(new Error('updateBook: only the owner can edit a book'));
+          var payload = Object.assign({}, result.book, patch, { updatedAt: new Date().toISOString() });
+          c.computeCid(payload, function (err, cid) {
+            if (err) return thenDo(err);
+            var envelope = {
+              objId: result.envelope.objId, did: result.envelope.did, type: 'book',
+              visibility: 'public', created: result.envelope.created,
+              record: { cid: cid, prevCid: result.envelope.record.cid, payload: payload, nonce: null, wrappedDek: null, recipients: [] },
+              blobCids: [], state: { title: payload.title },
+            };
+            self._signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
+              if (signErr) return thenDo(signErr);
+              self._putEnvelope(handle, signed || envelope, function (err) {
+                if (err) return thenDo(err);
+                thenDo(null, { objId: envelope.objId });
+              });
+            });
+          });
+        });
+      },
+
+      // Soft-delete only (state.deleted:true) -- there's no hard-delete in
+      // this append-only store, same limitation as every other object type
+      // here. The caller (Books.js's _deleteBook) is responsible for also
+      // removing the Library/List pointer entries referencing this objId.
+      // Calls thenDo(null, { objId }).
+      deleteBook: function (handle, bookObjId, thenDo) {
+        var self = this;
+        var c = lively.identity.crypto;
+        var user = lively.identity.did.currentUser();
+        if (!user) return thenDo(new Error('deleteBook: no identity session active'));
+        self.fetchBook(handle, bookObjId, function (err, result) {
+          if (err) return thenDo(err);
+          if (!result.isOwner) return thenDo(new Error('deleteBook: only the owner can delete a book'));
+          var payload = result.book;
+          c.computeCid(payload, function (err, cid) {
+            if (err) return thenDo(err);
+            var envelope = {
+              objId: result.envelope.objId, did: result.envelope.did, type: 'book',
+              visibility: 'public', created: result.envelope.created,
+              record: { cid: cid, prevCid: result.envelope.record.cid, payload: payload, nonce: null, wrappedDek: null, recipients: [] },
+              blobCids: [], state: { title: payload.title, deleted: true },
+            };
+            self._signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
+              if (signErr) return thenDo(signErr);
+              self._putEnvelope(handle, signed || envelope, function (err) {
+                if (err) return thenDo(err);
+                thenDo(null, { objId: envelope.objId });
+              });
+            });
+          });
+        });
+      },
+
     });
 
     // Singleton: lively.identity.fileCrypto.encryptAndUpload(...), etc.
