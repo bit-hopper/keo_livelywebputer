@@ -288,7 +288,7 @@ module("lively.books.Books")
         _setup: function () {
           this._dom = {};
           this.state = {
-            theme: this.booksTheme || "walnut",
+            theme: this.booksTheme || "echo",
             isOwner: false,
             loaded: false,
             books: [],
