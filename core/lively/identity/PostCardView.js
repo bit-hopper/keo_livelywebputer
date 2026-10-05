@@ -346,6 +346,15 @@ module("lively.identity.PostCardView")
           // past or click into — skip both listeners entirely.
           if (!this._compactMode) {
             content.addEventListener("wheel", function (e) {
+              // Scroll-chaining: only eat the event (and manually move
+              // scrollTop, working around the Chromium non-fast-scrollable-
+              // region bug described above) when this div actually has more
+              // room to scroll in that direction — otherwise let it bubble
+              // so an outer scrollable ancestor (e.g. the Scroll view's
+              // card-list box) can take it instead.
+              var atTop = content.scrollTop <= 0;
+              var atBottom = content.scrollTop + content.clientHeight >= content.scrollHeight - 1;
+              if ((e.deltaY < 0 && atTop) || (e.deltaY > 0 && atBottom)) return;
               content.scrollTop += e.deltaY;
               e.preventDefault();
             }, { passive: false });
@@ -1353,11 +1362,13 @@ module("lively.identity.PostCardView")
           // the new comment chip.
           var tipJarAddress = this._compactMode ? null : ((envelope.state && envelope.state.tipJarAddress) || null);
 
-          // Compact mode always shows the footer, even with reactions off
-          // and no tip jar — the comment chip (_renderCommentChip below)
-          // must always be reachable there, unlike the full card's footer
-          // which hides entirely when it would otherwise be empty.
-          if (!this._compactMode && !reactionsOn && !tipJarAddress) {
+          // Compact mode (and a full card opted into showCommentChip --
+          // ConstellationLounge.js's Scroll view) always shows the footer,
+          // even with reactions off and no tip jar — the comment chip
+          // (_renderCommentChip below) must always be reachable there,
+          // unlike a plain full card's footer which hides entirely when it
+          // would otherwise be empty.
+          if (!this._compactMode && !this._showCommentChip && !reactionsOn && !tipJarAddress) {
             this._footerEl.style.display = "none";
             this._tipJarChipEl.innerHTML = "";
             this._pillsWrapEl.innerHTML = "";
@@ -1377,11 +1388,12 @@ module("lively.identity.PostCardView")
             this._pillsWrapEl.innerHTML = "";
           }
 
-          if (this._compactMode) this._renderCommentChip();
+          if (this._compactMode || this._showCommentChip) this._renderCommentChip();
         },
 
         // The comment-icon chip (ConstellationLounge.js's Scroll view,
-        // compact mode only) — same DOM-button + inline-style idiom as
+        // compact mode, or a full card with showCommentChip) — same
+        // DOM-button + inline-style idiom as
         // _renderTipJarChip/_renderReactionPills above, with the locked
         // pill styling from the mockup. this._commentCount/
         // this._commentsExpanded are set by open()/setCommentCount/
@@ -1428,7 +1440,7 @@ module("lively.identity.PostCardView")
         // with whatever count is current rather than assuming an order.
         setCommentCount: function (n) {
           this._commentCount = n || 0;
-          if (this._compactMode) this._renderCommentChip();
+          if (this._compactMode || this._showCommentChip) this._renderCommentChip();
         },
 
         // Flips the chip's active styling and un-clamps/re-clamps the
@@ -1441,7 +1453,7 @@ module("lively.identity.PostCardView")
             // (expanded, caption reads in full above the comment thread).
             this._contentEl.classList.toggle("pcv-compact-clamped", !this._commentsExpanded);
           }
-          if (this._compactMode) this._renderCommentChip();
+          if (this._compactMode || this._showCommentChip) this._renderCommentChip();
         },
 
         // Tip jar (§5.3) — display-and-copy only, no wallet integration.
@@ -1823,12 +1835,19 @@ module("lively.identity.PostCardView")
       //   clamp excerpt instead of rich content, and a comment-icon chip in
       //   the reactions footer instead of the tip jar. Default false, so
       //   every existing caller keeps its full card chrome unchanged.
+      // options.showCommentChip -> opt-in comment-icon chip on a FULL
+      //   (non-compactMode) card — ConstellationLounge.js's Scroll view
+      //   (full-card rows). Independent of compactMode: shows the chip
+      //   (and keeps the footer visible even with reactions off and no tip
+      //   jar) while leaving flip/back-face/more-menu/tip-jar/rich content
+      //   all intact. Default false.
       // options.commentCount     -> initial count shown on the comment chip
-      //   (compactMode only) — the caller fetches this once up front so the
-      //   chip doesn't flip from blank to a number after the fact.
+      //   (compactMode or showCommentChip) — the caller fetches this once
+      //   up front so the chip doesn't flip from blank to a number after
+      //   the fact.
       // options.onToggleComments -> fired with this._objId when the comment
-      //   chip is clicked (compactMode only) — expand/collapse state lives
-      //   in the caller, not in this view.
+      //   chip is clicked (compactMode or showCommentChip) — expand/collapse
+      //   state lives in the caller, not in this view.
       open: function (handle, objId, options) {
         var opts = options || {};
         var view = new lively.identity.PostCardView(
@@ -1840,6 +1859,7 @@ module("lively.identity.PostCardView")
         view._envelope = opts.envelope || null;
         view._previewMode = !!opts.previewMode;
         view._compactMode = !!opts.compactMode;
+        view._showCommentChip = !!opts.showCommentChip;
         view._commentCount = opts.commentCount || 0;
         view._commentsExpanded = false;
         view._onToggleComments = opts.onToggleComments || null;

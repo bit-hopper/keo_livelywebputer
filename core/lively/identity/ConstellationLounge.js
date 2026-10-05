@@ -276,12 +276,11 @@ module("lively.identity.ConstellationLounge")
     var COMMENT_META_COLOR = Color.rgb(120, 120, 120);
     var COMMENT_ACCENT = "#e8497e";  // same pink accent as lively.commerce.Shop's --color-accent
 
-    // Scroll view (Option B "Mini Card Stack") — a vertical list of compact
-    // postcard rows, alongside the default Reel. MINI_CARD_H is a flat
-    // measured constant (not derived from fontSize math — CLAUDE.md), sized
-    // to fit PostCardView's compact chrome: 76px header + a 2-line clamp
-    // caption (~40px) + the 32px reactions footer, plus a little headroom.
-    var MINI_CARD_H = 160;
+    // Scroll view — a vertical list of full-size postcard rows (same card
+    // as the Reel, full feature parity), alongside the default Reel. Each
+    // row starts at CARD_H and is corrected to its real rendered height by
+    // _fitScrollRowToContent, the same measurement _fitCardToContent uses
+    // for the Reel's own singleton card.
     var MINI_ROW_PAD_X = 12, MINI_ROW_PAD_TOP = 12, MINI_ROW_GAP = 14;
     var VIEW_TOGGLE_W = 72, VIEW_TOGGLE_H = 32, VIEW_TOGGLE_GAP = 10;
 
@@ -321,6 +320,7 @@ module("lively.identity.ConstellationLounge")
         this._scrollRows = {};          // objId -> {box, objId, cardH, expanded, threadWrap, threadH, miniThread, commentCount}
         this._scrollExpandedObjId = null;   // single-select accordion — only one row's comments open at a time
         this._scrollLoadingMore = false;
+        this._scrollResizeFitTimer = null;
 
         this._presenceByDid = {};  // did -> true while online
 
@@ -793,15 +793,24 @@ module("lively.identity.ConstellationLounge")
         // <input>s anymore. "A"/"D" are a WASD-style alias for the same
         // prev/next turn as the arrow keys, guarded against modifier keys
         // so Cmd/Ctrl+A ("select all") and Ctrl+D ("bookmark") still reach
-        // the browser untouched.
+        // the browser untouched. "W"/"S" and Up/Down are the same WASD-
+        // style pairing for the Scroll view's own navigation (_scrollListBy
+        // no-ops, and lets the key fall through to its default browser
+        // behavior, outside Scroll mode) — preventDefault only when we
+        // actually scrolled, so Up/Down still do nothing-in-particular (not
+        // an unwanted page scroll) while in Reel mode.
         document.addEventListener("keydown", function (evt) {
           if (lively.morphic.Text.activeInstance && lively.morphic.Text.activeInstance()) return;
           if (evt.key === "ArrowLeft") return self._turn(-1);
           if (evt.key === "ArrowRight") return self._turn(1);
+          if (evt.key === "ArrowUp") { if (self._scrollListBy(-1)) evt.preventDefault(); return; }
+          if (evt.key === "ArrowDown") { if (self._scrollListBy(1)) evt.preventDefault(); return; }
           if (evt.ctrlKey || evt.metaKey || evt.altKey) return;
           var key = evt.key.toLowerCase();
           if (key === "a") self._turn(-1);
           else if (key === "d") self._turn(1);
+          else if (key === "w") { if (self._scrollListBy(-1)) evt.preventDefault(); }
+          else if (key === "s") { if (self._scrollListBy(1)) evt.preventDefault(); }
         });
 
         // This is fixed-layout chrome — nothing here should be draggable.
@@ -3643,7 +3652,7 @@ module("lively.identity.ConstellationLounge")
       // return, stacking two cards.
       // extraOpts (additive 3rd param, Scroll view only — the Reel's own
       // call sites below pass none, so they're unaffected): merged into
-      // PostCardView/WikiView.open's own opts, e.g. {compactMode: true,
+      // PostCardView/WikiView.open's own opts, e.g. {showCommentChip: true,
       // commentCount, onToggleComments}. The created view is stashed on
       // box._renderedView so a caller (e.g. the mini-thread accordion) can
       // reach it later without threading it through another callback.
@@ -3660,54 +3669,73 @@ module("lively.identity.ConstellationLounge")
             if (envelope.type === "wikipage") {
               box._renderedView = lively.identity.WikiView.open(handle, objId, opts);
             } else {
-              // previewMode: this reel is the one place a postcard renders
-              // as a compact "browse many" preview rather than being opened
-              // directly — reorder its content media-forward (see
+              // previewMode: both the Reel and the Scroll view (full-card
+              // rows, via _renderScrollList) render a postcard as a
+              // "browse many" preview rather than being opened directly —
+              // reorder its content media-forward (see
               // PostCardView._renderContentHtml). Every other
               // PostCardView.open call site in the app keeps natural
-              // document order (opt-in flag, default false). Harmless for a
-              // compactMode row too — PostCardView._renderContentHtml's
-              // compact branch short-circuits before previewMode is ever
-              // consulted.
+              // document order (opt-in flag, default false).
               opts.previewMode = true;
               box._renderedView = lively.identity.PostCardView.open(handle, objId, opts);
             }
-            if (box === self._frontCardBox) {
-              // Content may still be laying out / decrypting right after
-              // open(), so re-measure a couple of times.
-              [60, 500, 1800].forEach(function (ms) {
-                setTimeout(function () {
-                  if (box._cardRenderToken === token) self._fitCardToContent();
-                }, ms);
-              });
-            }
+            // Content may still be laying out / decrypting right after
+            // open(), so re-measure a couple of times — for the Reel's one
+            // singleton card, or (box._scrollRow, tagged by
+            // _renderScrollList) a Scroll-view row.
+            [60, 500, 1800].forEach(function (ms) {
+              setTimeout(function () {
+                if (box._cardRenderToken !== token) return;
+                if (box === self._frontCardBox) self._fitCardToContent();
+                else if (box._scrollRow) self._fitScrollRowToContent(box._scrollRow);
+              }, ms);
+            });
           });
         });
+      },
+
+      // Shared by the Reel's singleton card (_fitCardToContent) and every
+      // Scroll-view row (_fitScrollRowToContent) — measures a card box's
+      // real content height (its last child's bottom edge, not
+      // scrollHeight, which can't report less than the box's own current
+      // height and so could never shrink the card back down), clamped to
+      // [CARD_H, CARD_H_MAX]. 76px header above the content area, 26px
+      // reactions footer below it (PostCardView._buildChrome).
+      _measureCardContentHeight: function (box) {
+        var content = box.renderContext().shapeNode.querySelector(".lively-postcard-view-content");
+        if (!content || !content.lastElementChild) return CARD_H;
+        var last = content.lastElementChild;
+        var contentH = last.offsetTop + last.offsetHeight + 14;   // + content's bottom padding
+        return Math.max(CARD_H, Math.min(CARD_H_MAX, 76 + contentH + 26));
       },
 
       // The reel card is CARD_H tall by default and grows (up to CARD_H_MAX)
       // when its content needs more room — e.g. a photo gallery — instead of
       // scrolling inside a fixed box. Content taller than the max scrolls
-      // inside the card. Measures the content's real extent (its last
-      // child's bottom edge), not scrollHeight, because scrollHeight can't
-      // report less than the box's own current height and so could never
-      // shrink the card back down.
+      // inside the card.
       _fitCardToContent: function () {
         var box = this._frontCardBox;
         if (!box) return;
-        var content = box.renderContext().shapeNode.querySelector(".lively-postcard-view-content");
-        var h = CARD_H;
-        if (content && content.lastElementChild) {
-          var last = content.lastElementChild;
-          var contentH = last.offsetTop + last.offsetHeight + 14;   // + content's bottom padding
-          // 76px header above the content area, 26px reactions footer below it
-          // (PostCardView._buildChrome).
-          h = Math.max(CARD_H, Math.min(CARD_H_MAX, 76 + contentH + 26));
-        }
+        var h = this._measureCardContentHeight(box);
         if (h !== (this._cardH || CARD_H)) {
           this._cardH = h;
           this._layout();
         }
+      },
+
+      // Per-row equivalent of _fitCardToContent for the Scroll view: grows/
+      // shrinks a row's own box (and its embedded card view) to its real
+      // content height, repositions the comment-thread accordion panel
+      // if one is open below it, and reflows every row's position.
+      _fitScrollRowToContent: function (row) {
+        var h = this._measureCardContentHeight(row.box);
+        if (h === row.cardH) return;
+        row.cardH = h;
+        var w = row.box.getExtent().x;
+        row.box.setExtent(lively.pt(w, row.expanded ? h + row.threadH : h));
+        if (row.box._renderedView) row.box._renderedView.setExtent(lively.pt(w, h));
+        if (row.expanded && row.threadWrap) row.threadWrap.setPosition(lively.pt(0, h));
+        this._relayoutScrollRows();
       },
 
       _fetchEnvelope: function (objId, thenDo) {
@@ -3751,14 +3779,19 @@ module("lively.identity.ConstellationLounge")
     },
 
     // ─── Scroll view — a second, user-selectable postcard layout ──────────
-    // A vertical list of compact "mini cards" (PostcardDesignSpec-v2.md's
-    // Mini Card Stack), alongside the default Reel. Reuses _feedCards/
-    // _fetchFeed/_maybeLoadMore directly (no parallel fetch path) and
-    // PostCardView.open's compactMode flag for the card chrome itself —
-    // this section is almost entirely new UI, not new data plumbing. Each
-    // row gets its own comment-icon chip; clicking it expands an inline
+    // A vertical list of full-size postcard rows (same card as the Reel,
+    // full feature parity — flip/back-face, tip-jar chip, the more menu),
+    // alongside the default Reel. Reuses _feedCards/_fetchFeed/
+    // _maybeLoadMore directly (no parallel fetch path) and
+    // PostCardView.open's showCommentChip flag to put a comment-icon chip
+    // on an otherwise-full card — this section is almost entirely new UI,
+    // not new data plumbing. Each row's chip, clicked, expands an inline
     // accordion below that row (single-select — expanding one collapses
-    // whichever other row was open). The accordion deliberately does NOT
+    // whichever other row was open) and scrolls that row to the top of the
+    // viewport (_scrollRowIntoFocus). A row's own height is measured from
+    // its real rendered content (_fitScrollRowToContent), not a flat
+    // constant — see _measureCardContentHeight, shared with the Reel's own
+    // _fitCardToContent. The accordion deliberately does NOT
     // reuse _loadThread/_renderThreadTree (the "thread" section below) —
     // those mutate singleton instance fields (_threadContainer,
     // _draftText[key] with bare keys) that would collide across N
@@ -3878,14 +3911,15 @@ module("lively.identity.ConstellationLounge")
         var w = Math.max(100, this._scrollListBox.getExtent().x - MINI_ROW_PAD_X * 2);
         this._feedCards.forEach(function (card) {
           if (self._scrollRows[card.objId]) return;
-          var rowBox = new lively.morphic.Box(lively.rect(0, 0, w, MINI_CARD_H));
+          var rowBox = new lively.morphic.Box(lively.rect(0, 0, w, CARD_H));
           rowBox.applyStyle({ fill: null, borderWidth: 0, clipMode: "visible" });
           self._disableDragging(rowBox);
           self._scrollListBox.addMorph(rowBox);
           var row = self._scrollRows[card.objId] = {
-            box: rowBox, objId: card.objId, cardH: MINI_CARD_H, expanded: false,
+            box: rowBox, objId: card.objId, cardH: CARD_H, expanded: false,
             threadWrap: null, threadH: 0, miniThread: null, commentCount: 0,
           };
+          rowBox._scrollRow = row;
           // extraOpts is passed BY REFERENCE into _renderCardInto, which
           // doesn't actually read it until its own async envelope+handle
           // fetch resolves (inside that later callback) — so mutating
@@ -3898,7 +3932,7 @@ module("lively.identity.ConstellationLounge")
           // setCommentCount on, and a plain value (snapshotted at call
           // time) would stay stuck at 0 forever once the view does open.
           var extraOpts = {
-            compactMode: true,
+            showCommentChip: true,
             commentCount: 0,
             onToggleComments: self._onMiniCommentToggle.bind(self, card.objId),
           };
@@ -3921,6 +3955,7 @@ module("lively.identity.ConstellationLounge")
       // resize tick) — cheap position/extent writes, no rebuild.
       _resizeScrollRowsWidth: function () {
         if (!this._scrollListBox) return;
+        var self = this;
         var w = Math.max(100, this._scrollListBox.getExtent().x - MINI_ROW_PAD_X * 2);
         Object.keys(this._scrollRows).forEach(function (objId) {
           var row = this._scrollRows[objId];
@@ -3929,6 +3964,15 @@ module("lively.identity.ConstellationLounge")
           if (row.threadWrap) row.threadWrap.setExtent(lively.pt(w, row.threadWrap.getExtent().y));
         }, this);
         this._relayoutScrollRows();
+        // A width change reflows wrapped text, which can change a card's
+        // real content height — re-fit every row once layout settles
+        // (debounced across repeated resize ticks).
+        clearTimeout(this._scrollResizeFitTimer);
+        this._scrollResizeFitTimer = setTimeout(function () {
+          Object.keys(self._scrollRows).forEach(function (objId) {
+            self._fitScrollRowToContent(self._scrollRows[objId]);
+          });
+        }, 80);
       },
 
       // Recomputes every row's y from accumulated heights, in _feedCards
@@ -3965,6 +4009,34 @@ module("lively.identity.ConstellationLounge")
         }
         this._scrollExpandedObjId = objId;
         this._expandMiniRow(row);
+        this._scrollRowIntoFocus(row);
+      },
+
+      // Auto-scrolls the Scroll-view list so `row`'s top edge aligns with
+      // the top of the visible viewport — called once, right after
+      // expanding a row's comment accordion. A row's own top y is
+      // unaffected by its own expansion (only rows after it shift down
+      // when _relayoutScrollRows re-accumulates), so there's no need to
+      // re-call this once the async thread content finishes loading.
+      _scrollRowIntoFocus: function (row) {
+        if (!this._scrollListBox) return;
+        var node = this._scrollListBox.renderContext().shapeNode;
+        node.scrollTop = Math.max(0, row.box.getPosition().y - MINI_ROW_PAD_TOP);
+      },
+
+      // W/S and Up/Down arrow keyboard scrolling for the Scroll view (see
+      // the keydown handler in _buildChrome) — a no-op (returns false, so
+      // the caller doesn't preventDefault) outside Scroll mode or before
+      // the list box has been built. Step is a fraction of the visible
+      // viewport rather than a flat constant so it scales with window size
+      // the same way a "page" scroll would, with a floor so it's never too
+      // small on a short window.
+      _scrollListBy: function (dir) {
+        if (this._viewMode !== "scroll" || !this._scrollListBox) return false;
+        var node = this._scrollListBox.renderContext().shapeNode;
+        var step = Math.max(120, Math.round(node.clientHeight * 0.4));
+        node.scrollTop = Math.max(0, Math.min(node.scrollHeight - node.clientHeight, node.scrollTop + dir * step));
+        return true;
       },
 
       _expandMiniRow: function (row) {
