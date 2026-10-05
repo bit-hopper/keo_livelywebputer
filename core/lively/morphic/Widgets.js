@@ -1823,6 +1823,14 @@ lively.morphic.World.addMethods(
         });
     },
 
+    openHtmlEmbedTool: function() {
+        lively.require('lively.morphic.tools.HtmlEmbedDialog').toRun(function() {
+            var dlg = lively.BuildSpec('lively.morphic.tools.HtmlEmbedDialog').createMorph();
+            dlg.openInWorldCenter().comeForward();
+            $world.htmlEmbedDialog = dlg;
+        });
+    },
+
     openObjectEditor: function(whenDone) {
         lively.require('lively.ide.tools.ObjectEditor').toRun(function() {
             var editor = lively.BuildSpec('lively.ide.tools.ObjectEditor').createMorph().
@@ -2195,6 +2203,7 @@ lively.morphic.World.addMethods(
                 ['Test Runner', this.openTestRunner.bind(this)],
                 ['Text Editor', function() { lively.require('lively.ide').toRun(function() { lively.ide.openFile(URL.source.toString()); }); }],
                 ['Jenga3D', this.openJenga3D.bind(this)],
+                ['HTML Embed', this.openHtmlEmbedTool.bind(this)],
                 ['System Console', this.openSystemConsole.bind(this)],
                 ['Subserver Viewer', this.openSubserverViewer.bind(this)],
                 ['Server Workspace', this.openServerWorkspace.bind(this)],
