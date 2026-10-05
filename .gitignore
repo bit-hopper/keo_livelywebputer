@@ -88,6 +88,9 @@ core/apis/klipy-api.json
 # 511.org transit API (live BART predictions) — see core/servers/TransitProxyServer.js
 core/apis/511-api.json
 
+# Google Books API (Books world template cover/metadata search) — see core/servers/GoogleBooksProxyServer.js
+core/apis/google-books-api.json
+
 # HTTP / server #
 htpasswd
 .htpasswd

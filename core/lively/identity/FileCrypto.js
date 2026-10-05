@@ -1078,6 +1078,33 @@ module('lively.identity.FileCrypto')
         });
       },
 
+      // Adds a lightweight membership pointer (no blob) to the folder's file
+      // list — for a folder used as a List (lively.books.Books), where
+      // membership of a book is what's being tracked, not an uploaded file.
+      // The pointer needs no blob-level encryption of its own: the whole
+      // folder payload (the entire `files` array) is already encrypted as
+      // one unit under the folder's dek, same as every other field in it.
+      // pointer: { refObjId, refType } — refType defaults to 'book'.
+      // Calls thenDo(null, { id }).
+      addPointerToFolder: function (handle, folderObjId, pointer, thenDo) {
+        var self = this;
+        self.fetchFolder(handle, folderObjId, function (err, folder) {
+          if (err) return thenDo(err);
+          var entry = {
+            id: self._randomId(),
+            type: 'pointer',
+            refType: pointer.refType || 'book',
+            refObjId: pointer.refObjId,
+            addedAt: new Date().toISOString(),
+          };
+          var newFiles = folder.files.concat([entry]);
+          self._saveFolderVersion(handle, folder.envelope, folder.dek, folder.name, newFiles, folder.albums, function (err) {
+            if (err) return thenDo(err);
+            thenDo(null, { id: entry.id });
+          });
+        });
+      },
+
       // Drops one member entry from the folder's file list. Does NOT delete
       // the now-unreferenced blob from BlobStore — storage reclamation isn't
       // built anywhere else in this codebase either, left as a separate,
@@ -1193,6 +1220,13 @@ module('lively.identity.FileCrypto')
             function nextFile(i) {
               if (i >= folder.files.length) return afterFiles();
               var entry = folder.files[i];
+              // A pointer entry (see addPointerToFolder — used by Lists,
+              // lively.books.Books) has no blob of its own to re-encrypt: its
+              // membership data is already protected by the whole-payload
+              // encryption this function is already re-doing below. Fetching
+              // it as if it had a blobCid would throw (there's nothing at
+              // that cid), so carry it through unchanged instead.
+              if (!entry.blobCid) { newFiles.push(entry); return nextFile(i + 1); }
               self._fetchFolderFileBytes(handle, folderObjId, entry, function (err, result) {
                 if (err) return thenDo(err);
                 var plainBlob = new Blob([result.bytes], { type: result.mime || 'application/octet-stream' });

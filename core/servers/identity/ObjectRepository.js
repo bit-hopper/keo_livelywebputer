@@ -480,7 +480,20 @@ function put(envelope, thenDo) {
 // array, possibly empty.
 function _blobCidsOf(envelope) {
   if (envelope.type === 'file' && envelope.blobCid) return [envelope.blobCid];
-  if (envelope.type === 'folder' && Array.isArray(envelope.blobCids)) return envelope.blobCids;
+  // .filter(Boolean): a folder's files[] can include blob-less "pointer"
+  // entries (FileCrypto.js's addPointerToFolder — e.g. a List referencing a
+  // book objId, not an uploaded file), whose blobCid is null. Confirmed live
+  // 2026-10-05: an unfiltered null here reaches _syncBlobRefsTx's INSERT
+  // INTO blob_refs below, which violates its NOT NULL column, aborting the
+  // surrounding Postgres transaction — and because that INSERT's own error
+  // is deliberately swallowed (logged, not propagated — see _syncBlobRefsTx),
+  // the subsequent COMMIT on an already-aborted transaction succeeds as a
+  // silent no-op rollback. put() still reported {ok:true, changed:'content'}
+  // to the client while nothing was actually persisted (confirmed via the
+  // /versions endpoint showing only the genesis row after a "successful"
+  // save) — the exact same defensive filter the 'app' branch below already
+  // needed for its own per-file blobCid list.
+  if (envelope.type === 'folder' && Array.isArray(envelope.blobCids)) return envelope.blobCids.filter(Boolean);
   // A part envelope (PartSerializer.js's PART_BLOB_THRESHOLD) carries the
   // same top-level blobCid shape as a file envelope when its payload is
   // too large to inline. Unlike a file (one objId per upload, blobCid
