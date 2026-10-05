@@ -2,8 +2,9 @@
  * lively.identity.WorldsBrowser
  *
  * Floating window listing all worlds saved under the current user's identity.
- * Each row shows the world's human-readable name, its web key (objId), and an
- * "open" link that navigates to /@handle/objId.
+ * Each row shows the entry's human-readable name, its web key (objId) followed
+ * by a type label (World / Template · <key> / Wiki), and an "open" link
+ * that navigates to /@handle/objId (or /@handle/wiki/<name> for a wiki page).
  * The search input filters by name (Enter to apply).
  * A "history" link drills into version history with per-version restore.
  *
@@ -16,8 +17,8 @@
  *     internal setup World.createOn normally does, or clobber the live
  *     session's own $world if createOn were called directly).
  *   - Wiki page: a pure launcher into the existing NewWikiPageDialog/
- *     WikiEditor flow. Wiki pages save as type "wikipage", not "world", so
- *     they intentionally never show up back in this list.
+ *     WikiEditor flow. Wiki pages save as type "wikipage", not "world", but
+ *     are listed here too, labelled "Wiki".
  *   - Template: a single list of presets that pre-populate a new world
  *     (Shop/Inventory/Gallery/Books are wired up; Movie/Game/Music are
  *     inert "Coming soon" placeholders for now). A chosen template is launched
@@ -171,7 +172,7 @@ module("lively.identity.WorldsBrowser")
           .then(function (r) { return r.json(); })
           .then(function (body) {
             var worlds = (body.objects || []).filter(function (e) {
-              return e.type === "world";
+              return e.type === "world" || e.type === "wikipage";
             });
             self._worlds = worlds;
             self.renderWorlds(worlds);
@@ -182,13 +183,44 @@ module("lively.identity.WorldsBrowser")
       },
 
       filterWorlds: function filterWorlds(query) {
+        var self = this;
         var worlds = this._worlds || [];
         if (!query || !query.trim()) return this.renderWorlds(worlds);
         var q = query.trim().toLowerCase();
         this.renderWorlds(worlds.filter(function (e) {
-          var name = ((e.state && e.state.name) || e.objId).toLowerCase();
-          return name.indexOf(q) !== -1;
+          return self._entryName(e).toLowerCase().indexOf(q) !== -1;
         }));
+      },
+
+      // Display name for a list entry: worlds carry state.name; wiki pages
+      // carry state.wikiName (the page's name, same one WikiIndex's cards
+      // show) -- state.title is just the body's first line, often long or
+      // empty, so it's only a fallback for pages with no wikiName.
+      _entryName: function _entryName(e) {
+        var s = e.state || {};
+        return s.name || s.wikiName || s.title || e.objId;
+      },
+
+      // Type label shown after the web key: "Wiki", "Template · Shop" (a
+      // world created from a template -- state.template is only recorded by
+      // createWorld from now on, so older template worlds read as "World"),
+      // or "World".
+      _entryTypeLabel: function _entryTypeLabel(e) {
+        if (e.type === "wikipage") return "Wiki";
+        var t = e.state && e.state.template;
+        if (t) return "Template · " + t.charAt(0).toUpperCase() + t.slice(1);
+        return "World";
+      },
+
+      // Where "open" goes: a personal wiki page's friendly /wiki/<name> route
+      // (same canonical URL WikiView's share link uses); everything else,
+      // including constellation-scoped wiki pages, the generic objId route.
+      _entryUrl: function _entryUrl(e, handle) {
+        var wikiName = e.state && e.state.wikiName;
+        if (e.type === "wikipage" && wikiName && !e.constellation) {
+          return "/@" + handle + "/wiki/" + encodeURIComponent(wikiName);
+        }
+        return "/@" + handle + "/" + e.objId;
       },
 
       showMessage: function showMessage(msg) {
@@ -229,8 +261,8 @@ module("lively.identity.WorldsBrowser")
         var ROW_HOVER  = Color.rgb(224, 247, 244);
 
         worlds.forEach(function (envelope) {
-          var name = (envelope.state && envelope.state.name) || envelope.objId;
-          var url  = "/@" + handle + "/" + envelope.objId;
+          var name = self._entryName(envelope);
+          var url  = self._entryUrl(envelope, handle);
 
           var row = new lively.morphic.Box(lively.rect(0, y, w, rowH));
           row.applyStyle({ fill: null, borderWidth: 0 });
@@ -256,7 +288,7 @@ module("lively.identity.WorldsBrowser")
           nameText.grabbingEnabled = false;
           row.addMorph(nameText);
 
-          var keyText = new lively.morphic.Text(lively.rect(10, 29, w - 130, 14), envelope.objId);
+          var keyText = new lively.morphic.Text(lively.rect(10, 29, w - 130, 14), envelope.objId + "  ·  " + self._entryTypeLabel(envelope));
           keyText.applyStyle({
             allowInput: false,
             fontSize: 10,
@@ -854,7 +886,7 @@ module("lively.identity.WorldsBrowser")
                 objId: gen.objId,
                 genesisNonce: gen.genesisNonce,
                 publicKeyJwk: method ? method.publicKeyJwk : null,
-                stateMeta: { name: name },
+                stateMeta: template ? { name: name, template: template } : { name: name },
               }, function (err, envelope) {
                 if (err) return self.setCreateStatus("Error: " + err.message, true);
 

@@ -151,6 +151,16 @@ module("lively.identity.SignedSerializer")
                 record: { cid: cid, prevCid: prevCid, payload: jso },
                 state: params.stateMeta || {},
               };
+              // A world's state.template (set once by WorldsBrowser's create
+              // flow, shown as the "Template" type label) would otherwise be
+              // dropped by every in-place re-save, since callers (Save world,
+              // rename, WorldTemplateLauncher) pass a fresh stateMeta of just
+              // { name }. Carry it forward from the previous version.
+              var prevTemplate = params.prevEnvelope && params.prevEnvelope.state &&
+                params.prevEnvelope.state.template;
+              if (prevTemplate && envelope.type === "world" && !envelope.state.template) {
+                envelope.state = Object.assign({}, envelope.state, { template: prevTemplate });
+              }
               // Must be set before signing — see this function's params doc above.
               if (params.genesisNonce) envelope.genesisNonce = params.genesisNonce;
 
