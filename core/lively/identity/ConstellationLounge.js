@@ -529,9 +529,14 @@ module("lively.identity.ConstellationLounge")
         // never gets too cramped to use, capped at SEARCH_W so it doesn't
         // balloon past its original design width on very wide windows.
         var SEARCH_MIN_W = 260;
-        var searchRowAvail = Math.max(0, membersX - GUTTER - (rightColX + GUTTER + SORT_W + GUTTER));
+        // Sort-by and the Reel/Scroll view toggle both sit left of the
+        // search box now (toggle immediately right of sort-by), so the
+        // reserved-space math below has to account for both widths plus
+        // their gaps, not just SORT_W.
+        var LEFT_MENUS_W = SORT_W + VIEW_TOGGLE_GAP + VIEW_TOGGLE_W;
+        var searchRowAvail = Math.max(0, membersX - GUTTER - (rightColX + GUTTER + LEFT_MENUS_W + GUTTER));
         var searchW = Math.max(SEARCH_MIN_W, Math.min(SEARCH_W, searchRowAvail));
-        var minSearchX = rightColX + GUTTER + SORT_W;
+        var minSearchX = rightColX + GUTTER + LEFT_MENUS_W;
         var searchX = Math.max(minSearchX, (W - searchW) / 2 + 100);
         // Keep the box clear of the members column even when the centering
         // formula above would otherwise push it past that edge.
@@ -551,14 +556,9 @@ module("lively.identity.ConstellationLounge")
         // no-room bail-out. A menu bar "New postcard" entry
         // (MenuBarEntry.js) already offers the same action, so hiding
         // this shortcut at that final extreme isn't a functionality loss.
-        // Reel/Scroll view toggle sits in the same gap, right after the
-        // search box — additive to this gap's own math (doesn't touch
-        // searchW itself), just claims its own slice before "+ Postcard"'s
-        // centering runs over whatever's left.
-        var toggleX = searchX + searchW + VIEW_TOGGLE_GAP;
 
         var createBtnW = this._createBtnW || CREATE_BTN_W;
-        var createGapStart = toggleX + VIEW_TOGGLE_W + VIEW_TOGGLE_GAP;
+        var createGapStart = searchX + searchW + VIEW_TOGGLE_GAP;
         var createGapEnd = membersX;
         var createBtnFits = (createGapEnd - createGapStart) >= createBtnW + GUTTER * 2;
         var createBtnX = createGapStart + (createGapEnd - createGapStart - createBtnW) / 2;
@@ -568,12 +568,17 @@ module("lively.identity.ConstellationLounge")
         var createBtnFitsCircle = (createGapEnd - createGapStart) >= CREATE_BTN_CIRCLE_W + GUTTER;
         var createBtnCircleX = createGapStart + (createGapEnd - createGapStart - CREATE_BTN_CIRCLE_W) / 2;
 
+        // Sort-by sits in the gap between the postcard's top-right corner
+        // and the search box's left edge, same row; the Reel/Scroll view
+        // toggle sits immediately to sort-by's right, both still left of
+        // the search box.
+        var sortByX = searchX - GUTTER - VIEW_TOGGLE_W - VIEW_TOGGLE_GAP - SORT_W;
+        var toggleX = sortByX + SORT_W + VIEW_TOGGLE_GAP;
+
         var g = this._geom = {
           searchX: searchX, searchY: TOP, searchW: searchW,
           toggleX: toggleX, toggleY: TOP + (SEARCH_H - VIEW_TOGGLE_H) / 2,
-          // Sits in the gap between the postcard's top-right corner and the
-          // search box's left edge, same row.
-          sortByX: searchX - GUTTER - SORT_W, sortByY: TOP,
+          sortByX: sortByX, sortByY: TOP,
           // Sits beside the postcard, below the search row.
           quickInfoX: rightColX, quickInfoY: quickInfoY, quickInfoW: quickInfoW, quickInfoH: QUICK_INFO_H,
           reelX: GUTTER, reelY: reelY, cardW: cardW,
