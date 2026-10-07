@@ -838,7 +838,7 @@ lively.morphic.Box.subclass('lively.morphic.Menu',
         fill: Color.white,
         borderColor: Color.gray.lighter(),
         borderWidth: 1,
-        borderRadius: 4,
+        borderRadius: 12,
         opacity: 0.95,
         clipMode: 'visible',
         zIndex: 1000
@@ -1081,16 +1081,19 @@ lively.morphic.Box.subclass('lively.morphic.Menu',
     addItems: function(items) {
         this.removeAllItems();
         this.items = this.createMenuItems(items);
-        var y = this.yStartForItems(), x = 0;
+        // items are inset from the menu's edges so a selected item's highlight
+        // doesn't touch them (see lively.morphic.Menu.ITEM_INSET_X / _Y / ITEM_GAP)
+        var M = lively.morphic.Menu,
+            y = this.yStartForItems() + M.ITEM_INSET_Y, x = 0;
 
         this.items.forEach(function(item) {
             var itemMorph = new lively.morphic.MenuItem(item);
             this.itemMorphs.push(this.addMorph(itemMorph));
-            itemMorph.setPosition(pt(0, y));
-            y += itemMorph.getExtent().y;
+            itemMorph.setPosition(pt(M.ITEM_INSET_X, y));
+            y += itemMorph.getExtent().y + M.ITEM_GAP;
             x = Math.max(x, itemMorph.getExtent().x);
         }, this);
-        this.setExtent(pt(x, y));
+        this.setExtent(pt(x + 2 * M.ITEM_INSET_X, y - M.ITEM_GAP + M.ITEM_INSET_Y));
     }
 },
 'sub menu', {
@@ -1241,11 +1244,13 @@ lively.morphic.Box.subclass('lively.morphic.Menu',
         var owner = this.ownerMenu,
             visibleBounds = this.world().visibleBounds(),
             localVisibleBounds = owner.getGlobalTransform().inverse().transformRectToRect(visibleBounds),
+            // anchor to the owner menu's full width, not to the inset item
+            itemBounds = owner.overItemMorph ?
+                new Rectangle(0, owner.overItemMorph.bounds().y, owner.getExtent().x, owner.overItemMorph.bounds().height) :
+                new Rectangle(0,0,0,0),
             newBounds = this.clipForVisibility(
                 this.moveSubMenuBoundsForVisibility(
-                    this.innerBounds(),
-                    owner.overItemMorph ? owner.overItemMorph.bounds() : new Rectangle(0,0,0,0),
-                    localVisibleBounds), visibleBounds);
+                    this.innerBounds(), itemBounds, localVisibleBounds), visibleBounds);
         this.setBounds(newBounds);
     },
 
@@ -1264,21 +1269,24 @@ lively.morphic.Box.subclass('lively.morphic.Menu',
     fitToItems: function() {
         var paddingLeft = (new lively.morphic.MenuItem({})).getPadding().left(),
             offset = 10 + 20,
+            inset = lively.morphic.Menu.ITEM_INSET_X,
             morphs = this.itemMorphs;
         if (this.title) morphs = morphs.concat([this.title]);
 
         var widths = morphs.invoke('getTextExtent').pluck('x'),
-            width = Math.max.apply(Global, widths) + offset + paddingLeft,
-            newExtent = this.getExtent().withX(width);
+            itemWidth = Math.max.apply(Global, widths) + offset + paddingLeft,
+            newExtent = this.getExtent().withX(itemWidth + 2 * inset);
         this.setExtent(newExtent);
 
+        // items keep their inset from the menu's edges, the title spans the full width
         morphs.forEach(function(ea) {
-            ea.setExtent(ea.getExtent().withX(newExtent.x));
+            var isTitle = ea === this.title;
+            ea.setExtent(ea.getExtent().withX(isTitle ? newExtent.x : itemWidth));
             if (ea.submorphs.length > 0) {
                 var arrow = ea.submorphs.first();
-                arrow.setPosition(arrow.getPosition().withX(newExtent.x-17 - paddingLeft));
+                arrow.setPosition(arrow.getPosition().withX(itemWidth-17 - paddingLeft));
             }
-        });
+        }, this);
 
     },
   },
@@ -1311,6 +1319,11 @@ Object.extend(lively.morphic.Menu, {
         (function() { if (!menu.ownerMenu) menu.focus(); }).delay(0);
         return menu.openIn(lively.morphic.World.current(), pos, false);
     },
+
+    // items sit inset from the menu's edges (selected-item highlight doesn't touch them)
+    ITEM_INSET_X: 6,
+    ITEM_INSET_Y: 5,
+    ITEM_GAP: 2
 });
 
 
@@ -1400,7 +1413,7 @@ lively.morphic.Text.subclass("lively.morphic.MenuItem",
         this.applyStyle({
             fill: Color.rgb(240, 26, 105),
             textColor: Color.white,
-            borderRadius: 4
+            borderRadius: 6
         });
 
         // if the item is a submenu, set its textColor to white
