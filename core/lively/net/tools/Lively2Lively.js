@@ -1050,7 +1050,7 @@ lively.BuildSpec("lively.net.tools.ConnectionIndicatorMenuBarEntry", lively.Buil
         lively.bindings.connect(session, 'sessionClosed', onClose, 'messageReceived');
     }
     this.applyStyle({
-      fill: Global.Color.rgb(103,198,61),
+      fill: Global.Color.rgb(22,163,74),
       textColor: Global.Color.white
     });
     this.textString = 'connected';
