@@ -1111,6 +1111,32 @@ module('lively.identity.FileCrypto')
         });
       },
 
+      // Batch sibling of addPointerToFolder for self-contained inline
+      // entries (e.g. a playlist's track snapshots): appends all of
+      // `entries` in ONE _saveFolderVersion call, so importing N tracks is
+      // one write, not N. Each entry gets a fresh `id` (and `addedAt`)
+      // unless it already carries one; no blobCid, so setFolderVisibility
+      // passes them through untouched. Calls thenDo(null, { ids }).
+      addEntriesToFolder: function (handle, folderObjId, entries, thenDo) {
+        var self = this;
+        if (!entries || !entries.length) return thenDo(null, { ids: [] });
+        self.fetchFolder(handle, folderObjId, function (err, folder) {
+          if (err) return thenDo(err);
+          var now = new Date().toISOString();
+          var added = entries.map(function (e) {
+            return Object.assign({}, e, {
+              id: e.id || self._randomId(),
+              addedAt: e.addedAt || now,
+            });
+          });
+          var newFiles = folder.files.concat(added);
+          self._saveFolderVersion(handle, folder.envelope, folder.dek, folder.name, newFiles, folder.albums, function (err) {
+            if (err) return thenDo(err);
+            thenDo(null, { ids: added.map(function (e) { return e.id; }) });
+          });
+        });
+      },
+
       // Drops one member entry from the folder's file list. Does NOT delete
       // the now-unreferenced blob from BlobStore — storage reclamation isn't
       // built anywhere else in this codebase either, left as a separate,
@@ -1727,6 +1753,131 @@ module('lively.identity.FileCrypto')
             if (err) return thenDo(err);
             var envelope = {
               objId: result.envelope.objId, did: result.envelope.did, type: 'book',
+              visibility: 'public', created: result.envelope.created,
+              record: { cid: cid, prevCid: result.envelope.record.cid, payload: payload, nonce: null, wrappedDek: null, recipients: [] },
+              blobCids: [], state: { title: payload.title, deleted: true },
+            };
+            self._signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
+              if (signErr) return thenDo(signErr);
+              self._putEnvelope(handle, signed || envelope, function (err) {
+                if (err) return thenDo(err);
+                thenDo(null, { objId: envelope.objId });
+              });
+            });
+          });
+        });
+      },
+
+    },
+
+    // ─── album (Music template) ──────────────────────────────────────────
+    // Same shape and reasoning as the 'book' category above: a small,
+    // always-PUBLIC envelope per shelved album, no KEK/dek ceremony, with
+    // the title/artist/year/cover/tracklist snapshotted at add-time. The
+    // per-album `isPublic` field only gates the Reviews & Notes section in
+    // the UI (display privacy, not encryption). Reviews reuse the generic
+    // `/@:handle/:objId/comments` routes keyed by the album's objId.
+    // `updatedAt` is bumped on EVERY save (including delete) so a value
+    // that cycles back to an earlier state can't reproduce an old cid --
+    // see the cid-collision note on the 'book' category.
+    'album', {
+
+      // data: { title, artist, year, coverUrl, coverSource, ids, tracks,
+      //         shelf, rating, isPublic }. Calls thenDo(null, { objId }).
+      createAlbum: function (data, thenDo) {
+        var self = this;
+        var c = lively.identity.crypto;
+        var user = lively.identity.did.currentUser();
+        if (!user) return thenDo(new Error('createAlbum: no identity session active'));
+
+        var payload = Object.assign({
+          title: '', artist: '', year: null, coverUrl: null, coverSource: null,
+          ids: {}, tracks: [], shelf: 'want', rating: 0, isPublic: true,
+        }, data, { updatedAt: new Date().toISOString() });
+
+        c.computeCid(payload, function (err, cid) {
+          if (err) return thenDo(err);
+          lively.identity.webKey.generateGenesisObjId(user.did, function (err, gen) {
+            if (err) return thenDo(err);
+            var envelope = {
+              objId: gen.objId, did: user.did, genesisNonce: gen.genesisNonce,
+              type: 'album', visibility: 'public', created: new Date().toISOString(),
+              record: { cid: cid, prevCid: null, payload: payload, nonce: null, wrappedDek: null, recipients: [] },
+              blobCids: [], state: { title: payload.title },
+            };
+            self._signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
+              if (signErr) return thenDo(signErr);
+              self._putEnvelope(user.handle, signed || envelope, function (err) {
+                if (err) return thenDo(err);
+                thenDo(null, { objId: envelope.objId });
+              });
+            });
+          });
+        });
+      },
+
+      // Calls thenDo(null, { objId, album: <payload>, isOwner, envelope }).
+      fetchAlbum: function (handle, albumObjId, thenDo) {
+        var user = lively.identity.did.currentUser();
+        this._getEnvelope(handle, albumObjId, function (err, envelope) {
+          if (err) return thenDo(err);
+          if (envelope.type !== 'album') return thenDo(new Error('fetchAlbum: ' + albumObjId + ' is not an album'));
+          thenDo(null, {
+            objId: envelope.objId,
+            album: envelope.record.payload,
+            isOwner: !!(user && user.did === envelope.did),
+            envelope: envelope,
+          });
+        });
+      },
+
+      // Shallow-merges patch into the album's payload and re-saves a new
+      // envelope version (owner-only). Calls thenDo(null, { objId }).
+      updateAlbum: function (handle, albumObjId, patch, thenDo) {
+        var self = this;
+        var c = lively.identity.crypto;
+        var user = lively.identity.did.currentUser();
+        if (!user) return thenDo(new Error('updateAlbum: no identity session active'));
+
+        self.fetchAlbum(handle, albumObjId, function (err, result) {
+          if (err) return thenDo(err);
+          if (!result.isOwner) return thenDo(new Error('updateAlbum: only the owner can edit an album'));
+          var payload = Object.assign({}, result.album, patch, { updatedAt: new Date().toISOString() });
+          c.computeCid(payload, function (err, cid) {
+            if (err) return thenDo(err);
+            var envelope = {
+              objId: result.envelope.objId, did: result.envelope.did, type: 'album',
+              visibility: 'public', created: result.envelope.created,
+              record: { cid: cid, prevCid: result.envelope.record.cid, payload: payload, nonce: null, wrappedDek: null, recipients: [] },
+              blobCids: [], state: { title: payload.title },
+            };
+            self._signEnvelopeIfPossible(envelope, user, c, function (signErr, signed) {
+              if (signErr) return thenDo(signErr);
+              self._putEnvelope(handle, signed || envelope, function (err) {
+                if (err) return thenDo(err);
+                thenDo(null, { objId: envelope.objId });
+              });
+            });
+          });
+        });
+      },
+
+      // Soft-delete only (state.deleted:true). The caller (Music.js) is
+      // responsible for also removing the library pointer entry. Calls
+      // thenDo(null, { objId }).
+      deleteAlbum: function (handle, albumObjId, thenDo) {
+        var self = this;
+        var c = lively.identity.crypto;
+        var user = lively.identity.did.currentUser();
+        if (!user) return thenDo(new Error('deleteAlbum: no identity session active'));
+        self.fetchAlbum(handle, albumObjId, function (err, result) {
+          if (err) return thenDo(err);
+          if (!result.isOwner) return thenDo(new Error('deleteAlbum: only the owner can delete an album'));
+          var payload = Object.assign({}, result.album, { updatedAt: new Date().toISOString() });
+          c.computeCid(payload, function (err, cid) {
+            if (err) return thenDo(err);
+            var envelope = {
+              objId: result.envelope.objId, did: result.envelope.did, type: 'album',
               visibility: 'public', created: result.envelope.created,
               record: { cid: cid, prevCid: result.envelope.record.cid, payload: payload, nonce: null, wrappedDek: null, recipients: [] },
               blobCids: [], state: { title: payload.title, deleted: true },
