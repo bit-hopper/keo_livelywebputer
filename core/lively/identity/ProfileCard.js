@@ -1180,7 +1180,6 @@ module("lively.identity.ProfileCard")
           // recipient (private, encrypted to them). Signed-in visitors on
           // someone else's card only — no point postcarding yourself.
           var viewer = lively.identity.did.currentUser();
-          var nextX = btnX + btnW + 8; // bumped past pcBtn below if it renders
           if (!self._isOwner && viewer) {
             var pcSize = btnH;
             var pcBtn = new lively.morphic.Text(
@@ -1212,38 +1211,7 @@ module("lively.identity.ProfileCard")
             });
             pane.addMorph(pcBtn);
             pcBtn.renderContext().morphNode.title = 'Send @' + handle + ' a postcard';
-            nextX = btnX + btnW + 8 + pcSize + 8;
           }
-
-          // Postcard feed button — unconditionally visible (browsing a
-          // public feed needs no auth, unlike sending one above): opens
-          // PostCardFeed for this handle. This is the feature's own real
-          // entry point — PostCardFeed existed with no reachable UI path
-          // anywhere in the app before this.
-          var feedSize = btnH;
-          var feedBtn = new lively.morphic.Text(
-            lively.rect(nextX, btnY, feedSize, feedSize), 'dynamic_feed');
-          feedBtn.draggingEnabled = false;
-          feedBtn.droppingEnabled = false;
-          feedBtn.grabbingEnabled = false;
-          feedBtn.applyStyle({ fill: Color.rgb(80, 80, 90),
-            borderRadius: feedSize / 2, borderWidth: 0,
-            fontFamily: "'Material Symbols Rounded'", fontSize: 13.5,
-            textColor: Color.white, align: 'center',
-            padding: lively.rect(0, 1, 0, 0),
-            allowInput: false, selectable: false, clipMode: 'hidden',
-            whiteSpaceHandling: 'pre', handStyle: 'pointer' });
-          feedBtn._handle = handle;
-          feedBtn.addScript(function onMouseUp(evt) {
-            var toHandle = this._handle;
-            lively.require("lively.identity.PostCardFeed").toRun(function () {
-              lively.identity.PostCardFeed.open(toHandle);
-            });
-            evt.stop();
-            return true;
-          });
-          pane.addMorph(feedBtn);
-          feedBtn.renderContext().morphNode.title = "View @" + handle + "’s postcards";
         })();
 
 
@@ -1327,6 +1295,32 @@ module("lively.identity.ProfileCard")
           y += 6;
         }
 
+        // joined + hosting
+        var joinedStr = "—";
+        if (self._envelope && self._envelope.created) {
+          var d = new Date(self._envelope.created);
+          var months = ["Jan","Feb","Mar","Apr","May","Jun",
+                        "Jul","Aug","Sep","Oct","Nov","Dec"];
+          joinedStr = months[d.getMonth()] + " " + d.getDate() + ", " + d.getFullYear();
+        }
+        // Home instance: the "#home" service entry the server records in the
+        // DID document (DidHome.js). Left out when absent, never guessed.
+        var hostStr = null;
+        ((didDoc && Array.isArray(didDoc.service)) ? didDoc.service : []).forEach(function (s) {
+          if (!hostStr && s && s.id === didDoc.id + "#home" && typeof s.serviceEndpoint === "string") {
+            hostStr = s.serviceEndpoint.replace(/^https?:\/\//, "").replace(/\/+$/, "") || null;
+          }
+        });
+        pane.addMorph(ico('calendar_today', contentX, y + 1, 12, 150, 150, 158));
+        pane.addMorph(txt("Joined " + joinedStr, contentX + 18, y, cw - 18, 16, 10, 100, 100, 108, false)).applyStyle({ fixedWidth: false });
+        y += 18;
+        if (hostStr) {
+          pane.addMorph(ico('dns', contentX, y + 1, 12, 150, 150, 158));
+          pane.addMorph(txt("Hosted on " + hostStr, contentX + 18, y, cw - 18, 16, 10, 100, 100, 108, false)).applyStyle({ fixedWidth: false });
+          y += 18;
+        }
+        y += 6;
+
         // ETH address — heading line, then the copiable address on its own line.
         if (payload.ethAddress) {
           heading('account_balance_wallet', "ETH address");
@@ -1377,30 +1371,19 @@ module("lively.identity.ProfileCard")
           });
         }
 
-        // joined + hosting
-        var joinedStr = "—";
-        if (self._envelope && self._envelope.created) {
-          var d = new Date(self._envelope.created);
-          var months = ["Jan","Feb","Mar","Apr","May","Jun",
-                        "Jul","Aug","Sep","Oct","Nov","Dec"];
-          joinedStr = months[d.getMonth()] + " " + d.getDate() + ", " + d.getFullYear();
-        }
-        // Home instance: the "#home" service entry the server records in the
-        // DID document (DidHome.js). Left out when absent, never guessed.
-        var hostStr = null;
-        ((didDoc && Array.isArray(didDoc.service)) ? didDoc.service : []).forEach(function (s) {
-          if (!hostStr && s && s.id === didDoc.id + "#home" && typeof s.serviceEndpoint === "string") {
-            hostStr = s.serviceEndpoint.replace(/^https?:\/\//, "").replace(/\/+$/, "") || null;
-          }
-        });
-        y += 6;
-        pane.addMorph(ico('calendar_today', contentX, y + 1, 12, 150, 150, 158));
-        pane.addMorph(txt("Joined " + joinedStr, contentX + 18, y, cw - 18, 16, 10, 100, 100, 108, false)).applyStyle({ fixedWidth: false });
-        y += 18;
-        if (hostStr) {
-          pane.addMorph(ico('dns', contentX, y + 1, 12, 150, 150, 158));
-          pane.addMorph(txt("Hosted on " + hostStr, contentX + 18, y, cw - 18, 16, 10, 100, 100, 108, false)).applyStyle({ fixedWidth: false });
-          y += 18;
+        // Grow the window if the detail rows run past the bottom of the pane.
+        // `y` is now one row past the last row (rowY + 18). Originally added
+        // because the last row then was an icon row: ico() puts its (px + 8)
+        // -tall box at rowY + 3, bottom = rowY + 23 = y + 5, which measured
+        // live as 3px below the window's bottom edge. Keeping the same
+        // y + 10 margin regardless of which row ends up last.
+        var needLeftH = y + 10, haveLeftH = pane.getExtent().y;
+        if (needLeftH > haveLeftH) {
+          var le = self.getExtent();
+          self.setExtent(lively.pt(le.x, le.y + (needLeftH - haveLeftH)));
+          // Same bookkeeping as the Connect card's growth, so the undo at
+          // the top of the next render takes this back out too.
+          self._connectExtra = (self._connectExtra || 0) + (needLeftH - haveLeftH);
         }
 
         var ph = pane.getExtent().y;

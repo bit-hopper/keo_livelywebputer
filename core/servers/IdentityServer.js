@@ -590,7 +590,7 @@ function buildWalletVaultPage() {
 // Static mode: renders record.payload.snapshot as server-side HTML for fast
 // first paint, crawlers, and link previews — no Lively runtime required.
 // Live mode: the same page then boots a minimal Lively runtime that replaces
-// the static render with the live PostCardEditor / PostCardFeed morph.
+// the static render with the live PostCardView / WikiView morph.
 function buildPostCardPage(envelope, handle) {
   var meta = envelope.state || {};
   var title = escapeHtml(meta.title || envelope.objId);

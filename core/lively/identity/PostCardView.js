@@ -93,7 +93,7 @@ module("lively.identity.PostCardView")
         // running as part of the normal open() call sequence.
         _setup: function () {
           // Same rationale as PostCardEditor._setup: this morph is either
-          // embedded (ConstellationCanvas/ConstellationLounge/PostCardFeed manage its position
+          // embedded (ConstellationCanvas/ConstellationLounge manage its position
           // themselves) or windowed (openInWindow's title bar is the drag
           // handle) — either way, this morph's own body-dragging must not
           // fight with those.
@@ -1133,7 +1133,7 @@ module("lively.identity.PostCardView")
             // media/link-preview cards (PostcardDesignSpec-v2.md's Mini
             // Card Stack layout); leadExcerpt is the same lead-paragraph
             // excerpt buildPreviewSplit already computes for every other
-            // condensed-row caller (PostCardFeed.js), reused verbatim here
+            // condensed-row caller, reused verbatim here
             // rather than inventing new excerpt logic. textContent (not
             // innerHTML) since this is plain text, not markup.
             var split = U.buildPreviewSplit(snapshot.content, { feedMode: true });
@@ -1149,7 +1149,7 @@ module("lively.identity.PostCardView")
           // the card reads media-forward. suppressEmbeds: false overrides
           // feedMode's default "no card in a condensed row" posture: the
           // reel shows one full card at a time (not a many-rows list like
-          // PostCardFeed.js/the reply list), so a real link-preview
+          // the reply list), so a real link-preview
           // card/iframe is exactly what should show here too.
           var split = U.buildPreviewSplit(snapshot.content, { feedMode: true, suppressEmbeds: false });
           if (!split.hasMedia) {
@@ -1166,9 +1166,8 @@ module("lively.identity.PostCardView")
           }
           parts.push('<div class="lively-postcard-preview-media">' + split.mediaHtml + '</div>');
           if (split.restHtml) {
-            // Unclamped here (no -rest-clamped modifier) — this card grows
-            // to fit its content (ConstellationLounge's _fitCardToContent),
-            // it doesn't need PostCardFeed's fixed-max-height fade-clip.
+            // Unclamped — this card grows to fit its content
+            // (ConstellationLounge's _fitCardToContent).
             parts.push('<div class="lively-postcard-preview-rest">' + split.restHtml + '</div>');
           }
           this._contentEl.innerHTML = parts.join('');

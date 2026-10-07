@@ -2,7 +2,7 @@
  * lively.identity.PostCardUtils
  *
  * Shared client-side utilities for rendering ProseMirror snapshot JSON as HTML.
- * Used by PostCardFeed and WikiPlayback, so those two stay in sync.
+ * Used by PostCardView, WikiView and WikiPlayback, so those stay in sync.
  *
  * NOT shared with the server: IdentityServer.js's `_pmNodeToHtml` is an
  * independent copy for static server-side rendering, and PostCardEditor.js's
@@ -47,7 +47,7 @@ module('lively.identity.PostCardUtils')
     // and WikiEditor.js's own instance-level style injection (guarded by
     // document.getElementById('lively-postcard-editor-style')) — which never
     // runs unless a PostCardEditor/WikiEditor is actually instantiated. Every
-    // read-only render path (PostCardView, PostCardFeed, WikiView,
+    // read-only render path (PostCardView, WikiView,
     // WikiPlayback — none of which instantiate the editor just to display a
     // card) never got this CSS at all, so images/videos rendered at full
     // native pixel size, uncropped by their container. Harmless-looking for
@@ -117,19 +117,13 @@ module('lively.identity.PostCardUtils')
         '.lively-code-cell-output pre.lively-code-cell-stderr{color:#c33;}' +
         '.lively-code-cell-output img{max-width:100%;display:block;margin:4px 0;}' +
         // Media-forward ("Reddit-like") preview wrappers — see
-        // buildPreviewSplit above. Shared by PostCardFeed's row rendering
-        // and PostCardView's opt-in previewMode. -rest is unclamped by
-        // default (a card that grows to fit its content, like
+        // buildPreviewSplit above. Used by PostCardView's opt-in previewMode.
+        // -rest is unclamped (a card that grows to fit its content, like
         // ConstellationLounge's reel via _fitCardToContent, should show all
-        // of it) — -rest-clamped is an opt-in modifier PostCardFeed adds
-        // for its own fixed-max-height row, since that context has no
-        // "just grow taller" option.
+        // of it).
         '.lively-postcard-preview-lead{font-size:11px;color:#333;margin:2px 0 4px;}' +
         '.lively-postcard-preview-media{margin:2px 0 4px;}' +
         '.lively-postcard-preview-rest{font-size:11.5px;color:#333;}' +
-        '.lively-postcard-preview-rest.lively-postcard-preview-rest-clamped{max-height:140px;overflow:hidden;' +
-        '-webkit-mask-image:linear-gradient(#000 70%, transparent 100%);' +
-        'mask-image:linear-gradient(#000 70%, transparent 100%);}' +
         // Unfurled link-preview card (see hydrateLinkPreviews below) —
         // inserted as a block right after a "bare link" paragraph.
         '.lively-link-preview-card{display:flex;margin:6px 0;border:1px solid #ddd;border-radius:8px;' +
@@ -393,7 +387,7 @@ module('lively.identity.PostCardUtils')
 
     // opts.feedMode: thread through to blocksToHtml's opts.suppressEmbeds —
     // for a condensed multi-row context rendering many snapshots at once
-    // (ConstellationLounge.js's reply list, PostCardFeed.js's rows) where a
+    // (ConstellationLounge.js's reply list) where a
     // persisted link_preview_card node should render as a plain text link,
     // never a card/iframe. Omit for a single full-card/page render (the
     // common case), where the real card/embed is exactly what should show.
@@ -424,8 +418,8 @@ module('lively.identity.PostCardUtils')
 
     // opts.suppressEmbeds: render a link_preview_card node as a plain text
     // link, never a card/iframe (see pmNodeToHtml's 'link_preview_card'
-    // case) — set by buildPreviewSplit's feedMode for PostCardFeed.js's
-    // condensed rows, matching hydrateLinkPreviews's own long-standing "no
+    // case) — set by buildPreviewSplit's feedMode for condensed-row
+    // contexts, matching hydrateLinkPreviews's own long-standing "no
     // preview card per row — noisy and expensive" posture (this file's
     // comment on MAX_LINK_PREVIEWS_PER_CONTAINER), now also covering the
     // persisted-node render path that posture didn't originally anticipate.
@@ -492,8 +486,8 @@ module('lively.identity.PostCardUtils')
     // already consume) and splits it into a short leading text excerpt, the
     // first media block (promoted to appear early even if it means cutting
     // remaining pre-media text — media always shows if the doc has any),
-    // and whatever comes after. Used by PostCardFeed's row rendering and
-    // PostCardView's opt-in preview mode (ConstellationLounge's reel) to
+    // and whatever comes after. Used by PostCardView's opt-in preview mode
+    // (ConstellationLounge's reel) to
     // build a "Reddit-like" media-forward preview instead of showing
     // content in plain document order. Reuses blocksToHtml/
     // imageOnlyParagraph for actual HTML generation — no second renderer,
@@ -505,7 +499,7 @@ module('lively.identity.PostCardUtils')
     // enforced at whole-block granularity only (never a mid-block string
     // cut, which could produce broken HTML) — a single verbose trailing
     // block can run a bit over this; callers that need a hard visual cap
-    // (e.g. PostCardFeed's fixed-max-height row) apply their own CSS
+    // (e.g. a fixed-max-height row) apply their own CSS
     // clamp/fade on top of this.
     //
     // Returns { hasMedia, leadExcerpt, mediaHtml, restHtml, restTruncated }.
@@ -513,7 +507,7 @@ module('lively.identity.PostCardUtils')
     // callers should ignore leadExcerpt/mediaHtml/restHtml entirely and
     // fall back to their own plain/unsplit rendering in that case.
     //
-    // opts.feedMode: condensed-row context (PostCardFeed.js) — suppresses
+    // opts.feedMode: condensed-row context — suppresses
     // link-preview cards/iframes in mediaHtml/restHtml (see blocksToHtml's
     // opts.suppressEmbeds), same posture as this file's existing "no card in
     // a condensed row" rule for hydrateLinkPreviews. opts.suppressEmbeds,
@@ -604,7 +598,7 @@ module('lively.identity.PostCardUtils')
              (imgTitle ? ' title="' + escapeAttr(imgTitle) + '"' : '') + deco + '>';
     }
 
-    // BUG FIX: no read-only view (PostCardView, PostCardFeed, WikiView,
+    // BUG FIX: no read-only view (PostCardView, WikiView,
     // WikiPlayback) ever turned a rendered .lively-embedded-part placeholder
     // into the actual live Lively morph it references — confirmed live, the
     // placeholder text is permanent, not just a brief loading state. The
@@ -816,10 +810,8 @@ module('lively.identity.PostCardUtils')
     //
     // Capped at MAX_LINK_PREVIEWS_PER_CONTAINER fetches per call so a long
     // document full of bare links can't fire off unbounded parallel
-    // requests. Not called from PostCardFeed.js's row rendering or
-    // WikiPlayback.js's version viewer — both render many condensed/
-    // historical entries at once (see PostCardFeed.js's own comment on why
-    // it deliberately limits hydration there), where a preview card per row
+    // requests. Not called from WikiPlayback.js's version viewer, which
+    // renders many historical entries at once, where a preview card per row
     // would be noisy and expensive.
     var MAX_LINK_PREVIEWS_PER_CONTAINER = 6;
     var BARE_URL_RE = /^(https?:\/\/[^\s<>"']+)$/i;

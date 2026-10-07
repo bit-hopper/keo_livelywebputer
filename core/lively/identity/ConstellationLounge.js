@@ -4604,7 +4604,7 @@ module("lively.identity.ConstellationLounge")
         var snapshot = payload &&
           (payload.format === "prosemirror-doc-v1" ? payload.doc : payload.snapshot);
         // Every comment renders fully inline here (no condensed-feed-row
-        // collapsing, unlike PostCardFeed.js) — matches the reel's own
+        // collapsing) — matches the reel's own
         // suppressEmbeds override (see [[project-link-preview-reel-cards]]):
         // a persisted link_preview_card node (or a legacy bare-URL
         // paragraph, picked up by hydrateLinkPreviews below) renders as a
