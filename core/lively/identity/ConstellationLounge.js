@@ -226,15 +226,21 @@ module("lively.identity.ConstellationLounge")
     // feature rather than reusing the postcard-compose color.
     var ROOM_ACCENT = Color.rgb(79, 11, 67);
     var ROOM_GREEN = Color.rgb(46, 160, 90);
-    // "Clusters" panel-title pill (groups icon + label, same green as
+    // "Clusters" panel-title pill (star-cluster icon + label, same green as
     // ROOM_GREEN) — same icon-Text-plus-label-Text idiom as _buildPillButton,
     // but simpler: the icon's own position is fixed at construction time
     // (only the label's width is measured live), so it's baked straight
     // into the constructor rect rather than set afterward (CLAUDE.md:
     // setPosition right after addMorph can desync a morph's render tree).
     var CLUSTERS_TITLE_PILL_H = 26;
-    var CLUSTERS_TITLE_ICON_BOX = 18, CLUSTERS_TITLE_ICON_PX = 14;
+    var CLUSTERS_TITLE_ICON_BOX = 18;
     var CLUSTERS_TITLE_PAD = 10, CLUSTERS_TITLE_GAP = 5;
+    // Custom "star cluster" icon (three 5-point stars in descending sizes),
+    // not a Material Symbols ligature, so it's an inline SVG on a plain
+    // Image morph. 24x24 viewBox, white fill to sit on the green pill.
+    var CLUSTERS_STAR_PATH = "M9.00 7.00L10.94 11.83L16.13 12.18L12.14 15.52L13.41 20.57L9.00 17.80L4.59 20.57L5.86 15.52L1.87 12.18L7.06 11.83ZM18.00 2.40L19.18 5.38L22.37 5.58L19.90 7.62L20.70 10.72L18.00 9.00L15.30 10.72L16.10 7.62L13.63 5.58L16.82 5.38ZM19.00 15.50L19.76 17.45L21.85 17.57L20.24 18.90L20.76 20.93L19.00 19.80L17.24 20.93L17.76 18.90L16.15 17.57L18.24 17.45Z";
+    var CLUSTERS_STAR_ICON_URL = "data:image/svg+xml;utf8," + encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#ffffff" d="' + CLUSTERS_STAR_PATH + '"/></svg>');
     // How often an open lounge re-asks for room presence (see _startRoomsPoll).
     var ROOMS_POLL_MS = 8000;
     var NEW_ROOM_BTN_H = 28;
@@ -1440,35 +1446,23 @@ module("lively.identity.ConstellationLounge")
         }
       },
 
-      // "Clusters" panel-title pill: a fixed-size groups icon (position
+      // "Clusters" panel-title pill: a fixed-size star-cluster icon (position
       // baked into its own constructor rect, since it never moves) plus a
       // label Text sized to its own live-measured width (Box built oversized,
       // then shrunk — same idiom as _buildNewRoomButton just below).
       _buildClustersTitlePill: function (x, y) {
-        var H = CLUSTERS_TITLE_PILL_H, ICON_BOX = CLUSTERS_TITLE_ICON_BOX, ICON_PX = CLUSTERS_TITLE_ICON_PX;
+        var H = CLUSTERS_TITLE_PILL_H, ICON_BOX = CLUSTERS_TITLE_ICON_BOX;
         var box = new lively.morphic.Box(lively.rect(x, y, 130, H));
         box.setFill(ROOM_GREEN);
         box.applyStyle({ borderWidth: 0, borderRadius: H / 2 });
         noDrag(box);
 
-        // Icon idiom from _buildPillButton's glyph: fixed-rect Text (so
-        // align:'center' isn't a no-op), vertical centering via top padding,
-        // fontSize in pt (px * 0.75).
-        var icon = new lively.morphic.Text(lively.rect(CLUSTERS_TITLE_PAD, (H - ICON_BOX) / 2, ICON_BOX, ICON_BOX));
-        icon.textString = "groups";
-        icon.applyStyle({
-          fontFamily: "'Material Symbols Rounded'",
-          fontSize: ICON_PX * 0.75,
-          textColor: Color.rgb(255, 255, 255),
-          fill: null,
-          borderWidth: 0,
-          align: "center",
-          padding: lively.Rectangle.inset(0, Math.round((ICON_BOX - ICON_PX) / 2), 0, 0),
-          allowInput: false,
-          selectable: false,
-          clipMode: "hidden",
-          whiteSpaceHandling: "pre",
-        });
+        // Star-cluster SVG icon: fixed-rect Image sized to ICON_BOX (the SVG
+        // scales to fit, no font/padding math needed).
+        var icon = new lively.morphic.Image(
+          lively.rect(CLUSTERS_TITLE_PAD, (H - ICON_BOX) / 2, ICON_BOX, ICON_BOX),
+          CLUSTERS_STAR_ICON_URL);
+        icon.applyStyle({ fill: null, borderWidth: 0 });
         noDrag(icon);
         icon.eventsAreIgnored = true;
         box.addMorph(icon);
