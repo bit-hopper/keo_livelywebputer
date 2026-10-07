@@ -16,15 +16,6 @@ lively.BuildSpec("lively.morphic.tools.MenuBar", {
     name: "MenuBar",
     isGlobalMenuBar: true,
 
-    onWorldResize: function onWorldResize() {
-      var self = this;
-      lively.lang.fun.debounceNamed(this.id+"-world-resize", 100, function() {
-        var w = $world.visibleBounds().width;
-        self.setExtent(self.getExtent().withWidth(w));
-        self.relayout();
-      })
-    },
-
     leftsAndRights: function leftsAndRights() {
       var mid = this.innerBounds().center().x;
       return this.submorphs

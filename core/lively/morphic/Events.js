@@ -2122,6 +2122,16 @@ lively.morphic.World.addMethods(
 },
 'window related', {
     onWindowResize: function(evt) {
+        // The world is only fitted to the viewport at boot (Main.js); keep it
+        // fitted afterwards, but only while it still has the extent that fit
+        // gave it -- see World#recordViewportFit. Done before notifying
+        // submorphs; fitToViewport leaves the windowBounds cache cleared, so
+        // their onWorldResize reads the new bounds. The cache is cleared
+        // AFTER notifying, as before -- clearing it first made
+        // HTML.Positioning>>testFixedPositing and
+        // TransitionTests>>testMoveByAnimated fail in a full suite run.
+        var fit = this._viewportFitExtent;
+        if (fit && this.getExtent().eqPt(fit)) this.fitToViewport();
         this.submorphs.forEach(function(ea) {
             ea.onWorldResize && ea.onWorldResize(evt);
         });

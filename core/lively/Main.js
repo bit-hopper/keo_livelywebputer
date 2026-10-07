@@ -119,6 +119,7 @@ lively.Main.WorldDataAccessor.subclass('lively.Main.JSONMorphicData',
         // to rely on synchronously here.
         this.world.cachedWindowBounds = null;
         this.world.setBounds(this.world.windowBounds());
+        this.world.recordViewportFit();
         return this.world;
     },
 
@@ -138,7 +139,9 @@ lively.Main.WorldDataAccessor.subclass('lively.Main.WorldBuilder',
         if (this.world) return this.world;
         var d = this.getDoc(),
             bounds = lively.morphic.World.prototype.windowBounds(d);
-        return this.world = lively.morphic.World.createOn(d.body, bounds);
+        this.world = lively.morphic.World.createOn(d.body, bounds);
+        this.world.recordViewportFit();
+        return this.world;
     }
 });
 

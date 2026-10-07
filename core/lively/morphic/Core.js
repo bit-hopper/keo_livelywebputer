@@ -816,6 +816,31 @@ lively.morphic.Morph.subclass('lively.morphic.World',
       this.onWindowResize();
     }.bind(this))();
     return ext;
+  },
+
+  // Remembers the extent the world was last fitted to the viewport at, so
+  // onWindowResize can tell a world that is still tracking the viewport from
+  // one something deliberately resized (WikiIndex/WikiView grow it taller
+  // than the viewport, fullscreen toggles, ...) and leave the latter alone.
+  recordViewportFit: function() {
+    var e = this.getExtent();
+    this._viewportFitExtent = pt(e.x, e.y);
+  },
+
+  // Sets the world's extent to the current viewport. Two passes because a
+  // scrollbar that disappears (or appears) once the extent changes alters
+  // document.documentElement.clientWidth/Height, which windowBounds() reads;
+  // the second pass measures the settled size. Only the extent is touched,
+  // never the position. Skips setExtent when nothing changed -- setExtent
+  // itself schedules onWindowResize, so an unconditional call would loop.
+  fitToViewport: function() {
+    for (var i = 0; i < 2; i++) {
+      this.cachedWindowBounds = null;
+      var target = this.windowBounds().extent();
+      if (!this.getExtent().eqPt(target)) this.setExtent(target);
+    }
+    this.cachedWindowBounds = null;
+    this.recordViewportFit();
   }
 
 },
