@@ -982,9 +982,11 @@ lively.BuildSpec("lively.net.tools.ConnectionIndicatorMenuBarEntry", lively.Buil
   name: "lively2livelyStatusLabel",
   menuBarAlign: "right",
   changeColorForMenu: false,
+  // a small status pill, shorter than the regular menu bar entries
+  entryHeight: 20,
 
   style: lively.lang.obj.merge(lively.BuildSpec("lively.morphic.tools.MenuBarEntry").attributeStore.style, {
-    extent: lively.pt(130,20),
+    extent: lively.pt(96,20),
     textColor: Color.rgb(127,230,127),
     toolTip: "Shows the connection status to the cloxp (Lively) server environment. If the indicator is red this means that the server currently cannot be reached."
   }),
@@ -1048,15 +1050,15 @@ lively.BuildSpec("lively.net.tools.ConnectionIndicatorMenuBarEntry", lively.Buil
         lively.bindings.connect(session, 'sessionClosed', onClose, 'messageReceived');
     }
     this.applyStyle({
-      fill: Global.Color.green,
+      fill: Global.Color.rgb(103,198,61),
       textColor: Global.Color.white
     });
-    this.textString = '[l2l] connected';
+    this.textString = 'connected';
   },
 
   onConnecting: function onConnecting(session) {
     this.informsAboutMessages = false;
-    this.textString = '[l2l] connecting';
+    this.textString = 'connecting';
     this.applyStyle({
       fill: Global.Color.gray,
       textColor: Global.Color.white
@@ -1066,7 +1068,7 @@ lively.BuildSpec("lively.net.tools.ConnectionIndicatorMenuBarEntry", lively.Buil
   onDisconnect: function onDisconnect(session) {
     // this.onDisconnect()
     this.informsAboutMessages = false;
-    this.textString = '[l2l] disconnected';
+    this.textString = 'disconnected';
     this.applyStyle({
       fill: Global.Color.red,
       textColor: Global.Color.white
