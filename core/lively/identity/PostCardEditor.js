@@ -49,6 +49,7 @@ module('lively.identity.PostCardEditor')
     'lively.identity.WebAuthn',
     'lively.identity.WebKey',
     'lively.identity.FileCrypto',
+    'lively.morphic.TextFormattingToolbar',
   )
   .toRun(function () {
 
@@ -409,6 +410,24 @@ module('lively.identity.PostCardEditor')
             'border-radius:6px;border:2px solid transparent;background-clip:padding-box;}' +
             '.lively-postcard-editor-container::-webkit-scrollbar-thumb:hover{background:#E31361;' +
             'background-clip:padding-box;}' +
+            // Font-family dropdown: the native <select> popup can't have its
+            // scrollbar styled, so opt into the customizable-select picker
+            // (a real DOM popup) where supported and give it the same light-
+            // pink scrollbar as the content area. Browsers without
+            // base-select keep the plain native dropdown, with the
+            // scrollbar-color hint applied anyway.
+            'select.pce-input-control{scrollbar-color:#f6b8cf transparent;scrollbar-width:thin;}' +
+            '@supports (appearance:base-select){' +
+            'select.pce-input-control,select.pce-input-control::picker(select){appearance:base-select;}' +
+            'select.pce-input-control{align-items:center;justify-content:center;line-height:1;}' +
+            'select.pce-input-control::picker(select){max-height:300px;padding:4px;background:#fff;' +
+            'border:1px solid #ddd;border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,0.16);' +
+            'scrollbar-color:#f6b8cf transparent;scrollbar-width:thin;}' +
+            'select.pce-input-control option{padding:3px 8px;border-radius:5px;font-size:13px;color:#222;}' +
+            'select.pce-input-control option:hover,select.pce-input-control option:focus{background:#fde6ee;}' +
+            'select.pce-input-control option:checked{background:#f6b8cf;}' +
+            'select.pce-input-control option::checkmark{display:none;}' +
+            '}' +
             '.lively-link-preview-node{margin:4px 0;border-radius:8px;}' +
             '.lively-link-preview-node.lively-link-preview-node-selected,' +
             '.lively-link-preview-node.ProseMirror-selectednode{outline:2px solid #8cf;}';
@@ -511,8 +530,10 @@ module('lively.identity.PostCardEditor')
         rowA.appendChild(this._textColorInput);
         this._bgColorInput = this._buildColorInput('backgroundColor', 'Background color', '#ffffff');
         rowA.appendChild(this._bgColorInput);
+        // Font-family picker sits right after the Underline button.
         this._fontFamilySelect = this._buildFontFamilySelect();
-        rowA.appendChild(this._fontFamilySelect);
+        var underlineBtn = this._toggleButtons.filter(function (t) { return t.markType === 'underline'; })[0];
+        rowA.insertBefore(this._fontFamilySelect, underlineBtn ? underlineBtn.btn.nextSibling : null);
         this._fontSizeInput = this._buildFontSizeInput();
         rowA.appendChild(this._fontSizeInput);
 
@@ -548,14 +569,28 @@ module('lively.identity.PostCardEditor')
 
       _buildFontFamilySelect: function () {
         var self = this;
+        // [css value, label, preview font-family]
         var options = [
-          ['', 'Font'],
-          ['sans-serif', 'Sans'],
-          ['serif', 'Serif'],
-          ['monospace', 'Mono'],
-          ['"Comic Sans MS", cursive', 'Comic'],
-          ['Georgia, serif', 'Georgia'],
+          ['sans-serif', 'Sans', 'sans-serif'],
+          ['serif', 'Serif', 'serif'],
+          ['monospace', 'Mono', 'monospace'],
+          ['"Comic Sans MS", cursive', 'Comic', '"Comic Sans MS", cursive'],
+          ['Georgia, serif', 'Georgia', 'Georgia, serif'],
         ];
+        // Vendored Google Fonts (core/styles/google-fonts.css, loaded once per
+        // world by StyleSheets.js) — same list the TextFormattingToolbar's font
+        // picker uses. Merged into one alphabetical list with the generic
+        // faces; each option previews in its own face.
+        var NS = lively.morphic.TextFormattingToolbar;
+        var vendored = (NS && NS.VENDORED_FONT_NAMES) || [];
+        vendored.forEach(function (name) {
+          var css = "'" + name + "', sans-serif";
+          options.push([css, name, css]);
+        });
+        options.sort(function (a, b) {
+          return a[1].toLowerCase() < b[1].toLowerCase() ? -1 : a[1].toLowerCase() > b[1].toLowerCase() ? 1 : 0;
+        });
+        options.unshift(['', 'Font', '']);
         var select = document.createElement('select');
         select.className = 'pce-input-control';
         select.title = 'Font family';
@@ -564,8 +599,12 @@ module('lively.identity.PostCardEditor')
           var optionEl = document.createElement('option');
           optionEl.value = opt[0];
           optionEl.textContent = opt[1];
+          if (opt[2]) optionEl.style.fontFamily = opt[2];
           select.appendChild(optionEl);
         });
+        // @font-face resources are fetched lazily; kick them off now so the
+        // dropdown previews and applied text don't flash a fallback face.
+        if (NS && NS.warmVendoredFonts) NS.warmVendoredFonts();
         ['mousedown', 'click'].forEach(function (t) {
           select.addEventListener(t, function (e) { e.stopPropagation(); });
         });
