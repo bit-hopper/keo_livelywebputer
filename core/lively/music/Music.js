@@ -35,7 +35,7 @@
  */
 
 module("lively.music.Music")
-  .requires()
+  .requires("lively.music.PlaylistIO")
   .toRun(function () {
     var SHELF_KEYS = ["want", "listening", "listened", "dropped"];
     var SHELF_LABELS = { all: "All albums", want: "Want to listen", listening: "Listening", listened: "Listened", dropped: "Dropped" };
@@ -154,7 +154,7 @@ module("lively.music.Music")
         // _setup() on every fresh render context. musicLibraryObjId/
         // musicLibraryHandle/musicTheme/musicLibPublic are real serialized
         // Morph properties: all this morph needs to remember across a reload.
-        doNotSerialize: ["state", "_dom", "_audio", "_identityConnection", "_didHandleMap", "_libraryEnsurePending", "_catalogLast", "_addSearchTimer", "_toastTimer", "_searchSeq", "_nowPlayingKey", "_albumSave", "_queues"],
+        doNotSerialize: ["state", "_dom", "_audio", "_identityConnection", "_didHandleMap", "_libraryEnsurePending", "_catalogLast", "_addSearchTimer", "_toastTimer", "_searchSeq", "_nowPlayingKey", "_albumSave", "_queues", "_importRun", "_importCache", "_importTimer", "_importRenderTimer"],
       },
 
       "initialization",
@@ -206,7 +206,24 @@ module("lively.music.Music")
             duration: 30,
             queueOpen: false,
             toast: "",
+            exportOpen: false,
+            exportFmt: "csv",
+            importOpen: false,
+            importText: "",
+            importFormat: "auto",
+            importOrder: "artist-title",
+            importFileName: "",
+            importParsed: null,
+            importRows: null,
+            importPhase: "idle",
+            importVis: "private",
+            importNames: {},
+            importRemoved: {},
+            importSaving: "",
+            importError: "",
           };
+          this._importRun = 0;
+          this._importCache = {};
           this._didHandleMap = this._didHandleMap || {};
           this._searchSeq = 0;
           this._fitToWorld();
@@ -389,6 +406,7 @@ module("lively.music.Music")
           this._buildAlbumModal(body);
           this._buildAddModal(body);
           this._buildPickModal(body);
+          this._buildImportModal(body);
 
           this._dom.toast = this._el("div", null, vp);
           this._dom.toast.setAttribute("role", "status");
@@ -557,6 +575,90 @@ module("lively.music.Music")
           input.addEventListener("keydown", function (e) { if (e.key === "Enter") self._pickNewPlaylist(); });
           this._dom.pickInput = input;
           this._btn("btn acc", "Create", null, row, function () { self._pickNewPlaylist(); });
+        },
+
+        _buildImportModal: function (body) {
+          var self = this;
+          var scrim = this._el("div", "scrim", body);
+          scrim.style.display = "none";
+          scrim.style.zIndex = "35";
+          scrim.addEventListener("mousedown", function (e) { if (e.target === scrim) self._closeImport(); });
+          this._dom.impScrim = scrim;
+
+          var dlg = this._el("div", "dlg", scrim);
+          dlg.style.maxWidth = "820px";
+          dlg.setAttribute("role", "dialog");
+          dlg.setAttribute("aria-modal", "true");
+          dlg.addEventListener("mousedown", function (e) { e.stopPropagation(); });
+          this._iconBtn("dlg-x", "close", "Close", dlg, function () { self._closeImport(); });
+          var h = this._text("h2", null, "Import a playlist", dlg);
+          h.style.cssText = "margin-bottom:4px; font-size:26px";
+          var intro = this._text("div", null, "Bring a playlist over from another service. Export it as a CSV or text file with a transfer tool, then drop it here. We match every line against the catalog so you can check it before anything is saved.", dlg);
+          intro.style.cssText = "color:var(--mute); max-width:600px";
+
+          this._stepHead(dlg, 1, "Your list");
+          var row = this._el("div", null, dlg);
+          row.style.cssText = "display:flex; flex-wrap:wrap; align-items:center; gap:8px";
+          var pick = this._el("label", "btn", row);
+          pick.style.cssText = "position:relative; cursor:pointer";
+          this._icon("description", 18, pick);
+          pick.appendChild(document.createTextNode("Choose a .csv or .txt file"));
+          var file = this._el("input", null, pick);
+          file.type = "file";
+          file.accept = ".csv,.txt,text/csv,text/plain";
+          file.setAttribute("aria-label", "Choose a CSV or text file");
+          file.style.cssText = "position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; padding:0; border:0";
+          file.addEventListener("change", function () { self._onImportFile(file.files && file.files[0]); });
+          this._dom.impFile = file;
+          this._text("span", null, "or paste below.", row).style.cssText = "font-size:13px; color:var(--mute)";
+          var sp = this._el("span", null, row);
+          sp.style.flex = "1";
+          this._dom.impFormats = this._el("span", null, row);
+          this._dom.impFormats.setAttribute("role", "group");
+          this._dom.impFormats.setAttribute("aria-label", "Format");
+          this._dom.impFormats.style.cssText = "display:inline-flex; gap:6px";
+
+          var ta = this._el("textarea", "mono", dlg);
+          ta.rows = 6;
+          ta.placeholder = "Artist - Track, one per line\n\nor a CSV with a header row:\nTrack name,Artist name,Album name";
+          ta.setAttribute("aria-label", "Playlist file contents");
+          ta.style.cssText = "margin-top:10px; font-family:'DM Mono',ui-monospace,monospace; font-size:13px; line-height:1.6; white-space:pre; overflow:auto";
+          ta.addEventListener("input", function () { self._onImportText(ta.value); });
+          this._dom.impText = ta;
+
+          this._dom.impOrder = this._el("div", null, dlg);
+          this._dom.impError = this._el("div", null, dlg);
+          this._dom.impSummary = this._el("div", null, dlg);
+          this._dom.impReview = this._el("div", null, dlg);
+          this._dom.impSave = this._el("div", null, dlg);
+
+          var foot = this._el("div", null, dlg);
+          foot.style.cssText = "margin-top:24px; padding-top:18px; border-top:1px solid var(--line)";
+          this._text("div", "eyebrow", "Connect an account", foot);
+          var cards = this._el("div", null, foot);
+          cards.style.cssText = "display:flex; flex-wrap:wrap; gap:10px; margin-top:10px";
+          [["S", "Spotify", "Use a file for now."], ["A", "Apple Music", "Use a file for now."], ["Y", "YouTube Music", "Use a file for now."]].forEach(function (pv) {
+            var c = self._el("div", "optcard", cards);
+            c.style.cssText = "flex:1 1 200px; opacity:.72";
+            var mono = self._text("span", null, pv[0], c);
+            mono.style.cssText = "width:32px; height:32px; flex:none; border-radius:999px; background:var(--surf2); border:1px solid var(--line); display:inline-flex; align-items:center; justify-content:center; font-weight:700; font-size:13px";
+            var col = self._el("span", null, c);
+            col.style.display = "block";
+            var nm = self._el("span", null, col);
+            nm.style.cssText = "display:flex; align-items:center; gap:8px; font-weight:600";
+            nm.appendChild(document.createTextNode(pv[1]));
+            var soon = self._text("span", "mono", "Coming soon", nm);
+            soon.style.cssText = "font-size:10.5px; padding:1px 7px; border-radius:999px; background:var(--accsoft); color:var(--acc)";
+            self._text("span", null, pv[2], col).style.cssText = "display:block; font-size:12.5px; color:var(--mute); margin-top:2px";
+          });
+        },
+        _stepHead: function (parent, n, label) {
+          var head = this._el("div", "eyebrow", parent);
+          head.style.cssText = "display:flex; align-items:center; gap:8px; margin:22px 0 8px";
+          var num = this._text("span", "mono", String(n), head);
+          num.style.cssText = "width:20px; height:20px; border-radius:999px; background:var(--accsoft); color:var(--acc); display:inline-flex; align-items:center; justify-content:center; font-size:11px";
+          head.appendChild(document.createTextNode(label));
+          return head;
         },
 
         _buildQueuePopover: function (vp) {
@@ -742,7 +844,7 @@ module("lively.music.Music")
         // failure is treated as retryable with growing backoff. Calls are
         // spaced >= 900ms apart. isStale() lets a superseded search stop
         // retrying. thenDo(err, json).
-        _catalogGet: function (url, isStale, thenDo) {
+        _catalogGet: function (url, isStale, thenDo, onRetry) {
           var self = this;
           var MAX_TRIES = 6;
           function attempt(n) {
@@ -755,7 +857,7 @@ module("lively.music.Music")
                 .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
                 .then(function (json) { thenDo(null, json); })
                 .catch(function (e) {
-                  if (n + 1 < MAX_TRIES) attempt(n + 1);
+                  if (n + 1 < MAX_TRIES) { if (onRetry) onRetry(n + 1, MAX_TRIES - 1); attempt(n + 1); }
                   else thenDo(e);
                 });
             }, wait);
@@ -834,6 +936,7 @@ module("lively.music.Music")
         _openPlaylistView: function (objId) {
           this.state.view = "playlist";
           this.state.plId = objId;
+          this.state.exportOpen = false;
           this.state.visMenuOpen = false;
           this.state.shareDraft = "";
           this._renderSide();
@@ -1405,6 +1508,232 @@ module("lively.music.Music")
         },
       },
 
+      "import",
+      {
+        _openImport: function () {
+          if (!this.state.isOwner) return;
+          this._importRun++;
+          Object.assign(this.state, {
+            importOpen: true, importText: "", importFormat: "auto", importOrder: "artist-title", importFileName: "",
+            importParsed: null, importRows: null, importPhase: "idle", importVis: "private",
+            importNames: {}, importRemoved: {}, importSaving: "", importError: "",
+          });
+          this._importCache = {};
+          this._dom.impText.value = "";
+          this._dom.impFile.value = "";
+          this._renderImport();
+        },
+        _closeImport: function () {
+          if (this.state.importSaving) return;
+          this._importRun++; // abandons any in-flight matching
+          this.state.importOpen = false;
+          this._renderImport();
+        },
+        _onImportText: function (value) {
+          var self = this;
+          this.state.importText = value;
+          clearTimeout(this._importTimer);
+          this._importTimer = setTimeout(function () { self._importReparse(); }, 250);
+        },
+        _importReparse: function () {
+          var s = this.state;
+          this._importRun++;
+          s.importParsed = lively.music.PlaylistIO.parse(s.importText, { format: s.importFormat, order: s.importOrder });
+          s.importRows = null;
+          s.importPhase = "idle";
+          s.importNames = {};
+          s.importRemoved = {};
+          s.importError = "";
+          this._renderImport();
+        },
+        _onImportFile: function (file) {
+          var self = this;
+          if (!file) return;
+          if (file.size > 1024 * 1024) { this.state.importError = "That file is over 1 MB. Split it into smaller playlists."; this._renderImport(); return; }
+          var reader = new FileReader();
+          reader.onload = function () {
+            self.state.importFileName = file.name.replace(/\.[^.]+$/, "");
+            self._dom.impText.value = String(reader.result || "");
+            self.state.importText = self._dom.impText.value;
+            self._importReparse();
+          };
+          reader.onerror = function () { self.state.importError = "Couldn't read that file."; self._renderImport(); };
+          reader.readAsText(file);
+        },
+
+        // ---- matching ------------------------------------------------------
+        // Exact path: a file carrying catalog ids is resolved with batched
+        // lookups (no search, no throttling). Everything else is searched one
+        // row at a time, paced and retried on ANY failure; a row whose
+        // retries run out is "unreachable" (re-triable), never "not found".
+        _importFindMatches: function () {
+          var self = this;
+          var s = this.state;
+          var parsed = s.importParsed;
+          if (!parsed || !parsed.items.length || s.importPhase === "matching") return;
+          var run = ++this._importRun;
+          var stale = function () { return run !== self._importRun; };
+          s.importRows = parsed.items.map(function (it) { return { item: it, status: "pending", hit: null, note: "Waiting…", accepted: false, dropped: false }; });
+          s.importPhase = "matching";
+          this._renderImport();
+
+          var finish = function () {
+            if (stale()) return;
+            s.importPhase = "done";
+            self._renderImport();
+          };
+          var byId = function (next) {
+            if (parsed.idKind !== "apple") return next();
+            var ids = [];
+            s.importRows.forEach(function (r) { if (r.item.appleId && ids.indexOf(r.item.appleId) === -1) ids.push(r.item.appleId); });
+            var found = {};
+            var chunks = [];
+            for (var i = 0; i < ids.length; i += 25) chunks.push(ids.slice(i, i + 25));
+            (function step(k) {
+              if (stale()) return;
+              if (k >= chunks.length) {
+                s.importRows.forEach(function (r) {
+                  var hit = r.item.appleId && found[r.item.appleId];
+                  if (hit) { r.status = "ok"; r.hit = hit; r.note = "Matched by id"; }
+                });
+                return next();
+              }
+              self._catalogGet(CATALOG_LOOKUP + "?id=" + chunks[k].join(","), stale, function (err, json) {
+                if (stale()) return;
+                if (!err) (json.results || []).forEach(function (x) { if (x.wrapperType === "track" && x.trackId) found[String(x.trackId)] = x; });
+                step(k + 1);
+              });
+            })(0);
+          };
+          byId(function () { self._importSearchPending(stale, finish); });
+        },
+
+        _importSearchPending: function (stale, done) {
+          var self = this;
+          var IO = lively.music.PlaylistIO;
+          var todo = this.state.importRows.filter(function (r) { return r.status === "pending" || r.status === "unreachable"; });
+          (function step(i) {
+            if (stale()) return;
+            if (i >= todo.length) return done();
+            var row = todo[i];
+            var q = IO.queryFor(row.item);
+            if (!q) { row.status = "miss"; row.note = "No title on this line"; self._renderImportSoon(); return step(i + 1); }
+            row.status = "pending"; row.note = "Searching…";
+            var url = CATALOG_SEARCH + "?term=" + encodeURIComponent(q) + "&entity=song&limit=10";
+            var apply = function (json) {
+              var res = IO.rank(row.item, (json.results || []).filter(function (x) { return x.trackId; }));
+              row.status = res.status; row.hit = res.hit; row.note = res.note;
+            };
+            if (self._importCache[url]) { apply(self._importCache[url]); self._renderImportSoon(); return step(i + 1); }
+            self._catalogGet(url, stale, function (err, json) {
+              if (stale()) return;
+              if (err) { row.status = "unreachable"; row.note = "Couldn't reach the catalog. Try again."; }
+              else { self._importCache[url] = json; apply(json); }
+              self._renderImportSoon();
+              step(i + 1);
+            }, function (n, max) {
+              // The catalog throttles bursts; say so instead of looking stuck.
+              row.note = "Catalog is busy, retrying (" + n + " of " + max + ")…";
+              self._renderImportSoon();
+            });
+          })(0);
+        },
+        _importRetryUnreachable: function () {
+          var self = this;
+          var s = this.state;
+          if (s.importPhase === "matching") return;
+          var run = ++this._importRun;
+          var stale = function () { return run !== self._importRun; };
+          s.importPhase = "matching";
+          this._renderImport();
+          this._importSearchPending(stale, function () { if (stale()) return; s.importPhase = "done"; self._renderImport(); });
+        },
+        _importCancel: function () {
+          this._importRun++;
+          this.state.importPhase = "done";
+          this.state.importRows.forEach(function (r) { if (r.status === "pending") { r.status = "unreachable"; r.note = "Stopped before this row was checked."; } });
+          this._renderImport();
+        },
+
+        _importEff: function (row) {
+          return row.status === "check" && row.accepted ? "ok" : row.status;
+        },
+        _importCounts: function () {
+          var self = this;
+          var c = { ok: 0, check: 0, miss: 0, unreachable: 0, pending: 0, total: 0 };
+          (this.state.importRows || []).forEach(function (r) {
+            if (r.dropped) return;
+            c[self._importEff(r)]++;
+            c.total++;
+          });
+          return c;
+        },
+        // [{ key, name, rows, total }] for the groups still wanted; rows are
+        // the matched ones that will be saved.
+        _importPlan: function () {
+          var self = this;
+          var s = this.state;
+          var parsed = s.importParsed;
+          if (!parsed || !s.importRows) return [];
+          var fileBase = s.importFileName || "";
+          return parsed.groups.filter(function (g) { return !s.importRemoved[g.key]; }).map(function (g) {
+            var rows = s.importRows.filter(function (r) { return r.item.group === g.key && !r.dropped && self._importEff(r) === "ok"; });
+            var name = s.importNames[g.key] != null ? s.importNames[g.key] : (g.name || fileBase || "Imported playlist");
+            return { key: g.key, name: name, rows: rows, total: s.importRows.filter(function (r) { return r.item.group === g.key && !r.dropped; }).length };
+          });
+        },
+        _importSave: function () {
+          var self = this;
+          var s = this.state;
+          var full = this._importPlan();
+          var plan = full.filter(function (g) { return g.rows.length && g.name.trim(); });
+          if (!plan.length || s.importSaving || !s.isOwner) return;
+          var made = [], savedTracks = 0;
+          var totalLines = full.reduce(function (n, g) { return n + g.total; }, 0);
+          (function step(i) {
+            if (i >= plan.length) {
+              s.importSaving = "";
+              s.importOpen = false;
+              self._renderImport();
+              self._toast("Imported " + savedTracks + " of " + totalLines + " lines into " + (made.length === 1 ? "“" + made[0].name + "”" : made.length + " playlists"));
+              if (made.length) self._openPlaylistView(made[0].objId);
+              return;
+            }
+            var g = plan[i];
+            s.importSaving = "Saving " + (i + 1) + " of " + plan.length + ": " + g.name + "…";
+            self._renderImportSave();
+            self._createPlaylist(g.name.trim(), s.importVis, function (err, pl) {
+              if (err) { s.importSaving = ""; s.importError = "Couldn't create “" + g.name + "”: " + err.message; self._renderImport(); return; }
+              made.push(pl);
+              var items = g.rows.map(function (r) { return self._songFromCatalog(r.hit); });
+              self._addTracksToPlaylist(pl, items, function (err2) {
+                if (err2) { s.importSaving = ""; s.importError = "Couldn't add tracks to “" + g.name + "”."; self._renderImport(); return; }
+                savedTracks += items.length;
+                step(i + 1);
+              });
+            });
+          })(0);
+        },
+      },
+
+      "export",
+      {
+        // Contents + file name for the current format.
+        _exportData: function (pl) {
+          var IO = lively.music.PlaylistIO;
+          var isCsv = this.state.exportFmt === "csv";
+          var body = isCsv ? IO.toCsv(pl.name, pl.entries) : IO.toText(pl.entries);
+          return { isCsv: isCsv, body: body, filename: IO.slug(pl.name) + (isCsv ? ".csv" : ".txt") };
+        },
+        _copyExport: function (pl) {
+          var self = this;
+          var body = this._exportData(pl).body;
+          try {
+            navigator.clipboard.writeText(body).then(function () { self._toast("Copied to clipboard"); }, function () { self._toast("Copy is blocked here. Use Download instead."); });
+          } catch (e) { this._toast("Copy is blocked here. Use Download instead."); }
+        },
+      },
+
       "rendering",
       {
         _renderAll: function () {
@@ -1414,6 +1743,7 @@ module("lively.music.Music")
           this._renderAlbum();
           this._renderAdd();
           this._renderPick();
+          this._renderImport();
           this._renderPlayer();
           this._renderQueue();
           this._renderToast();
@@ -1497,7 +1827,11 @@ module("lively.music.Music")
           hdr.style.cssText = "display:flex; align-items:center; justify-content:space-between; padding:20px 12px 8px";
           this._text("span", "eyebrow", "Playlists", hdr);
           if (s.isOwner) {
-            var plus = this._iconBtn("", "add", "New playlist", hdr, function () { self._startNewPlaylist(); }, 18);
+            var btns = this._el("span", null, hdr);
+            btns.style.cssText = "display:inline-flex; gap:2px";
+            var up = this._iconBtn("", "upload", "Import a playlist", btns, function () { self._openImport(); }, 18);
+            up.style.cssText = "width:26px; height:26px";
+            var plus = this._iconBtn("", "add", "New playlist", btns, function () { self._startNewPlaylist(); }, 18);
             plus.style.cssText = "width:26px; height:26px";
           }
 
@@ -1688,6 +2022,8 @@ module("lively.music.Music")
             self._playItems(copy);
           }, 18);
           shuf.disabled = !playable;
+          var exp = this._btn("btn", "Export", "download", acts, function () { s.exportOpen = !s.exportOpen; self._renderMain(); }, 18);
+          exp.setAttribute("aria-expanded", s.exportOpen ? "true" : "false");
           if (owner) this._btn("btn", "Delete", "delete", acts, function () { self._deletePlaylist(pl); }, 18);
 
           if (owner && s.visMenuOpen) {
@@ -1706,6 +2042,7 @@ module("lively.music.Music")
             });
           }
 
+          if (s.exportOpen) this._renderExportPanel(main, pl);
           if (owner && (pl.visibility === "shared" || (pl.wantShared && pl.visibility !== "public"))) this._renderSharePanel(main, pl);
 
           var list = this._el("div", null, main);
@@ -2055,6 +2392,242 @@ module("lively.music.Music")
             b.addEventListener("click", function () { self._pickPlaylist(pl); });
           });
           if (!s.playlists.length) this._text("div", null, "You have no playlists yet — name a new one below.", list).style.cssText = "color:var(--mute); font-size:13px";
+        },
+
+        _renderImport: function () {
+          var self = this;
+          var s = this.state;
+          this._dom.impScrim.style.display = s.importOpen ? "" : "none";
+          if (!s.importOpen) return;
+          var parsed = s.importParsed;
+
+          var fmts = this._dom.impFormats;
+          this._clear(fmts);
+          [["auto", "Auto-detect"], ["csv", "CSV"], ["text", "Text"]].forEach(function (f) {
+            var on = s.importFormat === f[0];
+            var b = self._btn("pill" + (on ? " on" : ""), f[1], null, fmts, function () { s.importFormat = f[0]; self._importReparse(); });
+            b.setAttribute("aria-pressed", on ? "true" : "false");
+          });
+
+          var ord = this._dom.impOrder;
+          this._clear(ord);
+          if (parsed && parsed.mode === "text") {
+            ord.style.cssText = "display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:10px";
+            this._text("span", null, "Each line reads", ord).style.cssText = "font-size:13px; color:var(--mute)";
+            [["artist-title", "Artist - Track"], ["title-artist", "Track - Artist"]].forEach(function (o) {
+              var on = s.importOrder === o[0];
+              var b = self._btn("pill" + (on ? " on" : ""), o[1], null, ord, function () { s.importOrder = o[0]; self._importReparse(); });
+              b.setAttribute("aria-pressed", on ? "true" : "false");
+            });
+          } else ord.style.cssText = "";
+
+          var err = this._dom.impError;
+          this._clear(err);
+          if (s.importError) {
+            var e = this._text("div", null, s.importError, err);
+            e.style.cssText = "margin-top:12px; padding:10px 14px; border-radius:12px; background:var(--bg); border:1px solid #ff8f8f; color:var(--text); font-size:13px";
+          }
+
+          var sum = this._dom.impSummary;
+          this._clear(sum);
+          if (parsed && parsed.items.length) {
+            var line = this._el("div", null, sum);
+            line.style.cssText = "display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; margin-top:12px";
+            this._text("span", null, parsed.detected, line).style.cssText = "font-size:13px; color:var(--mute); flex:1 1 300px";
+            if (s.importPhase === "idle") {
+              this._btn("btn acc", "Find matches", "search", line, function () { self._importFindMatches(); }, 18);
+            }
+            if (parsed.truncated) {
+              this._text("div", null, "Only the first " + lively.music.PlaylistIO.MAX_ROWS + " rows are read; " + parsed.truncated + " more were left out.", sum).style.cssText = "margin-top:6px; font-size:12.5px; color:#f2c14e";
+            }
+            if (parsed.groups.length > 1) {
+              this._text("div", null, "This file holds " + parsed.groups.length + " playlists. Each one is imported as its own playlist.", sum).style.cssText = "margin-top:6px; font-size:13px; color:var(--mute)";
+            }
+          } else if (s.importText.trim()) {
+            this._text("div", null, "No rows found yet.", sum).style.cssText = "margin-top:12px; font-size:13px; color:var(--mute)";
+          }
+
+          this._renderImportReview();
+          this._renderImportSave();
+        },
+
+        // Debounced: matching updates rows many times a second.
+        _renderImportSoon: function () {
+          var self = this;
+          if (this._importRenderTimer) return;
+          this._importRenderTimer = setTimeout(function () {
+            self._importRenderTimer = null;
+            if (self.state.importOpen) self._renderImportReview();
+          }, 120);
+        },
+
+        _renderImportReview: function () {
+          var self = this;
+          var s = this.state;
+          var box = this._dom.impReview;
+          this._clear(box);
+          if (!s.importOpen || !s.importRows) return;
+          var IO = lively.music.PlaylistIO;
+          var counts = this._importCounts();
+          var rows = s.importRows;
+
+          this._stepHead(box, 2, "Check the matches");
+          var bar = this._el("div", null, box);
+          bar.style.cssText = "display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px";
+          var done = rows.filter(function (r) { return r.status !== "pending"; }).length;
+          var how = s.importParsed && s.importParsed.idKind === "apple" ? "Matching by Apple id" : "Searching the catalog";
+          this._text("span", null, s.importPhase === "matching" ? how + " · " + done + " of " + rows.length : how, bar).style.cssText = "font-size:13px; color:var(--mute)";
+          var sp = this._el("span", null, bar);
+          sp.style.flex = "1";
+          [["ok", "matched", "#4fd69c"], ["check", "to check", "#f2c14e"], ["miss", "not found", "#ff8f8f"]].forEach(function (c) {
+            var chip = self._text("span", "vis", counts[c[0]] + " " + c[1], bar);
+            chip.style.background = c[2];
+          });
+          if (counts.unreachable) {
+            var u = self._text("span", "vis", counts.unreachable + " unreachable", bar);
+            u.style.background = "#b0abc0";
+          }
+          if (s.importPhase === "matching") {
+            this._btn("pill", "Stop", "close", bar, function () { self._importCancel(); }, 14);
+          } else if (counts.unreachable) {
+            this._btn("pill", "Retry " + counts.unreachable, "refresh", bar, function () { self._importRetryUnreachable(); }, 14);
+          }
+
+          var list = this._el("div", null, box);
+          list.style.cssText = "margin-top:10px; max-height:300px; overflow-y:auto; border:1px solid var(--line); border-radius:14px; background:var(--bg)";
+          var ST = {
+            ok: ["check", "#4fd69c"], check: ["priority_high", "#f2c14e"], miss: ["close", "#ff8f8f"],
+            unreachable: ["cloud_off", "#b0abc0"], pending: ["hourglass_empty", "var(--surf2)"],
+          };
+          rows.forEach(function (r) {
+            if (r.dropped) return;
+            var eff = self._importEff(r);
+            var row = self._el("div", null, list);
+            row.style.cssText = "display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; padding:9px 12px; border-bottom:1px solid var(--line)";
+            var dot = self._el("div", null, row);
+            dot.style.cssText = "width:30px; height:30px; flex:none; border-radius:999px; display:flex; align-items:center; justify-content:center; color:#10131a; background:" + ST[eff][1];
+            if (eff === "pending") dot.style.color = "var(--faint)";
+            self._icon(ST[eff][0], 18, dot);
+            var cov = self._el("div", null, row);
+            cov.style.cssText = "width:38px; height:38px; flex:none; border-radius:8px";
+            var hit = r.hit;
+            self._setCover(cov, { coverUrl: hit ? self._artwork(hit.artworkUrl100, 100) : null, title: hit ? hit.collectionName : r.item.album || r.item.title });
+            var col = self._el("div", null, row);
+            col.style.cssText = "flex:1 1 220px; min-width:0";
+            self._text("div", "ell", hit ? hit.trackName : r.item.title, col).style.fontWeight = "600";
+            var sub = hit ? hit.artistName + (hit.collectionName ? " · " + hit.collectionName : "") : (r.item.artist || "") + (r.item.album ? " · " + r.item.album : "");
+            self._text("div", "ell", sub, col).style.cssText = "font-size:12.5px; color:var(--mute)";
+            self._text("span", null, r.note, row).style.cssText = "font-size:12.5px; color:var(--mute); flex:0 1 220px";
+            if (r.status === "check" && !r.accepted) {
+              self._btn("pill", "Use this", "check", row, function () { r.accepted = true; self._renderImportReview(); self._renderImportSave(); }, 14);
+            }
+            var rm = self._iconBtn("", "close", "Remove this line", row, function () { r.dropped = true; self._renderImportReview(); self._renderImportSave(); }, 18);
+            rm.style.cssText = "width:30px; height:30px";
+          });
+        },
+
+        _renderImportSave: function () {
+          var self = this;
+          var s = this.state;
+          var box = this._dom.impSave;
+          this._clear(box);
+          if (!s.importOpen || !s.importRows || s.importPhase === "matching") return;
+          var plan = this._importPlan();
+          var parsed = s.importParsed;
+          var saving = !!s.importSaving;
+          var tracks = plan.reduce(function (n, g) { return n + (g.name.trim() ? g.rows.length : 0); }, 0);
+          var lists = plan.filter(function (g) { return g.rows.length && g.name.trim(); }).length;
+
+          this._stepHead(box, 3, "Save it");
+          var multi = parsed.groups.length > 1;
+          if (multi) {
+            var gl = this._el("div", null, box);
+            gl.style.cssText = "display:flex; flex-direction:column; gap:8px; margin-bottom:12px";
+            plan.forEach(function (g) {
+              var row = self._el("div", null, gl);
+              row.style.cssText = "display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px";
+              var wrap = self._el("div", null, row);
+              wrap.style.cssText = "flex:1 1 240px; max-width:360px";
+              var input = self._el("input", null, wrap);
+              input.type = "text";
+              input.value = g.name;
+              input.setAttribute("aria-label", "Playlist name");
+              input.disabled = saving;
+              input.addEventListener("input", function () { s.importNames[g.key] = input.value; });
+              self._text("span", "mono", g.rows.length + " of " + g.total + " matched", row).style.cssText = "font-size:12.5px; color:var(--mute)";
+              var rm = self._iconBtn("", "close", "Skip this playlist", row, function () { s.importRemoved[g.key] = true; self._renderImportSave(); }, 18);
+              rm.style.cssText = "width:30px; height:30px";
+              rm.disabled = saving;
+            });
+          }
+
+          var row = this._el("div", null, box);
+          row.style.cssText = "display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px";
+          if (!multi) {
+            var wrap = this._el("div", null, row);
+            wrap.style.cssText = "flex:1 1 240px; max-width:360px";
+            var input = this._el("input", null, wrap);
+            input.type = "text";
+            input.setAttribute("aria-label", "Playlist name");
+            var g0 = plan[0];
+            input.placeholder = "Imported playlist";
+            input.value = g0 ? g0.name : "";
+            input.disabled = saving;
+            input.addEventListener("input", function () { if (g0) s.importNames[g0.key] = input.value; });
+          }
+          var vis = this._el("span", null, row);
+          vis.setAttribute("role", "group");
+          vis.setAttribute("aria-label", "Visibility");
+          vis.style.cssText = "display:inline-flex; flex-wrap:wrap; gap:6px";
+          ["private", "public"].forEach(function (v) {
+            var on = s.importVis === v;
+            var b = self._btn("pill" + (on ? " on" : ""), VIS_LABEL[v], VIS_ICON[v], vis, function () { s.importVis = v; self._renderImportSave(); }, 14);
+            b.setAttribute("aria-pressed", on ? "true" : "false");
+            b.disabled = saving;
+          });
+          var sp = this._el("span", null, row);
+          sp.style.flex = "1";
+          var label = saving ? "Saving…" : "Import " + tracks + (tracks === 1 ? " track" : " tracks") + (lists > 1 ? " into " + lists + " playlists" : "");
+          var go = this._btn("btn acc", label, "upload", row, function () { self._importSave(); }, 18);
+          go.disabled = saving || tracks === 0;
+
+          var skipped = plan.reduce(function (n, g) { return n + (g.total - g.rows.length); }, 0);
+          var note = saving ? s.importSaving : (tracks === 0 ? "Nothing is matched yet. Use “Use this” on a suggestion, or fix the list above." : (skipped ? skipped + (skipped === 1 ? " line is" : " lines are") + " skipped (not matched). " : "") + VIS_DESC[s.importVis]);
+          this._text("div", null, note, box).style.cssText = "margin-top:8px; font-size:12.5px; color:var(--mute)";
+        },
+
+        _renderExportPanel: function (main, pl) {
+          var self = this;
+          var s = this.state;
+          var d = this._exportData(pl);
+          var box = this._el("div", null, main);
+          box.style.cssText = "margin-top:20px; padding:16px 18px; background:var(--surf); border:1px solid var(--line); border-radius:16px";
+          var head = this._el("div", null, box);
+          head.style.cssText = "display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px";
+          this._text("span", "display", "Export playlist", head).style.cssText = "font-weight:700; font-size:17px";
+          var grp = this._el("span", null, head);
+          grp.setAttribute("role", "group");
+          grp.setAttribute("aria-label", "File format");
+          grp.style.cssText = "display:inline-flex; gap:6px";
+          [["csv", "CSV"], ["txt", "Text"]].forEach(function (f) {
+            var on = s.exportFmt === f[0];
+            var b = self._btn("pill" + (on ? " on" : ""), f[1], null, grp, function () { s.exportFmt = f[0]; self._renderMain(); });
+            b.setAttribute("aria-pressed", on ? "true" : "false");
+          });
+          this._el("span", null, head).style.flex = "1";
+          this._btn("pill", "Copy", "content_copy", head, function () { self._copyExport(pl); }, 16);
+          var a = this._el("a", "btn acc sm", head);
+          a.href = "data:text/" + (d.isCsv ? "csv" : "plain") + ";charset=utf-8," + encodeURIComponent((d.isCsv ? "\uFEFF" : "") + d.body);
+          a.download = d.filename;
+          this._icon("download", 18, a);
+          a.appendChild(document.createTextNode("Download " + d.filename));
+          this._text("div", null, d.isCsv
+            ? "One row per track, with the same columns a transfer-tool export uses. Opens in any spreadsheet, and the importer reads it straight back."
+            : "One “Artist - Track” line per track. Paste it anywhere a list of songs is accepted.", box).style.cssText = "margin-top:6px; font-size:12.5px; color:var(--mute)";
+          var lines = d.body.split("\n");
+          var pre = this._el("div", "mono", box);
+          pre.style.cssText = "margin-top:12px; max-height:170px; overflow:auto; padding:12px 14px; border-radius:12px; background:var(--bg); border:1px solid var(--line); font-size:12.5px; line-height:1.6; white-space:pre; color:var(--text)";
+          pre.textContent = lines.slice(0, 14).join("\n") + (lines.length > 14 ? "\n… " + (lines.length - 14) + " more" : "");
         },
 
         _renderToast: function () {
