@@ -2242,7 +2242,15 @@ lively.morphic.Morph.subclass('lively.morphic.HandMorph',
 'initializing', {
     initialize: function($super, optExtent) {
         $super();
-        var ext = optExtent || pt(2,2);
+        // Zero-sized by default: a 2x2 box parked at the pointer's position
+        // poked past the world's bottom/right edge whenever the pointer sat
+        // on the viewport's last pixel row/column, which made the document
+        // scrollable by a few px -- the vertical scrollbar then shrank
+        // clientWidth by 15px so the (exactly viewport-wide) world overflowed
+        // horizontally too, giving both scrollbars on an otherwise
+        // viewport-sized page. Confirmed live: setExtent(0,0) on the hand
+        // removed both; a 1x1 hand still overflowed.
+        var ext = optExtent || pt(0,0);
         // Invisible: the hand only needs to exist (position tracking, and as
         // the owner of grabbed morphs). It used to be filled red, which left
         // a stray 2x2 red dot following the mouse everywhere.
