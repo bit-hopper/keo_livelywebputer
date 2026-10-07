@@ -9,7 +9,7 @@ lively.BuildSpec("lively.morphic.tools.MenuBar", {
     grabbingEnabled: false,
     style: {
       fill: Color.rgba(255,255,255,0.62),
-      borderWidth: 1, borderColor: Color.rgba(255,255,255,0.7),
+      borderWidth: 0,
       borderRadius: 16,
       clipMode: "hidden",
       adjustForNewBounds: true
@@ -43,18 +43,21 @@ lively.BuildSpec("lively.morphic.tools.MenuBar", {
     },
 
     // The frosted-glass pill look; blur/shadow have no morphic style, so those go to the DOM.
+    // The thin pink outline is an inset ring in the box-shadow, not a real border: Lively
+    // floors fractional borderWidths to 0, and a real 1px border is drawn at 0.667px at
+    // fractional device-pixel ratios, which skews the bar's width and the entries' centering.
     applyPillChrome: function applyPillChrome() {
       var M = lively.morphic.tools.MenuBar;
       this.applyStyle({
         fill: Color.rgba(255,255,255,0.62),
-        borderColor: Color.rgba(255,255,255,0.7),
+        borderWidth: 0,
         borderRadius: M.HEIGHT / 2,
         clipMode: "hidden"
       });
       var node = this.renderContext().shapeNode;
       if (!node) return;
       node.style.backdropFilter = node.style.webkitBackdropFilter = M.BACKDROP_FILTER;
-      node.style.boxShadow = M.BOX_SHADOW;
+      node.style.boxShadow = "inset 0 0 0 " + M.RING_WIDTH + "px " + M.RING_COLOR + ", " + M.BOX_SHADOW;
     },
 
     add: function add(morph) {
@@ -257,6 +260,8 @@ Object.extend(lively.morphic.tools.MenuBar, {
   HEIGHT: 32,                // bar height
   ENTRY_HEIGHT: 24,          // height of a regular entry (its pill highlight)
   MENU_GAP: 6,               // gap between the bar and a dropdown menu
+  RING_WIDTH: 0.5,           // thin pink outline (px, may be < 1)
+  RING_COLOR: "rgb(240,26,105)",
   BACKDROP_FILTER: "blur(18px) saturate(180%)",
   BOX_SHADOW: "0 4px 18px rgba(0,0,0,0.14), 0 1px 3px rgba(0,0,0,0.10)",
 
