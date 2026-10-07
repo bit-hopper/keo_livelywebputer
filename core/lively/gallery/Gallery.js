@@ -176,6 +176,7 @@ module("lively.gallery.Gallery")
       "  border-radius:var(--g-radius-md); overflow:hidden; background:var(--g-card); box-shadow:var(--g-shadow-sm); transition:transform 0.15s ease; }" +
       ".lk-gallery-viewport .gal-tile:hover { transform:translateY(-2px) }" +
       ".lk-gallery-viewport .gal-tile.is-dragging { opacity:0.4 }" +
+      ".lk-gallery-viewport .gal-tile.is-drop-target { outline:3px solid var(--g-accent); outline-offset:-3px }" +
       ".lk-gallery-viewport .gal-tile img { display:block; width:100%; height:auto }" +
       ".lk-gallery-viewport .gal-cap { position:absolute; left:0; right:0; bottom:0; padding:10px 12px 8px; color:#fff;" +
       "  background:linear-gradient(to top, rgba(0,0,0,0.65), transparent); font-size:12px; opacity:0; transition:opacity 0.15s ease; pointer-events:none; }" +
@@ -682,12 +683,40 @@ module("lively.gallery.Gallery")
           evt.dataTransfer.effectAllowed = "move";
           evt.dataTransfer.setData("text/plain", photoId);
         },
-        _onTileDragOver: function (evt) {
+        // A plain tile.addEventListener("dragover"/"drop") never fires:
+        // lively.morphic.World handles those in capture phase on its own
+        // shapeNode and stops them first. It does delegate to the morph under
+        // the cursor's onHTML5Drag/onHTML5Drop, so these two (the same
+        // pattern as FilesBrowser.js) hit-test the tiles themselves via
+        // data-photo-id.
+        onHTML5Drag: function (evt) {
+          if (!this.state || !this.state.dragId) return false;
+          var el = this._tileElAt(evt.clientX, evt.clientY);
+          if (this._dragHoverEl && this._dragHoverEl !== el) {
+            this._dragHoverEl.classList.remove("is-drop-target");
+            this._dragHoverEl = null;
+          }
+          if (!el) return false;
           evt.preventDefault();
-          evt.dataTransfer.dropEffect = "move";
+          if (evt.dataTransfer) evt.dataTransfer.dropEffect = "move";
+          el.classList.add("is-drop-target");
+          this._dragHoverEl = el;
+          return true;
         },
-        _onTileDrop: function (targetId, evt) {
+        onHTML5Drop: function (evt) {
+          if (this._dragHoverEl) { this._dragHoverEl.classList.remove("is-drop-target"); this._dragHoverEl = null; }
+          if (!this.state || !this.state.dragId) return false;
+          var el = this._tileElAt(evt.clientX, evt.clientY);
+          if (!el) { this.state.dragId = null; return false; }
           evt.preventDefault();
+          this._onTileDrop(el.getAttribute("data-photo-id"));
+          return true;
+        },
+        _tileElAt: function (x, y) {
+          var el = document.elementFromPoint(x, y);
+          return el && el.closest ? el.closest(".gal-tile[data-photo-id]") : null;
+        },
+        _onTileDrop: function (targetId) {
           var dragId = this.state.dragId;
           this.state.dragId = null;
           if (!dragId || dragId === targetId) return;
@@ -893,6 +922,8 @@ module("lively.gallery.Gallery")
 
           var img = this._el("img", null, tile);
           img.alt = photo.caption || photo.name || "";
+          // Otherwise the <img> is the native drag source, not the tile.
+          img.draggable = false;
           lively.identity.fileCrypto.folderFileUrl(this.galleryHandle, this.galleryFolderObjId, photo, function (err, url) {
             if (!err) img.src = url;
           });
@@ -905,9 +936,8 @@ module("lively.gallery.Gallery")
           if (this.state.isOwner && this.state.reorderMode) {
             tile.draggable = true;
             tile.addEventListener("dragstart", function (e) { tile.classList.add("is-dragging"); self._onTileDragStart(photo.id, e); });
-            tile.addEventListener("dragend", function () { tile.classList.remove("is-dragging"); });
-            tile.addEventListener("dragover", function (e) { self._onTileDragOver(e); });
-            tile.addEventListener("drop", function (e) { self._onTileDrop(photo.id, e); });
+            tile.setAttribute("data-photo-id", photo.id);
+            tile.addEventListener("dragend", function () { tile.classList.remove("is-dragging"); self.state.dragId = null; });
             var grip = this._el("div", "gal-grip", tile);
             this._svgIcon(ICON_GRIP, grip);
           }

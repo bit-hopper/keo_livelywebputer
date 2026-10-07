@@ -2083,7 +2083,12 @@ lively.morphic.World.addMethods(
       // This method is called when a browser native drag event occurs. This
       // happens when selecting and dragging HTML elements or text (you usually
       // need to hold your mouse down for a while, then drag to trigger it)
-      // By default we will not handle these events and just stop them.
+      // By default we will not handle these events and just stop them —
+      // except for an element that explicitly opted in with draggable=true
+      // (e.g. Gallery's reorder tiles): preventDefault() on dragstart cancels
+      // the native drag outright, so stopping those would make them undraggable.
+      var t = evt.target;
+      if (t && t.closest && t.closest('[draggable="true"]')) return false;
       evt.stop();
       return true;
     },
