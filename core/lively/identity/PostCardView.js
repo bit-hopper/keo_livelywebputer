@@ -66,6 +66,7 @@ module("lively.identity.PostCardView")
           "_titleEl",
           "_contentEl",
           "_stampEl",
+          "_stampLayerEl",
           "_didEl",
           "_cidEl",
           "_dateEl",
@@ -465,6 +466,15 @@ module("lively.identity.PostCardView")
             "line-height:1.9",
           ].join(";");
           back.appendChild(meta);
+
+          // Author-placed stamps (payload.backStamps) — above the meta rows,
+          // below the verify badge and flip-back button appended after this.
+          // pointer-events:none so it never blocks the controls beneath.
+          var stampLayer = document.createElement("div");
+          stampLayer.className = "lively-postcard-view-stamps";
+          stampLayer.style.cssText = "position:absolute;inset:0;pointer-events:none;";
+          back.appendChild(stampLayer);
+          this._stampLayerEl = stampLayer;
 
           function row(label) {
             var r = document.createElement("div");
@@ -921,6 +931,12 @@ module("lively.identity.PostCardView")
           // never flips, so there's nothing to verify-badge either.
           if (!this._compactMode) {
             this._renderBackMeta(envelope);
+            // Public: the payload is right here. Private/shared: cleared now
+            // (a reused view must not keep the previous card's stamps) and
+            // filled in by _decryptAndRenderContent once decrypted.
+            this._renderBackStamps(
+              envelope.visibility === "public" && envelope.record ? envelope.record.payload : null,
+            );
             this._verify(envelope);
           }
           this._renderReactionsFooter(envelope);
@@ -1288,6 +1304,7 @@ module("lively.identity.PostCardView")
             );
             lively.identity.postCardUtils.hydrateLinkPreviewEmbeds(self._contentEl);
             lively.identity.postCardUtils.hydrateLinkPreviews(self._contentEl);
+            if (!self._compactMode) self._renderBackStamps(payload);
           });
         },
 
@@ -1321,6 +1338,49 @@ module("lively.identity.PostCardView")
           var stampColor =
             envelope.visibility === "public" ? "#888" : "#5566cc";
           this._stampEl.style.color = stampColor;
+        },
+
+        // payload.backStamps: [{ objId, x, y, w, ar }] — x/y/w are fractions
+        // of the back face, ar is natural width/height (see
+        // PostCardEditor's "back view" section). payload may be null.
+        // Plain <img> so animated GIF/WebP keep animating.
+        _renderBackStamps: function (payload) {
+          var layer = this._stampLayerEl;
+          if (!layer) return;
+          layer.innerHTML = "";
+          var stamps = (payload && payload.backStamps) || [];
+          var attachments = (payload && payload.attachments) || [];
+          var handle = this._handle;
+          // The dashed "✉" placeholder only makes sense on a bare back.
+          if (this._stampEl) this._stampEl.style.display = stamps.length ? "none" : "flex";
+          if (!stamps.length) return;
+
+          // Clamp defensively: a malformed/hand-edited payload must not be
+          // able to cover the whole card or sit off-face.
+          function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, +v || 0)); }
+          var MAX_W = 160 / 420;
+
+          stamps.forEach(function (s) {
+            var entry = attachments.filter(function (a) { return a.objId === s.objId; })[0];
+            if (!entry) return;
+            var w = clamp(s.w, 0.02, MAX_W);
+            var img = document.createElement("img");
+            img.draggable = false;
+            img.alt = "Stamp";
+            img.style.cssText = [
+              "position:absolute",
+              "left:" + clamp(s.x, 0, 1 - w) * 100 + "%",
+              "top:" + clamp(s.y, 0, 1) * 100 + "%",
+              "width:" + w * 100 + "%",
+              "height:auto",
+            ].join(";");
+            layer.appendChild(img);
+            lively.require("lively.identity.FileCrypto").toRun(function () {
+              lively.identity.fileCrypto.resolveAttachmentUrl(handle, entry, function (err, url) {
+                if (!err && url && img.parentNode) img.src = url;
+              });
+            });
+          });
         },
 
         _formatDate: function (iso) {

@@ -92,7 +92,7 @@ module('lively.identity.PostCardEditor')
     // ─── serialization guard ──────────────────────────────────────────────────────
 
     'serialization', {
-      doNotSerialize: ['editorView', 'yDoc', 'wsProvider', '_saveTimer', '_pmContainer', '_previewEl', '_contentLoadStarted'],
+      doNotSerialize: ['editorView', 'yDoc', 'wsProvider', '_saveTimer', '_pmContainer', '_previewEl', '_contentLoadStarted', '_backBar', '_backDiv', '_backFace', '_stampLayer', '_stampEls'],
     },
 
     // ─── initialization ──────────────────────────────────────────────────────────
@@ -134,6 +134,13 @@ module('lively.identity.PostCardEditor')
         // mime } entries — pass-through inside the postcard payload, hydrated
         // from the loaded envelope in _loadExistingNow.
         this._attachments = [];
+        // Back-of-card stamps: [{ objId, x, y, w, ar }] — objId resolves
+        // against _attachments (same dek/blobCid pass-through as inline
+        // images), x/y/w are fractions of the back face (see PostCardView's
+        // _renderBackStamps), ar is natural width/height. Plain mode only.
+        this._backStamps = [];
+        this._backViewActive = false;
+        this._selectedStampIdx = -1;
         // Plain-mode-only (§1.1/§2.3): { embedId: {...plain JSON...} },
         // this card's counterpart to a wiki-mode card's yDoc.getMap('partState').
         // Set fresh in _createNewDoc for a new plain card, hydrated from
@@ -323,6 +330,10 @@ module('lively.identity.PostCardEditor')
         shapeNode.appendChild(pmDiv);
         this._pmContainer = pmDiv;
 
+        // Back-of-card stamp arranger (hidden until _showBackView) — a plain
+        // DOM sibling of pmDiv, same event-isolation treatment below.
+        this._buildBackView(shapeNode);
+
         // Floating action cluster (Location/status/Send/Save) — appended
         // after pmDiv so it paints on top in source order, hovering over
         // the bottom-right of the content area (see the reserved bottom
@@ -442,6 +453,11 @@ module('lively.identity.PostCardEditor')
         ['mousedown', 'mousemove', 'mouseup', 'click', 'dblclick'].forEach(function (t) {
           pmDiv.addEventListener(t, function (e) { e.stopPropagation(); });
         });
+        [this._backDiv, this._backBar].forEach(function (el) {
+          ['keydown', 'keyup', 'keypress', 'input', 'mousedown', 'mousemove', 'mouseup', 'click', 'dblclick'].forEach(function (t) {
+            el.addEventListener(t, function (e) { e.stopPropagation(); });
+          });
+        });
       },
 
       // Two formatting rows, each a plain strip of icon-only circular
@@ -481,7 +497,9 @@ module('lively.identity.PostCardEditor')
           { icon: 'format_clear',           title: 'Clear formatting',   cmd: 'clearFormatting' },
           { icon: 'link',                   title: 'Insert/remove link', cmd: 'link' },
           { icon: 'attach_file',            title: 'Insert attachment',  cmd: 'attachment' },
-          { icon: 'extension',              title: 'Insert part',        cmd: 'insertPart' },
+          { icon: 'sticker_add',            title: 'Add a stamp to the back of the card', cmd: 'stamp' },
+          { icon: 'flip_to_back',           title: 'Back of card (arrange stamps)', cmd: 'backView' },
+          { icon: 'extension',             title: 'Insert part',        cmd: 'insertPart' },
           { icon: 'visibility',             title: 'Preview (toggle)',   cmd: 'preview' },
           { icon: 'functions',              title: 'Math inline',        cmd: 'insertMath', mathType: 'inline' },
           { icon: 'calculate',              title: 'Math display',      cmd: 'insertMath', mathType: 'display' },
@@ -1202,6 +1220,10 @@ module('lively.identity.PostCardEditor')
             // private/shared card) payload — the image NodeView/link click
             // handler resolve against this array, not a fresh fetch.
             self._attachments = (payload && payload.attachments) || [];
+            // Must be re-seeded here like _attachments: the save params are
+            // rebuilt from editor fields each time, so a loaded card's
+            // stamps would otherwise vanish on its next autosave.
+            self._backStamps = (payload && payload.backStamps) || [];
 
             self._attachEditor();
             self._applyReadOnlyMode();
@@ -1848,6 +1870,306 @@ module('lively.identity.PostCardEditor')
 
     },
 
+    // ─── back of card: stamps ─────────────────────────────────────────────────────
+    //
+    // The editor itself is one ProseMirror document, so the back face is a
+    // separate plain-DOM view swapped in over pmDiv (see _showBackView).
+    // Stamps are uploaded through the same FileCrypto path as inline
+    // attachments (_uploadFileEntry) and stored as payload.backStamps:
+    // [{ objId, x, y, w, ar }] — x/y/w are fractions of the face (so the
+    // layout scales with whatever size PostCardView renders the back at) and
+    // ar is natural width/height (so height always follows aspect ratio).
+    // Rendered as plain <img> (never via canvas) so animated GIF/WebP stay
+    // animated.
+
+    'back view', {
+
+      // Reference face size: PostCardView's default 420x300 extent. A stamp
+      // is capped at _STAMP_MAX_W x _STAMP_MAX_H *on this reference face*
+      // and shrunk proportionally if its natural size exceeds that.
+      _BACK_W: 420,
+      _BACK_H: 300,
+      _STAMP_MAX_W: 160,
+      _STAMP_MAX_H: 110,
+
+      _buildBackView: function (shapeNode) {
+        var self = this;
+
+        function pill(glyph, label, cls, onClick) {
+          var b = document.createElement('button');
+          b.className = 'pce-pill-btn ' + cls;
+          var g = document.createElement('span');
+          g.className = 'pce-pill-glyph';
+          g.textContent = glyph;
+          b.appendChild(g);
+          b.appendChild(document.createTextNode(label));
+          b.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            onClick();
+          });
+          return b;
+        }
+
+        // Replaces the formatting toolbar while the back is showing — none of
+        // its commands apply to the back face.
+        var bar = document.createElement('div');
+        bar.style.cssText = [
+          'position:absolute', 'top:0', 'left:0', 'right:0', 'height:' + this._TOOLBAR_HEIGHT + 'px',
+          'background:#fff', 'border-bottom:1px solid #eee', 'box-sizing:border-box',
+          'display:none', 'align-items:center', 'gap:8px', 'padding:0 12px', 'z-index:6',
+          'font-family:sans-serif',
+        ].join(';');
+        bar.appendChild(pill('arrow_back', 'Front', 'pce-pill-neutral', function () { self._showBackView(false); }));
+        bar.appendChild(pill('sticker_add', 'Add stamp', 'pce-pill-accent-soft', function () { self._promptStamp(); }));
+        var hint = document.createElement('span');
+        hint.style.cssText = 'font-size:11px;color:#999;margin-left:6px;line-height:1.4;';
+        hint.textContent = 'Back of card. Drag stamps to place them, click one to select it. ' +
+          'Large stamps are shrunk to fit ' + this._STAMP_MAX_W + '×' + this._STAMP_MAX_H + '.';
+        bar.appendChild(hint);
+        shapeNode.appendChild(bar);
+        this._backBar = bar;
+
+        var backDiv = document.createElement('div');
+        backDiv.style.cssText = [
+          'position:absolute', 'top:' + this._TOOLBAR_HEIGHT + 'px', 'left:0', 'right:0', 'bottom:0',
+          'overflow:auto', 'background:#f4f4f7', 'display:none', 'box-sizing:border-box',
+          'padding:24px 0 ' + this._FLOATING_ACTIONS_CLEARANCE + 'px 0',
+        ].join(';');
+        shapeNode.appendChild(backDiv);
+        this._backDiv = backDiv;
+
+        var face = document.createElement('div');
+        face.style.cssText = [
+          'position:relative', 'width:' + this._BACK_W + 'px', 'height:' + this._BACK_H + 'px',
+          'margin:0 auto', 'background:#fff', 'border-radius:10px', 'overflow:hidden',
+          'box-shadow:0 2px 10px rgba(0,0,0,0.14)', 'font-family:sans-serif',
+        ].join(';');
+        backDiv.appendChild(face);
+        this._backFace = face;
+
+        // Faded stand-ins for what PostCardView draws on the real back, so
+        // the author can see what a stamp will sit over.
+        var ghost = document.createElement('div');
+        ghost.style.cssText = 'position:absolute;inset:0;pointer-events:none;color:#c8c8d0;';
+        var ghostStamp = document.createElement('div');
+        ghostStamp.textContent = '✉';
+        ghostStamp.style.cssText = [
+          'position:absolute', 'top:10px', 'right:10px', 'width:44px', 'height:52px',
+          'border:2px dashed currentColor', 'border-radius:3px', 'display:flex',
+          'align-items:center', 'justify-content:center', 'font-size:18px',
+        ].join(';');
+        ghost.appendChild(ghostStamp);
+        var ghostMeta = document.createElement('div');
+        ghostMeta.style.cssText = 'position:absolute;top:16px;left:14px;font-size:11px;line-height:1.9;';
+        ghostMeta.innerHTML = 'From: …<br>CID: …<br>Sent: …<br>Visibility: …';
+        ghost.appendChild(ghostMeta);
+        face.appendChild(ghost);
+
+        var layer = document.createElement('div');
+        layer.style.cssText = 'position:absolute;inset:0;';
+        layer.addEventListener('pointerdown', function (e) {
+          if (e.target === layer) self._selectStamp(-1);
+        });
+        face.appendChild(layer);
+        this._stampLayer = layer;
+      },
+
+      _showBackView: function (on) {
+        if (on && this._isWikiMode) {
+          this._setStatus('Stamps need a plain card');
+          return;
+        }
+        this._backViewActive = !!on;
+        this._backBar.style.display = on ? 'flex' : 'none';
+        this._backDiv.style.display = on ? 'block' : 'none';
+        this._pmContainer.style.display = on ? 'none' : '';
+        if (on) this._refreshBackStamps();
+        else if (this.editorView) this.editorView.focus();
+      },
+
+      _promptStamp: function () {
+        var self = this;
+        if (!this._canEdit) return;
+        if (this._isWikiMode) { this._setStatus('Stamps need a plain card'); return; }
+        var input = document.createElement('input');
+        input.type = 'file';
+        input.accept = 'image/*';
+        input.style.display = 'none';
+        document.body.appendChild(input);
+        input.addEventListener('change', function () {
+          var file = input.files && input.files[0];
+          if (input.parentNode) input.parentNode.removeChild(input);
+          if (file) self._addStampFromFile(file);
+        });
+        input.click();
+      },
+
+      // Reads the natural size first (so an unreadable file is rejected
+      // before anything is uploaded), then uploads and appends the stamp.
+      _addStampFromFile: function (file) {
+        var self = this;
+        // Some OSes report an empty/generic type for .webp etc., so fall
+        // back to the extension (the probe <img> below rejects non-images).
+        var looksImage = /^image\//.test(file.type || '') || /\.(png|gif|webp|jpe?g|apng|avif|svg)$/i.test(file.name || '');
+        if (!looksImage) { this._setStatus('Stamps must be images'); return; }
+        var url = URL.createObjectURL(file);
+        var probe = new Image();
+        probe.onload = function () {
+          var nw = probe.naturalWidth || 100, nh = probe.naturalHeight || 100;
+          URL.revokeObjectURL(url);
+          self._uploadFileEntry(file, function (err, entry) {
+            if (err) return;
+            self._backStamps.push(self._makeStamp(entry.objId, nw, nh));
+            self._selectedStampIdx = self._backStamps.length - 1;
+            self._showBackView(true);
+            // Not a ProseMirror transaction, so nothing else would trigger
+            // an autosave for this.
+            self._markEdited();
+            self._setStatus('Stamp added');
+          });
+        };
+        probe.onerror = function () {
+          URL.revokeObjectURL(url);
+          self._setStatus('Could not read image');
+        };
+        probe.src = url;
+      },
+
+      // Natural size -> capped stamp record, centered with a small stagger
+      // so successive stamps don't land exactly on top of each other.
+      _makeStamp: function (objId, nw, nh) {
+        var scale = Math.min(1, this._STAMP_MAX_W / nw, this._STAMP_MAX_H / nh);
+        var w = (nw * scale) / this._BACK_W;
+        var ar = nw / nh;
+        var hFrac = (w * this._BACK_W / ar) / this._BACK_H;
+        var n = this._backStamps.length % 5;
+        return {
+          objId: objId,
+          x: Math.max(0, Math.min(1 - w, (1 - w) / 2 + 0.03 * n)),
+          y: Math.max(0, Math.min(1 - hFrac, (1 - hFrac) / 2 + 0.03 * n)),
+          w: w,
+          ar: ar,
+        };
+      },
+
+      _resolveStampSrc: function (stamp, cb) {
+        var entry = (this._attachments || []).filter(function (a) { return a.objId === stamp.objId; })[0];
+        if (!entry) return cb(null, '');
+        if (!entry.dek) return cb(null, this._publicBlobUrl(entry.blobCid));
+        lively.identity.fileCrypto.resolveAttachmentUrl(this._handle, entry, cb);
+      },
+
+      _refreshBackStamps: function () {
+        var self = this;
+        var layer = this._stampLayer;
+        layer.innerHTML = '';
+        this._stampEls = [];
+        function pct(f) { return (f * 100) + '%'; }
+
+        this._backStamps.forEach(function (stamp, i) {
+          var wrap = document.createElement('div');
+          wrap.setAttribute('role', 'button');
+          wrap.setAttribute('aria-label', 'Stamp ' + (i + 1) + ' (drag to move)');
+          wrap.style.cssText = 'position:absolute;left:' + pct(stamp.x) + ';top:' + pct(stamp.y) +
+            ';width:' + pct(stamp.w) + ';cursor:grab;touch-action:none;user-select:none;';
+          var img = document.createElement('img');
+          img.draggable = false;
+          img.alt = 'Stamp';
+          img.style.cssText = 'display:block;width:100%;height:auto;-webkit-user-drag:none;pointer-events:none;';
+          wrap.appendChild(img);
+          self._resolveStampSrc(stamp, function (err, src) {
+            if (!err && src) img.src = src;
+          });
+
+          var chip = document.createElement('button');
+          chip.textContent = 'close';
+          chip.title = 'Remove stamp';
+          chip.style.cssText = [
+            'position:absolute', 'top:2px', 'right:2px', 'width:18px', 'height:18px', 'padding:0',
+            'border:none', 'border-radius:50%', 'background:#E31361', 'color:#fff', 'cursor:pointer',
+            'font-family:"Material Symbols Rounded"', 'font-size:13px', 'line-height:18px',
+            'display:none', 'text-align:center',
+          ].join(';');
+          chip.addEventListener('pointerdown', function (e) { e.stopPropagation(); });
+          chip.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            self._removeStamp(i);
+          });
+          wrap.appendChild(chip);
+
+          wrap.addEventListener('pointerdown', function (e) {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+            self._selectStamp(i);
+            var scale = (self._backFace.getBoundingClientRect().width / self._BACK_W) || 1;
+            var startX = e.clientX, startY = e.clientY, ox = stamp.x, oy = stamp.y, moved = false;
+            var hFrac = (stamp.w * self._BACK_W / stamp.ar) / self._BACK_H;
+            wrap.setPointerCapture(e.pointerId);
+            wrap.style.cursor = 'grabbing';
+            function onMove(ev) {
+              var dx = (ev.clientX - startX) / scale / self._BACK_W;
+              var dy = (ev.clientY - startY) / scale / self._BACK_H;
+              stamp.x = Math.max(0, Math.min(1 - stamp.w, ox + dx));
+              stamp.y = Math.max(0, Math.min(1 - hFrac, oy + dy));
+              wrap.style.left = pct(stamp.x);
+              wrap.style.top = pct(stamp.y);
+              moved = true;
+            }
+            function onUp() {
+              document.removeEventListener('pointermove', onMove, true);
+              document.removeEventListener('pointerup', onUp, true);
+              document.removeEventListener('pointercancel', onUp, true);
+              wrap.style.cursor = 'grab';
+              if (moved) self._markEdited();
+            }
+            // Listen on document in the capture phase, not on the stamp:
+            // Lively's own capture-phase pointer/mouse handlers sit between
+            // document and the stamp and swallow the move/up events before
+            // they reach it (confirmed live — a listener on the stamp itself
+            // never fired, one on document capture did).
+            document.addEventListener('pointermove', onMove, true);
+            document.addEventListener('pointerup', onUp, true);
+            document.addEventListener('pointercancel', onUp, true);
+          });
+
+          layer.appendChild(wrap);
+          self._stampEls.push({ wrap: wrap, chip: chip });
+        });
+        this._selectStamp(this._selectedStampIdx);
+      },
+
+      _selectStamp: function (idx) {
+        this._selectedStampIdx = idx;
+        (this._stampEls || []).forEach(function (s, i) {
+          var sel = i === idx;
+          s.wrap.style.outline = sel ? '2px dashed #E31361' : 'none';
+          s.wrap.style.outlineOffset = '2px';
+          s.chip.style.display = sel ? 'block' : 'none';
+        });
+      },
+
+      _removeStamp: function (idx) {
+        var stamp = this._backStamps[idx];
+        if (!stamp) return;
+        this._backStamps.splice(idx, 1);
+        this._selectedStampIdx = -1;
+        // Drop the uploaded entry too (and its dek) unless something else —
+        // another stamp, or an inline image/link in the doc — still uses it.
+        var objId = stamp.objId;
+        var stillUsed = this._backStamps.some(function (s) { return s.objId === objId; }) ||
+          (this.editorView && JSON.stringify(this.editorView.state.doc.toJSON()).indexOf(objId) !== -1);
+        if (!stillUsed) {
+          this._attachments = (this._attachments || []).filter(function (a) { return a.objId !== objId; });
+        }
+        this._refreshBackStamps();
+        this._markEdited();
+      },
+
+    },
+
     // ─── auto-save ────────────────────────────────────────────────────────────────
 
     'autosave', {
@@ -1908,6 +2230,7 @@ module('lively.identity.PostCardEditor')
         } else {
           params.doc = this.editorView.state.doc.toJSON();
           params.partState = this._partState || {};
+          params.backStamps = this._backStamps || [];
           serialize = lively.identity.postCardSerializer.serializePlainToEnvelope;
         }
         this._setStatus('Saving…');
@@ -1963,6 +2286,7 @@ module('lively.identity.PostCardEditor')
             } else {
               params.doc = self.editorView.state.doc.toJSON();
               params.partState = self._partState || {};
+              params.backStamps = self._backStamps || [];
               serialize = lively.identity.postCardSerializer.serializePlainEncrypted;
             }
             serialize.call(lively.identity.postCardSerializer, params, function (err, envelope) {
@@ -3303,6 +3627,14 @@ module('lively.identity.PostCardEditor')
             this._promptAttachment();
             break;
           }
+          case 'stamp': {
+            this._promptStamp();
+            return;
+          }
+          case 'backView': {
+            this._showBackView(!this._backViewActive);
+            return;
+          }
           case 'preview': {
             this._togglePreview();
             return;
@@ -3402,6 +3734,27 @@ module('lively.identity.PostCardEditor')
         var isVideo = /^video\//.test(file.type || '');
         var isAudio = /^audio\//.test(file.type || '');
 
+        this._uploadFileEntry(file, function (err, entry) {
+          if (err) return;
+          // Inserting the node/mark below dispatches a doc-changing
+          // transaction, which dispatchTransaction already routes through
+          // _markEdited/_scheduleSave — no separate save trigger needed.
+          if (isImage) self._insertAttachmentImage(entry);
+          else if (isVideo) self._insertAttachmentVideo(entry);
+          else if (isAudio) self._insertAttachmentAudio(entry);
+          else self._insertAttachmentLink(entry);
+          self._setStatus('Uploaded');
+        });
+      },
+
+      // Encrypt-and-upload core shared by inline attachments and back-of-card
+      // stamps: uploads `file`, pushes the resulting entry onto _attachments,
+      // and calls cb(err, entry). Does NOT insert it anywhere — the caller
+      // decides what the entry is for.
+      _uploadFileEntry: function (file, cb) {
+        var self = this;
+        if (!this._handle) return cb(new Error('No handle'));
+
         function withRecipients(cb) {
           if (self._visibility === 'public' || !self._recipientHandles || !self._recipientHandles.length) {
             return cb([]);
@@ -3421,7 +3774,7 @@ module('lively.identity.PostCardEditor')
             if (err) {
               self._setStatus('Upload failed');
               console.error('[PostCardEditor] attachment upload failed:', err);
-              return;
+              return cb(err);
             }
             var entry = {
               objId: result.objId,
@@ -3438,14 +3791,7 @@ module('lively.identity.PostCardEditor')
             };
             if (!self._attachments) self._attachments = [];
             self._attachments.push(entry);
-            // Inserting the node/mark below dispatches a doc-changing
-            // transaction, which dispatchTransaction already routes through
-            // _markEdited/_scheduleSave — no separate save trigger needed.
-            if (isImage) self._insertAttachmentImage(entry);
-            else if (isVideo) self._insertAttachmentVideo(entry);
-            else if (isAudio) self._insertAttachmentAudio(entry);
-            else self._insertAttachmentLink(entry);
-            self._setStatus('Uploaded');
+            cb(null, entry);
           });
         });
       },

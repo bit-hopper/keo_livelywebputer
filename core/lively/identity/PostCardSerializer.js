@@ -339,6 +339,9 @@ module('lively.identity.PostCardSerializer')
           partState: params.partState || {},
           attachments: params.attachments || []
         };
+        // Back-of-card stamps (see PostCardEditor._backStamps) — omitted
+        // when empty so a stamp-less card's payload (and CID) is unchanged.
+        if (params.backStamps && params.backStamps.length) payload.backStamps = params.backStamps;
 
         var title = params.title;
         if (!title && doc.content && doc.content.length) {
@@ -654,6 +657,7 @@ module('lively.identity.PostCardSerializer')
           partState: params.partState || {},
           attachments: params.attachments || []
         };
+        if (params.backStamps && params.backStamps.length) payload.backStamps = params.backStamps;
 
         c.wrapDek(kek, function (err, dekResult) {
           if (err) return thenDo(err);
