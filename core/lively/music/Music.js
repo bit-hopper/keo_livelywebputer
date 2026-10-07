@@ -52,6 +52,16 @@ module("lively.music.Music")
       ["#e0784a", "#2b2a4a"], ["#1f3b4d", "#9ad1d4"], ["#2d1b4e", "#f2b134"], ["#6b8f4e", "#f4e4b8"],
       ["#b0245f", "#1a0f1e"], ["#2a6f97", "#e8f1f5"], ["#c98b3a", "#2e2118"], ["#0f6b6b", "#f3e9d2"],
     ];
+    // Pasted-link "full track" player. Only music sources are accepted: the
+    // pasted link's hostname must be one of EMBED_SOURCES (so arbitrary URLs
+    // never reach the unfurl endpoint), and the embed URL the server returns
+    // is re-checked against EMBED_HOSTS before it is ever set as an iframe src.
+    var EMBED_SOURCES = {
+      "open.spotify.com": 1, "youtube.com": 1, "www.youtube.com": 1, "m.youtube.com": 1, "music.youtube.com": 1,
+      "youtu.be": 1, "soundcloud.com": 1, "www.soundcloud.com": 1, "music.apple.com": 1,
+    };
+    var EMBED_HOSTS = { "open.spotify.com": "audio", "www.youtube.com": "video", "w.soundcloud.com": "audio", "embed.music.apple.com": "audio" };
+    var EMBED_PROVIDERS = ["spotify", "youtube", "soundcloud", "apple-music"];
     var CATALOG_SEARCH = "https://itunes.apple.com/search";
     var CATALOG_LOOKUP = "https://itunes.apple.com/lookup";
 
@@ -154,7 +164,7 @@ module("lively.music.Music")
         // _setup() on every fresh render context. musicLibraryObjId/
         // musicLibraryHandle/musicTheme/musicLibPublic are real serialized
         // Morph properties: all this morph needs to remember across a reload.
-        doNotSerialize: ["state", "_dom", "_audio", "_identityConnection", "_didHandleMap", "_libraryEnsurePending", "_catalogLast", "_addSearchTimer", "_toastTimer", "_searchSeq", "_nowPlayingKey", "_albumSave", "_queues", "_importRun", "_importCache", "_importTimer", "_importRenderTimer"],
+        doNotSerialize: ["state", "_dom", "_audio", "_identityConnection", "_didHandleMap", "_libraryEnsurePending", "_catalogLast", "_addSearchTimer", "_toastTimer", "_searchSeq", "_nowPlayingKey", "_albumSave", "_queues", "_importRun", "_importCache", "_importTimer", "_importRenderTimer", "_embedSeq", "_embedTimer"],
       },
 
       "initialization",
@@ -208,6 +218,10 @@ module("lively.music.Music")
             toast: "",
             exportOpen: false,
             exportFmt: "csv",
+            embedOpen: false,
+            embedUrl: "",
+            embed: null,
+            embedStatus: "idle",
             importOpen: false,
             importText: "",
             importFormat: "auto",
@@ -223,6 +237,7 @@ module("lively.music.Music")
             importError: "",
           };
           this._importRun = 0;
+          this._embedSeq = 0;
           this._importCache = {};
           this._didHandleMap = this._didHandleMap || {};
           this._searchSeq = 0;
@@ -413,6 +428,7 @@ module("lively.music.Music")
           this._dom.toast.style.cssText = "display:none; position:absolute; z-index:60; left:50%; bottom:92px; transform:translateX(-50%); max-width:90%; padding:10px 18px; border-radius:999px; background:var(--text); color:var(--bg); font-weight:600; font-size:13.5px; box-shadow:0 10px 26px rgba(0,0,0,.35)";
 
           this._buildQueuePopover(vp);
+          this._buildEmbedPopover(vp);
           this._buildPlayer(vp);
         },
 
@@ -661,6 +677,33 @@ module("lively.music.Music")
           return head;
         },
 
+        _buildEmbedPopover: function (vp) {
+          var self = this;
+          var pop = this._el("div", null, vp);
+          pop.setAttribute("role", "dialog");
+          pop.setAttribute("aria-label", "Play the full track");
+          pop.style.cssText = "display:none; position:absolute; z-index:55; right:20px; bottom:84px; width:420px; max-width:92%; max-height:calc(100% - 120px); overflow-y:auto; padding:16px; background:var(--surf); border:1px solid var(--line); border-radius:16px; box-shadow:0 18px 44px rgba(0,0,0,.4)";
+          pop.addEventListener("mousedown", function (e) { e.stopPropagation(); });
+          this._dom.embedPop = pop;
+          var head = this._el("div", null, pop);
+          head.style.cssText = "display:flex; align-items:center; justify-content:space-between";
+          this._text("span", "display", "Play the full track", head).style.cssText = "font-weight:700; font-size:17px";
+          var x = this._iconBtn("", "close", "Close", head, function () { self._closeEmbed(); }, 18);
+          x.style.cssText = "width:30px; height:30px";
+          this._text("div", null, "Previews are 30 seconds. Paste a link to a track, album, playlist or video from a supported music site to play the whole thing here.", pop).style.cssText = "font-size:13px; color:var(--mute); margin:4px 0 10px";
+          var row = this._el("div", null, pop);
+          row.style.cssText = "display:flex; align-items:center; gap:8px";
+          var ic = this._icon("link", 20, row);
+          ic.style.color = "var(--faint)";
+          var input = this._el("input", null, row);
+          input.type = "text";
+          input.placeholder = "https://…";
+          input.setAttribute("aria-label", "Link to the full track");
+          input.addEventListener("input", function () { self._onEmbedInput(input.value); });
+          this._dom.embedInput = input;
+          this._dom.embedBody = this._el("div", null, pop);
+        },
+
         _buildQueuePopover: function (vp) {
           var pop = this._el("div", null, vp);
           pop.style.cssText = "display:none; position:absolute; z-index:55; right:20px; bottom:84px; width:360px; max-width:90%; max-height:340px; overflow-y:auto; padding:10px; background:var(--surf); border:1px solid var(--line); border-radius:16px; box-shadow:0 18px 44px rgba(0,0,0,.4)";
@@ -716,6 +759,8 @@ module("lively.music.Music")
           right.style.cssText = "flex:1 1 220px; display:flex; align-items:center; justify-content:flex-end; gap:8px";
           var tag = this._text("span", "mono", "30s preview", right);
           tag.style.cssText = "font-size:11px; color:var(--faint)";
+          this._dom.pbEmbedBtn = this._btn("pill", "Full track", "link", right, function () { self._toggleEmbed(); }, 16);
+          this._dom.pbEmbedBtn.setAttribute("aria-haspopup", "dialog");
           this._dom.pbQueueBtn = this._btn("pill", "", "queue_music", right, function () { self._toggleQueue(); }, 16);
           this._dom.pbQueueLabel = document.createTextNode("Queue");
           this._dom.pbQueueBtn.appendChild(this._dom.pbQueueLabel);
@@ -993,6 +1038,7 @@ module("lively.music.Music")
         _playIndex: function (i) {
           var item = this.state.queue[i];
           if (!item) return;
+          this._closeEmbed(); // one thing at a time: a preview replaces a full track
           this.state.qi = i;
           this.state.elapsed = 0;
           this.state.duration = 30;
@@ -1008,7 +1054,7 @@ module("lively.music.Music")
         _togglePlay: function () {
           var a = this._audio;
           if (!a || !this._current()) return;
-          if (a.paused) { var p = a.play(); if (p && p.catch) p.catch(function () {}); }
+          if (a.paused) { this._closeEmbed(); var p = a.play(); if (p && p.catch) p.catch(function () {}); }
           else a.pause();
         },
         _nextTrack: function (fromEnded) {
@@ -1056,6 +1102,7 @@ module("lively.music.Music")
         },
         _toggleQueue: function () {
           this.state.queueOpen = !this.state.queueOpen;
+          if (this.state.queueOpen && this.state.embedOpen) this._closeEmbed();
           this._renderQueue();
         },
         // Album track items are rebuilt on every render, so match by catalog
@@ -1505,6 +1552,118 @@ module("lively.music.Music")
               self._dom.dRevInput.value = "";
               self._loadComments(objId);
             }).catch(function (e) { self._toast("Couldn't post: " + e.message); });
+        },
+      },
+
+      "full track",
+      {
+        _toggleEmbed: function () {
+          if (this.state.embedOpen) return this._closeEmbed();
+          this.state.embedOpen = true;
+          this.state.queueOpen = false;
+          this._renderQueue();
+          this._renderEmbed();
+          this._dom.embedInput.focus();
+        },
+        // Closing removes the iframe, which also stops whatever it was playing.
+        _closeEmbed: function () {
+          if (!this.state.embedOpen) return;
+          this.state.embedOpen = false;
+          this._embedSeq++;
+          this._renderEmbed();
+        },
+        _onEmbedInput: function (value) {
+          var self = this;
+          this.state.embedUrl = value;
+          clearTimeout(this._embedTimer);
+          this._embedSeq++;
+          this.state.embed = null;
+          this.state.embedStatus = value.trim() ? "typing" : "idle";
+          this._renderEmbed();
+          this._embedTimer = setTimeout(function () { self._resolveEmbed(value); }, 450);
+        },
+        _embedFrameHeight: function (embedUrl) {
+          var u = new URL(embedUrl);
+          var h = u.hostname.toLowerCase();
+          if (h === "open.spotify.com") return /^\/embed\/(track|episode)\//.test(u.pathname) ? 152 : 352;
+          if (h === "w.soundcloud.com") return /\/sets\//.test(decodeURIComponent(u.search)) ? 300 : 166;
+          if (h === "embed.music.apple.com") return /[?&]i=/.test(u.search) ? 175 : 450;
+          return 152;
+        },
+        _resolveEmbed: function (raw) {
+          var self = this;
+          var s = this.state;
+          var url = String(raw || "").trim();
+          var seq = ++this._embedSeq;
+          var fail = function (status) { if (seq !== self._embedSeq) return; s.embed = null; s.embedStatus = status; self._renderEmbed(); };
+          if (!url) return fail("idle");
+          var u = null;
+          try { u = new URL(url); } catch (e) { u = null; }
+          if (!u || (u.protocol !== "https:" && u.protocol !== "http:")) return fail("bad");
+          if (!EMBED_SOURCES[u.hostname.toLowerCase()]) return fail("unsupported");
+          s.embedStatus = "resolving";
+          this._renderEmbed();
+          fetch("/nodejs/LinkPreviewServer/unfurl?url=" + encodeURIComponent(u.toString()))
+            .then(function (r) {
+              // 422/404: the link was reachable but has nothing playable.
+              if (r.status === 422 || r.status === 404) return {};
+              if (!r.ok) throw new Error("HTTP " + r.status);
+              return r.json();
+            })
+            .then(function (d) {
+              if (seq !== self._embedSeq) return;
+              var host = "";
+              try { host = new URL(d.embedUrl).hostname.toLowerCase(); } catch (e) { host = ""; }
+              if (!d || EMBED_PROVIDERS.indexOf(d.provider) === -1 || !EMBED_HOSTS[host] || !/^https:\/\//.test(d.embedUrl)) return fail("unplayable");
+              s.embed = { link: u.toString(), embedUrl: d.embedUrl, host: host, shape: EMBED_HOSTS[host] };
+              s.embedStatus = "ready";
+              // One thing at a time: a full track pauses the preview queue.
+              if (self._audio && !self._audio.paused) self._audio.pause();
+              self._renderEmbed();
+            })
+            .catch(function () { fail("error"); });
+        },
+        _renderEmbed: function () {
+          var s = this.state;
+          var pop = this._dom.embedPop;
+          pop.style.display = s.embedOpen ? "" : "none";
+          this._dom.pbEmbedBtn.setAttribute("aria-expanded", s.embedOpen ? "true" : "false");
+          this._clear(this._dom.embedBody);
+          if (!s.embedOpen) return;
+          var body = this._dom.embedBody;
+          var MSG = {
+            bad: "That doesn't look like a link yet. Paste the full address starting with https://",
+            unsupported: "That link isn't from a supported music site. Try a track, album or playlist link from a streaming site.",
+            unplayable: "That link doesn't point at a track, album, playlist or video that can play here.",
+            error: "Couldn't check that link right now. Try again in a moment.",
+            resolving: "Checking the link…",
+            typing: "",
+          };
+          if (MSG[s.embedStatus]) this._text("div", null, MSG[s.embedStatus], body).style.cssText = "margin-top:10px; font-size:13px; color:var(--mute)";
+          if (s.embedStatus !== "ready" || !s.embed) return;
+
+          var card = this._el("div", null, body);
+          card.style.cssText = "margin-top:12px; border-radius:14px; background:var(--bg); border:1px solid var(--line); overflow:hidden";
+          var iframe = this._el("iframe", null, card);
+          iframe.src = s.embed.embedUrl;
+          iframe.title = "Full track player";
+          iframe.setAttribute("allowfullscreen", "");
+          iframe.referrerPolicy = "strict-origin-when-cross-origin";
+          iframe.sandbox = "allow-scripts allow-same-origin allow-popups allow-presentation";
+          iframe.allow = "autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture";
+          iframe.style.cssText = "display:block; width:100%; border:0";
+          if (s.embed.shape === "video") iframe.style.aspectRatio = "16 / 9";
+          else iframe.style.height = this._embedFrameHeight(s.embed.embedUrl) + "px";
+          var foot = this._el("div", null, body);
+          foot.style.cssText = "display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:8px";
+          this._text("span", "mono", "Embedded player · " + s.embed.host, foot).style.cssText = "font-size:11.5px; color:var(--faint)";
+          var a = this._el("a", "pill", foot);
+          a.href = s.embed.link;
+          a.target = "_blank";
+          a.rel = "noopener noreferrer";
+          this._icon("open_in_new", 14, a);
+          a.appendChild(document.createTextNode("Open site"));
+          this._text("div", null, "The preview queue pauses while a full track plays. The linked site controls playback and sound.", body).style.cssText = "margin-top:8px; font-size:12px; color:var(--faint)";
         },
       },
 
@@ -2063,8 +2222,7 @@ module("lively.music.Music")
             pb.style.cssText = "width:32px; height:32px; color:" + (np ? "var(--acc)" : "var(--faint)");
             pb.disabled = !entry.previewUrl;
             pb.setAttribute("aria-label", "Play " + entry.title);
-            if (np && self.state.playing) self._icon("graphic_eq", 18, pb);
-            else if (np) self._icon("pause", 18, pb);
+            if (np) self._icon(self.state.playing ? "graphic_eq" : "play_arrow", 18, pb);
             else self._text("span", "mono", String(idx + 1), pb).style.fontSize = "13px";
             pb.addEventListener("click", function () {
               if (np) self._togglePlay(); else self._playItems(items.slice(), entry);
@@ -2212,7 +2370,7 @@ module("lively.music.Music")
             pb.style.cssText = "width:30px; height:30px; color:" + (np ? "var(--acc)" : "var(--faint)");
             pb.disabled = !t.previewUrl;
             pb.setAttribute("aria-label", "Play " + t.title);
-            if (np) self._icon(self.state.playing ? "graphic_eq" : "pause", 18, pb);
+            if (np) self._icon(self.state.playing ? "graphic_eq" : "play_arrow", 18, pb);
             else self._text("span", "mono", String(i + 1), pb).style.fontSize = "12.5px";
             pb.addEventListener("click", function () { if (np) self._togglePlay(); else self._playItems(items, t); });
             self._text("span", "ell", t.title, row).style.cssText = "font-weight:500; color:" + (np ? "var(--acc)" : "var(--text)");
