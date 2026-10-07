@@ -20,7 +20,7 @@
  *     WikiEditor flow. Wiki pages save as type "wikipage", not "world", but
  *     are listed here too, labelled "Wiki".
  *   - Template: a single list of presets that pre-populate a new world
- *     (Shop/Inventory/Gallery/Books are wired up; Movie/Game/Music are
+ *     (Shop/Inventory/Gallery/Books/Music are wired up; Movie/Game are
  *     inert "Coming soon" placeholders for now). A chosen template is launched
  *     into the fresh world via a one-time ?template= query param, handled by
  *     WorldTemplateLauncher.js after the redirect.
@@ -739,7 +739,7 @@ module("lively.identity.WorldsBrowser")
           { icon: "movie",          title: "Movie",                  subtitle: "Organize your favorite movies.",           enabled: false, key: "movie" },
           { icon: "menu_book",      title: "Books",                  subtitle: "Organize your book collection.",           enabled: true,  key: "books" },
           { icon: "sports_esports", title: "Game",                   subtitle: "Organize your video games.",               enabled: false, key: "game" },
-          { icon: "library_music",  title: "Music",                  subtitle: "Organize your music collection.",          enabled: false, key: "music" },
+          { icon: "library_music",  title: "Music",                  subtitle: "Organize your music collection.",          enabled: true,  key: "music" },
         ];
 
         var rowH = 58;
