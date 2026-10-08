@@ -1447,6 +1447,17 @@ module("lively.identity.RoomView")
         list.renderContext().shapeNode.classList.add("roomview-scroll-light");
         chat.addMorph(list);
         this._msgListBox = list;
+        // Whether the user is parked at the newest message — _renderMessages
+        // only follows new content to the bottom while this holds, so
+        // scrolling up to read (or watch an embedded video) isn't undone by
+        // every poll/preview-landing re-render. Updated only by scroll
+        // events: content growing under a pinned list fires none, so it
+        // correctly stays pinned.
+        this._pinnedToBottom = true;
+        var listScrollNode = list.renderContext().shapeNode;
+        listScrollNode.addEventListener("scroll", function () {
+          self._pinnedToBottom = listScrollNode.scrollHeight - listScrollNode.scrollTop - listScrollNode.clientHeight < 40;
+        });
 
         var inputRow = noDrag(new lively.morphic.Box(lively.rect(0, listH, CHAT_W, INPUT_H)));
         inputRow.applyStyle({ fill: BG_MAIN, borderWidth: 0 });
@@ -1706,6 +1717,7 @@ module("lively.identity.RoomView")
         }
 
         this._sendingMessage = true;
+        this._scrollToBottomNext = true; // my own message always scrolls into view, even from a scrolled-up list
 
         // Consumed and cleared eagerly here (not left for the caller),
         // same "don't feel stuck" reasoning as _onSendMessage clearing the
@@ -2471,6 +2483,7 @@ module("lively.identity.RoomView")
       _onSendMessageFailed: function (text, err) {
         console.error("[RoomView] Failed to send message:", err);
         this._sendingMessage = false;
+        this._scrollToBottomNext = false;
         if (!this._inputM) return; // window closed mid-send; the text is not restored
         this._inputM.textString = text;
         this._placeholderM.setVisible(!text);
@@ -2769,6 +2782,19 @@ module("lively.identity.RoomView")
         // (date dividers, search bar, empty-state label) is cheap and rebuilt.
         var rowCache = (this._rowCacheOwner === this._msgListBox && this._rowCache) || {};
         var nextCache = {};
+        // Decided BEFORE anything below touches the list: removing/rebuilding
+        // rows can shrink scrollHeight and make the browser clamp scrollTop.
+        // Follow the newest message only if the user was already there, this
+        // is the first pass, I just sent a message, or search mode just
+        // flipped (search pins to the top, so closing it needs the bottom
+        // back). Otherwise put the scroll position back where it was.
+        var listScrollNode = this._msgListBox.renderContext().shapeNode;
+        var searchModeChanged = !!this._lastRenderSearch !== !!this._searchActive;
+        this._lastRenderSearch = this._searchActive;
+        var stickToBottom = this._pinnedToBottom !== false || this._scrollToBottomNext ||
+          searchModeChanged || !(this._rowCacheOwner === this._msgListBox && this._rowCache);
+        this._scrollToBottomNext = false;
+        var prevScrollTop = listScrollNode.scrollTop;
         (this._msgListBox.submorphs || []).slice().forEach(function (m) { if (!m._rvRow) m.remove(); });
         // Rebuilt fresh every pass — _jumpToMessage reads these at click
         // time rather than a closure capturing them now, so a reply chip's
@@ -3302,7 +3328,14 @@ module("lively.identity.RoomView")
         // Search mode: stay pinned to the top (the search bar + newest
         // match) rather than the live-chat convention of scrolling to the
         // newest message at the bottom.
-        scrollNode.scrollTop = this._searchActive ? 0 : scrollNode.scrollHeight;
+        if (this._searchActive) {
+          scrollNode.scrollTop = 0;
+        } else if (stickToBottom) {
+          scrollNode.scrollTop = scrollNode.scrollHeight;
+          this._pinnedToBottom = true;
+        } else {
+          scrollNode.scrollTop = prevScrollTop;
+        }
       },
 
     },
