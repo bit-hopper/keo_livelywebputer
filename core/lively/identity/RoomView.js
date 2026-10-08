@@ -2478,10 +2478,72 @@ module("lively.identity.RoomView")
       _messageBodyHtml: function (segments) {
         var self = this;
         return segments.map(function (s) {
-          if (!s.flag) return lively.identity.postCardUtils.escapeHtml(s.value);
+          if (!s.flag) return self._linkifyHtml(s.value);
           return '<img src="' + self._flagImageUrl(s.value) + '" alt="" ' +
             'style="width:16px;height:16px;vertical-align:-3px;border-radius:2px;display:inline-block;">';
         }).join("");
+      },
+
+      // http(s) URLs inside a message, with the punctuation a sentence puts
+      // right after a link left out of it: "see https://x.com/a." and
+      // "(https://x.com/a)" both link to https://x.com/a, while a closing
+      // paren that balances one inside the URL (a wiki page title like
+      // /Foo_(bar)) stays part of it.
+      _findUrls: function (text) {
+        var out = [];
+        var re = /https?:\/\/[^\s<>"']+/gi;
+        var m;
+        while ((m = re.exec(text || ""))) {
+          var url = m[0], prev;
+          do {
+            prev = url;
+            url = url.replace(/[.,;:!?]+$/, "");
+            while (/\)$/.test(url) && (url.match(/\)/g) || []).length > (url.match(/\(/g) || []).length) url = url.slice(0, -1);
+          } while (url !== prev);
+          if (url.length > 8) out.push({ url: url, start: m.index, end: m.index + url.length });
+          re.lastIndex = m.index + Math.max(url.length, m[0].length > 0 ? 1 : 0);
+        }
+        return out;
+      },
+
+      // Escapes `text` for innerHTML and turns each URL in it into a real
+      // link. Without this a URL inside a sentence was inert text — only a
+      // message that was nothing but a URL got linkified (by
+      // hydrateLinkPreviews), so a link between words didn't even highlight.
+      _linkifyHtml: function (text) {
+        var esc = lively.identity.postCardUtils.escapeHtml;
+        var out = "", last = 0;
+        this._findUrls(text).forEach(function (u) {
+          out += esc(text.slice(last, u.start)) +
+            '<a href="' + esc(u.url) + '" target="_blank" rel="noopener noreferrer">' + esc(u.url) + '</a>';
+          last = u.end;
+        });
+        return out + esc(text.slice(last));
+      },
+
+      // Preview cards for a message that has links INSIDE text. A message
+      // that is nothing but one URL is handled by hydrateLinkPreviews (card
+      // right after its own paragraph); this covers the rest, appending a
+      // card per distinct URL (capped) below the text, in URL order even if
+      // the fetches finish out of order. Same shared fetch cache and card
+      // builder, so a URL previewed anywhere else is instant here.
+      _attachInlineLinkCards: function (bodyNode, urls) {
+        var U = lively.identity.postCardUtils;
+        var MAX_INLINE_CARDS = 3;
+        var distinct = [];
+        urls.forEach(function (u) { if (distinct.indexOf(u.url) === -1) distinct.push(u.url); });
+        distinct.slice(0, MAX_INLINE_CARDS).forEach(function (url, idx) {
+          U.fetchLinkPreview(url, function (err, body) {
+            if (err || !body || body.error) return; // silent, same as the bare-link path
+            var card = U.buildLinkPreviewCard(body);
+            card.setAttribute("data-rv-idx", String(idx));
+            var before = null;
+            Array.prototype.forEach.call(bodyNode.children, function (el) {
+              if (!before && el.hasAttribute("data-rv-idx") && +el.getAttribute("data-rv-idx") > idx) before = el;
+            });
+            bodyNode.insertBefore(card, before);
+          });
+        });
       },
 
       // hydrateLinkPreviews (called right after bodyNode.innerHTML is set,
@@ -2497,20 +2559,42 @@ module("lively.identity.RoomView")
       // the real settled height by msg.text (same keying convention as
       // _mediaDims), then triggers one _renderMessages() reflow so this
       // row — and every row below it — gets the correct final layout.
-      // No-ops once a height is already cached for this key, so a message
-      // with no link (nothing ever inserted) doesn't leave a dangling
-      // observer past its own timeout below.
-      _watchLinkPreviewInsert: function (bodyNode, cacheKey) {
+      //
+      // The watch lasts as long as the row's own node does — it used to
+      // disconnect after 8s, and a preview that landed later (slow unfurl
+      // fetch) left its row at the pre-card height for good, the card hanging
+      // over the messages below it. That got worse once rows stopped being
+      // rebuilt on every pass (nothing else heals it). `appliedH` is the
+      // height the row's body box was actually given: only content TALLER
+      // than that needs a relayout, which also keeps this from looping on
+      // its own box height (scrollHeight is never below the box's height).
+      // `load` (capture) covers cards that grow after insertion, e.g. an
+      // image finishing — that is a layout change, not a DOM mutation.
+      // The rebuild runs in a microtask rather than a timer so it lands
+      // before the browser paints: no overlapping frame is ever shown.
+      _watchLinkPreviewInsert: function (bodyNode, cacheKey, appliedH) {
         var self = this;
-        if (self._linkPreviewRowH[cacheKey] !== undefined) return;
-        var mo = new MutationObserver(function () {
+        var check = function () {
           var real = Math.max(18, bodyNode.scrollHeight);
-          mo.disconnect();
+          if (real <= appliedH) return;
+          if (real <= (self._linkPreviewRowH[cacheKey] || 0)) return;
           self._linkPreviewRowH[cacheKey] = real;
-          self._renderMessagesSoon();
+          self._renderMessagesBeforePaint();
+        };
+        new MutationObserver(check).observe(bodyNode, { childList: true, subtree: true });
+        bodyNode.addEventListener("load", check, true);
+      },
+
+      // Coalesces rebuilds requested within one task into a single one that
+      // runs in a microtask, i.e. before the next paint.
+      _renderMessagesBeforePaint: function () {
+        var self = this;
+        if (this._renderMicroPending) return;
+        this._renderMicroPending = true;
+        Promise.resolve().then(function () {
+          self._renderMicroPending = false;
+          self._renderMessages();
         });
-        mo.observe(bodyNode, { childList: true, subtree: true });
-        setTimeout(function () { mo.disconnect(); }, 8000);
       },
 
       _formatTime: function (isoOrTs) {
@@ -3066,9 +3150,9 @@ module("lively.identity.RoomView")
             // hydrateLinkPreviews already runs for postcards/wiki pages/
             // cluster comments (PostCardUtils.js's "legacy bare-URL
             // paragraph" fallback — no schema change needed here, chat
-            // messages are already plain strings). A mixed message
-            // ("check this out: https://...") intentionally gets no card,
-            // same posture as that existing fallback everywhere else.
+            // messages are already plain strings). A link inside text
+            // ("check this out: https://...") is linkified by
+            // _messageBodyHtml and gets its card(s) via _attachInlineLinkCards.
             var flagSegments = self._splitFlagRuns(msg.text);
             var bodyBox = noDrag(new lively.morphic.Box(lively.rect(PAD + AVATAR_MSG + 8, contentTop + HEAD_H + HEAD_GAP, bw, 1)));
             bodyBox.applyStyle({ fill: null, borderWidth: 0 });
@@ -3090,11 +3174,17 @@ module("lively.identity.RoomView")
             bodyNode.innerHTML = "<p style=\"margin:0;\">" + self._messageBodyHtml(flagSegments) + "</p>";
             lively.identity.postCardUtils.hydrateLinkPreviews(bodyNode);
             lively.identity.postCardUtils.hydrateLinkPreviewEmbeds(bodyNode);
+            var msgUrls = self._findUrls(msg.text);
+            // Not the bare-URL-only case, which hydrateLinkPreviews above
+            // already gave its card.
+            if (msgUrls.length && (msg.text || "").trim() !== msgUrls[0].url) {
+              self._attachInlineLinkCards(bodyNode, msgUrls);
+            }
             var linkCacheKey = msg.text;
             var cachedLinkH = self._linkPreviewRowH[linkCacheKey];
             bh = cachedLinkH != null ? cachedLinkH : (bodyNode.scrollHeight || 18);
             bodyBox.setExtent(lively.pt(bw, bh + 4));
-            self._watchLinkPreviewInsert(bodyNode, linkCacheKey);
+            self._watchLinkPreviewInsert(bodyNode, linkCacheKey, bh + 4);
             bh = bh + 4;
           }
 
