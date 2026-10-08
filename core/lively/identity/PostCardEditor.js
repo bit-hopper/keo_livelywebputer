@@ -265,6 +265,11 @@ module('lively.identity.PostCardEditor')
 
         var shapeNode = this.renderContext().shapeNode;
         shapeNode.innerHTML = ''; // idempotent: safe if _setup() ever runs twice on one instance
+        // Set the radius on the morph model, not just the DOM node: a Window
+        // collapse/expand detaches and re-adds this morph, which re-runs the
+        // shape's initHTML and re-applies the model's borderRadius (0),
+        // wiping a style written only onto the shapeNode.
+        this.setBorderRadius(10);
         shapeNode.style.borderRadius = '10px';
         shapeNode.style.boxShadow = '0 4px 14px rgba(0,0,0,0.16)';
         // Rounded corners are otherwise decorative-shadow-only: toolbarDiv/
