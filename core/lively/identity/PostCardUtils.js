@@ -295,7 +295,17 @@ module('lively.identity.PostCardUtils')
         '.lively-bsky-images img{display:block;width:100%;height:140px;object-fit:cover;background:#eee;}' +
         '.lively-bsky-stats{display:flex;gap:14px;margin-top:8px;font-size:11px;color:#888;}' +
         '.lively-bsky-stats span{display:inline-flex;align-items:center;gap:3px;}' +
-        '.lively-bsky-stats .material-symbols-rounded{font-size:14px;}';
+        '.lively-bsky-stats .material-symbols-rounded{font-size:14px;}' +
+        // Checklists (check_list > list_item[data-checked]): the box is a
+        // Material Symbols glyph in ::before, not a real <input>, so the
+        // same markup renders in the editor, read views and server HTML.
+        'ul[data-type=checklist]{list-style:none;padding-left:4px;}' +
+        'ul[data-type=checklist]>li{position:relative;padding-left:28px;}' +
+        'ul[data-type=checklist]>li::before{content:"check_box_outline_blank";' +
+        'font-family:"Material Symbols Rounded";font-size:20px;line-height:1.3;color:#999;' +
+        'position:absolute;left:0;top:0;cursor:pointer;user-select:none;}' +
+        'ul[data-type=checklist]>li[data-checked=true]::before{content:"check_box";color:#E31361;}' +
+        'ul[data-type=checklist]>li[data-checked=true]>p:first-child{text-decoration:line-through;color:#888;}';
       document.head.appendChild(styleEl);
     }
 
@@ -1349,8 +1359,14 @@ module('lively.identity.PostCardUtils')
           return '<ul>' + (node.content || []).map(pmNodeToHtml).join('') + '</ul>';
         case 'ordered_list':
           return '<ol>' + (node.content || []).map(pmNodeToHtml).join('') + '</ol>';
-        case 'list_item':
-          return '<li' + alignIndentAttr(node) + '>' + (node.content || []).map(pmNodeToHtml).join('') + '</li>';
+        case 'check_list':
+          return '<ul data-type="checklist" class="lively-checklist">' + (node.content || []).map(pmNodeToHtml).join('') + '</ul>';
+        case 'list_item': {
+          var liChecked = node.attrs && node.attrs.checked;
+          var liStyle = alignIndentAttr(node);
+          if (liChecked === true || liChecked === false) liStyle += ' data-checked="' + liChecked + '"';
+          return '<li' + liStyle + '>' + (node.content || []).map(pmNodeToHtml).join('') + '</li>';
+        }
         case 'blockquote':
           return '<blockquote>' + (node.content || []).map(pmNodeToHtml).join('') + '</blockquote>';
         case 'code_block':
@@ -1518,6 +1534,8 @@ module('lively.identity.PostCardUtils')
       var style = '';
       if (attrs.align && attrs.align !== 'left') style += 'text-align:' + attrs.align + ';';
       if (attrs.indent) style += 'margin-left:' + (attrs.indent * 24) + 'px;';
+      var lh = parseFloat(attrs.lineHeight);
+      if (lh > 0) style += 'line-height:' + lh + ';';
       return style ? ' style="' + escapeAttr(style) + '"' : '';
     }
 

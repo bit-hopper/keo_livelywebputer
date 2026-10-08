@@ -62,16 +62,34 @@ module('lively.identity.PostCardEditor')
     function _parseAlignIndent(dom) {
       var align = dom.style && dom.style.textAlign;
       var indent = dom.style && parseInt(dom.style.marginLeft, 10);
+      var lineHeight = dom.style && parseFloat(dom.style.lineHeight);
       return {
         align: ALLOWED_ALIGN[align] ? align : 'left',
         indent: (indent > 0) ? Math.round(indent / 24) : 0,
+        lineHeight: (lineHeight > 0) ? lineHeight : null,
       };
     }
     function _alignIndentAttrs(node) {
       var style = '';
       if (node.attrs.align && node.attrs.align !== 'left') style += 'text-align:' + node.attrs.align + ';';
       if (node.attrs.indent) style += 'margin-left:' + (node.attrs.indent * 24) + 'px;';
+      if (node.attrs.lineHeight) style += 'line-height:' + node.attrs.lineHeight + ';';
       return style ? { style: style } : {};
+    }
+    // list_item's own toDOM attrs: indent (via _alignIndentAttrs) plus the
+    // checklist state. `checked` is null for ordinary bullet/numbered items,
+    // true/false only for checklist items that have been toggled.
+    function _listItemAttrs(node) {
+      var attrs = _alignIndentAttrs(node);
+      if (node.attrs.checked !== null && node.attrs.checked !== undefined) {
+        attrs['data-checked'] = node.attrs.checked ? 'true' : 'false';
+      }
+      return attrs;
+    }
+    function _parseListItem(dom) {
+      var attrs = _parseAlignIndent(dom);
+      var checked = dom.getAttribute && dom.getAttribute('data-checked');
+      return { indent: attrs.indent, checked: checked === 'true' ? true : checked === 'false' ? false : null };
     }
 
     // Shared by link_preview_card's two parseDOM tag matchers (div for the
@@ -259,6 +277,11 @@ module('lively.identity.PostCardEditor')
       // content area rather than reserving its own docked strip).
       _FLOATING_ACTIONS_CLEARANCE: 72,
 
+      // Base text size (px) of the editing area and preview overlay, and what
+      // the font-size stepper shows when the selection carries no explicit
+      // fontSize mark (choosing this size clears the mark instead of storing it).
+      _DEFAULT_FONT_SIZE: 20,
+
       _buildChrome: function () {
         var self = this;
         this.setFill(Color.white);
@@ -326,7 +349,7 @@ module('lively.identity.PostCardEditor')
           'padding:16px 20px ' + this._FLOATING_ACTIONS_CLEARANCE + 'px 20px',
           'box-sizing:border-box',
           'font-family:sans-serif',
-          'font-size:14px',
+          'font-size:' + this._DEFAULT_FONT_SIZE + 'px',
           'line-height:1.6',
           'white-space:pre-wrap',
         ].join(';');
@@ -404,6 +427,12 @@ module('lively.identity.PostCardEditor')
             'white-space:nowrap;}' +
             '.pce-input-control{flex:0 0 auto;height:26px;box-sizing:border-box;border:1px solid #ddd;' +
             'border-radius:8px;background:#fff;cursor:pointer;font-size:11px;}' +
+            '.pce-size-stepper{flex:0 0 auto;display:flex;align-items:center;gap:0;}' +
+            '.pce-icon-btn.pce-step-btn{width:22px;height:22px;font-size:16px;}' +
+            '.pce-input-control.pce-size-input{width:34px;padding:0 2px;text-align:center;' +
+            'border-color:transparent;background:transparent;-moz-appearance:textfield;}' +
+            '.pce-size-input::-webkit-inner-spin-button,.pce-size-input::-webkit-outer-spin-button' +
+            '{-webkit-appearance:none;margin:0;}' +
             '.pce-input-control:hover{border-color:#ccc;}' +
             '.pce-input-control:focus{border-color:#E31361;outline:none;}' +
             // Floating action cluster — a small rounded, shadowed capsule
@@ -478,34 +507,48 @@ module('lively.identity.PostCardEditor')
       _buildToolbar: function (toolbarDiv) {
         var self = this;
 
-        // Row A: character-level formatting — marks, headings, colors, fonts.
-        var markDefs = [
+        // Row 1: the everyday word-processor controls, in the order a writer
+        // reaches for them — the Styles/Font/Size/List/Line-height controls
+        // are built by their own _build*Select/Input helpers below and
+        // interleaved with these icon-button groups.
+        var emphasisDefs = [
           { icon: 'format_bold',       title: 'Bold',              cmd: 'toggleMark', markType: 'bold' },
           { icon: 'format_italic',     title: 'Italic',            cmd: 'toggleMark', markType: 'italic' },
           { icon: 'format_underlined', title: 'Underline',         cmd: 'toggleMark', markType: 'underline' },
-          { icon: 'strikethrough_s',   title: 'Strikethrough',     cmd: 'toggleMark', markType: 'strike' },
-          { icon: 'superscript',       title: 'Superscript',       cmd: 'toggleMark', markType: 'superscript' },
-          { icon: 'subscript',         title: 'Subscript',         cmd: 'toggleMark', markType: 'subscript' },
-          { icon: 'code',              title: 'Inline code',       cmd: 'toggleMark', markType: 'code' },
-          { icon: 'format_h1',         title: 'Heading 1',         cmd: 'setBlockType', nodeType: 'heading', attrs: { level: 1 } },
-          { icon: 'format_h2',         title: 'Heading 2',         cmd: 'setBlockType', nodeType: 'heading', attrs: { level: 2 } },
+        ];
+        var insertDefs = [
+          { icon: 'link',              title: 'Insert/remove link', cmd: 'link' },
+          { icon: 'attach_file',       title: 'Upload attachment',  cmd: 'attachment' },
+        ];
+        var alignDefs = [
+          { icon: 'format_align_left',    title: 'Align left',   cmd: 'setAlign', align: 'left' },
+          { icon: 'format_align_center',  title: 'Align center', cmd: 'setAlign', align: 'center' },
+          { icon: 'format_align_right',   title: 'Align right',  cmd: 'setAlign', align: 'right' },
+          { icon: 'format_align_justify', title: 'Justify',      cmd: 'setAlign', align: 'justify' },
         ];
 
-        // Row B: block structure, alignment, and insert commands.
+        // "Everything else", in order, each array one divider-separated
+        // cluster. The toolbar is one ordered sequence that simply wraps
+        // from Row 1 onto Row 2 where Row 1 runs out of room.
+        var extraMarkDefs = [
+          { icon: 'strikethrough_s',        title: 'Strikethrough',      cmd: 'toggleMark', markType: 'strike' },
+          { icon: 'superscript',            title: 'Superscript',        cmd: 'toggleMark', markType: 'superscript' },
+          { icon: 'subscript',              title: 'Subscript',          cmd: 'toggleMark', markType: 'subscript' },
+        ];
         var blockDefs = [
-          { icon: 'format_list_bulleted',   title: 'Bullet list',        cmd: 'wrapInList',   nodeType: 'bullet_list' },
-          { icon: 'format_list_numbered',   title: 'Ordered list',       cmd: 'wrapInList',   nodeType: 'ordered_list' },
           { icon: 'format_quote',           title: 'Blockquote',         cmd: 'wrapIn',       nodeType: 'blockquote' },
           { icon: 'code_blocks',            title: 'Code block',         cmd: 'setBlockType', nodeType: 'code_block', attrs: {} },
-          { icon: 'format_align_left',      title: 'Cycle alignment (left/center/right/justify)', cmd: 'cycleAlign' },
+          { icon: 'code',                   title: 'Inline code',        cmd: 'toggleMark', markType: 'code' },
+        ];
+        var indentDefs = [
           { icon: 'format_indent_increase', title: 'Indent',             cmd: 'indent' },
           { icon: 'format_indent_decrease', title: 'Outdent',            cmd: 'outdent' },
           { icon: 'format_clear',           title: 'Clear formatting',   cmd: 'clearFormatting' },
-          { icon: 'link',                   title: 'Insert/remove link', cmd: 'link' },
-          { icon: 'attach_file',            title: 'Insert attachment',  cmd: 'attachment' },
-          { icon: 'extension',             title: 'Insert part',        cmd: 'insertPart' },
+        ];
+        var embedDefs = [
+          { icon: 'extension',              title: 'Insert part',        cmd: 'insertPart' },
           { icon: 'functions',              title: 'Math inline',        cmd: 'insertMath', mathType: 'inline' },
-          { icon: 'calculate',              title: 'Math display',      cmd: 'insertMath', mathType: 'display' },
+          { icon: 'calculate',              title: 'Math display',       cmd: 'insertMath', mathType: 'display' },
         ];
 
         // Plain full-width row, no scrolling — both rows' content comfortably
@@ -517,11 +560,18 @@ module('lively.identity.PostCardEditor')
           var row = document.createElement('div');
           row.style.cssText = [
             'position:absolute', 'top:' + top + 'px', 'left:6px', 'right:6px', 'height:' + height + 'px',
-            'display:flex', 'align-items:center', 'justify-content:space-between', 'gap:4px', 'padding:0 2px',
+            'display:flex', 'align-items:center', 'justify-content:flex-start', 'gap:6px', 'padding:0 4px',
             'overflow:hidden', 'white-space:nowrap',
           ].join(';');
           toolbarDiv.appendChild(row);
           return row;
+        }
+
+        // Thin vertical rule separating one cluster of controls from the next.
+        function addDivider(row) {
+          var d = document.createElement('div');
+          d.style.cssText = 'flex:0 0 auto;width:1px;height:18px;background:#e6e6ec;margin:0 4px;';
+          row.appendChild(d);
         }
 
         this._toggleButtons = [];
@@ -541,25 +591,134 @@ module('lively.identity.PostCardEditor')
             if (btnDef.cmd === 'toggleMark') {
               self._toggleButtons.push({ btn: btn, markType: btnDef.markType });
             }
+            if (btnDef.cmd === 'setAlign') {
+              self._alignButtons.push({ btn: btn, align: btnDef.align });
+            }
           });
         }
 
+        this._alignButtons = [];
+
         var ROW_H = 30;
         var rowA = buildRow(3, ROW_H);
-        addButtons(rowA, markDefs);
+        // Row 1 is shorter than Row 2, which sets the editor's width — spread
+        // its controls so it spans the same width instead of leaving a gap.
+        rowA.style.justifyContent = 'space-between';
+        // Row 1: style, size, font | B I U | colors | align.
+        this._styleSelect = this._buildStyleSelect();
+        rowA.appendChild(this._styleSelect);
+        rowA.appendChild(this._buildFontSizeInput()); // also sets this._fontSizeInput
+        this._fontFamilySelect = this._buildFontFamilySelect();
+        rowA.appendChild(this._fontFamilySelect);
+        addDivider(rowA);
+        addButtons(rowA, emphasisDefs);
+        addDivider(rowA);
         this._textColorInput = this._buildColorInput('textColor', 'Text color', '#000000');
         rowA.appendChild(this._textColorInput);
-        this._bgColorInput = this._buildColorInput('backgroundColor', 'Background color', '#ffffff');
+        this._bgColorInput = this._buildColorInput('backgroundColor', 'Highlight color', '#ffffff');
         rowA.appendChild(this._bgColorInput);
-        // Font-family picker sits right after the Underline button.
-        this._fontFamilySelect = this._buildFontFamilySelect();
-        var underlineBtn = this._toggleButtons.filter(function (t) { return t.markType === 'underline'; })[0];
-        rowA.insertBefore(this._fontFamilySelect, underlineBtn ? underlineBtn.btn.nextSibling : null);
-        this._fontSizeInput = this._buildFontSizeInput();
-        rowA.appendChild(this._fontSizeInput);
+        addDivider(rowA);
+        addButtons(rowA, alignDefs);
 
+        // Row 2: link, upload | line height, list | marks | quote, code
+        // block, inline code | indent, outdent, clear | part, math.
         var rowB = buildRow(3 + ROW_H + 3, ROW_H);
+        addButtons(rowB, insertDefs);
+        addDivider(rowB);
+        this._lineHeightSelect = this._buildLineHeightSelect();
+        rowB.appendChild(this._lineHeightSelect);
+        this._listSelect = this._buildListSelect();
+        rowB.appendChild(this._listSelect);
+        addDivider(rowB);
+        addButtons(rowB, extraMarkDefs);
+        addDivider(rowB);
         addButtons(rowB, blockDefs);
+        addDivider(rowB);
+        addButtons(rowB, indentDefs);
+        addDivider(rowB);
+        addButtons(rowB, embedDefs);
+      },
+
+      // Styles dropdown: Normal text + Heading 1–6. Applies to every
+      // paragraph/heading in the selection (see 'setBlockStyle' in
+      // _execToolbarCmd); reflects the cursor's block in _updateToolbarState.
+      _buildStyleSelect: function () {
+        var self = this;
+        var select = document.createElement('select');
+        select.className = 'pce-input-control';
+        select.title = 'Styles';
+        select.style.cssText = 'width:112px;padding:0 6px;justify-content:flex-start;';
+        [['', 'Styles'], ['p', 'Normal text'], ['1', 'Heading 1'], ['2', 'Heading 2'], ['3', 'Heading 3'],
+         ['4', 'Heading 4'], ['5', 'Heading 5'], ['6', 'Heading 6']].forEach(function (opt) {
+          var optionEl = document.createElement('option');
+          optionEl.value = opt[0];
+          optionEl.textContent = opt[1];
+          // The empty option is only a read-only "cursor is in something else"
+          // placeholder (e.g. a code block), never a choosable action.
+          if (!opt[0]) optionEl.disabled = true;
+          select.appendChild(optionEl);
+        });
+        ['mousedown', 'click'].forEach(function (t) {
+          select.addEventListener(t, function (e) { e.stopPropagation(); });
+        });
+        select.addEventListener('change', function () {
+          if (!select.value) return;
+          self._execToolbarCmd({ cmd: 'setBlockStyle', style: select.value });
+        });
+        return select;
+      },
+
+      // Line height dropdown — a per-block preset (stored as the
+      // paragraph/heading `lineHeight` attr), '' = the editor's default.
+      _buildLineHeightSelect: function () {
+        var self = this;
+        var select = document.createElement('select');
+        select.className = 'pce-input-control';
+        select.title = 'Line height';
+        select.style.cssText = 'width:112px;padding:0 6px;justify-content:flex-start;';
+        [['', 'Line height'], ['1', '1.0'], ['1.15', '1.15'], ['1.5', '1.5'], ['2', '2.0'], ['2.5', '2.5']]
+          .forEach(function (opt) {
+            var optionEl = document.createElement('option');
+            optionEl.value = opt[0];
+            // The '' entry doubles as "reset to the editor's default".
+            optionEl.textContent = opt[1];
+            select.appendChild(optionEl);
+          });
+        ['mousedown', 'click'].forEach(function (t) {
+          select.addEventListener(t, function (e) { e.stopPropagation(); });
+        });
+        select.addEventListener('change', function () {
+          self._execToolbarCmd({ cmd: 'setLineHeight', lineHeight: select.value ? parseFloat(select.value) : null });
+        });
+        return select;
+      },
+
+      // List dropdown: a command menu (always resets to its "List"
+      // placeholder after acting), not a state display — whether the cursor
+      // is already in a list shows through the options' toggle behavior.
+      _buildListSelect: function () {
+        var self = this;
+        var select = document.createElement('select');
+        select.className = 'pce-input-control';
+        select.title = 'List';
+        select.style.cssText = 'width:96px;padding:0 6px;justify-content:flex-start;';
+        [['', 'List'], ['bullet_list', 'Bullet list'], ['ordered_list', 'Numbered list'],
+         ['check_list', 'Checklist'], ['none', 'Remove list']].forEach(function (opt) {
+          var optionEl = document.createElement('option');
+          optionEl.value = opt[0];
+          optionEl.textContent = opt[1];
+          if (!opt[0]) { optionEl.disabled = true; optionEl.selected = true; }
+          select.appendChild(optionEl);
+        });
+        ['mousedown', 'click'].forEach(function (t) {
+          select.addEventListener(t, function (e) { e.stopPropagation(); });
+        });
+        select.addEventListener('change', function () {
+          var value = select.value;
+          select.value = '';
+          if (value) self._execToolbarCmd({ cmd: 'setList', listType: value });
+        });
+        return select;
       },
 
       // Persistent (not popup-triggered) native color input — reflects the
@@ -615,7 +774,11 @@ module('lively.identity.PostCardEditor')
         var select = document.createElement('select');
         select.className = 'pce-input-control';
         select.title = 'Font family';
-        select.style.cssText = 'padding:0 4px;';
+        // Fixed width, with the selected name clipped (ellipsis) rather than
+        // overflowing into the neighboring controls — some vendored font
+        // names are long ("Shadows Into Light Two").
+        select.style.cssText = 'width:160px;padding:0 6px;justify-content:flex-start;' +
+          'overflow:hidden;white-space:nowrap;text-overflow:ellipsis;';
         options.forEach(function (opt) {
           var optionEl = document.createElement('option');
           optionEl.value = opt[0];
@@ -644,39 +807,90 @@ module('lively.identity.PostCardEditor')
         return select;
       },
 
-      // Editable number input (not a fixed-preset dropdown) — reflects the
-      // current selection's size (_updateToolbarState) and applies on commit.
+      // Font-size stepper: [ − ] [ 20 ] [ + ]. The middle field is still
+      // directly editable (type a size + Enter/blur); − and + step by 1px.
+      // Returns the wrapper to insert in the toolbar; this._fontSizeInput is
+      // the inner input (what _updateToolbarState writes the current size
+      // into — the default size when the selection has no fontSize mark).
       _buildFontSizeInput: function () {
         var self = this;
+        var DEFAULT = this._DEFAULT_FONT_SIZE, MIN = 6, MAX = 128;
+
+        var wrap = document.createElement('div');
+        wrap.className = 'pce-size-stepper';
+        wrap.title = 'Font size (px)';
+
+        function stepBtn(glyph, title) {
+          var b = document.createElement('button');
+          b.className = 'pce-icon-btn pce-icon-btn-glyph pce-step-btn';
+          b.textContent = glyph;
+          b.title = title;
+          return b;
+        }
+        var minus = stepBtn('remove', 'Decrease font size');
+        var plus = stepBtn('add', 'Increase font size');
+
         var input = document.createElement('input');
         input.type = 'number';
-        input.className = 'pce-input-control';
-        input.title = 'Font size (px)';
-        input.placeholder = '14';
-        input.min = '6';
-        input.max = '128';
-        input.style.cssText = 'width:44px;padding:0 4px;';
-        ['mousedown', 'click'].forEach(function (t) {
-          input.addEventListener(t, function (e) { e.stopPropagation(); });
+        input.className = 'pce-input-control pce-size-input';
+        input.min = String(MIN);
+        input.max = String(MAX);
+        input.value = String(DEFAULT);
+
+        wrap.appendChild(minus);
+        wrap.appendChild(input);
+        wrap.appendChild(plus);
+        this._fontSizeInput = input;
+
+        // The editor is a plain DOM subtree inside the morph: keep these
+        // events away from Lively's own handlers.
+        [wrap].forEach(function (el) {
+          ['mousedown', 'click'].forEach(function (t) {
+            el.addEventListener(t, function (e) { e.stopPropagation(); });
+          });
         });
-        function commit() {
+
+        // Applies `size` to the selection; with a bare cursor it sets the
+        // stored mark instead, so the next typed text takes that size. The
+        // default size clears the mark (no mark = default) rather than
+        // storing a redundant one.
+        function apply(size) {
           if (!self.editorView) return;
           var view = self.editorView;
           var markType = view.state.schema.marks.fontSize;
           if (!markType) return;
-          var from = view.state.selection.from, to = view.state.selection.to;
-          if (from === to) return; // requires a text selection
-          var tr = view.state.tr.removeMark(from, to, markType);
-          if (input.value) tr = tr.addMark(from, to, markType.create({ size: input.value + 'px' }));
+          size = Math.max(MIN, Math.min(MAX, Math.round(size)));
+          if (isNaN(size)) return;
+          input.value = String(size);
+          var sel = view.state.selection, tr = view.state.tr;
+          if (sel.from === sel.to) {
+            tr = tr.removeStoredMark(markType);
+            if (size !== DEFAULT) tr = tr.addStoredMark(markType.create({ size: size + 'px' }));
+          } else {
+            tr = tr.removeMark(sel.from, sel.to, markType);
+            if (size !== DEFAULT) tr = tr.addMark(sel.from, sel.to, markType.create({ size: size + 'px' }));
+          }
           view.dispatch(tr);
           view.focus();
         }
-        input.addEventListener('change', commit);
+        function stepBy(delta) {
+          // Step from what the selection really has, not a stale field value.
+          self._updateToolbarState();
+          apply((parseInt(input.value, 10) || DEFAULT) + delta);
+        }
+        // mousedown (not click) so the editor keeps its text selection, same
+        // as the other toolbar buttons.
+        minus.addEventListener('mousedown', function (e) { e.preventDefault(); e.stopPropagation(); stepBy(-1); });
+        plus.addEventListener('mousedown', function (e) { e.preventDefault(); e.stopPropagation(); stepBy(1); });
+
+        input.addEventListener('change', function () {
+          if (input.value) apply(parseFloat(input.value));
+        });
         input.addEventListener('keydown', function (e) {
           e.stopPropagation();
-          if (e.key === 'Enter') { e.preventDefault(); commit(); }
+          if (e.key === 'Enter') { e.preventDefault(); if (input.value) apply(parseFloat(input.value)); }
         });
-        return input;
+        return wrap;
       },
 
       // Card-level actions — a floating pill cluster hovering over the
@@ -827,7 +1041,32 @@ module('lively.identity.PostCardEditor')
         }
         if (this._fontSizeInput) {
           var sMark = markOfType('fontSize');
-          this._fontSizeInput.value = (sMark && sMark.attrs.size) ? parseInt(sMark.attrs.size, 10) : '';
+          // Don't clobber a size the user is mid-typing in the field.
+          if (document.activeElement !== this._fontSizeInput) {
+            this._fontSizeInput.value = (sMark && sMark.attrs.size)
+              ? parseInt(sMark.attrs.size, 10) : this._DEFAULT_FONT_SIZE;
+          }
+        }
+
+        // Block-level state, read from the cursor's block (selection.$from).
+        var block = state.selection.$from.parent;
+        if (this._styleSelect) {
+          this._styleSelect.value = block.type.name === 'paragraph' ? 'p'
+            : block.type.name === 'heading' ? String(block.attrs.level) : '';
+        }
+        var currentAlign = block.attrs && block.attrs.align;
+        (this._alignButtons || []).forEach(function (entry) {
+          // Blocks with an align attr but the default read as left-aligned.
+          entry.btn.classList.toggle('pce-active', !!currentAlign && entry.align === currentAlign);
+        });
+        if (this._lineHeightSelect) {
+          var lh = block.attrs && block.attrs.lineHeight;
+          var lhValue = lh ? String(lh) : '';
+          // A value outside the presets (e.g. from an imported card) has no
+          // matching option; fall back to the default entry rather than
+          // leaving the select blank.
+          this._lineHeightSelect.value = lhValue;
+          if (this._lineHeightSelect.value !== lhValue) this._lineHeightSelect.value = '';
         }
       },
 
@@ -1365,8 +1604,27 @@ module('lively.identity.PostCardEditor')
         // Must be inserted before baseKeymap so Enter is handled by splitListItem first.
         var sl = prosemirror.schemaList;
         if (sl && schema.nodes.list_item) {
+          // splitListItem copies the split item's attrs onto the new item, so
+          // pressing Enter on a checked checklist item would start the next
+          // one already checked — reset it on the resulting transaction.
+          var splitItem = sl.splitListItem(schema.nodes.list_item);
+          var splitListItemUnchecked = function (state, dispatch, view) {
+            return splitItem(state, dispatch ? function (tr) {
+              var $s = tr.selection.$from;
+              for (var d = $s.depth; d > 0; d--) {
+                var item = $s.node(d);
+                if (item.type.name === 'list_item') {
+                  if (item.attrs.checked === true) {
+                    tr.setNodeMarkup($s.before(d), null, Object.assign({}, item.attrs, { checked: false }));
+                  }
+                  break;
+                }
+              }
+              dispatch(tr);
+            } : undefined, view);
+          };
           plugins.unshift(prosemirror.keymap.keymap({
-            'Enter':     sl.splitListItem(schema.nodes.list_item),
+            'Enter':     splitListItemUnchecked,
             'Tab':       sl.sinkListItem(schema.nodes.list_item),
             'Shift-Tab': sl.liftListItem(schema.nodes.list_item),
           }));
@@ -1392,6 +1650,22 @@ module('lively.identity.PostCardEditor')
             // real href (see the link mark's toDOM above) — intercept the
             // click and resolve+decrypt on demand instead of navigating.
             click: function (view, event) {
+              // Checklist checkbox: it's the li's ::before glyph (see
+              // PostCardUtils's checklist CSS), so a click on it targets the
+              // li itself, within its left 28px gutter.
+              var li = event.target;
+              if (li && li.tagName === 'LI' && li.parentNode && li.parentNode.getAttribute &&
+                  li.parentNode.getAttribute('data-type') === 'checklist' &&
+                  event.clientX - li.getBoundingClientRect().left < 28) {
+                var itemPos = view.posAtDOM(li, 0) - 1;
+                var itemNode = view.state.doc.nodeAt(itemPos);
+                if (itemNode && itemNode.type.name === 'list_item') {
+                  view.dispatch(view.state.tr.setNodeMarkup(itemPos, null,
+                    Object.assign({}, itemNode.attrs, { checked: itemNode.attrs.checked !== true })));
+                  event.preventDefault();
+                  return true;
+                }
+              }
               var a = event.target && event.target.closest && event.target.closest('a[data-attachment-obj-id]');
               if (!a) return false;
               event.preventDefault();
@@ -3623,14 +3897,46 @@ module('lively.identity.PostCardEditor')
             dispatch(state.tr.replaceSelectionWith(mathNode));
             break;
           }
-          case 'cycleAlign': {
-            var alignOrder = ['left', 'center', 'right', 'justify'];
-            var $ap = state.selection.$from;
-            var alignNode = $ap.parent;
-            if (alignNode.attrs.align === undefined) return;
-            var nextAlign = alignOrder[(alignOrder.indexOf(alignNode.attrs.align) + 1) % alignOrder.length];
-            dispatch(state.tr.setNodeMarkup($ap.before($ap.depth), null,
-              Object.assign({}, alignNode.attrs, { align: nextAlign })));
+          case 'setAlign':
+          case 'setLineHeight': {
+            // Block-level attrs: applied to every paragraph/heading the
+            // selection touches (nodesBetween also descends into list items
+            // and blockquotes), not just the cursor's own block.
+            var blockAttr = btnDef.cmd === 'setAlign' ? 'align' : 'lineHeight';
+            var blockValue = btnDef.cmd === 'setAlign' ? btnDef.align : btnDef.lineHeight;
+            var blockTr = state.tr;
+            state.doc.nodesBetween(state.selection.from, state.selection.to, function (node, pos) {
+              if (!node.attrs || node.attrs[blockAttr] === undefined) return;
+              var nextAttrs = Object.assign({}, node.attrs);
+              nextAttrs[blockAttr] = blockValue;
+              blockTr.setNodeMarkup(pos, null, nextAttrs);
+            });
+            if (blockTr.docChanged) dispatch(blockTr);
+            break;
+          }
+          case 'setBlockStyle': {
+            // Styles dropdown: 'p' = Normal text, '1'..'6' = heading level.
+            // Keeps each block's align/lineHeight (setBlockType with fixed
+            // attrs would reset them).
+            var toHeading = btnDef.style !== 'p';
+            var styleType = toHeading ? state.schema.nodes.heading : state.schema.nodes.paragraph;
+            var styleTr = state.tr;
+            state.doc.nodesBetween(state.selection.from, state.selection.to, function (node, pos) {
+              if (node.type.name !== 'paragraph' && node.type.name !== 'heading') return;
+              // A list item's first child must stay a paragraph.
+              var $sp = state.doc.resolve(pos);
+              if (toHeading && $sp.parent.type.name === 'list_item' && $sp.index() === 0) return false;
+              var styleAttrs = { align: node.attrs.align, lineHeight: node.attrs.lineHeight };
+              if (toHeading) styleAttrs.level = parseInt(btnDef.style, 10);
+              else if (node.attrs.indent !== undefined) styleAttrs.indent = node.attrs.indent;
+              styleTr.setNodeMarkup(pos, styleType, styleAttrs);
+              return false;
+            });
+            if (styleTr.docChanged) dispatch(styleTr);
+            break;
+          }
+          case 'setList': {
+            this._setList(btnDef.listType);
             break;
           }
           case 'indent':
@@ -3682,6 +3988,54 @@ module('lively.identity.PostCardEditor')
         view.focus();
       },
 
+      // List dropdown commands. listType is bullet_list | ordered_list |
+      // check_list | 'none'. Not in a list → wrap; in the same kind of list
+      // → unwrap the whole list (a toggle); in a different kind → convert in
+      // place (all three share list_item children, so only the list node's
+      // own type changes).
+      _setList: function (listType) {
+        var view = this.editorView;
+        var prosemirror = this._ProseMirror();
+        var sl = prosemirror && prosemirror.schemaList;
+        if (!view || !sl) return;
+        var state = view.state;
+        var schema = state.schema;
+        var LIST_TYPES = ['bullet_list', 'ordered_list', 'check_list'];
+
+        var $from = state.selection.$from;
+        var listDepth = -1;
+        for (var d = $from.depth; d > 0; d--) {
+          if (LIST_TYPES.indexOf($from.node(d).type.name) >= 0) { listDepth = d; break; }
+        }
+
+        if (listDepth >= 0 && (listType === 'none' || $from.node(listDepth).type.name === listType)) {
+          // Lift every item of the cursor's list, not just the cursor's own:
+          // select across the whole list first, then lift. The selection-only
+          // transaction leaves the doc object untouched, so the lift
+          // transaction built from it still applies to the live view state.
+          var TextSelection = prosemirror.state.TextSelection;
+          var listStart = $from.start(listDepth), listEnd = $from.end(listDepth);
+          var wholeList = state.apply(state.tr.setSelection(
+            TextSelection.between(state.doc.resolve(listStart), state.doc.resolve(listEnd))));
+          sl.liftListItem(schema.nodes.list_item)(wholeList, view.dispatch.bind(view));
+        } else if (listDepth < 0) {
+          if (listType !== 'none') sl.wrapInList(schema.nodes[listType])(state, view.dispatch.bind(view));
+        } else {
+          var listNode = $from.node(listDepth);
+          var listPos = $from.before(listDepth);
+          var tr = state.tr.setNodeMarkup(listPos, schema.nodes[listType],
+            listType === 'ordered_list' ? { order: 1 } : null);
+          // Leaving a checklist: drop the per-item checked state.
+          if (listNode.type.name === 'check_list') {
+            listNode.forEach(function (item, offset) {
+              tr.setNodeMarkup(listPos + 1 + offset, null, Object.assign({}, item.attrs, { checked: null }));
+            });
+          }
+          view.dispatch(tr);
+        }
+        view.focus();
+      },
+
       // Toggles a read-only overlay over the editing area showing the card
       // exactly as PostCardView will render it (photo galleries, full-frame
       // video), so the author can check layout before saving/sending.
@@ -3701,7 +4055,7 @@ module('lively.identity.PostCardEditor')
         el.style.cssText = [
           'position:absolute', 'top:64px', 'left:0', 'right:0', 'bottom:36px',
           'overflow-y:auto', 'padding:16px 20px', 'box-sizing:border-box',
-          'font-family:sans-serif', 'font-size:14px', 'line-height:1.6',
+          'font-family:sans-serif', 'font-size:' + this._DEFAULT_FONT_SIZE + 'px', 'line-height:1.6',
           'background:#fff', 'z-index:5',
         ].join(';');
         ['keydown', 'keyup', 'keypress', 'mousedown', 'mousemove', 'mouseup', 'click', 'dblclick'].forEach(function (t) {
@@ -4008,25 +4362,33 @@ module('lively.identity.PostCardEditor')
             // separate node types — matches the same "decoration, not schema
             // constraint" reasoning §10.5 uses for the title styling.
             paragraph:    { group: 'block', content: 'inline*',
-                            attrs: { align: { default: 'left' }, indent: { default: 0 } },
+                            attrs: { align: { default: 'left' }, indent: { default: 0 }, lineHeight: { default: null } },
                             parseDOM: [{ tag: 'p', getAttrs: _parseAlignIndent }],
                             toDOM: function(n) { return ['p', _alignIndentAttrs(n), 0]; } },
             heading:      { group: 'block', content: 'inline*',
-                            attrs: { level: { default: 1 }, align: { default: 'left' } },
+                            attrs: { level: { default: 1 }, align: { default: 'left' }, lineHeight: { default: null } },
                             parseDOM: [1,2,3,4,5,6].map(function(l) {
-                              return { tag: 'h'+l, attrs: { level: l }, getAttrs: _parseAlignIndent };
+                              return { tag: 'h'+l, getAttrs: function(d) {
+                                var a = _parseAlignIndent(d); a.level = l; return a;
+                              } };
                             }),
                             toDOM: function(n) {
                               var attrs = _alignIndentAttrs(n);
                               return ['h'+n.attrs.level, attrs, 0];
                             } },
             bullet_list:  { group: 'block', content: 'list_item+',
-                            parseDOM: [{ tag: 'ul' }], toDOM: function() { return ['ul', 0]; } },
+                            parseDOM: [{ tag: 'ul:not([data-type=checklist])' }], toDOM: function() { return ['ul', 0]; } },
             ordered_list: { group: 'block', content: 'list_item+', attrs: { order: { default: 1 } },
                             parseDOM: [{ tag: 'ol' }], toDOM: function() { return ['ol', 0]; } },
-            list_item:    { content: 'paragraph block*', attrs: { indent: { default: 0 } },
-                            parseDOM: [{ tag: 'li', getAttrs: _parseAlignIndent }],
-                            toDOM: function(n) { return ['li', _alignIndentAttrs(n), 0]; } },
+            // Checklist: same list_item children as the other lists (so the
+            // Enter/Tab/Shift-Tab keymaps work unchanged); each item's own
+            // `checked` attr carries its state, null reading as unchecked.
+            check_list:   { group: 'block', content: 'list_item+',
+                            parseDOM: [{ tag: 'ul[data-type=checklist]' }],
+                            toDOM: function() { return ['ul', { 'data-type': 'checklist', class: 'lively-checklist' }, 0]; } },
+            list_item:    { content: 'paragraph block*', attrs: { indent: { default: 0 }, checked: { default: null } },
+                            parseDOM: [{ tag: 'li', getAttrs: _parseListItem }],
+                            toDOM: function(n) { return ['li', _listItemAttrs(n), 0]; } },
             blockquote:   { group: 'block', content: 'block+',
                             parseDOM: [{ tag: 'blockquote' }], toDOM: function() { return ['blockquote', 0]; } },
             // class:'hljs' matches the bundled highlight.js theme's base
@@ -4263,7 +4625,7 @@ module('lively.identity.PostCardEditor')
       // Load an existing postcard and open the editor.
       openCard: function (handle, objId, options) {
         var opts = options || {};
-        var editor = new lively.identity.PostCardEditor(opts.bounds || lively.rect(0, 0, 680, 520));
+        var editor = new lively.identity.PostCardEditor(opts.bounds || lively.rect(0, 0, 785, 520));
         editor._handle = handle;
         editor._objId = objId;
         editor._isNew = false;
@@ -4284,7 +4646,7 @@ module('lively.identity.PostCardEditor')
       // setting them beforehand would just get overwritten.
       newCard: function (handle, options) {
         var opts = options || {};
-        var editor = new lively.identity.PostCardEditor(lively.rect(0, 0, 680, 520));
+        var editor = new lively.identity.PostCardEditor(lively.rect(0, 0, 785, 520));
         editor._handle = handle;
         editor._objId = null;
         editor._isNew = true;

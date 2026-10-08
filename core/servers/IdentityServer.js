@@ -1065,6 +1065,8 @@ function _alignIndentAttr(node) {
   var style = '';
   if (attrs.align && attrs.align !== 'left') style += 'text-align:' + attrs.align + ';';
   if (attrs.indent) style += 'margin-left:' + (attrs.indent * 24) + 'px;';
+  var lh = parseFloat(attrs.lineHeight);
+  if (lh > 0) style += 'line-height:' + lh + ';';
   return style ? ' style="' + escapeHtml(style) + '"' : '';
 }
 
@@ -1106,7 +1108,24 @@ function _pmNodeToHtml(node) {
       return '<h' + level + _alignIndentAttr(node) + '>' + inner + '</h' + level + '>';
     case 'bullet_list': return '<ul>' + inner + '</ul>';
     case 'ordered_list': return '<ol>' + inner + '</ol>';
-    case 'list_item': return '<li' + _alignIndentAttr(node) + '>' + inner + '</li>';
+    // Checklist: this static pre-boot render has no postcard stylesheet, so
+    // the box is an inline-styled text glyph (the live client renders the
+    // same data-type/data-checked markup via PostCardUtils's CSS instead).
+    case 'check_list':
+      // Items never toggled carry checked:null — read as unchecked here.
+      inner = (node.content || []).map(function(item) {
+        var attrs = Object.assign({}, item.attrs);
+        if (attrs.checked !== true) attrs.checked = false;
+        return _pmNodeToHtml(Object.assign({}, item, { attrs: attrs }));
+      }).join('');
+      return '<ul data-type="checklist" style="list-style:none;padding-left:4px">' + inner + '</ul>';
+    case 'list_item':
+      var liChecked = node.attrs && node.attrs.checked;
+      if (liChecked === true || liChecked === false) {
+        return '<li data-checked="' + liChecked + '" style="display:flex;gap:6px"><span>' +
+               (liChecked ? '☑' : '☐') + '</span><div>' + inner + '</div></li>';
+      }
+      return '<li' + _alignIndentAttr(node) + '>' + inner + '</li>';
     case 'blockquote': return '<blockquote>' + inner + '</blockquote>';
     case 'code_block': return _renderHighlightedCode(node);
     case 'code_cell': return _renderCodeCell(node);
