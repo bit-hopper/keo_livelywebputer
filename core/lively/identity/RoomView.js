@@ -4879,13 +4879,12 @@ module("lively.identity.RoomView")
         };
         this._viewRoot = root;
 
-        var vb = $world.visibleBounds();
-        var pos = lively.pt(
-          Math.max(0, Math.round((vb.width - TOTAL_W) / 2)),
-          Math.max(0, Math.round((vb.height - TOTAL_H) / 2)));
         // Window first, children after: several builders measure their own
         // rendered DOM, which only exists once the morph is in the world.
-        this._win = root.openInWindow({ title: "Cluster", pos: pos });
+        // No `pos` here: World#addFramedMorph discards it and places the
+        // window at the mouse-hand position instead (confirmed live), so the
+        // centering below has to happen after the fact.
+        this._win = root.openInWindow({ title: "Cluster" });
         // This box clips with overflow:hidden but is still scrollable — the
         // browser scrolls it to reveal a caret or focused element (a wide
         // message box did exactly that and shifted every panel off screen,
@@ -4897,6 +4896,16 @@ module("lively.identity.RoomView")
         });
         applyAccentChrome(this._win);
         _widenWindowChrome(this._win);
+        // Centered on the real, final window size (frame + title bar included,
+        // which is bigger than TOTAL_W x TOTAL_H) in the CURRENT viewport —
+        // visibleBounds() carries the page scroll offset in its topLeft, and
+        // the cached window bounds may predate a browser resize.
+        $world.cachedWindowBounds = null;
+        var vb = $world.visibleBounds();
+        var ext = this._win.getExtent();
+        this._win.setPosition(lively.pt(
+          Math.round(vb.x + Math.max(0, (vb.width - ext.x) / 2)),
+          Math.round(vb.y + Math.max(0, (vb.height - ext.y) / 2))));
         return this._win;
       },
 
