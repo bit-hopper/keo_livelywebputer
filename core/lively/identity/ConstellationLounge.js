@@ -3756,7 +3756,7 @@ module("lively.identity.ConstellationLounge")
           if (err || !envelope || box._cardRenderToken !== token) return;
           self._resolveHandle(envelope.did, function (handle) {
             if (box._cardRenderToken !== token) return;
-            var opts = { target: box, envelope: envelope, bounds: lively.rect(0, 0, box.getExtent().x, box.getExtent().y) };
+            var opts = { target: box, envelope: envelope, pinkHandle: true, bounds: lively.rect(0, 0, box.getExtent().x, box.getExtent().y) };
             if (extraOpts) Object.keys(extraOpts).forEach(function (k) { opts[k] = extraOpts[k]; });
             if (envelope.type === "wikipage") {
               box._renderedView = lively.identity.WikiView.open(handle, objId, opts);
@@ -4247,10 +4247,12 @@ module("lively.identity.ConstellationLounge")
         var textX = x + COMMENT_AVATAR + 4;
         var textW = Math.max(60, rowW - COMMENT_AVATAR - 4);
 
+        var handleStr = "@" + (reply._handle || (reply.did || "").slice(0, 10) + "…");
         var header = lively.morphic.Text.makeLabel(
-          "@" + (reply._handle || (reply.did || "").slice(0, 10) + "…") + "  ·  " + self._formatRelativeTime(reply.created),
+          handleStr + "  ·  " + self._formatRelativeTime(reply.created),
           { fontSize: 10.5, textColor: COMMENT_META_COLOR });
         container.addMorph(header);
+        header.emphasize({ color: Color.rgb(0xCC, 0x00, 0x57) }, 0, handleStr.length);
         header.setPosition(lively.pt(textX, y + 2));
         header.setExtent(lively.pt(textW, 18));
 
@@ -4717,10 +4719,12 @@ module("lively.identity.ConstellationLounge")
         var textX = x + COMMENT_AVATAR + 4;
         var textW = Math.max(60, rowW - COMMENT_AVATAR - 4);
 
+        var handleStr = "@" + (reply._handle || (reply.did || "").slice(0, 10) + "…");
         var header = lively.morphic.Text.makeLabel(
-          "@" + (reply._handle || (reply.did || "").slice(0, 10) + "…") + "  ·  " + self._formatRelativeTime(reply.created),
+          handleStr + "  ·  " + self._formatRelativeTime(reply.created),
           { fontSize: 10.5, textColor: COMMENT_META_COLOR });
         container.addMorph(header);
+        header.emphasize({ color: Color.rgb(0xCC, 0x00, 0x57) }, 0, handleStr.length);
         header.setPosition(lively.pt(textX, y + 2));
         // 14 clipped the glyph's bottom ~3px (measured live: the rendered
         // span was 15.33px tall against a 14px, overflow:hidden box) — 18

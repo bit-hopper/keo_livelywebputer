@@ -225,7 +225,7 @@ module("lively.identity.WikiView")
           handleEl.style.cssText = [
             "position:absolute", "top:10px", "left:46px", "right:0",
             "height:28px", "display:flex", "align-items:center",
-            "font-size:11px", "color:#888", "white-space:nowrap",
+            "font-size:11px", "color:" + (this._pinkHandle ? "#CC0057" : "#888"), "white-space:nowrap",
             "overflow:hidden", "text-overflow:ellipsis",
           ].join(";");
           handleEl.textContent = "@" + this._handle;
@@ -1056,6 +1056,7 @@ module("lively.identity.WikiView")
         view._envelope = opts.envelope || null;
         view._onEdit = opts.onEdit || null;
         view._highlightQuery = opts.highlightQuery || null;
+        view._pinkHandle = !!opts.pinkHandle;
         // Embedded views (opts.target) keep their fixed box unless the
         // caller opts in; a standalone page view is the whole document, so
         // it grows by default.

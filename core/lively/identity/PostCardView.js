@@ -258,7 +258,8 @@ module("lively.identity.PostCardView")
             "display:flex",
             "align-items:center",
             "font-size:11px",
-            "color:#888",
+            // Pink only when embedded by the lounge (opts.pinkHandle).
+            "color:" + (this._pinkHandle ? "#CC0057" : "#888"),
             "white-space:nowrap",
             "overflow:hidden",
             "text-overflow:ellipsis",
@@ -1917,6 +1918,7 @@ module("lively.identity.PostCardView")
         view._cid = opts.cid || null;
         view._envelope = opts.envelope || null;
         view._previewMode = !!opts.previewMode;
+        view._pinkHandle = !!opts.pinkHandle;
         view._compactMode = !!opts.compactMode;
         view._showCommentChip = !!opts.showCommentChip;
         view._commentCount = opts.commentCount || 0;
