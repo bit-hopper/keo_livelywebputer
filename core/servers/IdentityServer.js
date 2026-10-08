@@ -3750,17 +3750,6 @@ module.exports = function (route, app) {
           });
         }
 
-        // Tip jar address (state.tipJarAddress, §5.3) — a plain Ethereum
-        // address, display-and-copy only. Unlike location's coerce-not-reject
-        // posture, this is a hard 400 on malformation: there's no sensible way
-        // to "floor" a bad address the way a too-precise Plus Code can be
-        // truncated, so an invalid value is rejected outright rather than
-        // silently dropped or mangled.
-        if (envelope.state && envelope.state.tipJarAddress != null &&
-            !/^0x[a-fA-F0-9]{40}$/.test(envelope.state.tipJarAddress)) {
-          return res.status(400).json({ error: "Invalid tip jar address" });
-        }
-
         // Inventory item size (state.sizeBytes) — server-computed from the
         // real bytes actually stored, never trusted from the client, same
         // posture as the location-floor coercion above. Inline payloads: the

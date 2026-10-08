@@ -76,7 +76,6 @@ module("lively.identity.PostCardView")
           "_moreMenuEl",
           "_moreMenuOutsideHandler",
           "_footerEl",
-          "_tipJarChipEl",
           "_pillsWrapEl",
           "_contentLoadStarted",
           "_decryptInFlight",
@@ -593,19 +592,9 @@ module("lively.identity.PostCardView")
           front.appendChild(footer);
           this._footerEl = footer;
 
-          // Two independent sub-areas so a tip-jar-only card (reactions
-          // off) and a reactions-only card (no tip jar) both render
-          // correctly — the tip chip is rebuilt once per envelope load, the
-          // pills wrap is rebuilt on every reactions poll, and neither
-          // clear should wipe out the other.
-          var tipJarChip = document.createElement("span");
-          tipJarChip.style.cssText = "flex:none;display:flex;align-items:center;gap:4px;";
-          footer.appendChild(tipJarChip);
-          this._tipJarChipEl = tipJarChip;
-
-          // margin-left:auto pushes this (and only this) sub-area to the
-          // footer's far right within the flex row, leaving the tip jar
-          // chip in its left-hand slot.
+          // margin-left:auto pushes this sub-area (and the comment chip
+          // after it) to the footer's far right within the flex row. The
+          // pills wrap is rebuilt on every reactions poll.
           var pillsWrap = document.createElement("span");
           pillsWrap.style.cssText = "flex:none;display:flex;align-items:center;gap:4px;margin-left:auto;";
           footer.appendChild(pillsWrap);
@@ -1406,39 +1395,28 @@ module("lively.identity.PostCardView")
       "reactions",
       {
         // Shows/hides and (re)populates the reactions footer for the given
-        // envelope. reactionsEnabled and the tip jar are independent
-        // opt-outs (§5.4) — the footer shows if either has something to
-        // display, not only when reactions are on. reactionsEnabled
-        // defaults to true ("each defaulting on"), so only an explicit
-        // `false` turns reactions off; the tip jar's presence is gated
-        // purely by whether tipJarAddress is set at all (§5.3). Delete
-        // (§6.3) lives in PostCardMailbox's "My Postcards" tab instead of
-        // here — this is a read-only reader, and the only place that
-        // actually lists a user's own authored cards is that mailbox tab.
+        // envelope. reactionsEnabled defaults to true ("each defaulting
+        // on", §5.4), so only an explicit `false` turns reactions off.
+        // Delete (§6.3) lives in PostCardMailbox's "My Postcards" tab
+        // instead of here — this is a read-only reader, and the only place
+        // that actually lists a user's own authored cards is that mailbox
+        // tab.
         _renderReactionsFooter: function (envelope) {
           var reactionsOn = !(envelope.state && envelope.state.reactionsEnabled === false);
-          // Tip jar is skipped entirely in compact mode (plan's confirmed
-          // decision) — a mini card's footer is reserved for reactions +
-          // the new comment chip.
-          var tipJarAddress = this._compactMode ? null : ((envelope.state && envelope.state.tipJarAddress) || null);
 
           // Compact mode (and a full card opted into showCommentChip --
           // ConstellationLounge.js's Scroll view) always shows the footer,
-          // even with reactions off and no tip jar — the comment chip
-          // (_renderCommentChip below) must always be reachable there,
-          // unlike a plain full card's footer which hides entirely when it
-          // would otherwise be empty.
-          if (!this._compactMode && !this._showCommentChip && !reactionsOn && !tipJarAddress) {
+          // even with reactions off — the comment chip (_renderCommentChip
+          // below) must always be reachable there, unlike a plain full
+          // card's footer which hides entirely when it would otherwise be
+          // empty.
+          if (!this._compactMode && !this._showCommentChip && !reactionsOn) {
             this._footerEl.style.display = "none";
-            this._tipJarChipEl.innerHTML = "";
             this._pillsWrapEl.innerHTML = "";
             return;
           }
 
           this._footerEl.style.display = "flex";
-
-          this._tipJarChipEl.innerHTML = "";
-          if (tipJarAddress) this._renderTipJarChip(tipJarAddress);
 
           if (reactionsOn) {
             this._pillsWrapEl.style.display = "";
@@ -1453,9 +1431,8 @@ module("lively.identity.PostCardView")
 
         // The comment-icon chip (ConstellationLounge.js's Scroll view,
         // compact mode, or a full card with showCommentChip) — same
-        // DOM-button + inline-style idiom as
-        // _renderTipJarChip/_renderReactionPills above, with the locked
-        // pill styling from the mockup. this._commentCount/
+        // DOM-button + inline-style idiom as _renderReactionPills below,
+        // with the locked pill styling from the mockup. this._commentCount/
         // this._commentsExpanded are set by open()/setCommentCount/
         // setCommentsExpanded — this method only ever reads them, never
         // fetches on its own (the caller owns both the count and the
@@ -1516,48 +1493,6 @@ module("lively.identity.PostCardView")
           if (this._compactMode || this._showCommentChip) this._renderCommentChip();
         },
 
-        // Tip jar (§5.3) — display-and-copy only, no wallet integration.
-        _renderTipJarChip: function (address) {
-          var chip = document.createElement("button");
-          chip.textContent = "💰 Tip";
-          chip.title = address;
-          chip.style.cssText = [
-            "flex:none",
-            "font-size:14px",
-            "padding:2px 9px",
-            "border-radius:13px",
-            "cursor:pointer",
-            "border:1px solid #ddd",
-            "background:#fffaf0",
-            "color:#333",
-          ].join(";");
-          ["mousedown", "click"].forEach(function (t) {
-            chip.addEventListener(t, function (e) {
-              e.preventDefault();
-              e.stopPropagation();
-              if (t !== "click") return;
-              var restore = chip.textContent;
-              function copied() {
-                chip.textContent = "Copied!";
-                setTimeout(function () { chip.textContent = restore; }, 1200);
-              }
-              if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(address).then(copied).catch(function () {});
-              } else {
-                // Fallback for contexts without the async Clipboard API.
-                var ta = document.createElement("textarea");
-                ta.value = address;
-                ta.style.cssText = "position:fixed;opacity:0;";
-                document.body.appendChild(ta);
-                ta.select();
-                try { document.execCommand("copy"); copied(); } catch (e2) {}
-                document.body.removeChild(ta);
-              }
-            });
-          });
-          this._tipJarChipEl.appendChild(chip);
-        },
-
         _loadReactions: function () {
           var self = this;
           var base = lively.identity.did.baseUrl();
@@ -1584,7 +1519,28 @@ module("lively.identity.PostCardView")
           var currentUser = lively.identity.did.currentUser();
           var toAnimate = null;
 
-          ["⭐", "🪿"].forEach(function (emoji) {
+          // One pill split down the middle: star on the left, goose on the
+          // right. A 1fr/1fr grid keeps the divider at the exact center even
+          // when one count is wider; the outline and divider turn blue when
+          // either half is the viewer's, and only that half is tinted.
+          var anyMine = ["⭐", "🪿"].some(function (e) { return mine.indexOf(e) !== -1; });
+          var edge = anyMine ? "#f0a3bf" : "#ddd";
+          var group = document.createElement("div");
+          group.style.cssText = [
+            "flex:none",
+            "display:grid",
+            "grid-template-columns:1fr 1fr",
+            "align-items:stretch",
+            "overflow:hidden",
+            "box-sizing:border-box",
+            "border-radius:13px",
+            "font-size:14px",
+            "color:#333",
+            "border:1px solid " + edge,
+            "background:#fafafa",
+          ].join(";");
+
+          ["⭐", "🪿"].forEach(function (emoji, idx) {
             var isMine = mine.indexOf(emoji) !== -1;
             var n = counts[emoji] || 0;
             var pill = document.createElement("button");
@@ -1594,17 +1550,26 @@ module("lively.identity.PostCardView")
             em.textContent = emoji;
             em.style.cssText = "display:inline-block;";
             pill.appendChild(em);
-            if (n) pill.appendChild(document.createTextNode(" " + self._abbreviateCount(n)));
+            if (n) {
+              var cnt = document.createElement("span");
+              cnt.textContent = self._abbreviateCount(n);
+              pill.appendChild(cnt);
+            }
             pill.title = (data.byEmoji && data.byEmoji[emoji] || []).join(", ");
             pill.style.cssText = [
-              "flex:none",
-              "font-size:14px",
-              "padding:2px 9px",
-              "border-radius:13px",
+              "display:flex",
+              "align-items:center",
+              "justify-content:center",
+              "gap:4px",
+              "min-width:42px",
+              "padding:2px 10px",
+              "border:0",
+              "margin:0",
+              "font:inherit",
+              "color:inherit",
               "cursor:" + (currentUser ? "pointer" : "default"),
-              "border:1px solid " + (isMine ? "#5566cc" : "#ddd"),
-              "background:" + (isMine ? "#eef0fd" : "#fafafa"),
-              "color:#333",
+              "background:" + (isMine ? "#fdeef3" : "transparent"),
+              idx === 1 ? "border-left:1px solid " + edge : "",
             ].join(";");
             ["mousedown", "click"].forEach(function (t) {
               pill.addEventListener(t, function (e) {
@@ -1620,13 +1585,14 @@ module("lively.identity.PostCardView")
                 }
               });
             });
-            self._pillsWrapEl.appendChild(pill);
+            group.appendChild(pill);
             if (isMine && self._pendingReactionAnim === emoji) toAnimate = { pill: pill, em: em, emoji: emoji };
           });
+          this._pillsWrapEl.appendChild(group);
           this._pendingReactionAnim = null;
-          // Only once both pills are in place: the wrap is right-aligned, so
-          // measuring right after the star alone is appended (before the
-          // goose exists) puts the burst a whole pill's width too far right.
+          // Only once the whole group is in place: the wrap is right-aligned,
+          // so measuring before it is attached would put the burst in the
+          // wrong spot.
           if (toAnimate) this._playReactionAnim(toAnimate.pill, toAnimate.em, toAnimate.emoji);
         },
 
@@ -1893,14 +1859,14 @@ module("lively.identity.PostCardView")
       // options.compactMode -> opt-in "mini card" chrome (ConstellationLounge.js's
       //   Scroll view): no flip/back face/more-menu, a plain-text 2-line-
       //   clamp excerpt instead of rich content, and a comment-icon chip in
-      //   the reactions footer instead of the tip jar. Default false, so
-      //   every existing caller keeps its full card chrome unchanged.
+      //   the reactions footer. Default false, so every existing caller
+      //   keeps its full card chrome unchanged.
       // options.showCommentChip -> opt-in comment-icon chip on a FULL
       //   (non-compactMode) card — ConstellationLounge.js's Scroll view
       //   (full-card rows). Independent of compactMode: shows the chip
-      //   (and keeps the footer visible even with reactions off and no tip
-      //   jar) while leaving flip/back-face/more-menu/tip-jar/rich content
-      //   all intact. Default false.
+      //   (and keeps the footer visible even with reactions off) while
+      //   leaving flip/back-face/more-menu/rich content all intact.
+      //   Default false.
       // options.commentCount     -> initial count shown on the comment chip
       //   (compactMode or showCommentChip) — the caller fetches this once
       //   up front so the chip doesn't flip from blank to a number after

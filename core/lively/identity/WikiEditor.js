@@ -14,7 +14,7 @@
  * WikiEditor instance is never anything else).
  *
  * Deliberately NOT ported from PostCardEditor (postcard-only features that
- * never applied to wiki pages): reactions, tip jar, hashtags, location
+ * never applied to wiki pages): reactions, hashtags, location
  * tags, mute/block, forwarding aliases, sent/immutability freeze, the
  * mailbox-hide delete mechanism, the visibility toggle (a wiki page's
  * readability is its constellation's canRead check, not its own — see

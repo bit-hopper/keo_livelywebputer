@@ -1565,7 +1565,8 @@ module('lively.identity.Wallet')
         if (this._balanceTextEl) this._balanceTextEl.textContent = text;
       },
 
-      // Same clipboard approach as PostCardView.js's tip-jar Copy button.
+      // Async Clipboard API with a textarea/execCommand fallback for
+      // contexts where it's unavailable.
       _copyToClipboard: function (text, btn) {
         var originalLabel = btn.textContent;
         function copied() {

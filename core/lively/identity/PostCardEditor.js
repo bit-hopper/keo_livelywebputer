@@ -159,14 +159,12 @@ module('lively.identity.PostCardEditor')
         this._locationCode = null;
         this._locationCleared = false;
         this._locationBtn = null;
-        // Sender-controlled opt-out toggle + tip jar (PostcardDesignSpec-v2.md
-        // §5.4) — defaults on (reactions) or absent (tip jar).
-        // Seeded from the loaded envelope in _loadExistingNow, same pattern
-        // as _locationCode above. No compose UI yet (reverted — broke the
-        // editor's typability, see chat history) — these currently just
-        // carry each card's defaults through save/reload unchanged.
+        // Sender-controlled opt-out toggle (PostcardDesignSpec-v2.md §5.4) —
+        // defaults on. Seeded from the loaded envelope in _loadExistingNow,
+        // same pattern as _locationCode above. No compose UI yet (reverted —
+        // broke the editor's typability, see chat history) — this currently
+        // just carries each card's default through save/reload unchanged.
         this._reactionsEnabled = true;
-        this._tipJarAddress = null;
         // True for a new card (you're creating it) or once _loadExistingNow
         // compares envelope.did to the session DID. Gates Send and the
         // visibility toggle specifically (those stay owner-only even for a
@@ -875,15 +873,11 @@ module('lively.identity.PostCardEditor')
       // Unlike location, reactionsEnabled always has a value
       // (default true) so it's always included, not conditionally
       // omitted — there's no "never touched this session" tri-state to
-      // preserve. tipJarAddress stays absent (not null) when unset, per
-      // §5.4's "0x... | absent" — omitting the key rather than nulling it
-      // matches how the field's own presence gates the tip-jar UI (§5.3).
+      // preserve.
       _optionsStateMeta: function () {
-        var meta = {
+        return {
           reactionsEnabled: this._reactionsEnabled !== false,
         };
-        if (this._tipJarAddress) meta.tipJarAddress = this._tipJarAddress;
-        return meta;
       },
 
       // Merges location + options stateMeta into one object for a save —
@@ -894,8 +888,8 @@ module('lively.identity.PostCardEditor')
       // Object.assign({}, params.stateMeta, {title}) — they do NOT merge
       // against the previously-stored envelope.state. That's fine for
       // fields this editor itself owns and re-seeds from the loaded
-      // envelope every time (location/reactionsEnabled/
-      // tipJarAddress, all handled above) — but ANY state field set by
+      // envelope every time (location/reactionsEnabled, both handled
+      // above) — but ANY state field set by
       // something other than this editor, and that this editor doesn't
       // know to carry forward, gets silently dropped on the next save.
       // Concretely: PostCardView.js's Delete action (§6.3) sets
@@ -1183,7 +1177,6 @@ module('lively.identity.PostCardEditor')
           self._locationCleared = false;
           self._updateLocationBtn();
           self._reactionsEnabled = !(envelope.state && envelope.state.reactionsEnabled === false);
-          self._tipJarAddress = (envelope.state && envelope.state.tipJarAddress) || null;
           // Re-seed _constellation from the loaded envelope so a re-save of
           // a plain card already attached to a constellation doesn't lose
           // that attachment (_composeStateMeta/save params only carry
@@ -2390,7 +2383,6 @@ module('lively.identity.PostCardEditor')
           self._locationCleared = false;
           self._updateLocationBtn();
           self._reactionsEnabled = !(envelope.state && envelope.state.reactionsEnabled === false);
-          self._tipJarAddress = (envelope.state && envelope.state.tipJarAddress) || null;
           self._updateVisibilityBtn();
           // If this was a new card, wire up sync now that we have an objId
           if (self._isNew) {

@@ -14,9 +14,9 @@
  *     genesis"), a Contributors row (other constellation members who have
  *     saved the page, avatars stacked horizontally), then CID/Updated/
  *     Constellation rows and the verify badge. See _buildDetails.
- *   - No reactions/tip-jar footer, no encrypted-content lock placeholder —
- *     wiki pages are always public/unencrypted, and reactions/tip-jar are
- *     postcard-only social features that never applied to wiki pages.
+ *   - No reactions footer, no encrypted-content lock placeholder —
+ *     wiki pages are always public/unencrypted, and reactions are a
+ *     postcard-only social feature that never applied to wiki pages.
  *
  * Contributors/last-editor data: envelope.did never changes from the
  * genesis author (WikiSerializer.js), so per-save attribution can't come

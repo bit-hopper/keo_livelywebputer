@@ -3872,7 +3872,7 @@ module("lively.identity.ConstellationLounge")
 
     // ─── Scroll view — a second, user-selectable postcard layout ──────────
     // A vertical list of full-size postcard rows (same card as the Reel,
-    // full feature parity — flip/back-face, tip-jar chip, the more menu),
+    // full feature parity — flip/back-face, the more menu),
     // alongside the default Reel. Reuses _feedCards/_fetchFeed/
     // _maybeLoadMore directly (no parallel fetch path) and
     // PostCardView.open's showCommentChip flag to put a comment-icon chip

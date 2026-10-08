@@ -1967,8 +1967,7 @@ module('lively.identity.PostCardMailbox')
         xhr.send();
       },
 
-      // Same clipboard approach as PostCardView.js's tip-jar Copy button —
-      // async Clipboard API with a textarea/execCommand fallback for
+      // Async Clipboard API with a textarea/execCommand fallback for
       // contexts where it's unavailable.
       _copyToClipboard: function (text, btn) {
         var restore = btn.textContent;
