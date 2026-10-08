@@ -664,6 +664,9 @@ module("lively.identity.RoomView")
           try { if (m && m.owner) m.remove(); } catch (e) {}
         });
         if (this._railTimer) { clearInterval(this._railTimer); this._railTimer = null; }
+        if (this._renderSoonTimer) { clearTimeout(this._renderSoonTimer); this._renderSoonTimer = null; }
+        this._rowCache = null;
+        this._rowCacheOwner = null;
         this._clearGrid();
         if (this._roomLeft) this._clearCircles();
         this._gridBox = null;
@@ -2498,7 +2501,7 @@ module("lively.identity.RoomView")
           var real = Math.max(18, bodyNode.scrollHeight);
           mo.disconnect();
           self._linkPreviewRowH[cacheKey] = real;
-          self._renderMessages();
+          self._renderMessagesSoon();
         });
         mo.observe(bodyNode, { childList: true, subtree: true });
         setTimeout(function () { mo.disconnect(); }, 8000);
@@ -2593,10 +2596,37 @@ module("lively.identity.RoomView")
         return y + barH + 14;
       },
 
+      // _renderMessages rebuilds every row (and each row's toolbar), ~600ms
+      // for a 38-message room — and each link-preview card / GIF that finishes
+      // loading used to call it directly, so a room with a few of them ran
+      // several back-to-back rebuilds right after opening, starving pointer
+      // events (a title-bar drag got 1-2 onDrag calls in 700ms and the window
+      // looked undraggable). Async hydration callbacks go through here
+      // instead, so everything that lands within the delay costs one rebuild.
+      _renderMessagesSoon: function () {
+        var self = this;
+        if (this._renderSoonTimer) return;
+        this._renderSoonTimer = setTimeout(function () {
+          self._renderSoonTimer = null;
+          self._renderMessages();
+        }, 150);
+      },
+
       _renderMessages: function () {
+        if (this._renderSoonTimer) { clearTimeout(this._renderSoonTimer); this._renderSoonTimer = null; }
         if (!this._msgListBox) return; // window closed — showView re-renders from this._messages
         var self = this;
-        (this._msgListBox.submorphs || []).slice().forEach(function (m) { m.remove(); });
+        // Message rows are cached across passes (key -> {sig, row, y, h}); a
+        // row whose signature is unchanged is kept as-is — only moved if the
+        // rows above it changed height — so a new message, reaction, edit or
+        // late-landing link preview costs a rebuild of THAT row, not of every
+        // row (a full pass was ~370ms at 44 messages and ~3.8s at 400), and
+        // untouched rows keep their embedded iframes (a playing video used to
+        // be destroyed by every rebuild). Everything else in the list box
+        // (date dividers, search bar, empty-state label) is cheap and rebuilt.
+        var rowCache = (this._rowCacheOwner === this._msgListBox && this._rowCache) || {};
+        var nextCache = {};
+        (this._msgListBox.submorphs || []).slice().forEach(function (m) { if (!m._rvRow) m.remove(); });
         // Rebuilt fresh every pass — _jumpToMessage reads these at click
         // time rather than a closure capturing them now, so a reply chip's
         // target stays correct even if the list re-renders (poll/reaction/
@@ -2637,6 +2667,7 @@ module("lively.identity.RoomView")
         function makeRow(top) {
           var row = noDrag(new lively.morphic.Box(lively.rect(0, top, self._chatW, 1)));
           row.applyStyle({ fill: null, borderWidth: 0, borderRadius: 6 });
+          row._rvRow = true;
           self._msgListBox.addMorph(row);
           row.onMouseOver = function () { row.applyStyle({ fill: BG_MSG_ROW_HOVER }); };
           row.onMouseOut = function () { row.applyStyle({ fill: null }); };
@@ -2741,7 +2772,45 @@ module("lively.identity.RoomView")
           // Block fully hides content (fixed-height placeholder, no
           // expand); mute collapses to one line with a click-to-expand
           // toggle. See CLAUDE.md's Ignore/Mute assumption note in DID.js.
-          if (lively.identity.did.isBlocked(msg.did, msg.handle)) {
+          var isBlockedMsg = lively.identity.did.isBlocked(msg.did, msg.handle);
+          var isMuted = lively.identity.did.isMuted(msg.did, msg.handle);
+          var muteKey = msg.objId || (msg.did + "|" + msg.created);
+          var muteExpanded = !!self._mutedExpanded[muteKey];
+          var isMine = !!(currentUser && msg.did === currentUser.did);
+          var isEditingThis = !!(msg.objId && msg.objId === self._editingObjId);
+
+          // Reuse the previous pass's row when nothing it renders from has
+          // changed. The signature must cover EVERY input the build below
+          // reads, or a stale row sticks around: the message's own fields,
+          // block/mute/edit state, who's viewing, the reply parent's
+          // handle+text (the reply chip shows them), and the two async
+          // height caches (a link preview / GIF landing changes those, which
+          // is exactly what should rebuild that one row).
+          var rowKey = msg.objId || (msg.did + "|" + msg.created);
+          while (nextCache[rowKey]) rowKey += "#";
+          var replyParent = (msg.replyTo && msg.replyTo.objId) ? self._findMessageByObjId(msg.replyTo.objId) : null;
+          var rowSig = JSON.stringify([
+            self._chatW, self._searchActive ? 1 : 0, !!(self._room && self._room.ephemeral),
+            msg.did, msg.handle, msg.text, msg.created, msg.editedAt || null, msg.reactions || null,
+            msg.replyTo ? (msg.replyTo.objId || 1) : null,
+            replyParent ? [replyParent.handle, replyParent.did, replyParent.text] : null,
+            isBlockedMsg, isMuted, muteExpanded, isMine, canModerate, isEditingThis,
+            currentUser ? currentUser.did : null,
+            self._linkPreviewRowH[msg.text] === undefined ? null : self._linkPreviewRowH[msg.text],
+            self._mediaDims[msg.text] || null,
+          ]);
+          var cachedRow = rowCache[rowKey];
+          if (cachedRow && cachedRow.sig === rowSig && cachedRow.row.owner === self._msgListBox) {
+            if (cachedRow.y !== y) { cachedRow.row.setPosition(lively.pt(0, y)); cachedRow.y = y; }
+            nextCache[rowKey] = cachedRow;
+            if (msg.objId) { self._rowTopByObjId[msg.objId] = y; self._rowMorphByObjId[msg.objId] = cachedRow.row; }
+            y += cachedRow.h + ROW_GAP;
+            return;
+          }
+          if (cachedRow && cachedRow.row.owner) cachedRow.row.remove();
+          var rowY = y;
+
+          if (isBlockedMsg) {
             var row = makeRow(y);
             if (msg.objId) { self._rowTopByObjId[msg.objId] = y; self._rowMorphByObjId[msg.objId] = row; }
             var lockAv = noDrag(lively.morphic.Text.makeLabel("lock", { fontSize: 16, textColor: CHAT_TEXT_MUTED }));
@@ -2760,14 +2829,10 @@ module("lively.identity.RoomView")
             row.addMorph(blockedLabel);
 
             row.setExtent(lively.pt(self._chatW, AVATAR_MSG));
+            nextCache[rowKey] = { sig: rowSig, row: row, y: rowY, h: AVATAR_MSG };
             y += AVATAR_MSG + ROW_GAP;
             return;
           }
-          var isMuted = lively.identity.did.isMuted(msg.did, msg.handle);
-          var muteKey = msg.objId || (msg.did + "|" + msg.created);
-          var muteExpanded = !!self._mutedExpanded[muteKey];
-          var isMine = !!(currentUser && msg.did === currentUser.did);
-          var isEditingThis = !!(msg.objId && msg.objId === self._editingObjId);
           var row = makeRow(y);
           if (msg.objId) { self._rowTopByObjId[msg.objId] = y; self._rowMorphByObjId[msg.objId] = row; }
 
@@ -2984,7 +3049,7 @@ module("lively.identity.RoomView")
               var next = { w: Math.round(ext.x), h: Math.round(ext.y) };
               var prev = self._mediaDims[msg.text];
               self._mediaDims[msg.text] = next;
-              if (!prev || prev.w !== next.w || prev.h !== next.h) self._renderMessages();
+              if (!prev || prev.w !== next.w || prev.h !== next.h) self._renderMessagesSoon();
             });
             row.addMorph(mediaM);
           } else {
@@ -3037,16 +3102,35 @@ module("lively.identity.RoomView")
           row.setExtent(lively.pt(self._chatW, totalH));
 
           if (!isEditingThis) {
-            var toolbar = self._renderRowToolbar(row, msg, isMine, canModerate, contentTop, PAD);
-            if (toolbar) {
-              var baseOver = row.onMouseOver, baseOut = row.onMouseOut;
-              row.onMouseOver = function () { baseOver(); toolbar.setVisible(true); };
-              row.onMouseOut = function () { baseOut(); toolbar.setVisible(false); };
-            }
+            // Built on the row's first hover, not up front: ~7ms per row,
+            // paid on every _renderMessages pass for every row, it was
+            // roughly a third of a full rebuild — and almost no row is ever
+            // hovered before the next rebuild replaces it anyway.
+            var toolbar = null, toolbarBuilt = false;
+            var baseOver = row.onMouseOver, baseOut = row.onMouseOut;
+            row.onMouseOver = function () {
+              baseOver();
+              if (!toolbarBuilt) {
+                toolbarBuilt = true;
+                toolbar = self._renderRowToolbar(row, msg, isMine, canModerate, contentTop, PAD);
+              }
+              if (toolbar) toolbar.setVisible(true);
+            };
+            row.onMouseOut = function () { baseOut(); if (toolbar) toolbar.setVisible(false); };
           }
 
+          nextCache[rowKey] = { sig: rowSig, row: row, y: rowY, h: totalH };
           y += totalH + ROW_GAP;
         });
+
+        // Rows whose message is gone (deleted, or outside the current
+        // search results) — anything not carried into this pass's cache.
+        Object.keys(rowCache).forEach(function (k) {
+          var old = rowCache[k];
+          if (nextCache[k] !== old && old.row.owner) old.row.remove();
+        });
+        this._rowCache = nextCache;
+        this._rowCacheOwner = this._msgListBox;
 
         var scrollNode = this._msgListBox.renderContext().shapeNode;
         // Search mode: stay pinned to the top (the search bar + newest
