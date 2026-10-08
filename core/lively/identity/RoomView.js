@@ -1125,7 +1125,10 @@ module("lively.identity.RoomView")
       _buildRoomsPanel: function () {
         var panel = noDrag(new lively.morphic.Box(lively.rect(
           this._originX, this._originY + HEADER_H, ROOMS_PANEL_W, BODY_H)));
-        panel.applyStyle({ fill: BG_SIDEBAR, borderWidth: 0, clipMode: "auto" });
+        // Vertical scroll only: rows are laid out at the panel's full width,
+        // so the vertical scrollbar's own width pushed content past the
+        // client width and produced a stray horizontal scrollbar.
+        panel.applyStyle({ fill: BG_SIDEBAR, borderWidth: 0, clipMode: { x: "hidden", y: "auto" } });
         this._ensureScrollbarStyle();
         panel.renderContext().shapeNode.classList.add("roomview-scroll-dark");
         this._viewRoot.addMorph(panel);
@@ -1431,7 +1434,10 @@ module("lively.identity.RoomView")
 
         var listH = BODY_H - INPUT_H;
         var list = noDrag(new lively.morphic.Box(lively.rect(0, 0, CHAT_W, listH)));
-        list.applyStyle({ fill: null, borderWidth: 0, clipMode: "auto" });
+        // Vertical scroll only — same reason as the rooms panel: rows are
+        // chat-width wide, the vertical scrollbar takes ~10px of it, and the
+        // overflow showed as a horizontal scrollbar over the last message.
+        list.applyStyle({ fill: null, borderWidth: 0, clipMode: { x: "hidden", y: "auto" } });
         this._ensureScrollbarStyle();
         list.renderContext().shapeNode.classList.add("roomview-scroll-light");
         chat.addMorph(list);
@@ -3149,7 +3155,7 @@ module("lively.identity.RoomView")
       _buildMembersPanel: function () {
         var panel = noDrag(new lively.morphic.Box(lively.rect(
           this._originX + CHAT_X_OFFSET + CHAT_W + PANEL_GAP, this._originY + HEADER_H, MEMBERS_W, BODY_H)));
-        panel.applyStyle({ fill: BG_SIDEBAR, borderWidth: 0, clipMode: "auto" });
+        panel.applyStyle({ fill: BG_SIDEBAR, borderWidth: 0, clipMode: { x: "hidden", y: "auto" } });
         this._ensureScrollbarStyle();
         panel.renderContext().shapeNode.classList.add("roomview-scroll-dark");
         this._viewRoot.addMorph(panel);
