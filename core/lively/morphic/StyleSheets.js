@@ -51,6 +51,15 @@ module('lively.morphic.StyleSheets').requires('lively.morphic.Core', 'apps.cssPa
         iconFontEl.setAttribute('href', Config.codeBase + 'styles/material-symbols.css')
         document.getElementsByTagName('head')[0].appendChild(iconFontEl);
         // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+        // Atkinson Hyperlegible, the default UI/body font (core/lib/atkinson-hyperlegible/,
+        // see core/styles/atkinson-hyperlegible.css). Same plain-<link> idiom as the
+        // icon font above: just @font-face at-rules, nothing for the CSS parser.
+        var bodyFontEl = document.createElement('link');
+        bodyFontEl.setAttribute('rel', "stylesheet")
+        bodyFontEl.setAttribute('type', "text/css")
+        bodyFontEl.setAttribute('href', Config.codeBase + 'styles/atkinson-hyperlegible.css')
+        document.getElementsByTagName('head')[0].appendChild(bodyFontEl);
+        // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
         // Vendored decorative/display Google Fonts (core/lib/google-fonts/,
         // one subdirectory per family with its own woff2 + upstream license
         // file), requested for the TextFormattingToolbar font-family picker

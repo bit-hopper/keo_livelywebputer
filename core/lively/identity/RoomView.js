@@ -74,14 +74,14 @@ module("lively.identity.RoomView")
     // get their own dark-tinted hover fill instead.
     var BG_MSG_ROW_HOVER = Color.rgba(43, 20, 63, 0.07);
     var TEXT_PRIMARY = Color.rgb(242, 243, 245);
-    var TEXT_MUTED   = Color.rgb(148, 155, 164);
-    var TEXT_FAINT   = Color.rgb(114, 118, 125);
+    var TEXT_MUTED   = Color.rgb(205, 210, 220);
+    var TEXT_FAINT   = Color.rgb(176, 180, 190);
     // Dark-on-light variants for content sitting directly on the now-light
     // BG_MAIN chat area (message list) — TEXT_PRIMARY/MUTED/FAINT above stay
     // near-white for the dark BG_SIDEBAR/BG_INPUT surfaces, which still need them.
-    var CHAT_TEXT_PRIMARY = Color.rgb(43, 20, 63);
-    var CHAT_TEXT_MUTED   = Color.rgb(90, 66, 122);
-    var CHAT_TEXT_FAINT   = Color.rgb(124, 100, 158);
+    var CHAT_TEXT_PRIMARY = Color.rgb(24, 8, 40);
+    var CHAT_TEXT_MUTED   = Color.rgb(48, 22, 80);
+    var CHAT_TEXT_FAINT   = Color.rgb(58, 30, 92);
     var ACCENT = Color.rgb(79, 11, 67);       // #4F0B43 — matches ConstellationLounge's ROOM_ACCENT
     var JUMP_HIGHLIGHT = Color.rgba(79, 11, 67, 0.18); // flash fill for "jump to replied-to message"
     var DANGER = Color.rgb(242, 63, 66);
@@ -200,7 +200,7 @@ module("lively.identity.RoomView")
     function measureNameTag(text, fontFamily) {
       if (!nameTagCanvas) nameTagCanvas = document.createElement("canvas");
       var ctx = nameTagCanvas.getContext("2d");
-      ctx.font = "700 " + NAME_TAG_FONT_PX + "px " + (fontFamily || "Helvetica");
+      ctx.font = "700 " + NAME_TAG_FONT_PX + "px " + (fontFamily || "'Atkinson Hyperlegible', Helvetica, Arial, sans-serif");
       return Math.ceil(ctx.measureText(text).width);
     }
     // "@" + the handle, cut to NAME_TAG_MAX_CHARS with an ellipsis.
@@ -1140,7 +1140,7 @@ module("lively.identity.RoomView")
         this._roomsPanelBox = panel;
 
         var heading = noDrag(lively.morphic.Text.makeLabel("CLUSTERS", {
-          fontSize: 11, fontWeight: "700", textColor: TEXT_MUTED,
+          fontSize: 12, fontWeight: "700", textColor: TEXT_MUTED,
         }));
         heading.eventsAreIgnored = true;
         heading.setPosition(lively.pt(16, 16));
@@ -1266,7 +1266,7 @@ module("lively.identity.RoomView")
           var countM = noDrag(lively.morphic.Text.makeLabel(
             count === 1 ? "1 here" : (count + " here"),
             {
-              fontSize: 11, textColor: isCurrent ? Color.rgba(255, 255, 255, 0.75) : TEXT_FAINT,
+              fontSize: 12, textColor: isCurrent ? Color.rgba(255, 255, 255, 0.75) : TEXT_FAINT,
               fixedWidth: true, fixedHeight: true,
             }
           ));
@@ -1483,7 +1483,7 @@ module("lively.identity.RoomView")
         // caret, taking every panel off screen. Fixed width wraps the text
         // instead; _fitComposer grows the height to match.
         input.beInputLine({
-          fontSize: 13, fontFamily: "Helvetica", textColor: TEXT_PRIMARY,
+          fontSize: 13, fontFamily: "'Atkinson Hyperlegible', Helvetica, Arial, sans-serif", textColor: TEXT_PRIMARY,
           fill: null, borderWidth: 0, whiteSpaceHandling: "pre-wrap", fixedWidth: true,
         });
         pill.addMorph(input);
@@ -2335,7 +2335,7 @@ module("lively.identity.RoomView")
         var reasonField = noDrag(new lively.morphic.Text(lively.rect(PAD, 75, W - PAD * 2, 106), ""));
         reasonField.beInputLine();
         reasonField.applyStyle({
-          allowInput: true, fontSize: 12, fontFamily: "Helvetica", clipMode: "hidden",
+          allowInput: true, fontSize: 12, fontFamily: "'Atkinson Hyperlegible', Helvetica, Arial, sans-serif", clipMode: "hidden",
           fixedWidth: true, fixedHeight: true, whiteSpaceHandling: "pre-wrap",
           fill: Color.white, borderColor: Color.rgb(203, 203, 203), borderWidth: 1, borderRadius: 4,
           padding: lively.Rectangle.inset(6, 6, 0, 0),
@@ -2726,7 +2726,7 @@ module("lively.identity.RoomView")
 
         var input = noDrag(new lively.morphic.Text(lively.rect(12, 5, self._chatW - PAD * 2 - 24 - 32, 24)));
         input.beInputLine({
-          fontSize: 13, fontFamily: "Helvetica", textColor: TEXT_PRIMARY,
+          fontSize: 13, fontFamily: "'Atkinson Hyperlegible', Helvetica, Arial, sans-serif", textColor: TEXT_PRIMARY,
           fill: null, borderWidth: 0, whiteSpaceHandling: "pre",
         });
         input.textString = this._searchQuery || "";
@@ -2815,7 +2815,7 @@ module("lively.identity.RoomView")
         // the actual rendered line needs 21px, clipping the bottom pixel of
         // any descender (g/y/p) in every handle. 23 leaves real headroom
         // rather than the exact measured minimum.
-        var HEAD_H = 23;
+        var HEAD_H = 26;
         var y = 12;
         // Discord/Slack-style per-message hover strip: invisible at rest,
         // fades in on hover for row separation without a permanent
@@ -2879,14 +2879,14 @@ module("lively.identity.RoomView")
         // than guessed, so the flanking lines meet the text edges cleanly
         // regardless of date-string length/locale.
         function renderDateDivider(top, iso) {
-          var DIV_H = 20, DIV_MARGIN = 10;
+          var DIV_H = 24, DIV_MARGIN = 10;
           var divRow = noDrag(new lively.morphic.Box(lively.rect(0, top + DIV_MARGIN, self._chatW, DIV_H)));
           divRow.applyStyle({ fill: null, borderWidth: 0 });
           divRow.eventsAreIgnored = true;
           self._msgListBox.addMorph(divRow);
 
           var label = noDrag(lively.morphic.Text.makeLabel(self._formatDividerDate(iso), {
-            fontSize: 11, fontWeight: "600", textColor: CHAT_TEXT_MUTED, fixedWidth: true, fixedHeight: true,
+            fontSize: 12, fontWeight: "600", textColor: CHAT_TEXT_MUTED, fixedWidth: true, fixedHeight: true,
           }));
           label.eventsAreIgnored = true;
           label.setExtent(lively.pt(260, DIV_H));
@@ -3034,7 +3034,7 @@ module("lively.identity.RoomView")
 
               var snippetText = "@" + (parent.handle || "someone") + "  " + (parent.text || "").replace(/\s+/g, " ").slice(0, 50);
               replyM = noDrag(lively.morphic.Text.makeLabel(snippetText, {
-                fontSize: 11, textColor: CHAT_TEXT_FAINT, fixedWidth: true, fixedHeight: true, whiteSpaceHandling: "pre",
+                fontSize: 12, textColor: CHAT_TEXT_FAINT, fixedWidth: true, fixedHeight: true, whiteSpaceHandling: "pre",
               }));
               replyM.setExtent(lively.pt(self._chatW - PAD - (replyAvX - PAD) - REPLY_AVATAR - 6, REPLY_PREVIEW_H));
               replyM.setPosition(lively.pt(replyAvX + REPLY_AVATAR + 6, 0));
@@ -3055,7 +3055,7 @@ module("lively.identity.RoomView")
               });
             } else {
               replyM = noDrag(lively.morphic.Text.makeLabel("Replying to a message", {
-                fontSize: 11, textColor: CHAT_TEXT_FAINT, fixedWidth: true, fixedHeight: true, whiteSpaceHandling: "pre",
+                fontSize: 12, textColor: CHAT_TEXT_FAINT, fixedWidth: true, fixedHeight: true, whiteSpaceHandling: "pre",
               }));
               replyM.eventsAreIgnored = true;
               replyM.setExtent(lively.pt(self._chatW - PAD * 2 - AVATAR_MSG - 8, REPLY_PREVIEW_H));
@@ -3114,7 +3114,7 @@ module("lively.identity.RoomView")
             (isMuted ? "   (ignored" + (muteExpanded ? " — showing)" : ", click to show)") : "") +
             (msg.editedAt ? "   (edited)" : "");
           var headM = noDrag(lively.morphic.Text.makeLabel(headText, {
-            fontSize: 12, fontWeight: "700", textColor: isMuted ? CHAT_TEXT_MUTED : CHAT_TEXT_PRIMARY, fixedWidth: true, fixedHeight: true,
+            fontSize: 13, fontWeight: "700", textColor: isMuted ? CHAT_TEXT_MUTED : CHAT_TEXT_PRIMARY, fixedWidth: true, fixedHeight: true,
           }));
           headM.eventsAreIgnored = !isMuted;
           if (isMuted) {
@@ -3140,7 +3140,7 @@ module("lively.identity.RoomView")
             var editInput = noDrag(new lively.morphic.Text(lively.rect(
               PAD + AVATAR_MSG + 8, contentTop + HEAD_H + HEAD_GAP, bw, 24)));
             editInput.beInputLine({
-              fontSize: 13, fontFamily: "Helvetica", textColor: CHAT_TEXT_PRIMARY,
+              fontSize: 13, fontFamily: "'Atkinson Hyperlegible', Helvetica, Arial, sans-serif", textColor: CHAT_TEXT_PRIMARY,
               fill: Color.white, borderWidth: 1, borderColor: ACCENT, borderRadius: 4,
               whiteSpaceHandling: "pre",
             });
@@ -3158,7 +3158,7 @@ module("lively.identity.RoomView")
             };
             setTimeout(function () { if (editInput.focus) editInput.focus(); }, 0);
 
-            var saveBtn = noDrag(lively.morphic.Text.makeLabel("Save", { fontSize: 11, fontWeight: "700", textColor: ACCENT }));
+            var saveBtn = noDrag(lively.morphic.Text.makeLabel("Save", { fontSize: 12, fontWeight: "700", textColor: ACCENT }));
             saveBtn.handStyle = "pointer";
             saveBtn.setPosition(lively.pt(PAD + AVATAR_MSG + 8, contentTop + HEAD_H + HEAD_GAP + 28));
             saveBtn.onMouseUp = function (evt) {
@@ -3168,7 +3168,7 @@ module("lively.identity.RoomView")
             };
             row.addMorph(saveBtn);
 
-            var cancelBtn = noDrag(lively.morphic.Text.makeLabel("Cancel", { fontSize: 11, textColor: CHAT_TEXT_MUTED }));
+            var cancelBtn = noDrag(lively.morphic.Text.makeLabel("Cancel", { fontSize: 12, textColor: CHAT_TEXT_MUTED }));
             cancelBtn.handStyle = "pointer";
             cancelBtn.setPosition(lively.pt(PAD + AVATAR_MSG + 8 + 44, contentTop + HEAD_H + HEAD_GAP + 28));
             cancelBtn.onMouseUp = function (evt) { self._cancelEditingMessage(); evt.stop(); return true; };
@@ -3238,9 +3238,10 @@ module("lively.identity.RoomView")
             bodyBox.eventsAreIgnored = true;
             row.addMorph(bodyBox);
             var bodyNode = bodyBox.renderContext().shapeNode;
-            bodyNode.style.fontFamily = "Helvetica";
-            bodyNode.style.fontSize = "13px";
-            bodyNode.style.color = "rgb(43, 20, 63)";
+            bodyNode.style.fontFamily = "'Atkinson Hyperlegible', Helvetica, Arial, sans-serif";
+            bodyNode.style.fontSize = "17px";
+            bodyNode.style.color = "rgb(24, 8, 40)";
+            bodyNode.style.lineHeight = "1.45";
             // pre-wrap: preserves real newlines/spaces in a multi-line
             // message (matching the old Text-morph path's whiteSpaceHandling)
             // while still wrapping long lines instead of overflowing bw.
@@ -3355,7 +3356,7 @@ module("lively.identity.RoomView")
         this._membersBox = panel;
 
         var heading = noDrag(lively.morphic.Text.makeLabel("MEMBERS", {
-          fontSize: 11, fontWeight: "700", textColor: TEXT_FAINT,
+          fontSize: 12, fontWeight: "700", textColor: TEXT_FAINT,
         }));
         heading.eventsAreIgnored = true;
         heading.setExtent(lively.pt(MEMBERS_W - 32, 16));
@@ -3440,7 +3441,7 @@ module("lively.identity.RoomView")
         });
 
         if (!this._participants.length) {
-          var empty = noDrag(lively.morphic.Text.makeLabel("No one's here yet.", { fontSize: 12, textColor: TEXT_FAINT }));
+          var empty = noDrag(lively.morphic.Text.makeLabel("No one's here yet.", { fontSize: 13, textColor: TEXT_FAINT }));
           empty.eventsAreIgnored = true;
           empty.setExtent(lively.pt(MEMBERS_W - 32, 18));
           empty.setPosition(lively.pt(16, 44));
