@@ -378,6 +378,8 @@ module('lively.identity.PostCardEditor')
             'background:transparent;color:#555;cursor:pointer;transition:background .15s,color .15s;}' +
             '.pce-icon-btn.pce-icon-btn-glyph{font-family:"Material Symbols Rounded";font-size:17px;line-height:1;}' +
             '.pce-icon-btn:hover{background:#f0f0f5;color:#222;}' +
+            '.pce-icon-btn.pce-icon-btn-accent,.pce-icon-btn.pce-icon-btn-accent:hover{color:#E31361;}' +
+            '.pce-icon-btn.pce-icon-btn-accent:hover{background:#fde6ee;}' +
             '.pce-icon-btn.pce-active{background:#fde6ee;color:#E31361;}' +
             '.pce-icon-btn.pce-active:hover{background:#fbd0e0;}' +
             '.pce-pill-btn{flex:0 0 auto;display:flex;align-items:center;gap:4px;height:26px;' +
@@ -405,7 +407,8 @@ module('lively.identity.PostCardEditor')
             // it sits on the same white as the content beneath it.
             '.pce-floating-actions{position:absolute;right:14px;bottom:14px;display:flex;' +
             'align-items:center;gap:8px;background:#fff;border:1px solid #eee;border-radius:20px;' +
-            'padding:6px 10px;box-shadow:0 4px 14px rgba(0,0,0,0.16);z-index:5;}' +
+            'padding:6px 10px;box-shadow:0 4px 14px rgba(0,0,0,0.16);z-index:6;}' +
+            '.pce-floating-actions.pce-floating-actions-left{right:auto;left:14px;gap:2px;padding:4px 6px;}' +
             // Content area's own scrollbar (the only scrollbar left in the
             // editor now that the toolbar rows no longer scroll) — tinted to
             // match the accent instead of a plain OS-gray bar. Webkit
@@ -495,10 +498,7 @@ module('lively.identity.PostCardEditor')
           { icon: 'format_clear',           title: 'Clear formatting',   cmd: 'clearFormatting' },
           { icon: 'link',                   title: 'Insert/remove link', cmd: 'link' },
           { icon: 'attach_file',            title: 'Insert attachment',  cmd: 'attachment' },
-          { icon: 'sticker_add',            title: 'Add a stamp to the back of the card', cmd: 'stamp' },
-          { icon: 'flip_to_back',           title: 'Back of card (arrange stamps)', cmd: 'backView' },
           { icon: 'extension',             title: 'Insert part',        cmd: 'insertPart' },
-          { icon: 'visibility',             title: 'Preview (toggle)',   cmd: 'preview' },
           { icon: 'functions',              title: 'Math inline',        cmd: 'insertMath', mathType: 'inline' },
           { icon: 'calculate',              title: 'Math display',      cmd: 'insertMath', mathType: 'display' },
         ];
@@ -524,7 +524,7 @@ module('lively.identity.PostCardEditor')
         function addButtons(row, defs) {
           defs.forEach(function (btnDef) {
             var btn = document.createElement('button');
-            btn.className = 'pce-icon-btn pce-icon-btn-glyph';
+            btn.className = 'pce-icon-btn pce-icon-btn-glyph' + (btnDef.accent ? ' pce-icon-btn-accent' : '');
             btn.textContent = btnDef.icon;
             btn.title = btnDef.title;
             btn.addEventListener('mousedown', function (e) {
@@ -689,6 +689,20 @@ module('lively.identity.PostCardEditor')
         shapeNode.appendChild(actionsDiv);
         this._floatingActionsDiv = actionsDiv;
 
+        // Preview toggle — leftmost in the capsule; highlighted (pce-active)
+        // while the preview overlay is showing (see _togglePreview).
+        var previewBtn = document.createElement('button');
+        previewBtn.className = 'pce-icon-btn pce-icon-btn-glyph pce-icon-btn-accent';
+        previewBtn.textContent = 'visibility';
+        previewBtn.title = 'Preview (toggle)';
+        previewBtn.addEventListener('mousedown', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          self._execToolbarCmd({ cmd: 'preview' });
+        });
+        actionsDiv.appendChild(previewBtn);
+        this._previewBtn = previewBtn;
+
         // Opt-in coarse location tag (~5.5km cell, never more precise —
         // see PostCardUtils.js's encodeLocation) — click attaches your
         // current location, click again (once attached) to remove it.
@@ -737,6 +751,28 @@ module('lively.identity.PostCardEditor')
           self._saveNow();
         });
         actionsDiv.appendChild(saveBtn);
+
+        // Back-of-card controls: a matching capsule at the bottom-left.
+        var backDefs = [
+          { icon: 'sticker_add',  title: 'Add a stamp to the back of the card', cmd: 'stamp' },
+          { icon: 'flip_to_back', title: 'Back of card (arrange stamps)',       cmd: 'backView' },
+        ];
+        var backActions = document.createElement('div');
+        backActions.className = 'pce-floating-actions pce-floating-actions-left';
+        shapeNode.appendChild(backActions);
+        this._floatingBackActionsDiv = backActions;
+        backDefs.forEach(function (btnDef) {
+          var btn = document.createElement('button');
+          btn.className = 'pce-icon-btn pce-icon-btn-glyph pce-icon-btn-accent';
+          btn.textContent = btnDef.icon;
+          btn.title = btnDef.title;
+          btn.addEventListener('mousedown', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            self._execToolbarCmd(btnDef);
+          });
+          backActions.appendChild(btn);
+        });
       },
 
       // Reflects the current selection's formatting into the toolbar: active
@@ -1820,6 +1856,7 @@ module('lively.identity.PostCardEditor')
         // shapeNode now (not nested inside toolbarDiv), so it isn't wiped by
         // the innerHTML='' above and must be hidden explicitly.
         if (this._floatingActionsDiv) this._floatingActionsDiv.style.display = 'none';
+        if (this._floatingBackActionsDiv) this._floatingBackActionsDiv.style.display = 'none';
         if (this._pmContainer) {
           this._pmContainer.style.top = '28px';
           this._pmContainer.style.bottom = '0';
@@ -3648,6 +3685,7 @@ module('lively.identity.PostCardEditor')
           if (this._previewEl.parentNode) this._previewEl.parentNode.removeChild(this._previewEl);
           this._previewEl = null;
           this._pmContainer.style.visibility = '';
+          if (this._previewBtn) this._previewBtn.classList.remove('pce-active');
           if (this.editorView) this.editorView.focus();
           return;
         }
@@ -3668,6 +3706,7 @@ module('lively.identity.PostCardEditor')
         this._pmContainer.parentNode.appendChild(el);
         this._pmContainer.style.visibility = 'hidden';
         this._previewEl = el;
+        if (this._previewBtn) this._previewBtn.classList.add('pce-active');
         utils.hydrateEmbeddedParts(el);
         utils.hydrateAttachments(el, this._handle, this._attachments || []);
       },
