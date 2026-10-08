@@ -177,6 +177,10 @@ module("lively.identity.RoomView")
     var CHAT_TOGGLE = 36;
     var SPEAKER_POLL_MS = 250, SPEAKER_THRESHOLD = 0.012, SPEAKER_HOLD_MS = 900;
     var INPUT_H = 52;
+    // The message box wraps and grows with its text (see _fitComposer): one
+    // line is COMPOSER_MIN_H tall, it stops growing at COMPOSER_MAX_H (about
+    // five lines) and scrolls inside itself from there.
+    var COMPOSER_MIN_H = 24, COMPOSER_MAX_H = 120;
     var AVATAR_MSG = 28, AVATAR_MEMBER = 28;
     // Reserved row height for a GIF/sticker message bubble (_isMediaMessage)
     // — fixed rather than measured, so _renderMessages' cumulative y-layout
@@ -667,6 +671,7 @@ module("lively.identity.RoomView")
         if (this._renderSoonTimer) { clearTimeout(this._renderSoonTimer); this._renderSoonTimer = null; }
         this._rowCache = null;
         this._rowCacheOwner = null;
+        this._composerGrow = 0;
         this._clearGrid();
         if (this._roomLeft) this._clearCircles();
         this._gridBox = null;
@@ -1460,12 +1465,26 @@ module("lively.identity.RoomView")
         // measured minimum. placeholder below is sized to match so the
         // two stay pixel-aligned regardless of which one is visible.
         var input = noDrag(new lively.morphic.Text(lively.rect(12, 6, CHAT_W - 32 - 72, 24)));
+        // fixedWidth: true + pre-wrap: beInputLine's default (fixedWidth:
+        // false, whitespace "pre") makes the box widen to fit one unbroken
+        // line, so a pasted paragraph turned it thousands of px wide — and the
+        // window's clipped content box then got scrolled sideways to chase the
+        // caret, taking every panel off screen. Fixed width wraps the text
+        // instead; _fitComposer grows the height to match.
         input.beInputLine({
           fontSize: 13, fontFamily: "Helvetica", textColor: TEXT_PRIMARY,
-          fill: null, borderWidth: 0, whiteSpaceHandling: "pre",
+          fill: null, borderWidth: 0, whiteSpaceHandling: "pre-wrap", fixedWidth: true,
         });
         pill.addMorph(input);
         this._inputM = input;
+        this._composerGrow = 0;
+        // Native `input` fires for every edit — typing, paste (keyboard or
+        // mouse/context menu), cut, undo — which a keydown hook can't see.
+        input.renderContext().shapeNode.addEventListener("input", function () {
+          var ed = input.renderContext().shapeNode.querySelector("[contenteditable]");
+          if (self._placeholderM) self._placeholderM.setVisible(!(ed && ed.textContent));
+          self._fitComposer();
+        });
 
         var placeholder = lively.morphic.Text.makeLabel("Message #" + (this._room.name || "cluster"), {
           fontSize: 13, textColor: TEXT_FAINT,
@@ -1547,12 +1566,40 @@ module("lively.identity.RoomView")
         ];
       },
 
+      // Sizes the message box to its wrapped text: measures the real content
+      // height, clamps it to [COMPOSER_MIN_H, COMPOSER_MAX_H], and grows the
+      // input, its pill and (via _renderReplyComposeStrip, which owns all the
+      // input-area geometry) the row, shrinking the message list to match.
+      // The list stays pinned to the bottom if it was there.
+      _fitComposer: function () {
+        if (!this._inputM || !this._pillM || !this._msgListBox) return;
+        var node = this._inputM.renderContext().shapeNode;
+        var ed = node.querySelector("[contenteditable]");
+        if (!ed) return;
+        var w = this._chatW - 32 - 72;
+        // The content div has min-height: calc(100% - 4px) of the box's CURRENT
+        // height, so a box that already grew can never measure shorter than
+        // itself — reset to one line first, then read the real height.
+        this._inputM.setExtent(lively.pt(w, COMPOSER_MIN_H));
+        var h = Math.max(COMPOSER_MIN_H, Math.min(COMPOSER_MAX_H, Math.ceil(ed.offsetHeight) + 3));
+        this._inputM.setExtent(lively.pt(w, h));
+        var grow = h - COMPOSER_MIN_H;
+        if (grow === (this._composerGrow || 0)) return;
+        var listNode = this._msgListBox.renderContext().shapeNode;
+        var atBottom = listNode.scrollHeight - listNode.scrollTop - listNode.clientHeight < 40;
+        this._composerGrow = grow;
+        this._pillM.setExtent(lively.pt(this._chatW - 32, 36 + grow));
+        this._renderReplyComposeStrip();
+        if (atBottom) listNode.scrollTop = listNode.scrollHeight;
+      },
+
       // Resizes the chat panel to width w (full CHAT_W, or CHAT_COMPACT_W beside
       // the speaker view) and everything in it that's sized from that width.
       _layoutChat: function (w) {
         if (!this._chatBox || this._chatW === w) return;
         this._chatW = w;
         this._chatBox.setExtent(lively.pt(w, BODY_H));
+        this._composerGrow = 0; // re-measured at the end, once the new width is in place
         this._pillM.setExtent(lively.pt(w - 32, 36));
         this._inputM.setExtent(lively.pt(w - 32 - 72, 24));
         this._placeholderM.setExtent(lively.pt(w - 32 - 72, 24));
@@ -1567,6 +1614,7 @@ module("lively.identity.RoomView")
         // duplicating the listH/rowH math.
         this._renderReplyComposeStrip();
         this._renderMessages();
+        this._fitComposer();
       },
 
       _getMediaPicker: function () {
@@ -1593,6 +1641,7 @@ module("lively.identity.RoomView")
       _insertEmoji: function (glyph) {
         this._inputM.textString = (this._inputM.textString || "") + glyph;
         this._placeholderM.setVisible(!this._inputM.textString);
+        this._fitComposer();
         if (this._inputM.focus) this._inputM.focus();
       },
 
@@ -1629,6 +1678,7 @@ module("lively.identity.RoomView")
         if (!text || this._sendingMessage) return;
         this._inputM.textString = "";
         this._placeholderM.setVisible(true);
+        this._fitComposer();
         this._sendText(text);
       },
 
@@ -1861,7 +1911,9 @@ module("lively.identity.RoomView")
         var rotationExtra = rotationOn ? ROTATION_BANNER_H : 0;
         var replyExtra = this._replyingTo ? REPLY_STRIP_H : 0;
         var extra = rotationExtra + replyExtra;
-        var rowH = INPUT_H + extra;
+        // The grown message box extends DOWN from the pill's own top, so it
+        // adds to the row's height but not to where the pill starts.
+        var rowH = INPUT_H + extra + (this._composerGrow || 0);
         var listH = BODY_H - rowH;
         this._msgListBox.setExtent(lively.pt(this._chatW, listH));
         this._inputRowM.setExtent(lively.pt(this._chatW, rowH));
@@ -2422,6 +2474,7 @@ module("lively.identity.RoomView")
         if (!this._inputM) return; // window closed mid-send; the text is not restored
         this._inputM.textString = text;
         this._placeholderM.setVisible(!text);
+        this._fitComposer();
       },
 
       // A message's own "text" is a Klipy GIF/sticker URL when it was sent
@@ -4783,6 +4836,15 @@ module("lively.identity.RoomView")
         // Window first, children after: several builders measure their own
         // rendered DOM, which only exists once the morph is in the world.
         this._win = root.openInWindow({ title: "Cluster", pos: pos });
+        // This box clips with overflow:hidden but is still scrollable — the
+        // browser scrolls it to reveal a caret or focused element (a wide
+        // message box did exactly that and shifted every panel off screen,
+        // with no scrollbar to undo it). Nothing in it is meant to scroll, so
+        // any scroll snaps straight back.
+        var rootNode = root.renderContext().shapeNode;
+        rootNode.addEventListener("scroll", function () {
+          if (rootNode.scrollLeft || rootNode.scrollTop) { rootNode.scrollLeft = 0; rootNode.scrollTop = 0; }
+        });
         applyAccentChrome(this._win);
         _widenWindowChrome(this._win);
         return this._win;
