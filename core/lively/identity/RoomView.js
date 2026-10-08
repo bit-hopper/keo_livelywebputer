@@ -3220,6 +3220,23 @@ module("lively.identity.RoomView")
             // while still wrapping long lines instead of overflowing bw.
             bodyNode.style.whiteSpace = "pre-wrap";
             bodyNode.style.wordBreak = "break-word";
+            // Lively's base stylesheet (Main.js) sets user-select:none on
+            // every element individually (`*:not(:focus)`), so neither half
+            // of the opt-out works alone, both confirmed live:
+            //  - the `.selectable` class only sets `user-select: auto` (on
+            //    the node and, via `.selectable *`, its descendants), and
+            //    `auto` resolves to `none` under a `none` parent — the row/
+            //    list morph nodes above this are — so the node itself needs
+            //    an explicit `text`;
+            //  - that inline `text` on the node isn't inherited by the
+            //    <p>/<span> inside it, since `*` gives each of them its own
+            //    `none` — the class's `.selectable *` rule is what resets
+            //    them to `auto`, which then resolves to `text` under this
+            //    node.
+            bodyNode.classList.add("selectable");
+            bodyNode.style.userSelect = "text";
+            bodyNode.style.webkitUserSelect = "text";
+            bodyNode.style.cursor = "text";
             // Wrapped in its own <p> so hydrateLinkPreviews' bare-link scan
             // (querySelectorAll('p, li'), checking each block's ONLY child)
             // has a block element to test — a bare top-level text node
