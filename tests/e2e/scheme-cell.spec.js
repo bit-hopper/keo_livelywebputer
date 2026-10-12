@@ -224,34 +224,50 @@ test.describe("read-only Scheme cell", () => {
   });
 });
 
-// The live wiki editor (ProseMirror NodeView). newCard works without a login;
-// autosave/sync requests just 401 in the background.
+// Live wiki editor helpers (ProseMirror NodeView). newCard works without a
+// login; autosave/sync requests just 401 in the background.
+async function openEditor(page) {
+  await boot(page);
+  await page.evaluate(() => new Promise((r) => lively.require("lively.identity.WikiEditor").toRun(r)));
+  await page.evaluate(async () => {
+    const ed = lively.identity.WikiEditor.newCard("tester", { wikiName: "scheme-e2e" });
+    window.__wikiEd = ed;
+    for (let i = 0; i < 100 && !ed.editorView; i++) await new Promise((r) => setTimeout(r, 100));
+    if (!ed.editorView) throw new Error("editor did not mount");
+    ed.setPosition(lively.pt(30, 70));   // keep the toolbar clear of the world's menu bar
+  });
+}
+
+// Real toolbar clicks: Template dropdown -> "<kind> code cell".
+async function insertCodeCell(page, kind) {
+  await page.locator('button[title="Template"]').click();
+  await page.getByText(kind + " code cell", { exact: true }).click();
+  await expect(page.locator(".lively-code-cell-node")).toHaveCount(1);
+}
+const insertSchemeCell = (page) => insertCodeCell(page, "Scheme");
+
+async function setSource(page, text) {
+  const ta = page.locator(".lively-code-cell-source");
+  await ta.fill(text);
+  await ta.blur();
+}
+
+// Clicks the Python confirm dialog's "Run" button (a morphic Button) with a real mouse click.
+async function confirmRun(page) {
+  await page.waitForFunction(() => {
+    let found = false;
+    $world.withAllSubmorphsDo((m) => { if (m.label && m.label.textString === "Run") found = true; });
+    return found;
+  });
+  const box = await page.evaluate(() => {
+    let r = null;
+    $world.withAllSubmorphsDo((m) => { if (m.label && m.label.textString === "Run") { const b = m.renderContext().shapeNode.getBoundingClientRect(); r = { x: b.x + b.width / 2, y: b.y + b.height / 2 }; } });
+    return r;
+  });
+  await page.mouse.click(box.x, box.y);
+}
+
 test.describe("Scheme cell in the wiki editor", () => {
-  async function openEditor(page) {
-    await boot(page);
-    await page.evaluate(() => new Promise((r) => lively.require("lively.identity.WikiEditor").toRun(r)));
-    await page.evaluate(async () => {
-      const ed = lively.identity.WikiEditor.newCard("tester", { wikiName: "scheme-e2e" });
-      window.__wikiEd = ed;
-      for (let i = 0; i < 100 && !ed.editorView; i++) await new Promise((r) => setTimeout(r, 100));
-      if (!ed.editorView) throw new Error("editor did not mount");
-      ed.setPosition(lively.pt(30, 70));   // keep the toolbar clear of the world's menu bar
-    });
-  }
-
-  async function insertSchemeCell(page) {
-    // Real toolbar clicks: Template dropdown -> "Scheme code cell".
-    await page.locator('button[title="Template"]').click();
-    await page.getByText("Scheme code cell", { exact: true }).click();
-    await expect(page.locator(".lively-code-cell-node")).toHaveCount(1);
-  }
-
-  async function setSource(page, text) {
-    const ta = page.locator(".lively-code-cell-source");
-    await ta.fill(text);
-    await ta.blur();
-  }
-
   test("insert via the Template menu, run, shared state, Reset", async ({ page }) => {
     await openEditor(page);
     await insertSchemeCell(page);
@@ -328,21 +344,6 @@ test.describe("Python cell is unchanged", () => {
     }, source);
   }
 
-  // Clicks the confirm dialog's "Run" button (a morphic Button) with a real mouse click.
-  async function confirmRun(page) {
-    await page.waitForFunction(() => {
-      let found = false;
-      $world.withAllSubmorphsDo((m) => { if (m.label && m.label.textString === "Run") found = true; });
-      return found;
-    });
-    const box = await page.evaluate(() => {
-      let r = null;
-      $world.withAllSubmorphsDo((m) => { if (m.label && m.label.textString === "Run") { const b = m.renderContext().shapeNode.getBoundingClientRect(); r = { x: b.x + b.width / 2, y: b.y + b.height / 2 }; } });
-      return r;
-    });
-    await page.mouse.click(box.x, box.y);
-  }
-
   test("asks for confirmation, runs, shows output; Stop is visible while running", async ({ page }) => {
     test.setTimeout(150000);
     await hydratePython(page, "print('answer')\n6 * 7");
@@ -360,3 +361,102 @@ test.describe("Python cell is unchanged", () => {
   });
 });
 
+// ---- Paths that were previously unverified ----
+
+test.describe("Previously unverified paths", () => {
+  test("Python cell works through the live editor NodeView", async ({ page }) => {
+    test.setTimeout(150000);
+    await openEditor(page);
+    await insertCodeCell(page, "Python");
+    await expect(page.locator(".lively-code-cell-badge")).toHaveText("Python");
+    await expect(page.locator(".lively-code-cell-reset-btn")).toHaveCount(0);
+    await setSource(page, "print('from editor')\n3 * 14");
+    const lang = await page.evaluate(() => {
+      let l = null;
+      window.__wikiEd.editorView.state.doc.descendants((n) => { if (n.type.name === "code_cell") l = n.attrs.language; });
+      return l;
+    });
+    expect(lang).toBe("python");
+    await page.locator(".lively-code-cell-run-btn").click();
+    await confirmRun(page);
+    await expect(page.locator(".lively-code-cell-stop-btn")).toBeVisible();
+    await expect(page.locator(".lively-code-cell-output")).toContainText("from editor", { timeout: 120000 });
+    await expect(page.locator(".lively-code-cell-output")).toContainText("42");
+    await expect(page.locator(".lively-code-cell-status")).toHaveText("Ran just now");
+    await expect(page.locator(".lively-code-cell-stop-btn")).toBeHidden();
+  });
+
+  test("Preview mode renders and runs the Scheme cell, and returns to editing", async ({ page }) => {
+    await openEditor(page);
+    await insertSchemeCell(page);
+    await setSource(page, "(define pv 6)\n(* pv 7)");
+    // The placeholder before any run.
+    await expect(page.locator(".lively-code-cell-output")).toHaveText("Run to see output.");
+
+    await page.getByRole("button", { name: "Preview", exact: true }).click();
+    const preview = page.locator(".lively-code-cell").last();
+    await expect(preview.locator(".lively-code-cell-badge")).toHaveText("Scheme");
+    await expect(preview.locator(".lively-code-cell-reset-btn")).toBeVisible();
+    await preview.locator(".lively-code-cell-run-btn").click();
+    await expect(preview.locator("pre.lively-code-cell-value")).toHaveText("42");
+    await expect(preview.locator(".lively-code-cell-status")).toHaveText("Ran just now");
+
+    await page.getByRole("button", { name: "Continue Editing", exact: true }).click();
+    await expect(page.locator(".lively-code-cell-node textarea.lively-code-cell-source")).toBeVisible();
+    // Back in the editor the same shared environment is live.
+    expect((await runCell(page, "pv")).segments[0].text).toBe("6");
+  });
+
+  test("a run with no output says so", async ({ page }) => {
+    await openEditor(page);
+    await insertSchemeCell(page);
+    await setSource(page, "(define quiet 1)");
+    await page.locator(".lively-code-cell-run-btn").click();
+    await expect(page.locator(".lively-code-cell-output")).toHaveText("Ran with no output.");
+  });
+
+  test("Reset while a cell is running drops the run and gives a fresh environment", async ({ page }) => {
+    await boot(page);
+    await runCell(page, "(define old 1)");
+    const r = await page.evaluate(() => new Promise((resolve) => {
+      const W = lively.identity.SchemeWorker;
+      W.run("(let loop () (loop))", {
+        onDone: (err, res) => resolve({ err: err && err.message, state: res && res.state }),
+      });
+      setTimeout(() => W.reset(() => {}), 300);
+    }));
+    expect(r.state).toBe("stopped");
+    expect((await runCell(page, "old")).state).toBe("error");
+    // The worker is alive and usable after the reset.
+    expect((await runCell(page, "(+ 1 2)")).segments[0].text).toBe("3");
+  });
+
+  test("output over the cap is truncated and the page stays usable", async ({ page }) => {
+    await boot(page);
+    const r = await runCell(page, '(let loop ((i 0)) (if (< i 200000) (begin (display "0123456789") (loop (+ i 1)))))');
+    expect(r.state).toBe("done");
+    const total = r.segments.filter((s) => s.kind === "stdout").reduce((n, s) => n + s.text.length, 0);
+    expect(total).toBeLessThanOrEqual(1000000);
+    expect(total).toBeGreaterThan(900000);
+    expect(r.segments.some((s) => s.kind === "status" && /truncated/.test(s.text))).toBe(true);
+    expect((await runCell(page, "(+ 1 1)")).segments[0].text).toBe("2");
+  });
+
+  test("Stop falls back to killing the worker when a native call never yields", async ({ page }) => {
+    await boot(page);
+    await runCell(page, "(define lost 1)");
+    const r = await page.evaluate(() => new Promise((resolve) => {
+      const W = lively.identity.SchemeWorker;
+      W.STOP_GRACE_MS = 300;
+      // One long native call (big-number printing) blocks the worker for over a second per iteration.
+      W.run("(let loop ((i 0)) (if (< i 30) (begin (number->string (expt 7 1000000)) (loop (+ i 1)))))", {
+        onDone: (err, res) => resolve({ err: err && err.message, state: res && res.state }),
+      });
+      setTimeout(() => W.interrupt(), 100);
+    }));
+    expect(r.err).toMatch(/did not respond to Stop/);
+    // A fresh runtime comes up on the next run; the old environment is gone.
+    expect((await runCell(page, "lost")).state).toBe("error");
+    expect((await runCell(page, "(+ 20 42)")).segments[0].text).toBe("62");
+  });
+});
