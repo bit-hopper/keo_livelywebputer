@@ -310,7 +310,7 @@ module('lively.identity.WikiEditor')
             '.lively-code-cell-header{display:flex;align-items:center;gap:8px;padding:4px 8px;' +
             'background:#eef0f5;border-bottom:1px solid #ddd;font-size:12px;}' +
             '.lively-code-cell-badge{font-weight:bold;color:#306998;}' +
-            '.lively-code-cell-run-btn,.lively-code-cell-stop-btn{cursor:pointer;' +
+            '.lively-code-cell-run-btn,.lively-code-cell-stop-btn,.lively-code-cell-reset-btn{cursor:pointer;' +
             'border:1px solid #ccc;border-radius:3px;background:#fff;font-size:11px;padding:2px 8px;}' +
             '.lively-code-cell-stop-btn{display:none;border-color:#c33;color:#c33;}' +
             '.lively-code-cell-status{margin-left:auto;color:#666;font-style:italic;}' +
@@ -322,6 +322,15 @@ module('lively.identity.WikiEditor')
             '.lively-code-cell-output.lively-code-cell-output-empty{color:#999;font-style:italic;}' +
             '.lively-code-cell-output pre{margin:0 0 6px 0;white-space:pre-wrap;word-break:break-word;}' +
             '.lively-code-cell-output pre.lively-code-cell-stderr{color:#c33;}' +
+            '.lively-code-cell-output pre.lively-code-cell-value{color:#1a5fb4;}' +
+            '.lively-code-cell-output pre.lively-code-cell-value:before{content:"\\21D2  ";color:#999;}' +
+            '.lively-code-cell-output pre.lively-code-cell-note{color:#888;font-style:italic;}' +
+            '.lively-code-cell-output pre.lively-code-cell-echo{color:#888;}' +
+            '.lively-code-cell-input-row{display:flex;gap:6px;margin:4px 0;}' +
+            '.lively-code-cell-input-row input{flex:1;min-width:0;font-family:monospace;font-size:12px;' +
+            'padding:2px 6px;border:1px solid #99a;border-radius:3px;}' +
+            '.lively-code-cell-input-row button{cursor:pointer;border:1px solid #ccc;border-radius:3px;' +
+            'background:#fff;font-size:11px;padding:2px 8px;}' +
             '.lively-code-cell-output img{max-width:100%;display:block;margin:4px 0;}';
           document.head.appendChild(codeCellStyleEl);
         }
@@ -484,7 +493,8 @@ module('lively.identity.WikiEditor')
           buildPanel: function (panel, close) {
             self._buildDropdownRow(panel, 'Math (inline)', { cmd: 'insertMath', mathType: 'inline' }, close);
             self._buildDropdownRow(panel, 'Math (display)', { cmd: 'insertMath', mathType: 'display' }, close);
-            self._buildDropdownRow(panel, 'Python code cell', { cmd: 'insertCodeCell' }, close);
+            self._buildDropdownRow(panel, 'Python code cell', { cmd: 'insertCodeCell', language: 'python' }, close);
+            self._buildDropdownRow(panel, 'Scheme code cell', { cmd: 'insertCodeCell', language: 'scheme' }, close);
           },
         });
 
@@ -1668,6 +1678,9 @@ module('lively.identity.WikiEditor')
         var focused = false;
         var pendingCommitTimer = null;
 
+        var language = node.attrs.language === 'scheme' ? 'scheme' : 'python';
+        var postCardUtils = lively.identity.postCardUtils;
+
         var dom = document.createElement('div');
         dom.className = 'lively-code-cell-node';
 
@@ -1675,7 +1688,7 @@ module('lively.identity.WikiEditor')
         header.className = 'lively-code-cell-header';
         var badge = document.createElement('span');
         badge.className = 'lively-code-cell-badge';
-        badge.textContent = 'Python';
+        badge.textContent = postCardUtils.codeCellLanguageLabel(language);
         var runBtn = document.createElement('button');
         runBtn.type = 'button';
         runBtn.className = 'lively-code-cell-run-btn';
@@ -1684,12 +1697,21 @@ module('lively.identity.WikiEditor')
         stopBtn.type = 'button';
         stopBtn.className = 'lively-code-cell-stop-btn';
         stopBtn.textContent = 'Stop';
+        var resetBtn = null;
+        if (language === 'scheme') {
+          resetBtn = document.createElement('button');
+          resetBtn.type = 'button';
+          resetBtn.className = 'lively-code-cell-reset-btn';
+          resetBtn.textContent = 'Reset';
+          resetBtn.title = 'Start a fresh Scheme environment for this page';
+        }
         var status = document.createElement('span');
         status.className = 'lively-code-cell-status';
         status.textContent = 'Idle';
         header.appendChild(badge);
         header.appendChild(runBtn);
         header.appendChild(stopBtn);
+        if (resetBtn) header.appendChild(resetBtn);
         header.appendChild(status);
         dom.appendChild(header);
 
@@ -1780,8 +1802,35 @@ module('lively.identity.WikiEditor')
 
         function setRunning(isRunning, statusText) {
           runBtn.style.display = isRunning ? 'none' : '';
-          stopBtn.style.display = isRunning ? '' : 'none';
+          stopBtn.style.display = isRunning ? 'inline-block' : 'none';  // '' would fall back to the stylesheet's display:none
+          if (resetBtn) resetBtn.style.display = isRunning ? 'none' : '';
           status.textContent = statusText;
+        }
+
+        // Scheme cells stream an ordered transcript (stdout / value / error)
+        // and can pause for a line of input; see postCardUtils.createSchemeOutput.
+        var schemeOut = language === 'scheme' ? postCardUtils.createSchemeOutput(output) : null;
+        var SCHEME_STATE_LABEL = { done: 'Ran just now', error: 'Error', stopped: 'Stopped', exit: 'Exited' };
+        function runSchemeCell() {
+          schemeOut.start();
+          postCardUtils.runCodeCell(textarea.value, {
+            onStatus: function (text) { if (!destroyed) setRunning(true, text); },
+            onSegments: function (segments) { if (!destroyed) schemeOut.append(segments); },
+            onNeedInput: function () {
+              if (destroyed) { postCardUtils.provideCodeCellInput(null); return; }
+              setRunning(true, 'Waiting for input…');
+              schemeOut.showInput(function (text) {
+                if (!destroyed) setRunning(true, 'Running…');
+                postCardUtils.provideCodeCellInput(text);
+              });
+            },
+            onDone: function (err, result) {
+              if (destroyed) return;
+              var state = result && result.state;
+              setRunning(false, err ? 'Error' : (SCHEME_STATE_LABEL[state] || 'Ran just now'));
+              schemeOut.finish(state, err);
+            },
+          }, 'scheme');
         }
 
         // Click-to-run, always -- CodeEditorSpec.md §2.3: a cell never
@@ -1795,6 +1844,7 @@ module('lively.identity.WikiEditor')
           e.preventDefault();
           e.stopPropagation();
           commit();
+          if (language === 'scheme') { runSchemeCell(); return; }
           lively.identity.postCardUtils.runCodeCell(textarea.value, {
             onStatus: function (text) { if (!destroyed) setRunning(true, text); },
             onDone: function (err, response) {
@@ -1808,9 +1858,22 @@ module('lively.identity.WikiEditor')
         stopBtn.addEventListener('mousedown', function (e) {
           e.preventDefault();
           e.stopPropagation();
-          lively.identity.postCardUtils.stopCodeCell();
-          setRunning(false, 'Stopped');
+          // A Scheme stop is cooperative: the run's own onDone reports the
+          // outcome (and the environment survives). Python's is an immediate
+          // worker kill, so this handler updates the UI itself.
+          if (postCardUtils.stopCodeCell(language)) setRunning(true, 'Stopping…');
+          else setRunning(false, 'Stopped');
         });
+
+        if (resetBtn) {
+          resetBtn.addEventListener('mousedown', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            postCardUtils.resetCodeCell(language, function () {
+              if (!destroyed) setRunning(false, 'Environment reset');
+            });
+          });
+        }
 
         return {
           dom: dom,
@@ -1826,7 +1889,9 @@ module('lively.identity.WikiEditor')
           },
           selectNode: function () { dom.classList.add('lively-code-cell-selected'); },
           deselectNode: function () { dom.classList.remove('lively-code-cell-selected'); commit(); },
-          stopEvent: function () { return focused; },
+          // Also swallow events inside the output pane, so a Scheme cell's
+          // inline input box gets its keystrokes and clicks.
+          stopEvent: function (e) { return focused || !!(e && e.target && output.contains(e.target)); },
           ignoreMutation: function () { return true; },
           destroy: function () { destroyed = true; if (pendingCommitTimer) clearTimeout(pendingCommitTimer); },
         };
@@ -2663,7 +2728,7 @@ module('lively.identity.WikiEditor')
           case 'insertCodeCell': {
             var cellType = state.schema.nodes.code_cell;
             if (!cellType) return;
-            var cellNode = cellType.create({ language: 'python', source: '' });
+            var cellNode = cellType.create({ language: btnDef.language === 'scheme' ? 'scheme' : 'python', source: '' });
             // See the KNOWN BUG note on _insertAttachmentVideo — code_cell
             // is a block atom, same replaceSelectionWith exposure.
             dispatch(state.tr.replaceSelectionWith(cellNode));

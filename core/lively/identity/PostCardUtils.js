@@ -39,6 +39,10 @@ module('lively.identity.PostCardUtils')
       buildLinkPreviewCard: buildLinkPreviewCard,
       runCodeCell:         runCodeCell,
       stopCodeCell:        stopCodeCell,
+      resetCodeCell:       resetCodeCell,
+      provideCodeCellInput: provideCodeCellInput,
+      codeCellLanguageLabel: codeCellLanguageLabel,
+      createSchemeOutput:  createSchemeOutput,
       openImageViewer:     openImageViewer,
     };
 
@@ -105,7 +109,7 @@ module('lively.identity.PostCardUtils')
         '.lively-code-cell-header{display:flex;align-items:center;gap:8px;padding:4px 8px;' +
         'background:#eef0f5;border-bottom:1px solid #ddd;font-size:12px;}' +
         '.lively-code-cell-badge{font-weight:bold;color:#306998;}' +
-        '.lively-code-cell-run-btn,.lively-code-cell-stop-btn{cursor:pointer;' +
+        '.lively-code-cell-run-btn,.lively-code-cell-stop-btn,.lively-code-cell-reset-btn{cursor:pointer;' +
         'border:1px solid #ccc;border-radius:3px;background:#fff;font-size:11px;padding:2px 8px;}' +
         '.lively-code-cell-stop-btn{display:none;border-color:#c33;color:#c33;}' +
         '.lively-code-cell-status{margin-left:auto;color:#666;font-style:italic;}' +
@@ -115,6 +119,15 @@ module('lively.identity.PostCardUtils')
         '.lively-code-cell-output.lively-code-cell-output-empty{color:#999;font-style:italic;}' +
         '.lively-code-cell-output pre{margin:0 0 6px 0;white-space:pre-wrap;word-break:break-word;}' +
         '.lively-code-cell-output pre.lively-code-cell-stderr{color:#c33;}' +
+        '.lively-code-cell-output pre.lively-code-cell-value{color:#1a5fb4;}' +
+        '.lively-code-cell-output pre.lively-code-cell-value:before{content:"\\21D2  ";color:#999;}' +
+        '.lively-code-cell-output pre.lively-code-cell-note{color:#888;font-style:italic;}' +
+        '.lively-code-cell-output pre.lively-code-cell-echo{color:#888;}' +
+        '.lively-code-cell-input-row{display:flex;gap:6px;margin:4px 0;}' +
+        '.lively-code-cell-input-row input{flex:1;min-width:0;font-family:monospace;font-size:12px;' +
+        'padding:2px 6px;border:1px solid #99a;border-radius:3px;}' +
+        '.lively-code-cell-input-row button{cursor:pointer;border:1px solid #ccc;border-radius:3px;' +
+        'background:#fff;font-size:11px;padding:2px 8px;}' +
         '.lively-code-cell-output img{max-width:100%;display:block;margin:4px 0;}' +
         // Media-forward ("Reddit-like") preview wrappers — see
         // buildPreviewSplit above. Used by PostCardView's opt-in previewMode.
@@ -743,10 +756,47 @@ module('lively.identity.PostCardUtils')
       var stopBtn = cellEl.querySelector('.lively-code-cell-stop-btn');
       if (!sourceEl || !outputEl) return;
 
+      var language = cellEl.getAttribute('data-language') || 'python';
+      var resetBtn = cellEl.querySelector('.lively-code-cell-reset-btn');
+
       function setRunning(isRunning, statusText) {
         runBtn.style.display = isRunning ? 'none' : '';
-        if (stopBtn) stopBtn.style.display = isRunning ? '' : 'none';
+        if (stopBtn) stopBtn.style.display = isRunning ? 'inline-block' : 'none';  // '' would fall back to the stylesheet's display:none
+        if (resetBtn) resetBtn.style.display = isRunning ? 'none' : '';
         if (statusEl) statusEl.textContent = statusText;
+      }
+
+      if (language === 'scheme') {
+        var schemeOut = createSchemeOutput(outputEl);
+        var STATE_LABEL = { done: 'Ran just now', error: 'Error', stopped: 'Stopped', exit: 'Exited' };
+        runBtn.addEventListener('click', function () {
+          schemeOut.start();
+          runCodeCell(sourceEl.textContent, {
+            onStatus: function (text) { setRunning(true, text); },
+            onSegments: function (segments) { schemeOut.append(segments); },
+            onNeedInput: function () {
+              setRunning(true, 'Waiting for input…');
+              schemeOut.showInput(function (text) { setRunning(true, 'Running…'); provideCodeCellInput(text); });
+            },
+            onDone: function (err, result) {
+              var state = result && result.state;
+              setRunning(false, err ? 'Error' : (STATE_LABEL[state] || 'Ran just now'));
+              schemeOut.finish(state, err);
+            },
+          }, 'scheme');
+        });
+        if (stopBtn) {
+          stopBtn.addEventListener('click', function () {
+            if (stopCodeCell('scheme')) setRunning(true, 'Stopping…');
+            else setRunning(false, 'Stopped');
+          });
+        }
+        if (resetBtn) {
+          resetBtn.addEventListener('click', function () {
+            resetCodeCell('scheme', function () { setRunning(false, 'Environment reset'); });
+          });
+        }
+        return;
       }
 
       function renderOutput(response, err) {
@@ -1299,10 +1349,17 @@ module('lively.identity.PostCardUtils')
     // {onStatus(text), onDone(err, response)}. Fires the confirm dialog on
     // every call -- no remembered trust (a wiki page's source can change
     // between two clicks; see the schema comment in WikiEditor.js).
-    function runCodeCell(source, callbacks) {
+    //
+    // `language` (default 'python') picks the runtime. A Scheme cell skips the
+    // confirm dialog (it has no ambient access to network/DOM/storage; the
+    // run is still click-only) and drives lively.identity.SchemeWorker, which
+    // streams output: callbacks.onSegments(segments), onNeedInput() and
+    // onDone(err, {state}) -- see createSchemeOutput below for rendering.
+    function runCodeCell(source, callbacks, language) {
       callbacks = callbacks || {};
       var onStatus = callbacks.onStatus || function () {};
       var onDone = callbacks.onDone || function () {};
+      if (language === 'scheme') { _runSchemeCell(source, callbacks); return; }
       if (typeof $world === 'undefined' || !$world.multipleChoicePrompt) { onDone(new Error('Run unavailable')); return; }
       $world.multipleChoicePrompt(
         'Run this Python cell? It executes in your own browser (via Pyodide/WebAssembly) ' +
@@ -1328,9 +1385,152 @@ module('lively.identity.PostCardUtils')
     // interpreter (CodeEditorSpec.md §2.3's one-worker-per-page model) --
     // a real worker.terminate(), same acknowledged can't-interrupt-mid-
     // computation limitation as lively.jenga3d.Worker.
-    function stopCodeCell() {
-      if (typeof lively === 'undefined' || !lively.identity || !lively.identity.PyodideWorker) return;
+    //
+    // Returns true when the stop is cooperative and the run's own onDone will
+    // still report the outcome (Scheme: environment survives); false when the
+    // run was torn down immediately and the caller should update its own UI.
+    function stopCodeCell(language) {
+      if (typeof lively === 'undefined' || !lively.identity) return false;
+      if (language === 'scheme') {
+        // Stop while the engine is still loading: cancel the pending start.
+        if (_schemeStartPending) { _schemeStartPending.cancelled = true; return true; }
+        if (!lively.identity.SchemeWorker) return false;
+        if (!lively.identity.SchemeWorker.isRunning()) return false;
+        lively.identity.SchemeWorker.interrupt();
+        return true;
+      }
+      if (!lively.identity.PyodideWorker) return false;
       lively.identity.PyodideWorker.terminate();
+      return false;
+    }
+
+    // Fresh Scheme environment for the page (core library only). Python cells
+    // have no equivalent. thenDo(err).
+    function resetCodeCell(language, thenDo) {
+      thenDo = thenDo || function () {};
+      if (language !== 'scheme' || typeof lively === 'undefined' || !lively.identity || !lively.identity.SchemeWorker) { thenDo(null); return; }
+      lively.identity.SchemeWorker.reset(thenDo);
+    }
+
+    // Answers a Scheme cell's pending read (text === null: end of input).
+    function provideCodeCellInput(text) {
+      if (typeof lively === 'undefined' || !lively.identity || !lively.identity.SchemeWorker) return;
+      lively.identity.SchemeWorker.provideInput(text);
+    }
+
+    // The run currently waiting for the Scheme engine to load, if any, so a
+    // Stop click in that window can cancel it (see stopCodeCell).
+    var _schemeStartPending = null;
+
+    function _runSchemeCell(source, callbacks) {
+      var onStatus = callbacks.onStatus || function () {};
+      var onDone = callbacks.onDone || function () {};
+      if (typeof lively === 'undefined' || !lively.require) { onDone(new Error('Run unavailable')); return; }
+      var pending = { cancelled: false };
+      _schemeStartPending = pending;
+      lively.require('lively.identity.SchemeWorker').toRun(function () {
+        var schemeWorker = lively.identity.SchemeWorker;
+        onStatus('Loading Scheme…');
+        schemeWorker.ensureReady(function (err) {
+          if (_schemeStartPending === pending) _schemeStartPending = null;
+          if (pending.cancelled) { onDone(null, { state: 'stopped' }); return; }
+          if (err) { onStatus('Error'); onDone(err, null); return; }
+          onStatus('Running…');
+          schemeWorker.run(source, {
+            onSegments: callbacks.onSegments,
+            onNeedInput: callbacks.onNeedInput,
+            onDone: function (runErr, result) { onDone(runErr, result); },
+          });
+        });
+      });
+    }
+
+    function codeCellLanguageLabel(language) {
+      return language === 'scheme' ? 'Scheme' : 'Python';
+    }
+
+    // Incremental renderer for a Scheme cell's output pane (ordered
+    // transcript, unlike Python's one-shot stdout/stderr/result). Shared by
+    // WikiEditor's live NodeView and this module's hydrateCodeCells.
+    //   start()            clear the pane for a new run
+    //   append(segments)   segments from SchemeWorker: stdout | value | error | status
+    //   showInput(submit)  inline one-line input; submit(text|null) answers the cell's read
+    //   finish(state, err) end of run; state: done | error | stopped | exit
+    function createSchemeOutput(outputEl) {
+      var lastPre = null, lastKind = null, anyContent = false, inputRow = null;
+
+      function addPre(kind, cls, text) {
+        var pre = document.createElement('pre');
+        if (cls) pre.className = cls;
+        pre.textContent = text;
+        if (inputRow && inputRow.parentNode === outputEl) outputEl.insertBefore(pre, inputRow);
+        else outputEl.appendChild(pre);
+        lastPre = pre; lastKind = kind; anyContent = true;
+        return pre;
+      }
+      function removeInput() {
+        if (inputRow && inputRow.parentNode) inputRow.parentNode.removeChild(inputRow);
+        inputRow = null;
+      }
+
+      return {
+        start: function () {
+          outputEl.innerHTML = '';
+          outputEl.classList.remove('lively-code-cell-output-empty');
+          lastPre = null; lastKind = null; anyContent = false; inputRow = null;
+        },
+        append: function (segments) {
+          (segments || []).forEach(function (seg) {
+            if (seg.kind === 'stdout') {
+              if (lastKind === 'stdout' && lastPre) lastPre.textContent += seg.text;
+              else addPre('stdout', 'lively-code-cell-stdout', seg.text);
+            } else if (seg.kind === 'value') {
+              addPre('value', 'lively-code-cell-value', seg.text);
+            } else if (seg.kind === 'error') {
+              addPre('error', 'lively-code-cell-stderr', seg.text);
+            } else {
+              addPre('status', 'lively-code-cell-note', seg.text);
+            }
+          });
+        },
+        showInput: function (submit) {
+          removeInput();
+          inputRow = document.createElement('div');
+          inputRow.className = 'lively-code-cell-input-row';
+          var input = document.createElement('input');
+          input.type = 'text';
+          input.spellcheck = false;
+          input.placeholder = 'Type a line and press Enter';
+          var eofBtn = document.createElement('button');
+          eofBtn.type = 'button';
+          eofBtn.textContent = 'End input';
+          function answer(text) {
+            removeInput();
+            if (text !== null) addPre('echo', 'lively-code-cell-echo', text + '\n');
+            submit(text);
+          }
+          input.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+          input.addEventListener('keydown', function (e) {
+            e.stopPropagation();
+            if (e.key === 'Enter') { e.preventDefault(); answer(input.value); }
+          });
+          eofBtn.addEventListener('mousedown', function (e) { e.preventDefault(); e.stopPropagation(); answer(null); });
+          inputRow.appendChild(input);
+          inputRow.appendChild(eofBtn);
+          outputEl.appendChild(inputRow);
+          anyContent = true;
+          input.focus();
+        },
+        finish: function (state, err) {
+          removeInput();
+          if (err) addPre('error', 'lively-code-cell-stderr', err.message || String(err));
+          if (state === 'stopped' && !err && lastKind !== 'status') addPre('status', 'lively-code-cell-note', 'Stopped');
+          if (!anyContent) {
+            outputEl.classList.add('lively-code-cell-output-empty');
+            outputEl.textContent = 'Ran with no output.';
+          }
+        },
+      };
     }
 
     // A private/shared attachment's src is only known once decrypted (see
@@ -1628,15 +1828,17 @@ module('lively.identity.PostCardUtils')
       var attrs = node.attrs || {};
       var source = attrs.source || '';
       var hljs = (typeof window !== 'undefined' && window.hljs) || null;
+      var language = attrs.language === 'scheme' ? 'scheme' : 'python';
       var highlighted;
-      try { highlighted = hljs ? hljs.highlight(source, { language: 'python' }).value : escapeHtml(source); }
+      try { highlighted = hljs ? hljs.highlight(source, { language: language }).value : escapeHtml(source); }
       catch (e) { highlighted = escapeHtml(source); }
       return '<div class="lively-code-cell lively-code-cell-node" data-language="' +
-             escapeAttr(attrs.language || 'python') + '">' +
+             escapeAttr(language) + '">' +
              '<div class="lively-code-cell-header">' +
-               '<span class="lively-code-cell-badge">Python</span>' +
+               '<span class="lively-code-cell-badge">' + codeCellLanguageLabel(language) + '</span>' +
                '<button type="button" class="lively-code-cell-run-btn" data-hydrate="code-cell">Run</button>' +
                '<button type="button" class="lively-code-cell-stop-btn">Stop</button>' +
+               (language === 'scheme' ? '<button type="button" class="lively-code-cell-reset-btn">Reset</button>' : '') +
                '<span class="lively-code-cell-status">Idle</span>' +
              '</div>' +
              '<pre class="lively-code-cell-source"><code class="hljs">' + highlighted + '</code></pre>' +

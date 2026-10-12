@@ -56,6 +56,7 @@ hljs.registerLanguage("json", require("highlight.js/lib/languages/json"));
 hljs.registerLanguage("markdown", require("highlight.js/lib/languages/markdown"));
 hljs.registerLanguage("plaintext", require("highlight.js/lib/languages/plaintext"));
 hljs.registerLanguage("python", require("highlight.js/lib/languages/python"));
+hljs.registerLanguage("scheme", require("highlight.js/lib/languages/scheme"));
 hljs.registerLanguage("sql", require("highlight.js/lib/languages/sql"));
 hljs.registerLanguage("typescript", require("highlight.js/lib/languages/typescript"));
 hljs.registerLanguage("xml", require("highlight.js/lib/languages/xml"));
@@ -929,15 +930,17 @@ function _renderHighlightedCode(node) {
 function _renderCodeCell(node) {
   var attrs = node.attrs || {};
   var text = attrs.source || '';
+  var language = attrs.language === 'scheme' ? 'scheme' : 'python';
   var highlighted;
-  try { highlighted = hljs.highlight(text, { language: 'python' }).value; }
+  try { highlighted = hljs.highlight(text, { language: language }).value; }
   catch (e) { highlighted = escapeHtml(text); }
   return '<div class="lively-code-cell lively-code-cell-node" data-language="' +
-         escapeHtml(attrs.language || 'python') + '">' +
+         escapeHtml(language) + '">' +
          '<div class="lively-code-cell-header">' +
-           '<span class="lively-code-cell-badge">Python</span>' +
+           '<span class="lively-code-cell-badge">' + (language === 'scheme' ? 'Scheme' : 'Python') + '</span>' +
            '<button type="button" class="lively-code-cell-run-btn" data-hydrate="code-cell">Run</button>' +
            '<button type="button" class="lively-code-cell-stop-btn">Stop</button>' +
+           (language === 'scheme' ? '<button type="button" class="lively-code-cell-reset-btn">Reset</button>' : '') +
            '<span class="lively-code-cell-status">Idle</span>' +
          '</div>' +
          '<pre class="lively-code-cell-source"><code class="hljs">' + highlighted + '</code></pre>' +
