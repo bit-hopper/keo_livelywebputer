@@ -2085,7 +2085,11 @@ module('lively.identity.WikiEditor')
       _saveNow: function (callback) {
         clearTimeout(this._saveTimer);
         var self = this;
-        if (this._saveInFlight) {
+        // _saveInFlight holds the start time rather than true: a save whose
+        // chain never calls back (an exception mid-serialize) would otherwise
+        // wedge every later autosave, so a flag older than 2 minutes is
+        // treated as dead.
+        if (this._saveInFlight && Date.now() - this._saveInFlight < 120000) {
           this._saveRerun = true;
           if (callback) (this._saveWaiters = this._saveWaiters || []).push(callback);
           return;
@@ -2107,7 +2111,7 @@ module('lively.identity.WikiEditor')
         var user = lively.identity.did.currentUser();
         if (!user) { this._setStatus('Not signed in'); return cb(new Error('Not signed in')); }
         if (!this.editorView) { this._setStatus('No document'); return cb(new Error('No document')); }
-        this._saveInFlight = true;
+        this._saveInFlight = Date.now();
 
         var params = {
           prevEnvelope:  this._envelope || null,

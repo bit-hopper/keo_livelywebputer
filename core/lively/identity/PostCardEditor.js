@@ -110,7 +110,8 @@ module('lively.identity.PostCardEditor')
     // ─── serialization guard ──────────────────────────────────────────────────────
 
     'serialization', {
-      doNotSerialize: ['editorView', 'yDoc', 'wsProvider', '_saveTimer', '_pmContainer', '_previewEl', '_contentLoadStarted', '_backBar', '_backDiv', '_backFace', '_stampLayer', '_stampEls'],
+      doNotSerialize: ['editorView', 'yDoc', 'wsProvider', '_saveTimer', '_pmContainer', '_previewEl', '_contentLoadStarted', '_backBar', '_backDiv', '_backFace', '_stampLayer', '_stampEls',
+        '_saveInFlight', '_saveRerun', '_saveWaiters'],
     },
 
     // ─── initialization ──────────────────────────────────────────────────────────
@@ -2508,14 +2509,49 @@ module('lively.identity.PostCardEditor')
       // callback: optional (err) — invoked after PUT completes/fails, in
       // addition to the normal status-line feedback. Used by _doSend to wait
       // for a reseal-save to finish before notifying the recipient.
+      //
+      // Saves are serialized: a save requested while another is still in
+      // flight (the first one can sit on a WebAuthn ceremony for many
+      // seconds) waits for it, then runs once more so it builds on the
+      // envelope that save produced. Without this the second save started
+      // from the same stale `this._envelope` -- null for a brand-new card, so
+      // it minted a SECOND genesis objId and the card was created twice; for
+      // an existing card it chained off the same prevCid and was rejected
+      // with a 409. Everything requested during the wait coalesces into one
+      // re-run, and each caller's callback fires after the save that covers
+      // its edits (so _doSend's reseal still sees the stored recipients).
       _saveNow: function (callback) {
         clearTimeout(this._saveTimer);
-        var cb = callback || function () {};
+        var self = this;
+        // _saveInFlight holds the start time rather than true: a save whose
+        // chain never calls back (an exception mid-serialize) would otherwise
+        // wedge every later autosave, so a flag older than 2 minutes is
+        // treated as dead.
+        if (this._saveInFlight && Date.now() - this._saveInFlight < 120000) {
+          this._saveRerun = true;
+          if (callback) (this._saveWaiters = this._saveWaiters || []).push(callback);
+          return;
+        }
+        var cb = function (err) {
+          self._saveInFlight = false;
+          var waiters = self._saveWaiters || [];
+          var rerun = self._saveRerun;
+          self._saveWaiters = null;
+          self._saveRerun = false;
+          if (callback) callback(err);
+          if (!rerun) return;
+          // A failed save (e.g. a cancelled passkey prompt) isn't retried
+          // here -- that would re-prompt immediately. Waiters hear the error;
+          // the next edit schedules a fresh save as usual.
+          if (err) return waiters.forEach(function (w) { w(err); });
+          self._saveNow(function (err2) { waiters.forEach(function (w) { w(err2); }); });
+        };
         var user = lively.identity.did.currentUser();
         if (!user) { this._setStatus('Not signed in'); return cb(new Error('Not signed in')); }
         // Plain mode (§1.1) has no yDoc at all — the editorView existing is
         // the actual "is there a document to save" signal for either mode.
         if (!this.editorView) { this._setStatus('No document'); return cb(new Error('No document')); }
+        this._saveInFlight = Date.now();
 
         if (this._visibility === 'public') return this._saveNowPublic(user, cb);
         this._saveNowPrivate(user, cb);
