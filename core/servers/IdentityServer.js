@@ -937,7 +937,7 @@ function _renderCodeCell(node) {
   return '<div class="lively-code-cell lively-code-cell-node" data-language="' +
          escapeHtml(language) + '">' +
          '<div class="lively-code-cell-header">' +
-           '<span class="lively-code-cell-badge">' + (language === 'scheme' ? 'Scheme' : 'Python') + '</span>' +
+           '<span class="lively-code-cell-badge">' + (language === 'scheme' ? 'λ Scheme' : '🐍 Python') + '</span>' +
            '<button type="button" class="lively-code-cell-run-btn" data-hydrate="code-cell">Run</button>' +
            '<button type="button" class="lively-code-cell-stop-btn">Stop</button>' +
            (language === 'scheme' ? '<button type="button" class="lively-code-cell-reset-btn">Reset</button>' : '') +

@@ -294,46 +294,8 @@ module('lively.identity.WikiEditor')
           document.head.appendChild(styleEl);
         }
 
-        // code_cell is wiki-only (not part of PostCardEditor.js's schema),
-        // so it gets its own singleton <style> tag rather than joining the
-        // shared one above -- that one is inserted idempotently by either
-        // editor, and if PostCardEditor's copy (which has no code_cell
-        // rules) happened to run first on a page, WikiEditor's own rules
-        // would never get added once the shared tag's id already exists.
-        if (!document.getElementById('lively-code-cell-style')) {
-          var codeCellStyleEl = document.createElement('style');
-          codeCellStyleEl.id = 'lively-code-cell-style';
-          codeCellStyleEl.textContent =
-            '.lively-code-cell-node{border:1px solid #ddd;border-radius:6px;margin:8px 0;' +
-            'background:#fafafa;overflow:hidden;}' +
-            '.lively-code-cell-node.lively-code-cell-selected{outline:2px solid #8cf;}' +
-            '.lively-code-cell-header{display:flex;align-items:center;gap:8px;padding:4px 8px;' +
-            'background:#eef0f5;border-bottom:1px solid #ddd;font-size:12px;}' +
-            '.lively-code-cell-badge{font-weight:bold;color:#306998;}' +
-            '.lively-code-cell-run-btn,.lively-code-cell-stop-btn,.lively-code-cell-reset-btn{cursor:pointer;' +
-            'border:1px solid #ccc;border-radius:3px;background:#fff;font-size:11px;padding:2px 8px;}' +
-            '.lively-code-cell-stop-btn{display:none;border-color:#c33;color:#c33;}' +
-            '.lively-code-cell-status{margin-left:auto;color:#666;font-style:italic;}' +
-            '.lively-code-cell-source{display:block;width:100%;box-sizing:border-box;border:none;' +
-            'resize:vertical;font-family:monospace;font-size:13px;padding:8px;min-height:60px;' +
-            'background:#282c34;color:#eee;}' +
-            '.lively-code-cell-output{padding:8px;border-top:1px solid #ddd;font-family:monospace;' +
-            'font-size:12px;}' +
-            '.lively-code-cell-output.lively-code-cell-output-empty{color:#999;font-style:italic;}' +
-            '.lively-code-cell-output pre{margin:0 0 6px 0;white-space:pre-wrap;word-break:break-word;}' +
-            '.lively-code-cell-output pre.lively-code-cell-stderr{color:#c33;}' +
-            '.lively-code-cell-output pre.lively-code-cell-value{color:#1a5fb4;}' +
-            '.lively-code-cell-output pre.lively-code-cell-value:before{content:"\\21D2  ";color:#999;}' +
-            '.lively-code-cell-output pre.lively-code-cell-note{color:#888;font-style:italic;}' +
-            '.lively-code-cell-output pre.lively-code-cell-echo{color:#888;}' +
-            '.lively-code-cell-input-row{display:flex;gap:6px;margin:4px 0;}' +
-            '.lively-code-cell-input-row input{flex:1;min-width:0;font-family:monospace;font-size:12px;' +
-            'padding:2px 6px;border:1px solid #99a;border-radius:3px;}' +
-            '.lively-code-cell-input-row button{cursor:pointer;border:1px solid #ccc;border-radius:3px;' +
-            'background:#fff;font-size:11px;padding:2px 8px;}' +
-            '.lively-code-cell-output img{max-width:100%;display:block;margin:4px 0;}';
-          document.head.appendChild(codeCellStyleEl);
-        }
+        // code_cell's stylesheet lives in PostCardUtils.js (codeCellCss), injected when
+        // that module loads, so the editor and the read-only view share one copy.
 
         ['keydown', 'keyup', 'keypress', 'input'].forEach(function (t) {
           pmDiv.addEventListener(t, function (e) { e.stopPropagation(); });
@@ -1683,6 +1645,7 @@ module('lively.identity.WikiEditor')
 
         var dom = document.createElement('div');
         dom.className = 'lively-code-cell-node';
+        dom.setAttribute('data-language', language);
 
         var header = document.createElement('div');
         header.className = 'lively-code-cell-header';

@@ -65,6 +65,75 @@ module('lively.identity.PostCardUtils')
     // function's values if the two ever need to be kept in sync.
     _ensureMediaStyle();
 
+    // Stylesheet for code_cell (Python/Scheme runnable cells): the live editor's
+    // NodeView and the read-only/hydrated render share these rules, so there is
+    // exactly one copy. A cell is a light card: a header (language badge, Run /
+    // Stop / Reset, status) over a dark source pane, over the output pane.
+    // The cell root carries data-language so the badge can be tinted per language.
+    function codeCellCss() {
+      var cell = '.lively-code-cell-node';
+      var mono = '"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace';
+      var hl = '.lively-code-cell-source .hljs-';
+      return [
+        cell + '{border:1px solid #e2e5ee;border-radius:12px;margin:14px 0;background:#fff;overflow:hidden;' +
+          'box-shadow:0 1px 2px rgba(20,24,40,.05),0 4px 14px rgba(20,24,40,.05);}',
+        cell + '.lively-code-cell-selected{outline:2px solid #6c8cff;outline-offset:0;}',
+        '.lively-code-cell-header{display:flex;align-items:center;gap:8px;padding:8px 12px;' +
+          'background:linear-gradient(#fafbfd,#f3f5fa);border-bottom:1px solid #e8ebf2;font-size:12px;' +
+          'font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}',
+        // Language badge: a tinted pill (icon + name).
+        '.lively-code-cell-badge{display:inline-flex;align-items:center;gap:5px;font-weight:600;font-size:11.5px;' +
+          'padding:3px 10px;border-radius:999px;letter-spacing:.01em;background:#eef0f5;color:#4a5068;border:1px solid #d9dde8;}',
+        cell + '[data-language="python"] .lively-code-cell-badge{background:#fff4cc;color:#7a5600;border-color:#f3dc8a;}',
+        cell + '[data-language="scheme"] .lively-code-cell-badge{background:#ede7ff;color:#5233b5;border-color:#d6c9fb;}',
+        // Buttons: Run is the primary action; icons are CSS glyphs so the button text stays "Run"/"Stop"/"Reset".
+        '.lively-code-cell-run-btn,.lively-code-cell-stop-btn,.lively-code-cell-reset-btn{cursor:pointer;' +
+          'font-family:inherit;font-size:11.5px;font-weight:600;line-height:1.4;padding:3px 12px;border-radius:999px;' +
+          'border:1px solid #d9dde8;background:#fff;color:#4a5068;}',
+        '.lively-code-cell-run-btn:before{content:"\\25B6";font-size:8px;margin-right:6px;vertical-align:1px;}',
+        '.lively-code-cell-stop-btn:before{content:"\\25A0";font-size:8px;margin-right:6px;vertical-align:1px;}',
+        '.lively-code-cell-reset-btn:before{content:"\\21BA";font-size:11px;margin-right:5px;}',
+        '.lively-code-cell-run-btn{background:#1a7f37;border-color:#17702f;color:#fff;}',
+        '.lively-code-cell-run-btn:hover{background:#16692d;}',
+        '.lively-code-cell-stop-btn{display:none;border-color:#efb4ad;color:#c0392b;}',
+        '.lively-code-cell-stop-btn:hover{background:#fdf0ee;}',
+        '.lively-code-cell-reset-btn:hover{background:#f4f5f9;}',
+        '.lively-code-cell-status{margin-left:auto;color:#7a8094;font-size:11.5px;}',
+        // Source pane: dark, with its own token palette (the highlight.js theme loaded for
+        // ordinary code blocks is a light one and would paint a white box in here).
+        '.lively-code-cell-source{display:block;width:100%;box-sizing:border-box;margin:0;border:none;outline:none;' +
+          'background:#1e2230;color:#d7dae0;font-family:' + mono + ';font-size:13px;line-height:1.55;' +
+          'padding:14px 16px;tab-size:2;overflow-x:auto;}',
+        'textarea.lively-code-cell-source{resize:vertical;min-height:72px;caret-color:#fff;}',
+        '.lively-code-cell-source code.hljs{display:inline;background:transparent;color:inherit;padding:0;font:inherit;}',
+        hl + 'keyword,' + hl + 'built_in{color:#c678dd;}',
+        hl + 'name,' + hl + 'title,' + hl + 'function{color:#61afef;}',
+        hl + 'string,' + hl + 'regexp{color:#98c379;}',
+        hl + 'number,' + hl + 'literal{color:#d19a66;}',
+        hl + 'symbol,' + hl + 'attr,' + hl + 'variable,' + hl + 'params{color:#e5c07b;}',
+        hl + 'comment{color:#7f848e;font-style:italic;}',
+        hl + 'meta{color:#56b6c2;}',
+        '.lively-code-cell-output{padding:12px 16px;border-top:1px solid #e8ebf2;background:#fcfcfe;color:#2b2f3e;' +
+          'font-family:' + mono + ';font-size:12.5px;line-height:1.5;}',
+        '.lively-code-cell-output.lively-code-cell-output-empty{color:#9aa0b3;font-style:italic;}',
+        '.lively-code-cell-output pre{margin:0 0 6px 0;white-space:pre-wrap;word-break:break-word;}',
+        '.lively-code-cell-output pre:last-child{margin-bottom:0;}',
+        '.lively-code-cell-output pre.lively-code-cell-stderr{color:#b3261e;background:#fdf0ee;' +
+          'border-left:3px solid #e57368;padding:6px 10px;border-radius:0 6px 6px 0;}',
+        '.lively-code-cell-output pre.lively-code-cell-value{color:#1a5fb4;}',
+        '.lively-code-cell-output pre.lively-code-cell-value:before{content:"\\21D2  ";color:#9aa0b3;}',
+        '.lively-code-cell-output pre.lively-code-cell-note{color:#8a90a3;font-style:italic;}',
+        '.lively-code-cell-output pre.lively-code-cell-echo{color:#8a90a3;}',
+        '.lively-code-cell-input-row{display:flex;gap:6px;margin:4px 0;}',
+        '.lively-code-cell-input-row input{flex:1;min-width:0;font-family:' + mono + ';font-size:12px;' +
+          'padding:4px 10px;border:1px solid #c8cde0;border-radius:8px;outline:none;}',
+        '.lively-code-cell-input-row input:focus{border-color:#6c8cff;box-shadow:0 0 0 2px rgba(108,140,255,.2);}',
+        '.lively-code-cell-input-row button{cursor:pointer;border:1px solid #d9dde8;border-radius:999px;' +
+          'background:#fff;color:#4a5068;font-size:11px;font-weight:600;padding:3px 12px;}',
+        '.lively-code-cell-output img{max-width:100%;display:block;margin:4px 0;}',
+      ].join('');
+    }
+
     function _ensureMediaStyle() {
       if (document.getElementById('lively-postcard-media-style')) return;
       var styleEl = document.createElement('style');
@@ -97,38 +166,9 @@ module('lively.identity.PostCardUtils')
         '.lively-wiki-view-content a:hover,.lively-wiki-editor-container a:hover{color:#116329;}' +
         '.lively-attachment-loading{opacity:0.35;}' +
         '.lively-attachment-error{opacity:0.5;filter:grayscale(1);}' +
-        // code_cell (CodeEditorSpec.md §2.3) read-only/hydrated rendering.
-        // Same class name and identical rules as WikiEditor.js's own
-        // editor-only copy (guarded by a separate <style> id there) so a
-        // read-only view (WikiView/WikiPlayback/Preview) gets correct
-        // styling without needing the editor loaded at all -- same
-        // duplication-is-fine reasoning as this function's own header note
-        // about postcard-image/video sizing.
-        '.lively-code-cell-node{border:1px solid #ddd;border-radius:6px;margin:8px 0;' +
-        'background:#fafafa;overflow:hidden;}' +
-        '.lively-code-cell-header{display:flex;align-items:center;gap:8px;padding:4px 8px;' +
-        'background:#eef0f5;border-bottom:1px solid #ddd;font-size:12px;}' +
-        '.lively-code-cell-badge{font-weight:bold;color:#306998;}' +
-        '.lively-code-cell-run-btn,.lively-code-cell-stop-btn,.lively-code-cell-reset-btn{cursor:pointer;' +
-        'border:1px solid #ccc;border-radius:3px;background:#fff;font-size:11px;padding:2px 8px;}' +
-        '.lively-code-cell-stop-btn{display:none;border-color:#c33;color:#c33;}' +
-        '.lively-code-cell-status{margin-left:auto;color:#666;font-style:italic;}' +
-        '.lively-code-cell-source{margin:0;padding:8px;background:#282c34;color:#eee;' +
-        'font-family:monospace;font-size:13px;overflow-x:auto;}' +
-        '.lively-code-cell-output{padding:8px;border-top:1px solid #ddd;font-family:monospace;font-size:12px;}' +
-        '.lively-code-cell-output.lively-code-cell-output-empty{color:#999;font-style:italic;}' +
-        '.lively-code-cell-output pre{margin:0 0 6px 0;white-space:pre-wrap;word-break:break-word;}' +
-        '.lively-code-cell-output pre.lively-code-cell-stderr{color:#c33;}' +
-        '.lively-code-cell-output pre.lively-code-cell-value{color:#1a5fb4;}' +
-        '.lively-code-cell-output pre.lively-code-cell-value:before{content:"\\21D2  ";color:#999;}' +
-        '.lively-code-cell-output pre.lively-code-cell-note{color:#888;font-style:italic;}' +
-        '.lively-code-cell-output pre.lively-code-cell-echo{color:#888;}' +
-        '.lively-code-cell-input-row{display:flex;gap:6px;margin:4px 0;}' +
-        '.lively-code-cell-input-row input{flex:1;min-width:0;font-family:monospace;font-size:12px;' +
-        'padding:2px 6px;border:1px solid #99a;border-radius:3px;}' +
-        '.lively-code-cell-input-row button{cursor:pointer;border:1px solid #ccc;border-radius:3px;' +
-        'background:#fff;font-size:11px;padding:2px 8px;}' +
-        '.lively-code-cell-output img{max-width:100%;display:block;margin:4px 0;}' +
+        // code_cell (runnable Python/Scheme cells): one shared stylesheet for the
+        // live editor's NodeView and the read-only render -- see codeCellCss.
+        codeCellCss() +
         // Media-forward ("Reddit-like") preview wrappers — see
         // buildPreviewSplit above. Used by PostCardView's opt-in previewMode.
         // -rest is unclamped (a card that grows to fit its content, like
@@ -1445,8 +1485,9 @@ module('lively.identity.PostCardUtils')
       });
     }
 
+    // The badge text: a small icon, then the language name.
     function codeCellLanguageLabel(language) {
-      return language === 'scheme' ? 'Scheme' : 'Python';
+      return language === 'scheme' ? 'λ Scheme' : '🐍 Python';
     }
 
     // Incremental renderer for a Scheme cell's output pane (ordered

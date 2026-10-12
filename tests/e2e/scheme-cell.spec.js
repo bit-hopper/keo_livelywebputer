@@ -130,7 +130,7 @@ test.describe("read-only Scheme cell", () => {
         hasSchemeGrammar: !!(window.hljs && window.hljs.getLanguage("scheme")),
       };
     });
-    expect(info.badge).toBe("Scheme");
+    expect(info.badge).toBe("λ Scheme");
     expect(info.lang).toBe("scheme");
     expect(info.hasReset).toBe(true);
     expect(info.hasSchemeGrammar).toBe(true);
@@ -272,7 +272,7 @@ test.describe("Scheme cell in the wiki editor", () => {
     await openEditor(page);
     await insertSchemeCell(page);
 
-    await expect(page.locator(".lively-code-cell-badge")).toHaveText("Scheme");
+    await expect(page.locator(".lively-code-cell-badge")).toContainText("Scheme");
     await expect(page.locator(".lively-code-cell-reset-btn")).toBeVisible();
 
     await setSource(page, "(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))\n(display \"fact 20 = \")\n(fact 20)");
@@ -346,8 +346,9 @@ test.describe("Python cell is unchanged", () => {
 
   test("asks for confirmation, runs, shows output; Stop is visible while running", async ({ page }) => {
     test.setTimeout(150000);
-    await hydratePython(page, "print('answer')\n6 * 7");
-    await expect(page.locator("#py-host .lively-code-cell-badge")).toHaveText("Python");
+    // The sleep keeps the run going long enough to see the Stop button.
+    await hydratePython(page, "import time\ntime.sleep(3)\nprint('answer')\n6 * 7");
+    await expect(page.locator("#py-host .lively-code-cell-badge")).toContainText("Python");
     await expect(page.locator("#py-host .lively-code-cell-reset-btn")).toHaveCount(0);
 
     await page.locator("#py-host .lively-code-cell-run-btn").click();
@@ -368,9 +369,9 @@ test.describe("Previously unverified paths", () => {
     test.setTimeout(150000);
     await openEditor(page);
     await insertCodeCell(page, "Python");
-    await expect(page.locator(".lively-code-cell-badge")).toHaveText("Python");
+    await expect(page.locator(".lively-code-cell-badge")).toContainText("Python");
     await expect(page.locator(".lively-code-cell-reset-btn")).toHaveCount(0);
-    await setSource(page, "print('from editor')\n3 * 14");
+    await setSource(page, "import time\ntime.sleep(3)\nprint('from editor')\n3 * 14");
     const lang = await page.evaluate(() => {
       let l = null;
       window.__wikiEd.editorView.state.doc.descendants((n) => { if (n.type.name === "code_cell") l = n.attrs.language; });
@@ -395,7 +396,7 @@ test.describe("Previously unverified paths", () => {
 
     await page.getByRole("button", { name: "Preview", exact: true }).click();
     const preview = page.locator(".lively-code-cell").last();
-    await expect(preview.locator(".lively-code-cell-badge")).toHaveText("Scheme");
+    await expect(preview.locator(".lively-code-cell-badge")).toContainText("Scheme");
     await expect(preview.locator(".lively-code-cell-reset-btn")).toBeVisible();
     await preview.locator(".lively-code-cell-run-btn").click();
     await expect(preview.locator("pre.lively-code-cell-value")).toHaveText("42");
