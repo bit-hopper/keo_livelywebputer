@@ -1518,6 +1518,7 @@ module("lively.identity.WikiIndex")
           var opts = self._autoHeightOpts({ bounds: lively.rect(0, 0, w, 780) });
           if (envelope) opts.envelope = envelope;
           opts.onEdit = function (h, o) { self._editExistingPage(h, o); };
+          opts.onDeleted = function (h, o) { self._handlePageDeleted(o); };
           if (extraOpts && extraOpts.highlightQuery) opts.highlightQuery = extraOpts.highlightQuery;
           self._setActiveContentMorph(lively.identity.WikiView.open(handle, page.objId, opts));
         });
@@ -1539,10 +1540,31 @@ module("lively.identity.WikiIndex")
               target: $world,
               bounds: lively.rect(0, 0, self._contentWidth(), 780),
               onEdit: function (h2, o2) { self._editExistingPage(h2, o2); },
+              onDeleted: function (h2, o2) { self._handlePageDeleted(o2); },
             })));
           },
         }));
         self._setActiveContentMorph(editor);
+      },
+
+      // Runs after WikiView's "Delete page" has permanently removed a page
+      // server-side: drops the now-dead view from the content slot, refetches
+      // the page list (rather than patching it locally, so the grid and the
+      // categories/tags panel reflect exactly what the server has), and
+      // returns the sidebar to the "all pages" list.
+      _handlePageDeleted: function (objId) {
+        var self = this;
+        var view = this._activeContentMorph;
+        if (view) view.remove();
+        this._activeContentMorph = null;
+        this._pages = (this._pages || []).filter(function (p) { return p.objId !== objId; });
+        this._fetchWikiIndexSilently(function () {
+          self._renderCategoriesPanel();
+          self._renderPages();
+          self._showSidebarPageList("");
+          if (self._sidebarSearchField) self._sidebarSearchField.textString = "";
+          if (self._sidebarSearchPlaceholder) self._sidebarSearchPlaceholder.setVisible(true);
+        });
       },
 
       // Both the read-only WikiView (existing page) and the editable
@@ -1806,6 +1828,7 @@ module("lively.identity.WikiIndex")
             // with it, rather than staying in edit mode indefinitely.
             onSaved: function (savedHandle, objId) {
               var opts2 = self._autoHeightOpts({ bounds: lively.rect(0, 0, w, 780) });
+              opts2.onDeleted = function (h2, o2) { self._handlePageDeleted(o2); };
               self._setActiveContentMorph(lively.identity.WikiView.open(savedHandle, objId, opts2));
             },
           };

@@ -121,6 +121,17 @@ function canEditWikiPage(existing, did, constellation, cb) {
   });
 }
 
+// Who may permanently delete a wiki page: its author (envelope.did, fixed at
+// genesis) and, for a constellation page, that constellation's controllers.
+// Deliberately NOT tied to editPolicy -- being allowed to edit a page doesn't
+// imply being allowed to destroy it. Synchronous: `constellation` is the
+// already-fetched record (or null for a personal page), `did` may be null.
+function canDeleteWikiPage(existing, did, constellation) {
+  if (!did) return false;
+  if (existing.did === did) return true;
+  return !!constellation && constellationRegistry.isController(constellation, did);
+}
+
 var REASON_MESSAGES = {
   anonymous: 'Sign in to edit this page.',
   'not-member': 'Forbidden: not a member of this constellation with write access',
@@ -135,5 +146,6 @@ module.exports = {
   policiesEqual: policiesEqual,
   validatePolicy: validatePolicy,
   canEditWikiPage: canEditWikiPage,
+  canDeleteWikiPage: canDeleteWikiPage,
   REASON_MESSAGES: REASON_MESSAGES,
 };

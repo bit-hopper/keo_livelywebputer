@@ -3603,14 +3603,18 @@ module.exports = function (route, app) {
       var policy = wikiPermissions.normalizePolicy(envelope.state && envelope.state.editPolicy);
 
       function decide(constellation) {
+        // canDelete is a separate rule from canEdit (author or constellation
+        // controller, see WikiPermissions.canDeleteWikiPage) -- returned here
+        // so WikiView can decide whether to show its "Delete" menu entry.
+        var canDelete = wikiPermissions.canDeleteWikiPage(envelope, did, constellation);
         wikiPermissions.canEditWikiPage(envelope, did, constellation, function (err, result) {
           if (err) return res.status(500).json({ error: String(err) });
           if (!result.allowed) {
-            return res.json({ canEdit: false, reason: result.reason, policy: policy });
+            return res.json({ canEdit: false, canDelete: canDelete, reason: result.reason, policy: policy });
           }
           constellationSpace.mintWikiRoomToken(objId, did, true, function (err, token) {
             if (err) return res.status(500).json({ error: String(err) });
-            res.json({ canEdit: true, reason: null, policy: policy, token: token });
+            res.json({ canEdit: true, canDelete: canDelete, reason: null, policy: policy, token: token });
           });
         });
       }
@@ -3619,6 +3623,49 @@ module.exports = function (route, app) {
       constellationRegistry.get(envelope.constellation, function (err, constellation) {
         if (err) return res.status(500).json({ error: String(err) });
         decide(constellation);
+      });
+    });
+  });
+
+  // ─── wiki page hard delete ─────────────────────────────────────────────────
+  // Permanently removes every stored version of a wiki page (and its
+  // reactions/hide/collection/star/comment rows) -- not the state.deleted
+  // tombstone the list queries filter on. The authority is the objId's own
+  // stored envelope, not :handle (a constellation page is addressed under its
+  // author's handle, which may differ from the caller's). Allowed for the
+  // page's author and, for a constellation page, its controllers
+  // (WikiPermissions.canDeleteWikiPage). Lives in this file, ahead of the
+  // app.all("/@:handle/*") catch-all, same reason as edit-token above.
+  app.delete("/@:handle/:objId/wikipage", auth.requireAuth, function (req, res) {
+    var objId = req.params.objId;
+    objectRepo.get(objId, function (err, envelope) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!envelope || envelope.type !== "wikipage") {
+        return res.status(404).json({ error: "Wiki page not found: " + objId });
+      }
+      var did = req.identity.did;
+
+      function proceed(constellation) {
+        if (!wikiPermissions.canDeleteWikiPage(envelope, did, constellation)) {
+          return res.status(403).json({
+            error: envelope.constellation
+              ? "Forbidden: only the page's author and this constellation's controllers can delete this page"
+              : "Forbidden: only the page's author can delete this page",
+          });
+        }
+        objectRepo.deleteWikiPage(objId, function (err, result) {
+          if (err) {
+            if (err.notFound || err.wrongType) return res.status(404).json({ error: err.message });
+            return res.status(500).json({ error: String(err) });
+          }
+          res.json({ ok: true, deleted: result.deleted });
+        });
+      }
+
+      if (!envelope.constellation) return proceed(null);
+      constellationRegistry.get(envelope.constellation, function (err, constellation) {
+        if (err) return res.status(500).json({ error: String(err) });
+        proceed(constellation);
       });
     });
   });

@@ -88,6 +88,7 @@ module("lively.identity.WikiView")
           "_moreMenuOutsideHandler",
           "_contentLoadStarted",
           "_onEdit",
+          "_onDeleted",
           "_heightObserver",
           "_onHeightChanged",
         ],
@@ -112,6 +113,7 @@ module("lively.identity.WikiView")
           this._detailsOpen = true;
           this._isOwner = false;
           this._canEdit = false;
+          this._canDelete = false;
           this._verifyResult = null;
           this._buildChrome();
 
@@ -503,6 +505,7 @@ module("lively.identity.WikiView")
           var self = this;
           if (this._isOwner) {
             this._canEdit = true;
+            this._canDelete = true;
             return;
           }
           if (!this._constellation || !this._handle || !this._objId) return;
@@ -520,7 +523,11 @@ module("lively.identity.WikiView")
           xhr.onload = function () {
             if (xhr.status !== 200) return;
             try {
-              if (JSON.parse(xhr.responseText).canEdit) self._canEdit = true;
+              var access = JSON.parse(xhr.responseText);
+              if (access.canEdit) self._canEdit = true;
+              // Author or constellation controller -- decided server-side
+              // (WikiPermissions.canDeleteWikiPage), independent of editPolicy.
+              if (access.canDelete) self._canDelete = true;
             } catch (e) {}
           };
           xhr.send();
@@ -823,14 +830,15 @@ module("lively.identity.WikiView")
             "box-sizing:border-box",
           ].join(";");
 
-          var makeItem = function (label, iconName, onClick) {
+          var makeItem = function (label, iconName, onClick, danger) {
             var item = document.createElement("div");
             item.style.cssText = [
               "display:flex", "align-items:center", "gap:8px",
-              "padding:7px 10px", "border-radius:5px", "cursor:pointer", "color:#333",
+              "padding:7px 10px", "border-radius:5px", "cursor:pointer",
+              "color:" + (danger ? "#c33" : "#333"),
             ].join(";");
             item.innerHTML =
-              '<span class="material-symbols-rounded" style="font-size:16px;color:#666;">' + iconName + '</span>' +
+              '<span class="material-symbols-rounded" style="font-size:16px;color:' + (danger ? "#c33" : "#666") + ';">' + iconName + '</span>' +
               '<span>' + label + '</span>';
             item.addEventListener("mouseenter", function () { item.style.background = "#f2f2f2"; });
             item.addEventListener("mouseleave", function () { item.style.background = "transparent"; });
@@ -849,6 +857,9 @@ module("lively.identity.WikiView")
           }
           menu.appendChild(makeItem("Copy link", "link", function () { self._copyShareLink(); }));
           menu.appendChild(makeItem("Download", "download", function () { self._downloadPage(); }));
+          if (this._canDelete) {
+            menu.appendChild(makeItem("Delete page", "delete", function () { self._confirmDeletePage(); }, true));
+          }
 
           document.body.appendChild(menu);
           this._moreMenuEl = menu;
@@ -949,6 +960,102 @@ module("lively.identity.WikiView")
           this._flashNearMoreBtn("Downloaded");
         },
 
+        // Plain DOM confirm overlay on document.body (not inside this morph's
+        // shapeNode -- see CLAUDE.md on native-DOM dialogs over a world).
+        // Deleting is permanent (every stored version is removed, nothing to
+        // restore), so this spells that out rather than a generic "Are you
+        // sure?".
+        _confirmDeletePage: function () {
+          var self = this;
+          var esc = lively.identity.postCardUtils.escapeHtml;
+          var title = (this._envelope && this._envelope.state &&
+            (this._envelope.state.wikiName || this._envelope.state.title)) || "this page";
+
+          var scrim = document.createElement("div");
+          scrim.style.cssText = [
+            "position:fixed", "top:0", "left:0", "right:0", "bottom:0", "z-index:10000",
+            "background:rgba(0,0,0,0.35)", "display:flex", "align-items:center",
+            "justify-content:center", "font-family:sans-serif",
+          ].join(";");
+          var box = document.createElement("div");
+          box.style.cssText = [
+            "width:360px", "max-width:calc(100vw - 32px)", "background:#fff",
+            "border-radius:12px", "box-shadow:0 8px 30px rgba(0,0,0,0.3)",
+            "padding:20px", "box-sizing:border-box", "color:#333",
+          ].join(";");
+          box.innerHTML =
+            '<div style="font-size:16px;font-weight:600;margin-bottom:8px;">Delete “' + esc(title) + '”?</div>' +
+            '<div style="font-size:13px;line-height:1.45;color:#555;">This permanently deletes the page and its ' +
+            'entire edit history. It can’t be undone.</div>' +
+            '<div data-role="error" style="font-size:12px;color:#c33;margin-top:10px;display:none;"></div>' +
+            '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px;"></div>';
+          var errEl = box.querySelector('[data-role="error"]');
+          var row = box.lastChild;
+
+          var makeBtn = function (text, bg, color) {
+            var b = document.createElement("button");
+            b.textContent = text;
+            b.style.cssText = [
+              "border:none", "border-radius:8px", "padding:7px 16px", "font-size:13px",
+              "cursor:pointer", "background:" + bg, "color:" + color,
+            ].join(";");
+            return b;
+          };
+          var cancelBtn = makeBtn("Cancel", "#eee", "#333");
+          var deleteBtn = makeBtn("Delete", "#c33", "#fff");
+          row.appendChild(cancelBtn);
+          row.appendChild(deleteBtn);
+          scrim.appendChild(box);
+          document.body.appendChild(scrim);
+
+          var close = function () { scrim.remove(); };
+          cancelBtn.addEventListener("click", close);
+          scrim.addEventListener("mousedown", function (e) { if (e.target === scrim) close(); });
+          deleteBtn.addEventListener("click", function () {
+            deleteBtn.disabled = cancelBtn.disabled = true;
+            deleteBtn.textContent = "Deleting…";
+            errEl.style.display = "none";
+            self._deletePage(function (errMsg) {
+              if (!errMsg) return close();
+              deleteBtn.disabled = cancelBtn.disabled = false;
+              deleteBtn.textContent = "Delete";
+              errEl.textContent = errMsg;
+              errEl.style.display = "block";
+            });
+          });
+        },
+
+        // DELETE /@handle/:objId/wikipage -- the server decides (author, or
+        // a constellation controller) and removes the page's rows outright.
+        // thenDo(errMsg|null). On success an embedding caller's onDeleted
+        // hook takes over (WikiIndex.js swaps the page out of its slot);
+        // otherwise this is a standalone page that no longer exists, so
+        // navigate to the wiki index it belonged to.
+        _deletePage: function (thenDo) {
+          var self = this;
+          var base = lively.identity.did.baseUrl();
+          var url = base + "/@" + encodeURIComponent(this._handle) + "/" +
+            encodeURIComponent(this._objId) + "/wikipage";
+          var xhr = new XMLHttpRequest();
+          xhr.open("DELETE", url, true);
+          xhr.withCredentials = true;
+          xhr.setRequestHeader("Accept", "application/json");
+          xhr.onload = function () {
+            if (xhr.status !== 200) {
+              var msg = "Delete failed (" + xhr.status + ")";
+              try { msg = JSON.parse(xhr.responseText).error || msg; } catch (e) {}
+              return thenDo(msg);
+            }
+            thenDo(null);
+            if (self._onDeleted) return self._onDeleted(self._handle, self._objId, self);
+            window.location.href = self._constellation
+              ? base + "/c/" + encodeURIComponent(self._constellation) + "/wiki"
+              : base + "/@" + encodeURIComponent(self._handle) + "/wiki";
+          };
+          xhr.onerror = function () { thenDo("Network error deleting the page"); };
+          xhr.send();
+        },
+
         _slugify: function (s) {
           return String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "wiki-page";
         },
@@ -1037,6 +1144,9 @@ module("lively.identity.WikiView")
       // embedding caller (e.g. WikiIndex.js) swap this view for an editor in
       // its own managed slot. If omitted, the view falls back to swapping
       // itself for a standalone editor in place -- see _startEditDefault.
+      // options.onDeleted(handle, objId, view) -> fired after the "Delete
+      // page" menu entry has permanently deleted this page server-side. If
+      // omitted, the view navigates to the wiki index its page belonged to.
       // options.autoHeight  -> grow with content instead of scrolling
       // internally (default: true when standalone, false when embedded via
       // options.target)
@@ -1055,6 +1165,7 @@ module("lively.identity.WikiView")
         view._cid = opts.cid || null;
         view._envelope = opts.envelope || null;
         view._onEdit = opts.onEdit || null;
+        view._onDeleted = opts.onDeleted || null;
         view._highlightQuery = opts.highlightQuery || null;
         view._pinkHandle = !!opts.pinkHandle;
         // Embedded views (opts.target) keep their fixed box unless the

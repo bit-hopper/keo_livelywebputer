@@ -67,8 +67,10 @@
  *     PRIMARY KEY (did, alias_name)
  *
  * The latest version of an object is the row with the highest id for a
- * given obj_id. No DELETE ever happens on `objects` — that log is
- * append-only (postcard_reactions rows are deleted freely on un-react).
+ * given obj_id. `objects` is an append-only log, with two exceptions:
+ * deleteVersionsAfter (revert) trims the tail, and deleteWikiPage removes a
+ * wiki page's rows entirely (postcard_reactions rows are deleted freely on
+ * un-react).
  *
  * Concurrency: put()/addRecipient() each acquire a Postgres advisory
  * transaction lock keyed on the target objId (pg_advisory_xact_lock) before
@@ -1124,6 +1126,73 @@ function deleteVersionsAfter(objId, cid, thenDo) {
               );
             }
           );
+        });
+      });
+    });
+  });
+}
+
+// Permanently removes a wiki page: every version row in `objects`, plus the
+// rows in the per-object side tables keyed on its obj_id (reactions, hide
+// rows, collection saves, stars, comments, blob_refs). This is a real hard
+// delete, unlike the state.deleted tombstone the listing queries filter on --
+// nothing is left to recover or to resolve the page's name afterwards.
+//
+// Wiki-only by construction: the type is re-checked against the locked latest
+// row inside the transaction and any other type is refused, so a caller can't
+// use this to wipe a world/part/file. No blob reclaim is needed -- a
+// wikipage envelope references no blobs (see _blobCidsOf).
+//
+// Calls thenDo(err, { deleted }) -- deleted is the number of `objects` rows
+// removed, or null with err.notFound / err.wrongType set when nothing was
+// removed because the objId doesn't exist / isn't a wiki page.
+function deleteWikiPage(objId, thenDo) {
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    pool.connect(function (err, client, release) {
+      if (err) return thenDo(err);
+      client.query('BEGIN', function (err) {
+        if (err) { release(); return thenDo(err); }
+
+        _lockObjIdTx(client, objId, function (err) {
+          if (err) return _rollbackAndRelease(client, release, err, thenDo);
+
+          _getLatestTx(client, objId, function (err, latest) {
+            if (err) return _rollbackAndRelease(client, release, err, thenDo);
+            if (!latest) {
+              var nf = new Error('Wiki page not found: ' + objId);
+              nf.notFound = true;
+              return _rollbackAndRelease(client, release, nf, thenDo);
+            }
+            if (latest.type !== 'wikipage') {
+              var wt = new Error('Object ' + objId + ' is not a wiki page');
+              wt.wrongType = true;
+              return _rollbackAndRelease(client, release, wt, thenDo);
+            }
+
+            // Side tables first, the objects rows last, all in this one
+            // transaction -- a failure partway rolls everything back.
+            var sideTables = [
+              'blob_refs', 'postcard_reactions', 'postcard_mailbox_hidden',
+              'postcard_collections', 'item_stars', 'item_comments',
+            ];
+            (function next(i) {
+              if (i === sideTables.length) {
+                return client.query('DELETE FROM objects WHERE obj_id = $1', [objId], function (err, delResult) {
+                  if (err) return _rollbackAndRelease(client, release, err, thenDo);
+                  client.query('COMMIT', function (err) {
+                    release();
+                    if (err) return thenDo(err);
+                    thenDo(null, { deleted: delResult.rowCount });
+                  });
+                });
+              }
+              client.query('DELETE FROM ' + sideTables[i] + ' WHERE obj_id = $1', [objId], function (err) {
+                if (err) return _rollbackAndRelease(client, release, err, thenDo);
+                next(i + 1);
+              });
+            })(0);
+          });
         });
       });
     });
@@ -2963,7 +3032,8 @@ module.exports = {
   getSettingsForDid:             getSettingsForDid,
   listVersions:                  listVersions,
   deleteVersionsAfter:           deleteVersionsAfter,
-  getObjIdsForBlob:              getObjIdsForBlob,
+  deleteWikiPage:                deleteWikiPage,
+  getObjIdsForBlob:             getObjIdsForBlob,
   addRecipient:                  addRecipient,
   upsertPartAlias:               upsertPartAlias,
   resolvePartAlias:              resolvePartAlias,
