@@ -413,6 +413,80 @@ test.describe("Scheme cell in the wiki editor", () => {
     await page.keyboard.press("Enter");
     await expect(page.locator(".lively-code-cell-output pre.lively-code-cell-value")).toHaveText('"hi, Ada Lovelac"');
   });
+
+  // Edits the one cell's source and clicks Run. Callers assert on the rendered rows, which
+  // retry until they match, so a stale transcript from the previous run can't satisfy them.
+  async function editAndRun(page, source) {
+    await setSource(page, source);
+    await page.locator(".lively-code-cell-run-btn").click();
+  }
+  const valueRows = (page) => page.locator(".lively-code-cell-output pre.lively-code-cell-value");
+  const errorRows = (page) => page.locator(".lively-code-cell-output pre.lively-code-cell-stderr");
+
+  test("a #lang sicp cell loads the library; it persists across edits and runs until Reset", async ({ page }) => {
+    await openEditor(page);
+    await insertSchemeCell(page);
+
+    await editAndRun(page, "#lang sicp\n(put 'op '(a b) 42)\n(list nil (get 'op '(a b)))");
+    await expect(valueRows(page)).toHaveText(["(() 42)"]);
+
+    // Same cell, new source with no #lang line: the library and its table are still there.
+    await editAndRun(page, "(get 'op '(a b))");
+    await expect(valueRows(page)).toHaveText(["42"]);
+
+    await page.locator(".lively-code-cell-reset-btn").click();
+    await expect(page.locator(".lively-code-cell-status")).toHaveText("Environment reset");
+    await editAndRun(page, "nil");
+    await expect(errorRows(page)).toContainText("Unbound variable: nil");
+
+    // Loading it again gives an empty table.
+    await editAndRun(page, "#lang sicp\n(get 'op '(a b))");
+    await expect(valueRows(page)).toHaveText(["#f"]);
+  });
+
+  test("a #lang tls cell loads the library and its macros", async ({ page }) => {
+    await openEditor(page);
+    await insertSchemeCell(page);
+
+    await editAndRun(page, [
+      "#lang tls",
+      "(define (f l) (try out (if (null? l) (out 'none) (car l)) 'fallback))",
+      "(list (atom? 'a) (atom? '(a)) (f '()) (f '(1)) (add1 4))",
+    ].join("\n"));
+    await expect(valueRows(page)).toHaveText(["(#t #f fallback 1 5)"]);
+    await expect(page.locator(".lively-code-cell-status")).toHaveText("Ran just now");
+
+    // The library is still loaded for a later run of the same cell.
+    await editAndRun(page, "(letcc k (+ 1 (k 99)))");
+    await expect(valueRows(page)).toHaveText(["99"]);
+  });
+
+  test("trace, define-structure and (the-environment) inside a procedure work in an editor cell", async ({ page }) => {
+    await openEditor(page);
+    await insertSchemeCell(page);
+
+    await editAndRun(page, [
+      "(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))",
+      "(trace fib)",
+      "(fib 1)",
+      "(untrace fib)",
+      "(define-structure point x y)",
+      "(define p (make-point 3 4))",
+      "(set-point-x! p 10)",
+      "(list (point-x p) (point-y p) (point? p))",
+      "(define (mk a) (let ((b 2)) (the-environment)))",
+      "(eval '(+ a b) (mk 40))",
+    ].join("\n"));
+    await expect(valueRows(page)).toHaveText(["1", "(10 4 #t)", "42"]);
+    const trace = await page.locator(".lively-code-cell-output pre.lively-code-cell-stdout").innerText();
+    expect(trace).toMatch(/^\[Entering #\[compound-procedure \d+ fib\]\n\s+Args: 1\]\n\[1\n\s+<== #\[compound-procedure \d+ fib\]\n\s+Args: 1\]\n?$/);
+    await expect(page.locator(".lively-code-cell-status")).toHaveText("Ran just now");
+
+    // After untrace, the same call prints nothing.
+    await editAndRun(page, "(fib 2)");
+    await expect(valueRows(page)).toHaveText(["1"]);
+    await expect(page.locator(".lively-code-cell-output pre.lively-code-cell-stdout")).toHaveCount(0);
+  });
 });
 
 // Python cells share code paths with the Scheme ones (run/stop dispatch,
