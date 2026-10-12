@@ -106,7 +106,8 @@ module('lively.identity.WikiEditor')
       doNotSerialize: ['editorView', 'yDoc', 'wsProvider', '_saveTimer', '_pmContainer', '_contentLoadStarted', '_onSaved',
         '_previewContainer', '_previewMode', '_activeDropdown', '_outsideClickHandler',
         '_flowEl', '_heightObserver', '_onHeightChanged',
-        '_editAccess', '_tokenTimer', '_permissionsRow', '_permPanel', '_permCloseHandler'],
+        '_editAccess', '_tokenTimer', '_permissionsRow', '_permPanel', '_permCloseHandler',
+        '_saveInFlight', '_saveRerun', '_saveWaiters'],
     },
 
     // ─── initialization ──────────────────────────────────────────────────────────
@@ -2071,13 +2072,42 @@ module('lively.identity.WikiEditor')
         return meta;
       },
 
+      // Saves are serialized: a save requested while another is still in
+      // flight (it can sit for many seconds on the first-save WebAuthn
+      // ceremony, see WebAuthn.deriveKek) waits for it, then runs once more
+      // so it builds on the envelope that save produced. Without this the
+      // second save started from the same stale `this._envelope` -- for a
+      // brand-new page that is null, so it minted a SECOND genesis objId and
+      // the page got created twice (two rows, same wikiName); for an existing
+      // page it chained off the same prevCid and was rejected with a 409.
+      // Everything requested during the wait coalesces into a single re-run,
+      // and each caller's callback fires after the save that covers its edits.
       _saveNow: function (callback) {
         clearTimeout(this._saveTimer);
         var self = this;
-        var cb = callback || function () {};
+        if (this._saveInFlight) {
+          this._saveRerun = true;
+          if (callback) (this._saveWaiters = this._saveWaiters || []).push(callback);
+          return;
+        }
+        var cb = function (err) {
+          self._saveInFlight = false;
+          var waiters = self._saveWaiters || [];
+          var rerun = self._saveRerun;
+          self._saveWaiters = null;
+          self._saveRerun = false;
+          if (callback) callback(err);
+          if (!rerun) return;
+          // A failed save (e.g. a cancelled passkey prompt) isn't retried
+          // here -- that would re-prompt immediately. Waiters hear the error;
+          // the next edit schedules a fresh save as usual.
+          if (err) return waiters.forEach(function (w) { w(err); });
+          self._saveNow(function (err2) { waiters.forEach(function (w) { w(err2); }); });
+        };
         var user = lively.identity.did.currentUser();
         if (!user) { this._setStatus('Not signed in'); return cb(new Error('Not signed in')); }
         if (!this.editorView) { this._setStatus('No document'); return cb(new Error('No document')); }
+        this._saveInFlight = true;
 
         var params = {
           prevEnvelope:  this._envelope || null,
