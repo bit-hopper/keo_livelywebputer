@@ -105,6 +105,44 @@ test.describe("SchemeWorker controller", () => {
     expect(r.state).toBe("error");
     expect(r.segments[0].text).toMatch(/Unknown #lang/);
   });
+
+  test("#lang tls fetches the library, which later cells keep and Reset drops", async ({ page }) => {
+    await boot(page);
+    const first = await runCell(page, "#lang tls\n(list (atom? 'a) (atom? '(a)) (add1 4))");
+    expect(first.err).toBeFalsy();
+    expect(first.state).toBe("done");
+    expect(first.segments).toEqual([{ kind: "value", text: "(#t #f 5)" }]);
+
+    // The library stays in the page's shared environment for later cells (no #lang line needed),
+    // including its macros, and case/=> works.
+    const second = await runCell(page, "(define (f l) (try out (if (null? l) (out 'none) (car l)) 'fallback))\n(list (f '(1 2)) (f '()) (case 3 ((3) => add1) (else 0)))");
+    expect(second.state).toBe("done");
+    expect(second.segments[second.segments.length - 1]).toEqual({ kind: "value", text: "(1 fallback 4)" });
+
+    // A cell can redefine atom? without disturbing the rest.
+    const third = await runCell(page, "(define (atom? x) 'mine) (atom? 1)");
+    expect(third.segments[third.segments.length - 1]).toEqual({ kind: "value", text: "mine" });
+
+    // Reset drops it; the next #lang tls cell loads it again.
+    await page.evaluate(() => new Promise((r) => lively.identity.SchemeWorker.reset(r)));
+    expect((await runCell(page, "(atom? 'a)")).state).toBe("error");
+    const again = await runCell(page, "#lang tls\n(atom? 'a)");
+    expect(again.segments).toEqual([{ kind: "value", text: "#t" }]);
+  });
+
+  test("a book-style program runs end to end in a cell", async ({ page }) => {
+    await boot(page);
+    const src = [
+      "#lang tls",
+      "(define Y (lambda (le) ((lambda (f) (f f)) (lambda (f) (le (lambda (x) ((f f) x)))))))",
+      "(define len (Y (lambda (length) (lambda (l) (cond ((null? l) 0) (else (add1 (length (cdr l)))))))))",
+      "(define rember-upto-last (lambda (a lat) (letcc skip (letrec ((R (lambda (lat) (cond ((null? lat) '()) ((eq? (car lat) a) (skip (R (cdr lat)))) (else (cons (car lat) (R (cdr lat)))))))) (R lat)))))",
+      "(list (len '(a b c d)) (rember-upto-last 'r '(a r b r c d)))",
+    ].join("\n");
+    const r = await runCell(page, src);
+    expect(r.state).toBe("done");
+    expect(r.segments[r.segments.length - 1]).toEqual({ kind: "value", text: "(4 (c d))" });
+  });
 });
 
 test.describe("read-only Scheme cell", () => {

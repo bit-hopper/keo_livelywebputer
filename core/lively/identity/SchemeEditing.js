@@ -31,7 +31,7 @@ module('lively.identity.SchemeEditing')
       'lambda': 1, 'let': 1, 'let*': 1, 'letrec': 1, 'letrec*': 1, 'let-values': 1, 'let*-values': 1,
       'let-syntax': 1, 'letrec-syntax': 1, 'syntax-rules': 1, 'when': 1, 'unless': 1, 'do': 1, 'case': 1,
       'cases': 1, 'parameterize': 1, 'fluid-let': 1, 'guard': 1, 'named-lambda': 1, 'case-lambda': 1,
-      'dynamic-wind': 1, 'receive': 1, 'delay': 1, 'make-promise': 1, 'cons-stream': 1,
+      'dynamic-wind': 1, 'receive': 1, 'letcc': 1, 'delay': 1, 'make-promise': 1, 'cons-stream': 1,
     };
 
     function isBodyOperator(name) {

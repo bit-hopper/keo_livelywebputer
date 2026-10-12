@@ -135,3 +135,15 @@ test('eval', () => {
     ["(define zz 10) (eval 'zz (the-environment))", '10'],
   ], i);
 });
+
+test('case clauses with => call the procedure on the key', () => {
+  const i = newInterp();
+  cases([
+    ['(case 3 ((1 2) (quote low)) ((3 4) => (lambda (k) (* k 10))) (else (quote none)))', '30'],
+    ['(case 9 ((1 2) (quote low)) ((3 4) => (lambda (k) (* k 10))) (else => (lambda (k) (+ k 1))))', '10'],
+    ['(case 1 ((1 2) (quote low)) ((3 4) => (lambda (k) k)))', 'low'],
+    ['(define n 0) (define (bump) (set! n (+ n 1)) n) (case (bump) ((1) => list) (else (quote no)))', '(1)'],
+    ['n', '1'],
+    ['(define (cs n) (case n ((0) => (lambda (k) (quote done))) (else (cs (- n 1))))) (cs 300000)', 'done'],
+  ], i);
+});

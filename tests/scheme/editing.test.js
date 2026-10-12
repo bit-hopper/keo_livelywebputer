@@ -118,3 +118,8 @@ test('reindent: does not touch a string that spans lines', () => {
   const t = '(display "a\n   b")';
   assert.strictEqual(E.reindent(t, 1, 1).text, t);
 });
+
+test('indentFor: letcc is a body form', () => {
+  assert.strictEqual(nextIndent('(letcc hop\n'), 2);
+  assert.strictEqual(nextIndent('  (letcc k\n'), 4);
+});

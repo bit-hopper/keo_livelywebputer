@@ -390,13 +390,27 @@ defSF('letrec*', sfLetrec);
 
 defSF('case', (c, x, scope) => {
   if (!(x.cdr instanceof Pair)) throw bad(x);
+  const rawClauses = toArr(x.cdr.cdr, x);
+  // A clause written (datums => proc) calls proc on the key: bind the key once
+  // and rewrite those bodies to (proc key).
+  if (rawClauses.some((cl) => cl instanceof Pair && cl.cdr instanceof Pair && isKw(cl.cdr.car, '=>'))) {
+    const t = gensym('case-key');
+    const newClauses = rawClauses.map((cl) => {
+      if (!(cl instanceof Pair)) throw bad(x);
+      if (cl.cdr instanceof Pair && isKw(cl.cdr.car, '=>')) {
+        if (!(cl.cdr.cdr instanceof Pair) || cl.cdr.cdr.cdr !== NIL) throw bad(x);
+        return list(cl.car, list(cl.cdr.cdr.car, t));
+      }
+      return cl;
+    });
+    return c.analyze(list(SF.let, list(list(t, x.cdr.car)), cons(SF.case, cons(t, arrayToList(newClauses)))), scope);
+  }
   const key = c.analyze(x.cdr.car, scope);
   const clauses = [];
   let elseBody = null;
-  for (const cl of toArr(x.cdr.cdr, x)) {
+  for (const cl of rawClauses) {
     if (!(cl instanceof Pair)) throw bad(x);
     const bodyForms = toArr(cl.cdr, x);
-    if (bodyForms.length > 0 && isKw(bodyForms[0], '=>')) throw syntaxError('=> in case clauses is not supported', stripForm(x));
     const body = c.seq(bodyForms, scope);
     if (isKw(cl.car, 'else')) elseBody = body;
     else clauses.push({ datums: toArr(strip(cl.car), x), body });
