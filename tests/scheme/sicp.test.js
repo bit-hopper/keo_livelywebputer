@@ -358,3 +358,22 @@ test('register machines: perform, long loops, errors', () => {
   t("(make-machine '(a) '() '((assign a (op nope) (const 1))))", ';Unknown operation -- ASSEMBLE nope');
   t("(make-machine '(a a) '() '())", ';Multiply defined register: a');
 });
+
+test('register machines: Fibonacci stack statistics match the closed forms', () => {
+  const i = loaded('sicp-5-regs');
+  // Each call with n >= 2 does four pushes of its own (two before each recursive call) plus its
+  // two subcalls, so pushes(n) = 4 + pushes(n-1) + pushes(n-2) with pushes(0) = pushes(1) = 0,
+  // which solves to 4 * (F(n+1) - 1). The deepest stack comes from the n-1 chain, two entries
+  // per level: depth(n) = 2 * (n - 1) for n >= 1.
+  const F = [0, 1];
+  for (let k = 2; k < 40; k++) F.push(F[k - 1] + F[k - 2]);
+  for (let n = 0; n <= 12; n++) {
+    const pushes = n < 2 ? 0 : 4 * (F[n + 1] - 1);
+    const depth = n < 2 ? 0 : 2 * (n - 1);
+    assert.equal(val(`(run-machine fib-machine '((n ${n})) 'val)`, i), String(F[n]), 'fib ' + n);
+    assert.equal(val("((fib-machine 'stack) 'statistics)", i), `(${pushes} ${depth})`, 'statistics for ' + n);
+  }
+  // a few worked out by hand from the recurrence: 4, 8, 16, 28 ... and the n = 10 case
+  assert.equal(val("(run-machine fib-machine '((n 5)) 'val) ((fib-machine 'stack) 'statistics)", i), '(28 8)');
+  assert.equal(val("(run-machine fib-machine '((n 10)) 'val) ((fib-machine 'stack) 'statistics)", i), '(352 18)');
+});
