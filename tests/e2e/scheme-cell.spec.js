@@ -143,6 +143,55 @@ test.describe("SchemeWorker controller", () => {
     expect(r.state).toBe("done");
     expect(r.segments[r.segments.length - 1]).toEqual({ kind: "value", text: "(4 (c d))" });
   });
+
+  test("#lang sicp fetches the library; nil and put/get persist across cells and Reset drops them", async ({ page }) => {
+    await boot(page);
+    const first = await runCell(page, "#lang sicp\n(list nil (null? nil) (get 'op '(a b)))");
+    expect(first.err).toBeFalsy();
+    expect(first.state).toBe("done");
+    expect(first.segments).toEqual([{ kind: "value", text: "(() #t #f)" }]);
+
+    // The table lives behind the library's procedures, so it is shared by every later cell.
+    const second = await runCell(page, "(put 'op '(a b) 42)");
+    expect(second.state).toBe("done");
+    expect(second.segments).toEqual([]);
+    const third = await runCell(page, "(list (get 'op '(a b)) (get 'op '(a c)))");
+    expect(third.segments).toEqual([{ kind: "value", text: "(42 #f)" }]);
+
+    // Reset drops the library; the next #lang sicp cell loads it again with an empty table.
+    await page.evaluate(() => new Promise((r) => lively.identity.SchemeWorker.reset(r)));
+    expect((await runCell(page, "nil")).state).toBe("error");
+    const again = await runCell(page, "#lang sicp\n(list nil (get 'op '(a b)))");
+    expect(again.segments).toEqual([{ kind: "value", text: "(() #f)" }]);
+  });
+
+  test("a register-machine simulator written in Scheme runs end to end in cells", async ({ page }) => {
+    await boot(page);
+    // The corpus file is served from the repo like any other static file.
+    const corpus = await page.evaluate(async () => (await fetch("/tests/scheme/corpora/sicp-5-regs.scm")).text());
+    expect(corpus).toContain("make-new-machine");
+    const loadedCorpus = await runCell(page, corpus);
+    expect(loadedCorpus.err).toBeFalsy();
+    expect(loadedCorpus.state).toBe("done");
+    expect(loadedCorpus.segments).toEqual([]);
+
+    const r = await runCell(page, [
+      "(list (run-machine gcd-machine '((a 206) (b 40)) 'a)",
+      "      (run-machine fact-machine '((n 5)) 'val)",
+      "      ((fact-machine 'stack) 'statistics)",
+      "      (run-machine fib-machine '((n 15)) 'val))",
+    ].join("\n"));
+    expect(r.state).toBe("done");
+    expect(r.segments).toEqual([{ kind: "value", text: "(2 120 (8 8) 610)" }]);
+
+    // A loop longer than the recursion limit completes only with proper tail calls.
+    const loop = await runCell(page, "(run-machine sum-machine '((n 100000)) 'total)");
+    expect(loop.segments).toEqual([{ kind: "value", text: "5000050000" }]);
+
+    const bad = await runCell(page, "(get-register-contents gcd-machine 'zzz)");
+    expect(bad.state).toBe("error");
+    expect(bad.segments.some((s) => s.kind === "error" && /Unknown register: zzz/.test(s.text))).toBe(true);
+  });
 });
 
 test.describe("read-only Scheme cell", () => {
