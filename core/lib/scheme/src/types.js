@@ -85,6 +85,11 @@ export class Promise_ {
   constructor(node, env) { this.done = false; this.value = undefined; this.node = node; this.env = env; }
 }
 export class Environment { constructor(name) { this.name = name; } }
+// The environment of a procedure body or `let`: the compile-time scope plus the
+// runtime frame it was captured with, so `eval` can analyze against the same names.
+export class LexicalEnv extends Environment {
+  constructor(scope, frame) { super('local'); this.scope = scope; this.frame = frame; }
+}
 export class RecordType {
   constructor(name, fields) { this.name = name; this.fields = fields; }
 }

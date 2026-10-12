@@ -1,9 +1,10 @@
 // Primitives that need the machine (continuations, dynamic extent, apply, force,
 // eval) plus port I/O (which may pause the machine to wait for input).
 import {
-  UNSPEC, EOF, SString, Char, Primitive, MPrim, Promise_, Values, Port, Parameter,
-  Continuation, SchemeExit, makeChar, listToArray,
+  UNSPEC, UNASSIGNED, EOF, SString, Char, Primitive, MPrim, Promise_, Values, Port, Parameter,
+  Continuation, SchemeExit, Environment, LexicalEnv, makeChar, listToArray,
 } from './types.js';
+import { frameScope } from './compiler.js';
 import { Frame, Winder, HandlerEntry, F_JS } from './machine.js';
 import { wrongType } from './errors.js';
 import { toDisplay, toWrite } from './printer.js';
@@ -76,6 +77,17 @@ export function installControl(interp) {
   });
 
   defM('eval', 1, 2, (m, vals) => {
+    const e = vals[2];
+    if (e instanceof LexicalEnv) {
+      // Analyze against the captured scope and run in the captured frame. A `define`
+      // in the evaluated code adds a name to the shared scope; this frame grows to match.
+      m.node = interp.compiler.analyze(vals[1], e.scope);
+      const names = frameScope(e.scope).names;
+      while (e.frame.length < names.length + 1) e.frame.push(UNASSIGNED);
+      m.env = e.frame; m.mode = EVAL;
+      return;
+    }
+    if (e !== undefined && !(e instanceof Environment)) throw wrongType(e, 2, 'eval');
     m.node = interp.compiler.analyze(vals[1], null);
     m.env = null; m.mode = EVAL;
   });

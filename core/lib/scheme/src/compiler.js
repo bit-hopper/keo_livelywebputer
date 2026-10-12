@@ -5,7 +5,7 @@
 // in head position, so a user binding or redefinition of `if`, `cons`, `list`
 // etc. can never change what a derived form means.
 import {
-  Pair, NIL, UNSPEC, UNASSIGNED, Sym, Primitive, Record, RecordType, intern, gensym, stripSym,
+  Pair, NIL, UNSPEC, UNASSIGNED, Sym, Primitive, Record, RecordType, LexicalEnv, intern, gensym, stripSym,
   list, arrayToList, listToArray,
 } from './types.js';
 import { Node, T, LamInfo, SIMPLE_MAX } from './nodes.js';
@@ -59,7 +59,7 @@ export function strip(x) {
   return x;
 }
 
-function frameScope(scope) {
+export function frameScope(scope) {
   let s = scope;
   while (s && !s.hasFrame) s = s.parent;
   return s;
@@ -450,9 +450,13 @@ function sfLetSyntax(recursive) {
 defSF('let-syntax', sfLetSyntax(false));
 defSF('letrec-syntax', sfLetSyntax(true));
 
+// Inside a procedure or let, the environment is the compile-time scope paired with the
+// frame the machine is running in (ENVREF), captured as a LexicalEnv at run time.
+const makeLexicalEnv = new Primitive('%make-environment', 2, 2, (scope, frame) => new LexicalEnv(scope, frame));
 defSF('the-environment', (c, x, scope) => {
-  if (frameScope(scope) !== null) throw syntaxError('(the-environment) is only supported at top level', stripForm(x));
-  return new Node(T.CONST, c.interp.globalEnv);
+  if (!(x.cdr === NIL)) throw bad(x);
+  if (frameScope(scope) === null) return new Node(T.CONST, c.interp.globalEnv);
+  return c.makeCall([new Node(T.CONST, makeLexicalEnv), new Node(T.CONST, scope), ENVREF]);
 });
 defSF('declare', () => UNSPEC_NODE);
 
@@ -594,6 +598,31 @@ defMacro('define-record-type', (x, scope, c) => {
     }
   });
   return cons(SF.begin, arrayToList(defs));
+});
+
+// (define-structure name field ...) / (define-structure (name) field ...): constructor
+// make-NAME taking every field in order, predicate NAME?, accessors NAME-FIELD and
+// modifiers set-NAME-FIELD!. A field may be written (field default); the default is
+// ignored because the constructor always takes all fields. Options are not supported.
+defMacro('define-structure', (x) => {
+  const a = toArr(x.cdr, x);
+  if (a.length < 1) throw bad(x);
+  let nameSym = a[0];
+  if (nameSym instanceof Pair) {
+    if (nameSym.cdr !== NIL) throw syntaxError('define-structure options are not supported', stripForm(nameSym));
+    nameSym = nameSym.car;
+  }
+  if (!(nameSym instanceof Sym)) throw bad(x);
+  const name = stripSym(nameSym).name;
+  const fields = a.slice(1).map((f) => {
+    const s = f instanceof Pair ? f.car : f;
+    if (!(s instanceof Sym)) throw bad(x);
+    return stripSym(s).name;
+  });
+  const specs = fields.map((f) => list(intern(f), intern(name + '-' + f), intern('set-' + name + '-' + f + '!')));
+  return cons(nativeMacros['define-record-type'], cons(intern('<' + name + '>'),
+    cons(cons(intern('make-' + name), arrayToList(fields.map((f) => intern(f)))),
+      cons(intern(name + '?'), arrayToList(specs)))));
 });
 
 // --- multiple values --------------------------------------------------------------------------------------------------

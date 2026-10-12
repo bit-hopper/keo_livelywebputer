@@ -297,3 +297,51 @@
     ((_ (v rest ...) lst)
      (let ((l lst)) (set! v (car l)) (%fluid-set! (rest ...) (cdr l))))))
 
+;; trace / untrace: (trace f) replaces the binding of f with a wrapper that reports
+;; each call and its result; (untrace f) puts the original back. The wrapper table
+;; stays behind procedures (library state is not seen by user code otherwise).
+(define %trace-operations
+  (let ((originals (make-strong-eqv-hash-table)))
+    (define (original-of proc) (hash-table-ref/default originals proc proc))
+    (define (print-args args)
+      (if (null? args)
+          (display "]")
+          (begin
+            (newline)
+            (display "    Args: ")
+            (write (car args))
+            (for-each (lambda (a) (newline) (display "          ") (write a)) (cdr args))
+            (display "]")))
+      (newline))
+    (define (wrap name proc)
+      (if (not (procedure? proc)) (error "Not a procedure -- TRACE" name))
+      (let ((original (original-of proc)))
+        (let ((wrapper
+               (lambda args
+                 (fresh-line)
+                 (display "[Entering ")
+                 (write original)
+                 (print-args args)
+                 (let ((result (apply original args)))
+                   (fresh-line)
+                   (display "[")
+                   (write result)
+                   (newline)
+                   (display "      <== ")
+                   (write original)
+                   (print-args args)
+                   result))))
+          (hash-table-set! originals wrapper original)
+          wrapper)))
+    (cons wrap original-of)))
+(define %trace-wrap (car %trace-operations))
+(define %trace-original (cdr %trace-operations))
+(define-syntax trace
+  (syntax-rules ()
+    ((_) (if #f #f))
+    ((_ name rest ...) (begin (set! name (%trace-wrap 'name name)) (trace rest ...)))))
+(define-syntax untrace
+  (syntax-rules ()
+    ((_) (if #f #f))
+    ((_ name rest ...) (begin (set! name (%trace-original name)) (untrace rest ...)))))
+
