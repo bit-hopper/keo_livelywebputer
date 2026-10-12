@@ -461,3 +461,132 @@ test.describe("Previously unverified paths", () => {
     expect((await runCell(page, "(+ 20 42)")).segments[0].text).toBe("62");
   });
 });
+
+// Paren-aware source editing (SchemeEditing): driven with real key events,
+// never `.value =`, so the keydown handlers and the browser's own edit path
+// are what's under test.
+test.describe("Scheme source editing", () => {
+  async function focusedCell(page) {
+    await openEditor(page);
+    await insertSchemeCell(page);
+    const ta = page.locator("textarea.lively-code-cell-source");
+    await ta.click();
+    return ta;
+  }
+
+  test("auto-closes brackets, overtypes closers, and Enter indents", async ({ page }) => {
+    const ta = await focusedCell(page);
+    await page.keyboard.type("(define (f x");
+    await expect(ta).toHaveValue("(define (f x))");
+    await page.keyboard.type(")");               // overtypes the auto-inserted closer
+    await expect(ta).toHaveValue("(define (f x))");
+    await page.keyboard.press("Enter");
+    await expect(ta).toHaveValue("(define (f x)\n  )");
+    await page.keyboard.type("(* x x");
+    await page.keyboard.type(")");
+    await expect(ta).toHaveValue("(define (f x)\n  (* x x))");
+    // The edit reaches the document node through the normal debounced commit.
+    await ta.blur();
+    const src = await page.evaluate(() => {
+      let s = null;
+      window.__wikiEd.editorView.state.doc.descendants((n) => { if (n.type.name === "code_cell") s = n.attrs.source; });
+      return s;
+    });
+    expect(src).toBe("(define (f x)\n  (* x x))");
+    // and it runs
+    await page.locator(".lively-code-cell-run-btn").click();
+    await page.locator("textarea.lively-code-cell-source").click();
+    await expect(page.locator(".lively-code-cell-status")).toHaveText("Ran just now");
+    expect((await runCell(page, "(f 7)")).segments[0].text).toBe("49");
+  });
+
+  test("quotes pair, Backspace removes an empty pair, character literals are left alone", async ({ page }) => {
+    const ta = await focusedCell(page);
+    await page.keyboard.type('(display "hi');
+    await expect(ta).toHaveValue('(display "hi")');   // only the "(" is auto-closed; the quote paired inside it
+    await page.keyboard.type('"');                    // overtypes the closing quote
+    await page.keyboard.press("Backspace");           // removes the quote just typed (not a pair)
+    await ta.fill("");
+    await page.keyboard.type("()");
+    await expect(ta).toHaveValue("()");
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("Backspace");           // empty pair -> both go
+    await expect(ta).toHaveValue("");
+    const charLit = "#" + String.fromCharCode(92) + "(";   // the character literal #\(
+    await page.keyboard.type(charLit);                // no auto-close after #\
+    await expect(ta).toHaveValue(charLit);
+    await page.keyboard.type(" ; (");                 // inside a comment: no auto-close
+    await expect(ta).toHaveValue(charLit + " ; (");
+  });
+
+  test("Tab re-indents the selected lines; Ctrl+Z undoes it as one step", async ({ page }) => {
+    const ta = await focusedCell(page);
+    const messy = "(define (fact n)\n(if (= n 0)\n1\n(* n\n(fact (- n 1)))))";
+    await ta.fill(messy);
+    await page.keyboard.press("Control+a");
+    await page.keyboard.press("Tab");
+    await expect(ta).toHaveValue("(define (fact n)\n  (if (= n 0)\n      1\n      (* n\n         (fact (- n 1)))))");
+    await page.keyboard.press("Control+z");
+    await expect(ta).toHaveValue(messy);
+  });
+
+  test("Tab on a single line indents just that line and keeps the caret in place", async ({ page }) => {
+    const ta = await focusedCell(page);
+    await ta.fill("(foo a\nb)");
+    await page.keyboard.press("Control+End");
+    await page.keyboard.press("ArrowLeft");          // between b and )
+    await page.keyboard.press("Tab");
+    await expect(ta).toHaveValue("(foo a\n     b)");
+    await page.keyboard.type("X");
+    await expect(ta).toHaveValue("(foo a\n     bX)");
+  });
+
+  test("the bracket next to the caret and its partner are highlighted", async ({ page }) => {
+    const ta = await focusedCell(page);
+    await ta.fill("(a (b) c)");
+    await page.keyboard.press("Control+Home");
+    await page.keyboard.press("ArrowRight");         // just after the first "("
+    const marks = page.locator(".lively-code-cell-backdrop-inner mark");
+    await expect(marks).toHaveCount(2);
+    await expect(marks.nth(0)).toHaveText("(");
+    await expect(marks.nth(1)).toHaveText(")");
+    // The marks sit exactly over the characters they highlight: same left offset
+    // as the textarea's text, one cell per column.
+    const geo = await page.evaluate(() => {
+      const t = document.querySelector("textarea.lively-code-cell-source").getBoundingClientRect();
+      const ms = [...document.querySelectorAll(".lively-code-cell-backdrop-inner mark")].map((m) => m.getBoundingClientRect());
+      return { taLeft: t.left, taTop: t.top, m0: ms[0].left, m1: ms[1].left, w: ms[0].width, mTop: ms[0].top, mH: ms[0].height };
+    });
+    expect(Math.abs(geo.m0 - (geo.taLeft + 16))).toBeLessThan(1.5);          // padding-left
+    expect(Math.abs((geo.m1 - geo.m0) - 8 * geo.w)).toBeLessThan(1.5);       // ")" is at column 8
+    // vertically the mark is centred on the first text line (14px padding, 1.55 * 13px line box)
+    expect(Math.abs((geo.mTop + geo.mH / 2) - (geo.taTop + 14 + (1.55 * 13) / 2))).toBeLessThan(2);
+    if (process.env.SCHEME_SHOT) await page.locator(".lively-code-cell-node").screenshot({ path: process.env.SCHEME_SHOT });
+    // moving away clears them; an unmatched bracket is flagged
+    await page.keyboard.press("ArrowRight");
+    await expect(marks).toHaveCount(0);
+    await ta.fill("(a b");
+    await page.keyboard.press("Control+Home");
+    await expect(page.locator(".lively-code-cell-backdrop-inner mark.bad")).toHaveCount(1);
+  });
+
+  test("Escape and Shift+Tab are not trapped", async ({ page }) => {
+    const ta = await focusedCell(page);
+    await page.keyboard.type("(a");
+    await page.keyboard.press("Shift+Tab");
+    await expect(ta).not.toBeFocused();
+    await ta.click();
+    await page.keyboard.press("Escape");
+    await expect(ta).not.toBeFocused();
+  });
+
+  test("a Python cell keeps its plain textarea (no brackets paired, Tab not trapped)", async ({ page }) => {
+    await openEditor(page);
+    await insertCodeCell(page, "Python");
+    await expect(page.locator(".lively-code-cell-editwrap")).toHaveCount(0);
+    const ta = page.locator("textarea.lively-code-cell-source");
+    await ta.click();
+    await page.keyboard.type("print(");
+    await expect(ta).toHaveValue("print(");
+  });
+});

@@ -63,6 +63,7 @@ module('lively.identity.WikiEditor')
     'lively.identity.WebAuthn',
     'lively.identity.WebKey',
     'lively.identity.FileCrypto',
+    'lively.identity.SchemeEditing',
   )
   .toRun(function () {
 
@@ -1684,6 +1685,8 @@ module('lively.identity.WikiEditor')
         textarea.spellcheck = false;
         textarea.value = node.attrs.source || '';
         dom.appendChild(textarea);
+        // Scheme source gets bracket matching, auto-close and Lisp indentation.
+        var editing = language === 'scheme' ? lively.identity.SchemeEditing.attach(textarea) : null;
 
         var output = document.createElement('div');
         output.className = 'lively-code-cell-output lively-code-cell-output-empty';
@@ -1848,7 +1851,10 @@ module('lively.identity.WikiEditor')
             // Don't clobber an in-flight local edit on an incoming
             // collaborator update -- same care _attachmentImageNodeView's
             // diff-before-re-render already takes.
-            if (sourceChanged && !focused) textarea.value = node.attrs.source || '';
+            if (sourceChanged && !focused) {
+              textarea.value = node.attrs.source || '';
+              if (editing) editing.refresh();
+            }
             return true;
           },
           selectNode: function () { dom.classList.add('lively-code-cell-selected'); },
@@ -1857,7 +1863,11 @@ module('lively.identity.WikiEditor')
           // inline input box gets its keystrokes and clicks.
           stopEvent: function (e) { return focused || !!(e && e.target && output.contains(e.target)); },
           ignoreMutation: function () { return true; },
-          destroy: function () { destroyed = true; if (pendingCommitTimer) clearTimeout(pendingCommitTimer); },
+          destroy: function () {
+            destroyed = true;
+            if (pendingCommitTimer) clearTimeout(pendingCommitTimer);
+            if (editing) editing.destroy();
+          },
         };
       },
 

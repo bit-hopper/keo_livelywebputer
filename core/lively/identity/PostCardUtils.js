@@ -105,6 +105,17 @@ module('lively.identity.PostCardUtils')
           'background:#1e2230;color:#d7dae0;font-family:' + mono + ';font-size:13px;line-height:1.55;' +
           'padding:14px 16px;tab-size:2;overflow-x:auto;}',
         'textarea.lively-code-cell-source{resize:vertical;min-height:72px;caret-color:#fff;}',
+        // Scheme editor (SchemeEditing.attach): the textarea goes transparent over a backdrop
+        // that paints the matching-bracket highlight. The backdrop copies the textarea's font
+        // metrics exactly; no wrapping so columns line up with the indentation logic.
+        '.lively-code-cell-editwrap{position:relative;background:#1e2230;}',
+        '.lively-code-cell-editwrap textarea.lively-code-cell-source{position:relative;background:transparent;white-space:pre;}',
+        '.lively-code-cell-backdrop{position:absolute;left:0;top:0;right:0;bottom:0;overflow:hidden;pointer-events:none;}',
+        '.lively-code-cell-backdrop-inner{box-sizing:border-box;padding:14px 16px;margin:0;font-family:' + mono + ';' +
+          'font-size:13px;line-height:1.55;tab-size:2;white-space:pre;color:transparent;}',
+        '.lively-code-cell-backdrop-inner mark{background:rgba(97,175,239,.38);color:transparent;border-radius:2px;' +
+          'box-shadow:0 0 0 1px rgba(97,175,239,.55);}',
+        '.lively-code-cell-backdrop-inner mark.bad{background:rgba(229,115,104,.42);box-shadow:0 0 0 1px rgba(229,115,104,.7);}',
         '.lively-code-cell-source code.hljs{display:inline;background:transparent;color:inherit;padding:0;font:inherit;}',
         hl + 'keyword,' + hl + 'built_in{color:#c678dd;}',
         hl + 'name,' + hl + 'title,' + hl + 'function{color:#61afef;}',
