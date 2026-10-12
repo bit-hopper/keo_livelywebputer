@@ -321,3 +321,40 @@ test('amb evaluator: parsing a sentence by backtracking over input consumption',
   assert.equal(val(program, i), '((sentence (noun-phrase (article the) (noun cat)) (verb eats)))');
   assert.equal(val(program.replace("'(the cat eats)", "'(the cat)"), i), '()');
 });
+
+// ---- milestone: the register-machine simulator -----------------------------
+
+test('register machines: gcd, factorial with stack statistics, fibonacci', () => {
+  const i = loaded('sicp-5-regs');
+  const t = (src, want) => assert.equal(val(src, i), want, src);
+  t("(run-machine gcd-machine '((a 206) (b 40)) 'a)", '2');
+  // the same machine runs again with new inputs
+  t("(run-machine gcd-machine '((a 17) (b 5)) 'a)", '1');
+  // gcd of two Fibonacci numbers is the Fibonacci number at the gcd of the indices
+  t("(run-machine gcd-machine (list (list 'a 354224848179261915075) (list 'b 12586269025)) 'a)", '12586269025');
+  t("(run-machine fact-machine '((n 5)) 'val)", '120');
+  // two pushes for each of the n-1 recursive levels, all outstanding at the deepest point
+  t("((fact-machine 'stack) 'statistics)", '(8 8)');
+  t("(run-machine fact-machine '((n 10)) 'val)", '3628800');
+  t("((fact-machine 'stack) 'statistics)", '(18 18)');
+  t("(run-machine fact-machine '((n 1)) 'val)", '1');
+  t("((fact-machine 'stack) 'statistics)", '(0 0)');
+  t("(run-machine fib-machine '((n 10)) 'val)", '55');
+  t("(run-machine fib-machine '((n 20)) 'val)", '6765');
+  t("(map (lambda (k) (run-machine fib-machine (list (list 'n k)) 'val)) '(0 1 2 3 4 5 6))", '(0 1 1 2 3 5 8)');
+});
+
+test('register machines: perform, long loops, errors', () => {
+  const i = loaded('sicp-5-regs');
+  const t = (src, want) => assert.equal(val(src, i), want, src);
+  t("(set! recorded '()) (run-machine countdown-machine '((n 3)) 'n)", '0');
+  t('recorded', '(3 2 1)');
+  // 500,000 instructions through one execute loop: only proper tail calls get this far
+  const t0 = Date.now();
+  t("(run-machine sum-machine '((n 100000)) 'total)", '5000050000');
+  console.log('# 100k-iteration machine took', Date.now() - t0, 'ms');
+  t("(get-register-contents gcd-machine 'zzz)", ';Unknown register: zzz');
+  t("(make-machine '(a) '() '((goto (label nowhere))))", ';Undefined label -- ASSEMBLE nowhere');
+  t("(make-machine '(a) '() '((assign a (op nope) (const 1))))", ';Unknown operation -- ASSEMBLE nope');
+  t("(make-machine '(a a) '() '())", ';Multiply defined register: a');
+});
