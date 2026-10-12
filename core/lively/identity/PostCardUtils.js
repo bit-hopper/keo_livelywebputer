@@ -101,15 +101,17 @@ module('lively.identity.PostCardUtils')
         '.lively-code-cell-status{margin-left:auto;color:#7a8094;font-size:11.5px;}',
         // Source pane: dark, with its own token palette (the highlight.js theme loaded for
         // ordinary code blocks is a light one and would paint a white box in here).
-        '.lively-code-cell-source{display:block;width:100%;box-sizing:border-box;margin:0;border:none;outline:none;' +
+        // The pane floats inside the card with a margin on each side and soft corners.
+        '.lively-code-cell-source{display:block;width:calc(100% - 24px);box-sizing:border-box;margin:10px 12px;border:none;outline:none;' +
           'background:#1e2230;color:#d7dae0;font-family:' + mono + ';font-size:13px;line-height:1.55;' +
-          'padding:14px 16px;tab-size:2;overflow-x:auto;}',
+          'padding:14px 16px;tab-size:2;overflow-x:auto;border-radius:10px;}',
         'textarea.lively-code-cell-source{resize:vertical;min-height:72px;caret-color:#fff;}',
         // Scheme editor (SchemeEditing.attach): the textarea goes transparent over a backdrop
         // that paints the matching-bracket highlight. The backdrop copies the textarea's font
         // metrics exactly; no wrapping so columns line up with the indentation logic.
-        '.lively-code-cell-editwrap{position:relative;background:#1e2230;}',
-        '.lively-code-cell-editwrap textarea.lively-code-cell-source{position:relative;background:transparent;white-space:pre;}',
+        '.lively-code-cell-editwrap{position:relative;background:#1e2230;margin:10px 12px;border-radius:10px;overflow:hidden;}',
+        '.lively-code-cell-editwrap textarea.lively-code-cell-source{position:relative;background:transparent;white-space:pre;' +
+          'width:100%;margin:0;border-radius:10px;}',
         '.lively-code-cell-backdrop{position:absolute;left:0;top:0;right:0;bottom:0;overflow:hidden;pointer-events:none;}',
         '.lively-code-cell-backdrop-inner{box-sizing:border-box;padding:14px 16px;margin:0;font-family:' + mono + ';' +
           'font-size:13px;line-height:1.55;tab-size:2;white-space:pre;color:transparent;}',
