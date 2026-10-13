@@ -219,6 +219,20 @@ test('simply: text that reads as a number works in arithmetic once the library i
   assert.match(val('(vector-ref (vector 1) "x")', i), /^;The object "x"/);
 });
 
+test('simply: strings-are-numbers switches the rule off and on again', () => {
+  const i = lib();
+  assert.equal(val('(+ 3 (bf 1075))', i), '78');
+  assert.equal(val('(strings-are-numbers #f)', i), 'okay');
+  assert.match(val('(+ 3 (bf 1075))', i), /^;The object "075"/);
+  assert.equal(val('(strings-are-numbers #t)', i), 'okay');
+  assert.equal(val('(+ 3 (bf 1075))', i), '78');
+  // asking for the state it is already in says so
+  assert.equal(stdout('(strings-are-numbers #t)', i), 'Strings are already numbers\n');
+  run('(strings-are-numbers #f)', i);
+  assert.equal(stdout('(strings-are-numbers #f)', i), 'Strings are already not numbers\n');
+  assert.equal(val('(strings-are-numbers 5)', i), ';Strings-are-numbers: give a #t or a #f');
+});
+
 test('simply: text numbers are off on a page that has not loaded the library, and after Reset', () => {
   const fresh = newInterp();
   assert.match(val('(+ "5" 1)', fresh), /^;The object "5", passed as the first argument to integer-add/);

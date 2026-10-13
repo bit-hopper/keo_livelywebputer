@@ -17,6 +17,9 @@ test('atoms', () => {
   assert.equal(read('1e3'), '1000.0');
   assert.equal(read('#t'), '#t');
   assert.equal(read('#false'), '#f');
+  assert.equal(read('#T'), '#t');            // the capital forms are accepted too
+  assert.equal(read('#F'), '#f');
+  assert.equal(read('#TRUE'), '#t');
   assert.equal(read('foo-bar?'), 'foo-bar?');
   assert.equal(read('+'), '+');
   assert.equal(read('...'), '...');

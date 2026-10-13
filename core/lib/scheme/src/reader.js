@@ -178,8 +178,9 @@ export class Parser {
       throw parseError('Unknown # syntax: ' + tok);
     }
     const tok = this._rawToken();
-    if (tok === '#t' || tok === '#true') return true;
-    if (tok === '#f' || tok === '#false') return false;
+    const lower = tok.toLowerCase();   // the capital forms #T and #F are accepted too
+    if (lower === '#t' || lower === '#true') return true;
+    if (lower === '#f' || lower === '#false') return false;
     const num = parseNumber(tok);
     if (num !== null) return num;
     throw parseError('Unknown # syntax: ' + tok);

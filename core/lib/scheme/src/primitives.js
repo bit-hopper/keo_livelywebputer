@@ -528,6 +528,7 @@ export function installPrimitives(interp) {
   def('%run-number', 0, 0, () => interp.runCount);
   // (%text-numbers! #t) lets arithmetic and indexes accept text such as "05" (see num above)
   def('%text-numbers!', 1, 1, (on) => { interp.textNumbers = on !== false; return UNSPEC; });
+  def('%text-numbers?', 0, 0, () => interp.textNumbers);
   def('real-time', 0, 0, () => new Flonum(Date.now()));
   def('current-time', 0, 0, () => Math.floor(Date.now() / 1000));
   def('void', 0, -1, () => UNSPEC);

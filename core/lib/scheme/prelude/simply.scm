@@ -540,5 +540,19 @@
 
 ;;; ---------------------------------------------------------------- text numbers
 
-;; from here on, arithmetic and indexes accept text that reads as a number
-(%text-numbers! #t)
+;; (strings-are-numbers #t) lets arithmetic and indexes accept text that reads as a
+;; number, (strings-are-numbers #f) takes that away again. It is on from the moment
+;; this library loads (the textbook's library does the same).
+(define (strings-are-numbers yesno)
+  (cond ((eq? yesno #t)
+         (if (%text-numbers?)
+             (show "Strings are already numbers")
+             (%text-numbers! #t)))
+        ((eq? yesno #f)
+         (if (%text-numbers?)
+             (%text-numbers! #f)
+             (show "Strings are already not numbers")))
+        (else (error "Strings-are-numbers: give a #t or a #f")))
+  'okay)
+
+(strings-are-numbers #t)
