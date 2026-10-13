@@ -216,6 +216,30 @@ test.describe("SchemeWorker controller", () => {
     expect(again.segments).toEqual([{ kind: "value", text: "#t" }]);
   });
 
+  test("#lang jbob checks proofs; it changes core names for the page and Reset restores them", async ({ page }) => {
+    await boot(page);
+    const first = await runCell(page, [
+      "#lang jbob",
+      "(J-Bob/step (prelude) '(car (cons 'ham '(eggs))) '(((1) (cons 'ham '(eggs))) (() (car '(ham eggs)))))",
+    ].join("\n"));
+    expect(first.err).toBeFalsy();
+    expect(first.state).toBe("done");
+    expect(first.segments).toEqual([{ kind: "value", text: "(quote ham)" }]);
+
+    // The proof language's car is in force for later cells, and library procedures still work.
+    const second = await runCell(page, "(list (car 5) (iota 3))");
+    expect(second.segments).toEqual([{ kind: "value", text: "(() (0 1 2))" }]);
+
+    // A real proof from the transcript, fetched from the repo: the whole run is accepted.
+    const transcript = await page.evaluate(async () => (await fetch("/tests/scheme/corpora/jbob-transcript.scm")).text());
+    expect((await runCell(page, transcript)).state).toBe("done");
+    const proved = await runCell(page, "(length (dethm.align/align))");
+    expect(proved.segments).toEqual([{ kind: "value", text: "60" }]);
+
+    await page.evaluate(() => new Promise((r) => lively.identity.SchemeWorker.reset(r)));
+    expect((await runCell(page, "(car 5)")).state).toBe("error");
+  });
+
   test("an interpreter built with the scanner/parser generator runs end to end in cells", async ({ page }) => {
     await boot(page);
     const corpus = await page.evaluate(async () => (await fetch("/tests/scheme/corpora/eopl-3-proc.scm")).text());

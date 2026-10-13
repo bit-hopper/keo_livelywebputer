@@ -16,6 +16,10 @@ import { toWrite, uncaughtReport, printSettings } from './printer.js';
 const MAX_OUTPUT_CHARS = 1_000_000;
 // Names that are accepted as `#lang` without a registered library.
 const BUILTIN_LANGS = new Set(['scheme', 'r7rs', 'r5rs', 'mit-scheme', 'core']);
+// Libraries that redefine core names (if, car, +, ...) with a different meaning. Compiled in system
+// mode they would change what library procedures such as map and sort do, so they are loaded as
+// user code instead: the change is page-wide until Reset, like any definition a cell makes.
+const USER_MODE_LIBRARIES = new Set(['jbob']);
 
 export class Interpreter {
   constructor(opts = {}) {
@@ -102,14 +106,25 @@ export class Interpreter {
     const src = this.libraries.get(name);
     if (src === undefined) throw new Error('unknown library ' + name);
     this.loadedLibraries.add(name);
-    this.runLibrarySource(src);
-    this.syncToUser(false);
+    const system = !USER_MODE_LIBRARIES.has(name);
+    if (system) {
+      // A library compiled now would pick up the other one's macros (its `if`), not the real ones.
+      const changed = [...this.loadedLibraries].find((n) => USER_MODE_LIBRARIES.has(n));
+      if (changed) {
+        this.loadedLibraries.delete(name);
+        throw new Error('cannot load "' + name + '" after "' + changed + '": ' + changed +
+          ' has changed if, car, cdr, + and < for this page. Press Reset first.');
+      }
+    }
+    this.runLibrarySource(src, system);
+    if (system) this.syncToUser(false); // a user-mode library's definitions are already in the user table
   }
 
-  // Evaluate source in system mode (globals go to the system table).
-  runLibrarySource(source) {
+  // Evaluate source in system mode (globals go to the system table) or, for a library that
+  // changes the meaning of core names, in user mode (globals go to the user table).
+  runLibrarySource(source, system = true) {
     const wasSystem = this.systemMode;
-    this.systemMode = true;
+    this.systemMode = system;
     try {
       const job = new Job(this, source, { library: true });
       const r = job.runToCompletion();
