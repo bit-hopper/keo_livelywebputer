@@ -462,6 +462,103 @@ async function confirmRun(page) {
   await page.mouse.click(box.x, box.y);
 }
 
+// Template menu click that does not assume how many cells exist afterwards.
+async function templateInsert(page, kind) {
+  await page.locator('button[title="Template"]').click();
+  await page.getByText(kind + " code cell", { exact: true }).click();
+}
+// What the document holds vs. what the editor shows, for every code cell in order.
+const cellsInDocAndView = (page) => page.evaluate(() => {
+  const doc = [];
+  window.__wikiEd.editorView.state.doc.descendants((n) => { if (n.type.name === "code_cell") doc.push({ lang: n.attrs.language, src: n.attrs.source }); });
+  const view = [...document.querySelectorAll(".lively-code-cell-node")].map((c) => ({
+    lang: c.getAttribute("data-language"),
+    badge: c.querySelector(".lively-code-cell-badge").innerText,
+    reset: !!c.querySelector(".lively-code-cell-reset-btn"),
+    src: c.querySelector("textarea").value,
+    status: c.querySelector(".lively-code-cell-status").innerText,
+    out: c.querySelector(".lively-code-cell-output").innerText,
+  }));
+  return { doc, view };
+});
+
+test.describe("Inserting cells while another block is selected", () => {
+  test("a second cell is added beside the first, which keeps its source and output", async ({ page }) => {
+    await openEditor(page);
+    await templateInsert(page, "Scheme");
+    await page.locator(".lively-code-cell-source").click();
+    await page.keyboard.type("(+ 1 2)");
+    await page.locator(".lively-code-cell-run-btn").click();
+    await expect(page.locator(".lively-code-cell-status")).toHaveText("Ran just now");
+    await page.keyboard.press("Escape");
+
+    await templateInsert(page, "Scheme");
+    await expect(page.locator(".lively-code-cell-node")).toHaveCount(2);
+    const s = await cellsInDocAndView(page);
+    expect(s.doc).toEqual([{ lang: "scheme", src: "(+ 1 2)" }, { lang: "scheme", src: "" }]);
+    expect(s.view[0]).toMatchObject({ src: "(+ 1 2)", status: "Ran just now", out: "3" });
+    // The new cell is a fresh one, not the old view relabelled.
+    expect(s.view[1]).toMatchObject({ src: "", status: "Idle", out: "Run to see output." });
+
+    // And a third works the same way: the caret is left on a paragraph after the last cell.
+    await templateInsert(page, "Python");
+    await expect(page.locator(".lively-code-cell-node")).toHaveCount(3);
+    const shape = await page.evaluate(() => { const k = []; window.__wikiEd.editorView.state.doc.forEach((n) => k.push(n.type.name)); return k; });
+    expect(shape.filter((t) => t === "code_cell")).toHaveLength(3);
+    expect(shape[shape.length - 1]).toBe("paragraph");
+  });
+
+  test("with a Scheme cell selected, a Python cell is inserted after it and shows as Python", async ({ page }) => {
+    await openEditor(page);
+    await templateInsert(page, "Scheme");
+    // Select the cell itself, as clicking its frame or pressing Escape out of it does.
+    await page.evaluate(() => {
+      const ed = window.__wikiEd, v = ed.editorView, PM = ed._ProseMirror().state;
+      let pos = null;
+      v.state.doc.descendants((n, p) => { if (pos === null && n.type.name === "code_cell") pos = p; });
+      v.dispatch(v.state.tr.setSelection(PM.NodeSelection.create(v.state.doc, pos)));
+    });
+    expect(await page.evaluate(() => !!window.__wikiEd.editorView.state.selection.node)).toBe(true);
+
+    await templateInsert(page, "Python");
+    await expect(page.locator(".lively-code-cell-node")).toHaveCount(2);
+    const s = await cellsInDocAndView(page);
+    expect(s.doc.map((c) => c.lang)).toEqual(["scheme", "python"]);
+    // What is on screen matches the document: a Python cell has its own badge and no Reset button.
+    expect(s.view.map((c) => c.lang)).toEqual(["scheme", "python"]);
+    expect(s.view[1].badge).toContain("Python");
+    expect(s.view[1].reset).toBe(false);
+    expect(s.view[0].reset).toBe(true);
+  });
+
+  test("the other block inserts share the fix: two display-math blocks in a row both stay", async ({ page }) => {
+    await openEditor(page);
+    for (let i = 0; i < 2; i++) {
+      await page.locator('button[title="Template"]').click();
+      await page.getByText("Math (display)", { exact: true }).click();
+    }
+    const shape = await page.evaluate(() => { const k = []; window.__wikiEd.editorView.state.doc.forEach((n) => k.push(n.type.name)); return k; });
+    expect(shape.filter((t) => t === "math_display")).toHaveLength(2);
+  });
+
+  test("a cell whose language changes in the document gets a view of that language", async ({ page }) => {
+    await openEditor(page);
+    await templateInsert(page, "Scheme");
+    // Replace the cell by one of the other language in place (what an undo or a collaborator can do).
+    await page.evaluate(() => {
+      const v = window.__wikiEd.editorView;
+      let pos = null, size = 0;
+      v.state.doc.descendants((n, p) => { if (pos === null && n.type.name === "code_cell") { pos = p; size = n.nodeSize; } });
+      v.dispatch(v.state.tr.replaceWith(pos, pos + size, v.state.schema.nodes.code_cell.create({ language: "python", source: "x = 1" })));
+    });
+    const s = await cellsInDocAndView(page);
+    expect(s.doc).toEqual([{ lang: "python", src: "x = 1" }]);
+    expect(s.view).toHaveLength(1);
+    expect(s.view[0]).toMatchObject({ lang: "python", reset: false, src: "x = 1" });
+    expect(s.view[0].badge).toContain("Python");
+  });
+});
+
 test.describe("Scheme cell in the wiki editor", () => {
   test("insert via the Template menu, run, shared state, Reset", async ({ page }) => {
     await openEditor(page);

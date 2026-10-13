@@ -3418,11 +3418,42 @@ module('lively.identity.PostCardEditor')
           handle: user && user.handle,
           embedId: this._generateEmbedId(),
         });
-        // See the KNOWN BUG note on _insertAttachmentVideo: if this embed
-        // ends up as the doc's last node, the next block-atom insert can
-        // silently replace it (shared replaceSelectionWith exposure).
-        view.dispatch(state.tr.replaceSelectionWith(node));
+        this._insertBlockAtom(node);
         view.focus();
+      },
+
+      // Inserts a block-level atom (display math, video, audio, embedded part) at the selection.
+      // replaceSelectionWith alone gets two things wrong:
+      //  1. with a node selected (the atom left selected by the previous insert) it replaces
+      //     that node instead of adding beside it, and
+      //  2. when the new atom is the last node there is no text position after it, so
+      //     ProseMirror leaves the selection ON the atom -- which sets up (1) for the next insert.
+      // So: a node selection inserts after the node, and an atom with no text block after it
+      // gets an empty paragraph that takes the caret. Cost, measured in the wiki editor's Preview
+      // (same renderer): that paragraph is 0px tall but its 16px bottom margin shows below the last
+      // block; it is added only when no text block follows, so repeated inserts do not pile up paragraphs.
+      _insertBlockAtom: function (node) {
+        var view = this.editorView;
+        var prosemirror = this._ProseMirror();
+        if (!view || !prosemirror) return;
+        var TextSelection = prosemirror.state.TextSelection;
+        var state = view.state;
+        var tr = state.tr;
+        var selected = state.selection.node;
+        var end = null;                       // where the new atom ends, when the caret is not already after it
+        if (selected && !selected.isInline) {
+          tr.insert(state.selection.to, node);
+          end = state.selection.to + node.nodeSize;
+        } else {
+          tr.replaceSelectionWith(node);
+          if (tr.selection.node) end = tr.selection.to;   // landed on the atom: nothing after it
+        }
+        if (end !== null) {
+          var after = tr.doc.resolve(end).nodeAfter;
+          if (!(after && after.isTextblock)) tr.insert(end, state.schema.nodes.paragraph.create());
+          tr.setSelection(TextSelection.create(tr.doc, end + 1));
+        }
+        view.dispatch(tr.scrollIntoView());
       },
 
       _generateEmbedId: function () {
@@ -3928,9 +3959,8 @@ module('lively.identity.PostCardEditor')
               : state.schema.nodes.math_inline;
             if (!mathNodeType) return;
             var mathNode = mathNodeType.create({ value: '' });
-            // See the KNOWN BUG note on _insertAttachmentVideo — applies to
-            // math_display (block atom), not math_inline.
-            dispatch(state.tr.replaceSelectionWith(mathNode));
+            if (btnDef.mathType === 'display') this._insertBlockAtom(mathNode);
+            else dispatch(state.tr.replaceSelectionWith(mathNode));
             break;
           }
           case 'setAlign':
@@ -4243,15 +4273,8 @@ module('lively.identity.PostCardEditor')
       // Video attachments render inline (own block, per the image node's
       // comment above) rather than as a text link. Same public/private src
       // resolution as _insertAttachmentImage.
-      //
-      // KNOWN BUG (README.md "Fix before Deploying"): if this video ends up
-      // as the doc's last node, replaceSelectionWith below leaves a
-      // NodeSelection on it (ProseMirror's Selection.atEnd can't find a
-      // trailing text cursor after a block atom with no following
-      // paragraph) — the next attachment/embed insert then silently
-      // replaces this video instead of adding alongside it. Not specific to
-      // video: embeddedPart/math_display share the same replaceSelectionWith
-      // pattern and the same exposure.
+      // Block atoms go through _insertBlockAtom (see its note): a plain replaceSelectionWith
+      // here could replace the previous atom instead of adding beside it.
       _insertAttachmentVideo: function (entry) {
         if (!this.editorView) return;
         var view = this.editorView;
@@ -4260,16 +4283,11 @@ module('lively.identity.PostCardEditor')
         if (!videoType) return;
         var src = entry.dek ? '' : this._publicBlobUrl(entry.blobCid);
         var node = videoType.create({ src: src, name: entry.name, objId: entry.objId });
-        view.dispatch(state.tr.replaceSelectionWith(node));
+        this._insertBlockAtom(node);
         view.focus();
       },
 
       // Audio attachments: same reasoning as _insertAttachmentVideo.
-      //
-      // KNOWN BUG (README.md "Fix before Deploying"): same exposure as
-      // _insertAttachmentVideo's note — this is a block atom, so it can be
-      // silently replaced by the next attachment/embed insert if it ends up
-      // as the doc's last node.
       _insertAttachmentAudio: function (entry) {
         if (!this.editorView) return;
         var view = this.editorView;
@@ -4278,7 +4296,7 @@ module('lively.identity.PostCardEditor')
         if (!audioType) return;
         var src = entry.dek ? '' : this._publicBlobUrl(entry.blobCid);
         var node = audioType.create({ src: src, name: entry.name, objId: entry.objId });
-        view.dispatch(state.tr.replaceSelectionWith(node));
+        this._insertBlockAtom(node);
         view.focus();
       },
 
