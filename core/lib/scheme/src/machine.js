@@ -260,7 +260,9 @@ export class Machine {
     }
     if (f instanceof Continuation) { this.throwTo(f, vals.slice(1)); return; }
     if (f instanceof Parameter) {
-      if (vals.length !== 1) throw wrongArgs(f, vals.length - 1);
+      // one argument sets the value (an extension that interpreters written for this vocabulary use: (trace-apply-procedure #t))
+      if (vals.length > 2) throw wrongArgs(f, vals.length - 1);
+      if (vals.length === 2) { f.value = vals[1]; this.val = UNSPEC; this.mode = RET; return; }
       this.val = f.value; this.mode = RET;
       return;
     }

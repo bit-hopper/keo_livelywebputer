@@ -10,6 +10,7 @@ import { Machine, STATUS, setMaxDepth } from './machine.js';
 import { Compiler, SF, nativeMacros } from './compiler.js';
 import { installPrimitives } from './primitives.js';
 import { installControl } from './control.js';
+import { installEopl } from './eopl.js';
 import { toWrite, uncaughtReport, printSettings } from './printer.js';
 
 const MAX_OUTPUT_CHARS = 1_000_000;
@@ -25,6 +26,8 @@ export class Interpreter {
     this.macros = new Map();
     this.primTable = new Map();
     this.globalEnv = new Environment('system-global-environment');
+    this.datatypes = new Map();   // define-datatype: type name -> DataType
+    this.variantIndex = new Map(); // variant name -> {dt, fields} (sllgen builds trees through it)
     this.libraries = new Map();   // name -> source text
     this.loadedLibraries = new Set();
     this.consoleOut = new Port('console-out');
@@ -40,6 +43,7 @@ export class Interpreter {
     for (const [name, macro] of Object.entries(nativeMacros)) this.macros.set(intern(name), macro);
     installPrimitives(this);
     installControl(this);
+    installEopl(this);
     for (const alias of ['system-global-environment', 'user-initial-environment']) this.defineGlobal(alias, this.globalEnv);
     this.defineGlobal('true', true);
     this.defineGlobal('false', false);
@@ -123,7 +127,9 @@ export class Interpreter {
   }
 
   // --- running code ------------------------------------------------------------------------------------
-  startRun(source) { return new Job(this, source, {}); }
+  // Each run starts with an empty console input: an "end of input" given to one cell must not
+  // make every later cell's read return end-of-file at once.
+  startRun(source) { this.consoleIn = new Port('console-in'); return new Job(this, source, {}); }
   evalSync(source) { return this.startRun(source).runToCompletion(); }
 }
 

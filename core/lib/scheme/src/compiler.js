@@ -625,6 +625,44 @@ defMacro('define-structure', (x) => {
       cons(intern(name + '?'), arrayToList(specs)))));
 });
 
+// Shape checks on a `cases` form. Whether each variant belongs to the datatype, has the right number
+// of fields, or is covered at all is checked when the clause is reached, not here: code written for
+// other implementations of this vocabulary may define or redefine its datatype after the function
+// that uses it.
+function checkCases(c, tname, clauses, x) {
+  if (!(tname instanceof Sym)) throw syntaxError('cases: not a datatype name', stripForm(x));
+  clauses.forEach((cl, i) => {
+    if (isKw(cl[0], 'else') && i !== clauses.length - 1) throw syntaxError('cases: else clause must be last', stripForm(x));
+  });
+}
+
+// (%cases type expr (variant (field ...) body ...) ... [(else body ...)]): the engine behind
+// `cases` in prelude/eopl.scm. Expands to a chain of tests on the variant's name, each binding
+// the clause's fields straight from the variant's slots (no argument list is built).
+defMacro('%cases', (x, scope, c) => {
+  const a = toArr(x.cdr, x);
+  if (a.length < 2) throw bad(x);
+  const tname = a[0], v = gensym('cases');
+  const clauses = a.slice(2).map((cl) => toArr(cl, x));
+  checkCases(c, tname, clauses, x);
+  let chain = list(c.prim('%cases-no-match'), list(SF.quote, tname), v);
+  for (let i = clauses.length - 1; i >= 0; i--) {
+    const cl = clauses[i];
+    if (cl.length < 1) throw bad(x);
+    if (isKw(cl[0], 'else')) {
+      if (i !== clauses.length - 1) throw bad(x);
+      chain = cons(SF.let, cons(NIL, arrayToList(cl.slice(1))));
+      continue;
+    }
+    if (cl.length < 3) throw bad(x);
+    const fields = toArr(cl[1], x);
+    const bindings = fields.map((f, idx) => list(f, list(c.prim('%variant-ref'), v, idx)));
+    chain = list(SF.if, list(c.prim('%variant-is?'), v, list(SF.quote, cl[0]), fields.length),
+      cons(SF.let, cons(arrayToList(bindings), arrayToList(cl.slice(2)))), chain);
+  }
+  return list(SF.let, list(list(v, a[1])), list(c.prim('%cases-check'), list(SF.quote, tname), v), chain);
+});
+
 // --- multiple values --------------------------------------------------------------------------------------------------
 defMacro('receive', (x, scope, c) => {
   const a = toArr(x.cdr, x);

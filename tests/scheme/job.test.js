@@ -133,3 +133,17 @@ test('a user-defined name wins over a library one defined earlier, and vice vers
   run('#lang mylib\n1', i);
   assert.equal(val('lib-val', i), '1');
 });
+
+test('console input: end of input given to one run does not carry over to the next', () => {
+  const i = newInterp();
+  const first = i.startRun('(eof-object? (read-line))');
+  first.step(1000);
+  first.provideInput(null);
+  first.step(1000);
+  assert.equal(first.segments.at(-1).text, '#t');
+  const second = i.startRun('(read-line)');
+  assert.equal(second.step(1000).state, 'input'); // asks for a line instead of seeing the old end of input
+  second.provideInput('fresh');
+  second.step(1000);
+  assert.equal(second.segments.at(-1).text, '"fresh"');
+});

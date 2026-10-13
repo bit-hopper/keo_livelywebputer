@@ -3,7 +3,7 @@
 // control primitives that need the machine live in control.js.
 import {
   Pair, NIL, UNSPEC, DEFAULT, EOF, Sym, Char, SString, Flonum, Ratnum, Closure, Primitive, MPrim,
-  Continuation, Parameter, Promise_, Condition, HashTable, Record, Cell, Values,
+  Continuation, Parameter, Promise_, Condition, HashTable, Record, Variant, Cell, Values,
   intern, gensym, stripSym, makeChar, arrayToList, listToArray,
 } from './types.js';
 import * as N from './numeric.js';
@@ -434,7 +434,7 @@ export function installPrimitives(interp) {
     if (k instanceof Char) return 'c' + k.cp;
     if (kind === 'equal' || kind === 'string') {
       if (k instanceof SString) return 's' + k.s;
-      if (k instanceof Pair || Array.isArray(k) || k instanceof Record) return 'p' + toWrite(k);
+      if (k instanceof Pair || Array.isArray(k) || k instanceof Record || k instanceof Variant) return 'p' + toWrite(k);
     }
     return k;
   };

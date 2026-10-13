@@ -182,6 +182,56 @@ test.describe("SchemeWorker controller", () => {
     expect(again.segments).toEqual([{ kind: "value", text: "(() #f)" }]);
   });
 
+  test("#lang eopl fetches the library; datatypes persist across cells and Reset drops them", async ({ page }) => {
+    await boot(page);
+    const first = await runCell(page, [
+      "#lang eopl",
+      "(define-datatype shape shape?",
+      "  (circle (r number?))",
+      "  (rect (w number?) (h number?)))",
+      "(define (area s) (cases shape s (circle (r) (* 3 r r)) (rect (w h) (* w h))))",
+      "(list (area (circle 2)) (area (rect 4 5)) (shape? (circle 1)))",
+    ].join("\n"));
+    expect(first.err).toBeFalsy();
+    expect(first.state).toBe("done");
+    expect(first.segments).toEqual([{ kind: "value", text: "(12 20 #t)" }]);
+
+    // Both the type and the library stay in the page's shared environment for later cells.
+    const second = await runCell(page, "(list (circle 3) (eopl:error 'f \"bad ~s\" 7))");
+    expect(second.state).toBe("error");
+    expect(second.segments[second.segments.length - 1].text).toBe("f: bad 7");
+    const third = await runCell(page, "(circle 'x)");
+    expect(third.segments[third.segments.length - 1].text).toBe("circle: bad value for r field: x");
+
+    // Reset drops the library and the datatypes.
+    await page.evaluate(() => new Promise((r) => lively.identity.SchemeWorker.reset(r)));
+    expect((await runCell(page, "(circle 1)")).state).toBe("error");
+    const again = await runCell(page, "#lang eopl\n(define-datatype t t? (a)) (t? (a))");
+    expect(again.segments).toEqual([{ kind: "value", text: "#t" }]);
+  });
+
+  test("an interpreter built with the scanner/parser generator runs end to end in cells", async ({ page }) => {
+    await boot(page);
+    const corpus = await page.evaluate(async () => (await fetch("/tests/scheme/corpora/eopl-3-proc.scm")).text());
+    expect(corpus).toContain("sllgen:make-define-datatypes");
+    const loadedCorpus = await runCell(page, corpus);
+    expect(loadedCorpus.err).toBeFalsy();
+    expect(loadedCorpus.state).toBe("done");
+    expect(loadedCorpus.segments).toEqual([]);
+
+    const r = await runCell(page, [
+      "(list (run-num \"let f = proc (x) -(x,11) in (f (f 77))\")",
+      "      (run-num \"letrec double(x) = if zero?(x) then 0 else -((double -(x,1)), -2) in (double 6)\")",
+      "      (run-num \"letrec loop(n) = if zero?(n) then 0 else (loop -(n,1)) in (loop 5000)\"))",
+    ].join("\n"));
+    expect(r.state).toBe("done");
+    expect(r.segments).toEqual([{ kind: "value", text: "(55 12 0)" }]);
+
+    const bad = await runCell(page, "(run \"if 1 then 2\")");
+    expect(bad.state).toBe("error");
+    expect(bad.segments[bad.segments.length - 1].text).toBe('parsing: at line 1: looking for "else", found end-marker #f');
+  });
+
   test("a register-machine simulator written in Scheme runs end to end in cells", async ({ page }) => {
     await boot(page);
     // The corpus file is served from the repo like any other static file.
@@ -507,6 +557,23 @@ test.describe("Scheme cell in the wiki editor", () => {
     // The library is still loaded for a later run of the same cell.
     await editAndRun(page, "(letcc k (+ 1 (k 99)))");
     await expect(valueRows(page)).toHaveText(["99"]);
+  });
+
+  test("a #lang eopl cell parses a program with a grammar and evaluates it", async ({ page }) => {
+    await openEditor(page);
+    await insertSchemeCell(page);
+
+    await editAndRun(page, [
+      "#lang eopl",
+      "(define spec '((ws (whitespace) skip) (number (digit (arbno digit)) number)))",
+      "(define gram '((top (term) top-node) (term (number) lit) (term (\"(\" term \"+\" term \")\") add)))",
+      "(sllgen:make-define-datatypes spec gram)",
+      "(define parse (sllgen:make-string-parser spec gram))",
+      "(define (ev t) (cases term t (lit (n) n) (add (a b) (+ (ev a) (ev b)))))",
+      "(list (parse \"(1 + 2)\") (cases top (parse \"((1 + 2) + 39)\") (top-node (t) (ev t))))",
+    ].join("\n"));
+    await expect(valueRows(page)).toHaveText(["(#(struct:top-node #(struct:add #(struct:lit 1) #(struct:lit 2))) 42)"]);
+    await expect(page.locator(".lively-code-cell-status")).toHaveText("Ran just now");
   });
 
   test("trace, define-structure and (the-environment) inside a procedure work in an editor cell", async ({ page }) => {

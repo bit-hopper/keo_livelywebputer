@@ -1,4 +1,4 @@
-import { Pair, Char, SString, Flonum, Ratnum, Record } from './types.js';
+import { Pair, Char, SString, Flonum, Ratnum, Record, Variant } from './types.js';
 import { eqvNum } from './numeric.js';
 
 export function eq(a, b) {
@@ -25,6 +25,11 @@ export function equal(a, b) {
     if (Array.isArray(a)) {
       if (!Array.isArray(b) || a.length !== b.length) return false;
       for (let i = 0; i < a.length; i++) if (!equal(a[i], b[i])) return false;
+      return true;
+    }
+    if (a instanceof Variant) {
+      if (!(b instanceof Variant) || a.dt !== b.dt || a.name !== b.name) return false;
+      for (let i = 0; i < a.vals.length; i++) if (!equal(a.vals[i], b.vals[i])) return false;
       return true;
     }
     if (a instanceof Record) {

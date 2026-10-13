@@ -2,7 +2,7 @@
 import {
   Pair, NIL, UNSPEC, DEFAULT, EOF, UNASSIGNED, UNBOUND, Sym, Char, SString, Flonum, Ratnum,
   Values, Closure, Primitive, MPrim, Continuation, Parameter, Promise_, Environment,
-  RecordType, Record, HashTable, Cell, Condition, Port, stripSym,
+  RecordType, Record, DataType, Variant, HashTable, Cell, Condition, Port, stripSym,
 } from './types.js';
 import { numberToString } from './numeric.js';
 import { ORDINALS } from './errors.js';
@@ -93,6 +93,13 @@ function emit(x, write, out, depth) {
   if (x instanceof Promise_) { out.push('#[promise ' + hashNumber(x) + ']'); return; }
   if (x instanceof Environment) { out.push('#[environment ' + x.name + ']'); return; }
   if (x instanceof RecordType) { out.push('#[record-type ' + hashNumber(x) + ' ' + x.name + ']'); return; }
+  if (x instanceof Variant) {
+    out.push('#(struct:' + x.name);
+    for (const v of x.vals) { out.push(' '); emit(v, write, out, depth + 1); }
+    out.push(')');
+    return;
+  }
+  if (x instanceof DataType) { out.push('#[datatype ' + x.name + ']'); return; }
   if (x instanceof Record) {
     const t = x.type;
     out.push('#[' + t.name + ' ' + hashNumber(x) + ']');

@@ -96,6 +96,13 @@ export class RecordType {
 export class Record {
   constructor(type, vals) { this.type = type; this.vals = vals; }
 }
+// define-datatype support: a datatype owns its variants; a Variant is one constructed value.
+export class DataType {
+  constructor(name) { this.name = name; this.variants = new Map(); } // variant name -> field names
+}
+export class Variant {
+  constructor(dt, name, vals) { this.dt = dt; this.name = name; this.vals = vals; }
+}
 export class HashTable {
   constructor(kind) { this.kind = kind; this.map = new Map(); }
 }
