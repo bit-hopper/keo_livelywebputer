@@ -363,11 +363,22 @@ async function confirmRun(page) {
     $world.withAllSubmorphsDo((m) => { if (m.label && m.label.textString === "Run") found = true; });
     return found;
   });
-  const box = await page.evaluate(() => {
+  // The dialog's button first renders at a transient position (measured: x~815, then ~482 about
+  // 400 ms later) before the layout settles. Clicking the first reading lands on empty dialog
+  // when the move happens in between, so wait until two readings 150 ms apart agree.
+  const read = () => page.evaluate(() => {
     let r = null;
     $world.withAllSubmorphsDo((m) => { if (m.label && m.label.textString === "Run") { const b = m.renderContext().shapeNode.getBoundingClientRect(); r = { x: b.x + b.width / 2, y: b.y + b.height / 2 }; } });
     return r;
   });
+  let box = await read();
+  for (let i = 0; i < 40; i++) {
+    await page.waitForTimeout(150);
+    const next = await read();
+    const settled = next && box && next.x === box.x && next.y === box.y;
+    box = next;
+    if (settled) break;
+  }
   await page.mouse.click(box.x, box.y);
 }
 
