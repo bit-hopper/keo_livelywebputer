@@ -3,8 +3,8 @@
  *
  * Tabbed morph showing the views of the user's postcard mailbox:
  *
- *   Received     — cards delivered to your inbox (GET /@:handle/inbox)
- *   Delivered    — cards you sent that were accepted (GET /@:handle/deliveries?status=delivered)
+ *   Inbox        — cards delivered to your inbox (GET /@:handle/inbox)
+ *   Sent         — cards you sent that were accepted (GET /@:handle/deliveries?status=delivered)
  *   Returned     — cards that got the postal rejection  (GET /@:handle/deliveries?status=returned)
  *   Blocked      — manage your block list (GET/PUT /@:handle/settings)
  *   My Postcards — your own authored drafts/standalone/constellation posts
@@ -237,8 +237,8 @@ module('lively.identity.PostCardMailbox')
         tabBar.className = 'pcm-tabbar';
 
         var tabs = [
-          { id: 'received',  label: 'Received',     icon: 'inbox' },
-          { id: 'delivered', label: 'Delivered',     icon: 'outbox' },
+          { id: 'received',  label: 'Inbox',         icon: 'inbox' },
+          { id: 'delivered', label: 'Sent',          icon: 'outbox' },
           { id: 'returned',  label: 'Returned',      icon: 'assignment_return' },
           { id: 'blocked',   label: 'Blocked',       icon: 'block' },
           { id: 'own',       label: 'My Postcards',  icon: 'draft' },
@@ -901,7 +901,7 @@ module('lively.identity.PostCardMailbox')
         content.innerHTML = '';
 
         if (!records.length) {
-          content.innerHTML = self._emptyHtml('inbox', 'No received postcards yet.');
+          content.innerHTML = self._emptyHtml('inbox', 'Your inbox is empty.');
           return;
         }
 
@@ -1108,7 +1108,7 @@ module('lively.identity.PostCardMailbox')
 
         var emptyMsg = status === 'returned'
           ? 'No returned postcards.'
-          : 'No delivered postcards yet.';
+          : 'No sent postcards yet.';
 
         if (!records.length) {
           content.innerHTML = self._emptyHtml(status === 'returned' ? 'assignment_return' : 'outbox', emptyMsg);
