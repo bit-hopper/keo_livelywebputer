@@ -203,8 +203,14 @@
   (apply for-each f (string->list s) (map string->list rest)))
 (define (string-map f s . rest)
   (list->string (apply map f (string->list s) (map string->list rest))))
+;; Own loop rather than \`count\`: a library (the word/sentence one) may redefine
+;; \`count\` in the shared system table.
 (define (string-count s pred)
-  (count (if (char? pred) (lambda (c) (char=? c pred)) pred) (string->list s)))
+  (let ((pred (if (char? pred) (lambda (c) (char=? c pred)) pred)))
+    (let loop ((l (string->list s)) (n 0))
+      (cond ((null? l) n)
+            ((pred (car l)) (loop (cdr l) (+ n 1)))
+            (else (loop (cdr l) n))))))
 
 ;; ---------------------------------------------------------------- streams
 
@@ -360,5 +366,5 @@
     ((_) (if #f #f))
     ((_ name rest ...) (begin (set! name (%trace-original name)) (untrace rest ...)))))
 
-`;var Rr=typeof self<"u"?self:globalThis;Rr.SchemeEngine={buildId:"2026-10-12T23:33:59.584Z",Interpreter:ot,Job:Xe,Parser:qe,transcript:Nn,setMaxDepth:yt,printSettings:st,corePrelude:kn,createInterpreter(t={}){return new ot({prelude:kn,...t})}};})();
+`;var Rr=typeof self<"u"?self:globalThis;Rr.SchemeEngine={buildId:"2026-10-12T23:46:28.482Z",Interpreter:ot,Job:Xe,Parser:qe,transcript:Nn,setMaxDepth:yt,printSettings:st,corePrelude:kn,createInterpreter(t={}){return new ot({prelude:kn,...t})}};})();
 //# sourceMappingURL=scheme-engine.js.map

@@ -130,6 +130,23 @@ test.describe("SchemeWorker controller", () => {
     expect(again.segments).toEqual([{ kind: "value", text: "#t" }]);
   });
 
+  test("#lang simply fetches the word library; read-line returns a sentence; Reset drops it", async ({ page }) => {
+    await boot(page);
+    const first = await runCell(page, "#lang simply\n(define (pigl w) (if (member? (first w) 'aeiou) (word w 'ay) (pigl (word (bf w) (first w)))))\n(list (every pigl '(the quick fox)) (accumulate + 1234) (match '(* me *) '(love me do)))");
+    expect(first.err).toBeFalsy();
+    expect(first.state).toBe("done");
+    expect(first.segments).toEqual([{ kind: "value", text: "((ethay uickqay oxfay) 10 #t)" }]);
+
+    // The library stays loaded for later cells; read-line (no port) hands back the typed words as a sentence.
+    const second = await runCell(page, "(define line (read-line))\n(list (count line) (first line) (bf line))");
+    expect(second.state).toBe("done");
+    expect(second.segments.map((s) => s.kind)).toContain("needInput");
+    expect(second.segments[second.segments.length - 1]).toEqual({ kind: "value", text: "(2 typed (line))" });
+
+    await page.evaluate(() => new Promise((r) => lively.identity.SchemeWorker.reset(r)));
+    expect((await runCell(page, "(word 'a 'b)")).state).toBe("error");
+  });
+
   test("a book-style program runs end to end in a cell", async ({ page }) => {
     await boot(page);
     const src = [
@@ -442,6 +459,26 @@ test.describe("Scheme cell in the wiki editor", () => {
     // Loading it again gives an empty table.
     await editAndRun(page, "#lang sicp\n(get 'op '(a b))");
     await expect(valueRows(page)).toHaveText(["#f"]);
+  });
+
+  test("a #lang simply cell asks for a line and gets it back as a sentence", async ({ page }) => {
+    await openEditor(page);
+    await insertSchemeCell(page);
+
+    await setSource(page, [
+      "#lang simply",
+      "(define words (read-line))",
+      "(show-line (every (lambda (w) (word w 'ay)) words))",
+      "(list (count words) (last words))",
+    ].join("\n"));
+    await page.locator(".lively-code-cell-run-btn").click();
+    const input = page.locator(".lively-code-cell-input-row input");
+    await expect(input).toBeVisible();
+    await input.click();
+    await page.keyboard.type("hello brave worlds");
+    await page.keyboard.press("Enter");
+    await expect(valueRows(page)).toHaveText(["(3 worlds)"]);
+    await expect(page.locator(".lively-code-cell-output")).toContainText("helloay braveay worldsay");
   });
 
   test("a #lang tls cell loads the library and its macros", async ({ page }) => {

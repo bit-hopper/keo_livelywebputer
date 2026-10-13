@@ -188,8 +188,14 @@
   (apply for-each f (string->list s) (map string->list rest)))
 (define (string-map f s . rest)
   (list->string (apply map f (string->list s) (map string->list rest))))
+;; Own loop rather than `count`: a library (the word/sentence one) may redefine
+;; `count` in the shared system table.
 (define (string-count s pred)
-  (count (if (char? pred) (lambda (c) (char=? c pred)) pred) (string->list s)))
+  (let ((pred (if (char? pred) (lambda (c) (char=? c pred)) pred)))
+    (let loop ((l (string->list s)) (n 0))
+      (cond ((null? l) n)
+            ((pred (car l)) (loop (cdr l) (+ n 1)))
+            (else (loop (cdr l) n))))))
 
 ;; ---------------------------------------------------------------- streams
 
