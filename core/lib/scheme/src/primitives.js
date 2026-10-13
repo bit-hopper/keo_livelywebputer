@@ -502,6 +502,7 @@ export function installPrimitives(interp) {
 
   // ---------- misc ----------
   def('runtime', 0, 0, () => new Flonum(performance.now() / 1000));
+  def('%run-number', 0, 0, () => interp.runCount);
   def('real-time', 0, 0, () => new Flonum(Date.now()));
   def('current-time', 0, 0, () => Math.floor(Date.now() / 1000));
   def('void', 0, -1, () => UNSPEC);

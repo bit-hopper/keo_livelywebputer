@@ -135,7 +135,7 @@ test.describe("SchemeWorker controller", () => {
     const first = await runCell(page, "#lang simply\n(define (pigl w) (if (member? (first w) 'aeiou) (word w 'ay) (pigl (word (bf w) (first w)))))\n(list (every pigl '(the quick fox)) (accumulate + 1234) (match '(* me *) '(love me do)))");
     expect(first.err).toBeFalsy();
     expect(first.state).toBe("done");
-    expect(first.segments).toEqual([{ kind: "value", text: "((ethay uickqay oxfay) 10 #t)" }]);
+    expect(first.segments).toEqual([{ kind: "value", text: "((ethay uickqay oxfay) 10 ())" }]);
 
     // The library stays loaded for later cells; read-line (no port) hands back the typed words as a sentence.
     const second = await runCell(page, "(define line (read-line))\n(list (count line) (first line) (bf line))");

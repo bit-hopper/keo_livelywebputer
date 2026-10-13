@@ -46,13 +46,14 @@ test('simply: selectors on words, numbers and sentences', () => {
   ]);
 });
 
-test('simply: selector errors are reported MIT-style', () => {
+test('simply: selector errors read like the book\'s (capitalised procedure names)', () => {
   const i = lib();
-  assert.equal(val("(first '())", i), ';Invalid argument to first: ()');
-  assert.equal(val("(last '())", i), ';Invalid argument to last: ()');
-  assert.equal(val('(bf "")', i), ';Invalid argument to butfirst: ""');
-  assert.equal(val("(item 4 '(a b c))", i), ';Invalid argument to item: 4');
-  assert.equal(val("(count (lambda (x) x))", i).startsWith(';Invalid argument to count:'), true);
+  assert.equal(val("(first '())", i), ';Invalid argument to FIRST: ()');
+  assert.equal(val("(last '())", i), ';Invalid argument to LAST: ()');
+  assert.equal(val('(bf "")', i), ';Invalid argument to BUTFIRST: ""');
+  assert.equal(val("(item 4 '(a b c))", i), ';No such item: 4 (a b c)');
+  assert.equal(val("(item 0 '(a b c))", i), ';Invalid first argument to ITEM (must be positive): 0');
+  assert.equal(val("(count (lambda (x) x))", i).startsWith(';Invalid argument to COUNT:'), true);
 });
 
 test('simply: word and sentence construction', () => {
@@ -63,17 +64,50 @@ test('simply: word and sentence construction', () => {
     ["(se '() 'a '())", '(a)'], ["(se 1 '(2 3))", '(1 2 3)'],
   ]);
   const i = lib();
-  assert.equal(val("(word 'a '(b))", i), ';Invalid argument to word: (b)');
-  assert.equal(val("(se '((a)) 'b)", i), ';Argument to sentence not a word or sentence: ((a))');
+  assert.equal(val("(word 'a '(b))", i), ';Invalid argument to WORD: (b)');
+  assert.equal(val("(se '((a)) 'b)", i), ';Argument to SENTENCE not a word or sentence: ((a))');
+});
+
+test('simply: text becomes a number, a symbol or stays a string by the book\'s rules', () => {
+  check(lib(), [
+    // written the way a number normally is: a number
+    ['(number? (word 1 2))', '#t'], ['(number? (word 2 \'|.| 5))', '#t'], ['(number? (word "-" 7))', '#t'],
+    ['(number? (word 0))', '#t'], ["(number? (word 0 '|.| 5))", '#t'], ['(bf 274)', '74'],
+    // leading zero, leading point, trailing zero in a decimal, minus zero: stays text
+    ['(bf 105)', '"05"'], ['(word 0 5)', '"05"'], ["(word '|.| 5)", '".5"'], ["(word 1 '|.| 5 0)", '"1.50"'],
+    ['(word "-" 0)', '"-0"'], ['(number? (bf 105))', '#f'], ['(string? (bf 105))', '#t'],
+    // a symbol: starts with a letter (either case) or one of ! $ % & * / : < = > ? ~ _ ^
+    ["(symbol? (word 'a 'b))", '#t'], ["(symbol? (word 'A 'b))", '#t'], ['(symbol? (word "?" "x"))', '#t'],
+    // anything else is a string
+    ['(word "(" \'a)', '"(a"'], ['(first "(abc")', '"("'], ['(string? (word 1 \'a))', '#t'],
+    // single characters
+    ['(first 274)', '2'], ['(first "+5")', '+'], ['(first "-5")', '-'], ['(item 2 "a.b")', '"."'],
+  ]);
+});
+
+test('simply: the conversion procedures are available', () => {
+  check(lib(), [
+    ['(string->word "42")', '42'], ['(string->word "cat")', 'cat'], ['(string->word "a b")', '"a b"'],
+    ["(word->string 'cat)", '"cat"'], ['(word->string 42)', '"42"'], ['(word->string "x")', '"x"'],
+    ['(char->word #\\7)', '7'], ['(char->word #\\a)', 'a'], ['(char->word #\\,)', '","'],
+  ]);
 });
 
 test('simply: member?, before?, appearances', () => {
-  check(lib(), [
+  const i = lib();
+  check(i, [
     ["(member? 'b '(a b c))", '#t'], ["(member? 'z '(a b c))", '#f'], ["(member? 2 '(1 2 3))", '#t'],
     ["(member? 'a 'banana)", '#t'], ["(member? 'z 'banana)", '#f'], ["(member? 3 12345)", '#t'],
-    ["(before? 'apple 'banana)", '#t'], ["(before? 'b 'a)", '#f'], ['(before? 2 10)', '#t'],
+    ["(member? 'a '())", '#f'], ['(member? \'a "")', '#f'],
+    // the library compares words loosely: 3 and "3", abc and "abc"
+    ['(member? 3 \'("3"))', '#t'], ['(member? \'abc \'("abc"))', '#t'],
     ["(appearances 'a 'banana)", '3'], ["(appearances 'a '(a b a))", '2'], ["(appearances 3 31353)", '3'],
+    // alphabetical on the text of the words, so 10 comes before 9
+    ["(before? 'apple 'banana)", '#t'], ["(before? 'b 'a)", '#f'], ['(before? 2 10)', '#f'], ['(before? 10 9)', '#t'],
+    ["(before? 'a 'a)", '#f'],
   ]);
+  assert.equal(val("(member? 'ab 'abc)", i), ';Invalid arguments to MEMBER?: ab abc');
+  assert.equal(val("(before? '(a) 'b)", i), ';Invalid first argument to BEFORE? (not a word): (a)');
 });
 
 test('simply: every, keep, accumulate, repeated', () => {
@@ -89,21 +123,43 @@ test('simply: every, keep, accumulate, repeated', () => {
     ["(accumulate + '())", '0'], ["(accumulate * '())", '1'], ["(accumulate word '())", '""'], ["(accumulate se '())", '()'],
     ["((repeated (lambda (x) (* x 2)) 3) 1)", '8'], ["((repeated cdr 0) '(a b))", '(a b)'],
   ]);
-  assert.match(val("(accumulate max '())", lib()), /^;Can't accumulate empty input with that function:/);
+  assert.equal(val("(accumulate max '())", lib()), ";Can't accumulate empty input with that combiner");
 });
 
-test('simply: show, show-line, align', () => {
+test('simply: reduce takes (combiner list) and still takes the core\'s three arguments', () => {
   const i = lib();
-  assert.equal(stdout("(show '(a (b c) \"s\"))", i), '(a (b c) "s")\n');
+  check(i, [
+    ["(reduce + '(1 2 3))", '6'], ["(reduce - '(10 3 2))", '9'], ["(reduce append '((a) (b) (c)))", '(a b c)'],
+    ["(reduce + '(5))", '5'], ["(reduce + '())", '0'], ["(reduce * '())", '1'], ["(reduce append '())", '()'],
+    ["(reduce + 0 '(1 2 3))", '6'], ["(reduce + 10 '())", '10'],
+  ]);
+  assert.equal(val("(reduce max '())", i), ";Can't reduce empty input with that combiner");
+});
+
+test('simply: show displays its argument, show-line drops the parentheses, align follows the book', () => {
+  const i = lib();
+  assert.equal(stdout("(show '(a (b c) \"s\"))", i), '(a (b c) s)\n');
+  assert.equal(stdout('(show "hi there")', i), 'hi there\n');
+  assert.equal(val('(let ((p (open-output-string))) (show 7 p) (get-output-string p))', i), '"7\\n"');
   assert.equal(stdout("(show-line '(a b 3))", i), 'a b 3\n');
   assert.equal(stdout("(show-line '())", i), '\n');
+  assert.equal(val('(show-line 5)', i), ';Invalid argument to SHOW-LINE (not a list): 5');
   check(i, [
-    ["(align 'ab 5)", '"ab   "'], ["(align 'abcdefg 4)", '"abcd"'], ['(align 42 6)', '"    42"'],
-    ['(align 3.14159 6)', '"3.1416"'], ['(align 123456 3)', '"***"'],
+    // words are padded on the right; numbers are padded on the left
+    ["(align 'ab 5)", '"ab   "'], ['(align 42 6)', '"    42"'], ['(align "hi" 2)', '"hi"'],
+    // the third argument is the number of digits after the point
+    ['(align 3.14159 8 2)', '"    3.14"'], ['(align 7 5 2)', '" 7.00"'], ['(align -2.5 8 1)', '"    -2.5"'],
+    ['(align 0.05 6 2)', '"  0.05"'], ['(align 2.6 6 0)', '"     3"'], ['(align (sqrt 7) 10 5)', '"   2.64575"'],
+    // too long: keep what fits and end with a plus sign
+    ['(align 12345679 4 0)', '"123+"'], ["(align 'abcdefg 4)", '"abc+"'], ['(align 123456 3)', '"12+"'],
+    ['(align 3.14159 4 3)', '"3.1+"'],
+    // a fraction that rounds to nothing shows a single 0, not 00
+    ['(align 0.4 3)', '"  0"'], ['(align 0 3)', '"  0"'],
   ]);
+  assert.equal(val("(align '(a) 3)", i), ';Invalid argument to ALIGN: (a)');
 });
 
-test('simply: read-line returns a sentence; with a port it is unchanged', () => {
+test('simply: read-line returns a sentence, read-string the line as a string', () => {
   const i = lib();
   const job = i.startRun('(define a (read-line)) (define b (read-line)) a');
   assert.equal(job.step(1000).state, 'input');
@@ -113,7 +169,10 @@ test('simply: read-line returns a sentence; with a port it is unchanged', () => 
   assert.equal(job.step(1000).state, 'done');
   assert.equal(job.segments.at(-1).text, '(the 3 little pigs)');
   check(i, [['b', '()'], ['(number? (cadr a))', '#t'],
-    ['(read-line (open-input-string "x y\\nz"))', '"x y"']]);
+    ['(read-line (open-input-string "x y\\nz"))', '(x y)'],
+    ['(read-line (open-input-string "go 05 1.5 hi,"))', '(go "05" 1.5 "hi,")'],
+    ['(read-string (open-input-string "x y\\nz"))', '"x y"'],
+    ['(eof-object? (read-line (open-input-string "")))', '#t']]);
   const eof = i.startRun('(eof-object? (read-line))');
   eof.step(1000);
   eof.provideInput(null);
@@ -130,6 +189,30 @@ test('simply: the core is unaffected by the redefined names', () => {
     ["(sort '(3 1 2) <)", '(1 2 3)'],
     ["(map (lambda (x) (* x x)) '(1 2 3))", '(1 4 9)'],
   ]);
+});
+
+test('simply: the interpreter itself is left alone (text is not a number, equal? stays strict)', () => {
+  const i = lib();
+  check(i, [
+    ['(+ 1 2)', '3'], ['(equal? 3 "3")', '#f'], ['(equal? \'abc "abc")', '#f'], ['(equal? \'(a b) \'(a b))', '#t'],
+    ['(round 7/2)', '4'], ['(member 3 (list 1 2 3))', '(3)'],
+  ]);
+  assert.match(val('(+ "3" 4)', i), /^;The object "3"/);
+});
+
+test('simply: loading it does not break the parser-generator read-eval-print loop', () => {
+  const i = newInterp();
+  run('#lang simply', i);
+  assert.equal(run(corpus('eopl-3-let'), i), '', 'the language corpus loads');
+  run(`(define rep (sllgen:make-rep-loop "calc> " (lambda (pgm) (value-of-program pgm))
+                    (sllgen:make-stream-parser the-lexical-spec the-grammar)))`, i);
+  const job = i.startRun('(rep)');
+  assert.equal(job.step(1000).state, 'input');
+  job.provideInput('let x = 5 in -(x,2)');
+  assert.equal(job.step(1000).state, 'input');
+  assert.equal(job.segments.map((s) => s.text).join(''), 'calc> #(struct:num-val 3)\ncalc> ');
+  job.provideInput(null);
+  assert.equal(job.step(1000).state, 'done');
 });
 
 test('simply: word games corpus', () => {
@@ -152,25 +235,123 @@ test('simply: word games corpus', () => {
   ]);
 });
 
-test('simply: pattern matcher placeholders', () => {
+test('simply: pattern matcher placeholders (no names: () when it matches, failed when not)', () => {
   check(lib(), [
-    ["(match '(* me *) '(love me do))", '#t'],
-    ["(match '(* me *) '(love you do))", '#f'],
-    ["(match '(a * b) '(a b))", '#t'],
-    ["(match '(a & b) '(a b))", '#f'],
-    ["(match '(a & b) '(a x y b))", '#t'],
-    ["(match '(a ? b) '(a b))", '#t'],
-    ["(match '(a ? b) '(a x b))", '#t'],
-    ["(match '(a ? b) '(a x y b))", '#f'],
-    ["(match '(a ! b) '(a b))", '#f'],
-    ["(match '(a ! b) '(a x b))", '#t'],
-    ["(match '() '())", '#t'],
-    ["(match '(&) '())", '#f'],
-    ["(match '(*x me *y) '(love me do))", '(x love ! y do !)'],
-    ["(match '(*x *y) '(a b))", '(x ! y a b !)'],
-    ["(match '(!x ?y !x) '(a b a))", '(x a ! y b !)'],
-    ["(match '(!x !x) '(a b))", '#f'],
-    ["(match '(!x !x) '(a a))", '(x a !)'],
-    ["(match '(a b) '(a b c))", '#f'],
+    ["(match '(* me *) '(go me now))", '()'],
+    ["(match '(* me *) '(go you now))", 'failed'],
+    ["(match '(mean mr mustard) '(mean mr mustard))", '()'],
+    ["(match '(a * b) '(a b))", '()'],
+    ["(match '(a & b) '(a b))", 'failed'],
+    ["(match '(a & b) '(a x y b))", '()'],
+    ["(match '(a ? b) '(a b))", '()'],
+    ["(match '(a ? b) '(a x b))", '()'],
+    ["(match '(a ? b) '(a x y b))", 'failed'],
+    ["(match '(a ! b) '(a b))", 'failed'],
+    ["(match '(a ! b) '(a x b))", '()'],
+    ["(match '() '())", '()'],
+    ["(match '(&) '())", 'failed'],
+    ["(match '(a b) '(a b c))", 'failed'],
+    ["(match '(a b c) '(a b))", 'failed'],
   ]);
+});
+
+test('simply: pattern matcher names, longest match first, repeated names', () => {
+  check(lib(), [
+    // the result lists each name with its words, every group ended by !
+    ["(match '(*start me *end) '(go me now))", '(start go ! end now !)'],
+    ["(match '(*start me *end) '(please please me))", '(start please please ! end !)'],
+    ["(match '(*start me *end) '(in my life))", 'failed'],
+    ["(match '(*x me *y) '(go me now))", '(x go ! y now !)'],
+    // an unnamed placeholder leaves no group
+    ["(match '(* me *end) '(go me now))", '(end now !)'],
+    // when several splits work, the first placeholder takes as many words as possible
+    ["(match '(*front *back) '(your mother should know))", '(front your mother should know ! back !)'],
+    ["(match '(*x *y) '(a b))", '(x a b ! y !)'],
+    ["(match '(*x ?y) '(a b))", '(x a b ! y !)'],
+    ["(match '(?x ?y) '(a b))", '(x a ! y b !)'],
+    ["(match '(?x *y) '(a b))", '(x a ! y b !)'],
+    ["(match '(*x b *y) '(a b c b d))", '(x a b c ! y d !)'],
+    // a name used twice must match the same words each time
+    ["(match '(!twice !other !twice) '(cry baby cry))", '(twice cry ! other baby !)'],
+    ["(match '(!twice !other !twice) '(please please me))", 'failed'],
+    ["(match '(!x ?y !x) '(a b a))", '(x a ! y b !)'],
+    ["(match '(!x !x) '(a b))", 'failed'],
+    ["(match '(!x !x) '(a a))", '(x a !)'],
+    ["(match '(*stuff and *stuff) '(a b and a b))", '(stuff a b !)'],
+    // ...and only if the second placeholder is allowed to match that many words
+    ["(match '(*stuff and !stuff) '(a b and a b))", 'failed'],
+    ["(match '(*stuff and *stuff) '(and))", '(stuff !)'],
+  ]);
+});
+
+test('simply: trace prints calls and values the way the book shows them', () => {
+  const i = lib();
+  run("(define (double wd) (word wd wd))", i);
+  run('(trace double)', i);
+  assert.equal(stdout("(double 'frozen)", i), '(double frozen)\nfrozenfrozen\n');
+  assert.equal(val("(double 'frozen)", i), 'frozenfrozen');
+  // each nesting level adds a bar; a value is printed at the level of its call
+  run("(define (downup wd) (if (= (count wd) 1) (se wd) (se wd (downup (bl wd)) wd)))", i);
+  run('(trace downup)', i);
+  assert.equal(stdout("(downup 'trace)", i), [
+    '(downup trace)',
+    '|  (downup trac)',
+    '|  |  (downup tra)',
+    '|  |  |  (downup tr)',
+    '|  |  |  |  (downup t)',
+    '|  |  |  |  (t)',
+    '|  |  |  (tr t tr)',
+    '|  |  (tra tr t tr tra)',
+    '|  (trac tra tr t tr tra trac)',
+    '(trace trac tra tr t tr tra trac trace)',
+    '',
+  ].join('\n'));
+  // several arguments, and a call that starts in the middle of a line of output
+  run('(define (add a b) (+ a b))', i);
+  run('(trace add)', i);
+  assert.equal(stdout('(begin (display "x") (add 1 2))', i), 'x\n(add 1 2)\n3\n');
+  // untrace puts the original back; tracing twice does not stack
+  run('(trace add)', i);
+  assert.equal(stdout('(add 1 2)', i), '(add 1 2)\n3\n');
+  run('(untrace add double)', i);
+  assert.equal(stdout("(list (add 1 2) (double 'ab))", i), '');
+  assert.equal(val("(trace 5)", i).startsWith(';'), true);
+});
+
+test('simply: trace of a doubly recursive procedure (operands run left to right here)', () => {
+  const i = lib();
+  run('(define (fib n) (if (<= n 2) 1 (+ (fib (- n 1)) (fib (- n 2)))))', i);
+  run('(trace fib)', i);
+  assert.equal(stdout('(fib 4)', i), [
+    '(fib 4)',
+    '|  (fib 3)',
+    '|  |  (fib 2)',
+    '|  |  1',
+    '|  |  (fib 1)',
+    '|  |  1',
+    '|  2',
+    '|  (fib 2)',
+    '|  1',
+    '3',
+    '',
+  ].join('\n'));
+});
+
+test('simply: an error inside a traced call does not leave later traces indented', () => {
+  const i = lib();
+  run("(define (g n) (if (= n 0) (car '()) (g (- n 1))))", i);
+  run('(trace g)', i);
+  assert.match(run('(g 2)', i), /^out:\(g 2\)\n\|  \(g 1\)\n\|  \|  \(g 0\)\n\|;/);
+  run('(define (h) 1)', i);
+  run('(trace h)', i);
+  assert.equal(stdout('(h)', i), '(h)\n1\n');
+});
+
+test('simply: loading it replaces the core trace for the rest of the page, and a fresh page has the core one', () => {
+  const core = newInterp();
+  run('(define (f x) x) (trace f)', core);
+  assert.match(stdout('(f 1)', core), /^\[Entering #\[compound-procedure \d+ f\]/);
+  const withLib = lib();
+  run('(define (f x) x) (trace f)', withLib);
+  assert.equal(stdout('(f 1)', withLib), '(f 1)\n1\n');
 });

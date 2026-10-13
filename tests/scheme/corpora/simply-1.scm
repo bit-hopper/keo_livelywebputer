@@ -85,7 +85,7 @@
 
 ;; a small database using match
 (define (greeting? sent)
-  (match '(hello *) sent))
+  (not (equal? 'failed (match '(hello *) sent))))
 
 (define (who-is sent)
   (match '(my name is *name) sent))

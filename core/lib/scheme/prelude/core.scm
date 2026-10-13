@@ -351,3 +351,8 @@
     ((_) (if #f #f))
     ((_ name rest ...) (begin (set! name (%trace-original name)) (untrace rest ...)))))
 
+;; The plain line reader (a string, or the eof object). A library may redefine
+;; read-line for its own purposes (a sentence reader); library code that needs
+;; the string reader uses this name instead.
+(define %read-line-string read-line)
+

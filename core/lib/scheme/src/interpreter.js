@@ -32,6 +32,7 @@ export class Interpreter {
     this.loadedLibraries = new Set();
     this.consoleOut = new Port('console-out');
     this.consoleIn = new Port('console-in');
+    this.runCount = 0;            // top-level runs started so far (library state that must not outlive an aborted run)
     this.currentOut = this.consoleOut;
     this.sink = null;
     if (opts.maxDepth) setMaxDepth(opts.maxDepth);
@@ -129,7 +130,7 @@ export class Interpreter {
   // --- running code ------------------------------------------------------------------------------------
   // Each run starts with an empty console input: an "end of input" given to one cell must not
   // make every later cell's read return end-of-file at once.
-  startRun(source) { this.consoleIn = new Port('console-in'); return new Job(this, source, {}); }
+  startRun(source) { this.consoleIn = new Port('console-in'); this.runCount++; return new Job(this, source, {}); }
   evalSync(source) { return this.startRun(source).runToCompletion(); }
 }
 

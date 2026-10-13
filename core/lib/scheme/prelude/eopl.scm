@@ -131,7 +131,7 @@
               (newline)
               (display prompt)
               (loop (cdr r)))
-            (let ((line (read-line)))
+            (let ((line (%read-line-string)))
               (if (eof-object? line)
                   (if (string=? (string-trim buffer) "")
                       #t
