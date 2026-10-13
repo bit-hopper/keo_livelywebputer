@@ -18,9 +18,31 @@ export function installPrimitives(interp) {
   const alias = (newName, oldName) => interp.aliasPrimitive(newName, oldName);
 
   // ---------- helpers ----------
-  const num = (x, i, who) => { if (!isNum(x)) throw wrongType(x, i, who); return x; };
-  const int = (x, i, who) => { if (!N.isInteger(x)) throw wrongType(x, i, who); return x; };
-  const idx = (x, i, who) => { if (typeof x !== 'number' || x < 0) { if (!N.isExactInt(x)) throw wrongType(x, i, who); throw badRange(x, i, who); } return x; };
+  // Once a library turns interp.textNumbers on, text that reads as a number is accepted
+  // where a number is required. This only runs where the argument check would otherwise
+  // fail, so a call that already works never pays for it and never changes.
+  const textNumber = (x) => {
+    if (!interp.textNumbers || !(x instanceof SString)) return undefined;
+    const r = N.parseNumber(x.s);
+    return r === null ? undefined : r;
+  };
+  const num = (x, i, who) => {
+    if (isNum(x)) return x;
+    const t = textNumber(x);
+    if (t !== undefined) return t;
+    throw wrongType(x, i, who);
+  };
+  const int = (x, i, who) => {
+    if (N.isInteger(x)) return x;
+    const t = textNumber(x);
+    if (t !== undefined && N.isInteger(t)) return t;
+    throw wrongType(x, i, who);
+  };
+  const idx = (x, i, who) => {
+    if (typeof x !== 'number') { const t = textNumber(x); if (t !== undefined) x = t; }
+    if (typeof x !== 'number' || x < 0) { if (!N.isExactInt(x)) throw wrongType(x, i, who); throw badRange(x, i, who); }
+    return x;
+  };
   const str = (x, i, who) => { if (!(x instanceof SString)) throw wrongType(x, i, who); return x.s; };
   const sym = (x, i, who) => { if (!(x instanceof Sym)) throw wrongType(x, i, who); return x; };
   const chr = (x, i, who) => { if (!(x instanceof Char)) throw wrongType(x, i, who); return x; };
@@ -72,8 +94,9 @@ export function installPrimitives(interp) {
       if (typeof a === 'number' && typeof b === 'number') return test(a < b ? -1 : a > b ? 1 : 0);
       return test(N.cmp(num(a, 1, who), num(b, 2, who)));
     }
-    for (let i = 0; i < n; i++) num(arguments[i], i + 1, who);
-    for (let i = 0; i + 1 < n; i++) if (!test(N.cmp(arguments[i], arguments[i + 1]))) return false;
+    const v = [];
+    for (let i = 0; i < n; i++) v.push(num(arguments[i], i + 1, who));
+    for (let i = 0; i + 1 < n; i++) if (!test(N.cmp(v[i], v[i + 1]))) return false;
     return true;
   });
   chain('=', 'integer-equal?', (c) => c === 0);
@@ -104,8 +127,8 @@ export function installPrimitives(interp) {
   def('add1', 1, 1, (x) => N.add(num(x, 1, 'integer-add'), 1));
   def('sub1', 1, 1, (x) => N.sub(num(x, 1, 'integer-subtract'), 1));
   def('abs', 1, 1, (x) => N.abs(num(x, 1, 'integer-abs'))); alias('magnitude', 'abs');
-  def('square', 1, 1, (x) => N.mul(num(x, 1, 'integer-multiply'), x));
-  def('cube', 1, 1, (x) => N.mul(x, N.mul(num(x, 1, 'integer-multiply'), x)));
+  def('square', 1, 1, (x) => { x = num(x, 1, 'integer-multiply'); return N.mul(x, x); });
+  def('cube', 1, 1, (x) => { x = num(x, 1, 'integer-multiply'); return N.mul(x, N.mul(x, x)); });
   def('quotient', 2, 2, (a, b) => N.quotient(int(a, 1, 'integer-quotient'), int(b, 2, 'integer-quotient')));
   def('remainder', 2, 2, (a, b) => N.remainder(int(a, 1, 'integer-remainder'), int(b, 2, 'integer-remainder')));
   def('modulo', 2, 2, (a, b) => N.modulo(int(a, 1, 'integer-modulo'), int(b, 2, 'integer-modulo')));
@@ -138,21 +161,21 @@ export function installPrimitives(interp) {
     return inexact ? N.toInexact(r) : r;
   }
   const fl = (name, f, exactCase) => def(name, 1, 1, (x) => {
-    num(x, 1, name);
+    x = num(x, 1, name);
     if (exactCase && x === exactCase[0]) return exactCase[1];
     return new Flonum(f(N.toFloat(x)));
   });
   fl('exp', Math.exp, [0, 1]); fl('sin', Math.sin, [0, 0]); fl('cos', Math.cos, [0, 1]); fl('tan', Math.tan, [0, 0]);
   fl('asin', Math.asin, [0, 0]); fl('acos', Math.acos, [1, 0]);
   def('log', 1, 2, (x, b) => {
-    num(x, 1, 'log');
+    x = num(x, 1, 'log');
     if (b === undefined) return x === 1 ? 0 : new Flonum(Math.log(N.toFloat(x)));
     return new Flonum(Math.log(N.toFloat(x)) / Math.log(N.toFloat(num(b, 2, 'log'))));
   });
   def('atan', 1, 2, (y, x) => {
-    num(y, 1, 'atan');
+    y = num(y, 1, 'atan');
     if (x === undefined) return y === 0 ? 0 : new Flonum(Math.atan(N.toFloat(y)));
-    num(x, 2, 'atan');
+    x = num(x, 2, 'atan');
     if (y === 0 && N.isExact(x) && N.sign(x) > 0) return 0;
     return new Flonum(Math.atan2(N.toFloat(y), N.toFloat(x)));
   });
@@ -162,7 +185,7 @@ export function installPrimitives(interp) {
   def('number->string', 1, 2, (x, radix) => mkstr(N.numberToString(num(x, 1, 'number->string'), radix === undefined ? 10 : radix)));
   def('string->number', 1, 2, (s, radix) => { const r = N.parseNumber(str(s, 1, 'string->number'), radix === undefined ? 10 : radix); return r === null ? false : r; });
   def('random', 1, 2, (n) => {
-    num(n, 1, 'random');
+    n = num(n, 1, 'random');
     if (N.sign(n) <= 0) throw badRange(n, 1, 'random');
     return N.randomBelow(n);
   });
@@ -399,13 +422,13 @@ export function installPrimitives(interp) {
   def('vector-length', 1, 1, (v) => vec(v, 1, 'vector-length').length);
   def('vector-ref', 2, 2, (v, k) => {
     if (!Array.isArray(v)) throw wrongType(v, 1, 'vector-ref');
-    if (typeof k !== 'number') throw wrongType(k, 2, 'vector-ref');
+    if (typeof k !== 'number') { const t = textNumber(k); if (typeof t !== 'number') throw wrongType(k, 2, 'vector-ref'); k = t; }
     if (k < 0 || k >= v.length) throw badRange(k, 2, 'vector-ref');
     return v[k];
   });
   def('vector-set!', 3, 3, (v, k, x) => {
     if (!Array.isArray(v)) throw wrongType(v, 1, 'vector-set!');
-    if (typeof k !== 'number') throw wrongType(k, 2, 'vector-set!');
+    if (typeof k !== 'number') { const t = textNumber(k); if (typeof t !== 'number') throw wrongType(k, 2, 'vector-set!'); k = t; }
     if (k < 0 || k >= v.length) throw badRange(k, 2, 'vector-set!');
     v[k] = x;
     return UNSPEC;
@@ -503,6 +526,8 @@ export function installPrimitives(interp) {
   // ---------- misc ----------
   def('runtime', 0, 0, () => new Flonum(performance.now() / 1000));
   def('%run-number', 0, 0, () => interp.runCount);
+  // (%text-numbers! #t) lets arithmetic and indexes accept text such as "05" (see num above)
+  def('%text-numbers!', 1, 1, (on) => { interp.textNumbers = on !== false; return UNSPEC; });
   def('real-time', 0, 0, () => new Flonum(Date.now()));
   def('current-time', 0, 0, () => Math.floor(Date.now() / 1000));
   def('void', 0, -1, () => UNSPEC);

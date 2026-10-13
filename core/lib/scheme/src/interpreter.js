@@ -32,7 +32,8 @@ export class Interpreter {
     this.loadedLibraries = new Set();
     this.consoleOut = new Port('console-out');
     this.consoleIn = new Port('console-in');
-    this.runCount = 0;            // top-level runs started so far (library state that must not outlive an aborted run)
+    this.textNumbers = false;     // arithmetic accepts text that reads as a number (switched on by the word library)
+    this.runCount = 0;           // top-level runs started so far (library state that must not outlive an aborted run)
     this.currentOut = this.consoleOut;
     this.sink = null;
     if (opts.maxDepth) setMaxDepth(opts.maxDepth);

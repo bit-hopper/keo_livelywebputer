@@ -191,13 +191,64 @@ test('simply: the core is unaffected by the redefined names', () => {
   ]);
 });
 
-test('simply: the interpreter itself is left alone (text is not a number, equal? stays strict)', () => {
+test('simply: equality and the number predicates stay strict', () => {
   const i = lib();
   check(i, [
     ['(+ 1 2)', '3'], ['(equal? 3 "3")', '#f'], ['(equal? \'abc "abc")', '#f'], ['(equal? \'(a b) \'(a b))', '#t'],
-    ['(round 7/2)', '4'], ['(member 3 (list 1 2 3))', '(3)'],
+    ['(number? "5")', '#f'], ['(integer? "5")', '#f'], ['(round 7/2)', '4'], ['(member 3 (list 1 2 3))', '(3)'],
   ]);
-  assert.match(val('(+ "3" 4)', i), /^;The object "3"/);
+});
+
+test('simply: text that reads as a number works in arithmetic once the library is loaded', () => {
+  const i = lib();
+  check(i, [
+    // the book's own example of why: a leading-zero result stays text, and still adds up
+    ['(+ (bf 105) 1)', '6'], ['(* 2 (word 0 5))', '10'], ['(string? (bf 105))', '#t'],
+    ['(+ "5" 1)', '6'], ['(- "10" 3)', '7'], ['(/ "9" 3)', '3'], ['(* "2" "3" "4")', '24'], ['(+ "1.5" 1)', '2.5'],
+    ['(< "2" 10)', '#t'], ['(< "1" "2" "3")', '#t'], ['(< "3" "2" "3")', '#f'], ['(= "05" 5)', '#t'], ['(>= 5 "05")', '#t'],
+    ['(abs "-4")', '4'], ['(sqrt "16")', '4'], ['(square "6")', '36'], ['(expt "2" 10)', '1024'], ['(max "3" 9 "7")', '9'],
+    ['(quotient "17" 5)', '3'], ['(remainder 17 "5")', '2'], ['(modulo "-7" 3)', '2'], ['(even? "04")', '#t'], ['(odd? "7")', '#t'],
+    ['(zero? "0")', '#t'], ['(round "7/2")', '4'], ['(exact->inexact "1/2")', '0.5'], ['(number->string "42")', '"42"'],
+    ['(list-ref (list 10 20 30) "1")', '20'], ['(vector-ref (vector 10 20 30) "2")', '30'], ['(vector-length (make-vector "3" 0))', '3'],
+    ['(let ((v (vector 1 2 3))) (vector-set! v "1" 9) v)', '#(1 9 3)'], ['(item "2" \'(a b c))', 'b'],
+  ]);
+  // text that is not a number is still the same error as before
+  assert.match(val('(+ "abc" 1)', i), /^;The object "abc", passed as the first argument to integer-add/);
+  assert.match(val('(+ "" 1)', i), /^;The object "", passed as the first argument to integer-add/);
+  assert.match(val('(quotient "1.5" 2)', i), /^;The object "1.5"/);
+  assert.match(val('(vector-ref (vector 1) "x")', i), /^;The object "x"/);
+});
+
+test('simply: text numbers are off on a page that has not loaded the library, and after Reset', () => {
+  const fresh = newInterp();
+  assert.match(val('(+ "5" 1)', fresh), /^;The object "5", passed as the first argument to integer-add/);
+  assert.match(val('(< "2" 10)', fresh), /^;The object "2"/);
+  assert.match(val('(list-ref (list 1 2) "1")', fresh), /^;The object "1"/);
+  // other libraries do not turn it on
+  const sicp = newInterp();
+  run('#lang sicp', sicp);
+  assert.match(val('(+ "5" 1)', sicp), /^;The object "5"/);
+  // loading the word library turns it on for the whole page, other cells included
+  run('#lang simply', sicp);
+  assert.equal(val('(+ "5" 1)', sicp), '6');
+  // a reset is a new interpreter
+  assert.match(val('(+ "5" 1)', newInterp()), /^;The object "5"/);
+});
+
+test('simply: switching text numbers on does not slow down ordinary arithmetic', () => {
+  const fib = '(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))';
+  const time = (i) => {
+    run(fib, i);
+    run('(fib 20)', i);                        // warm up
+    const t = performance.now();
+    for (let k = 0; k < 3; k++) run('(fib 24)', i);
+    return performance.now() - t;
+  };
+  const plain = Math.min(time(newInterp()), time(newInterp()));
+  const withLib = Math.min(time(lib()), time(lib()));
+  // wrapping the operators in Scheme the way the book does is about twenty times slower;
+  // the native switch should be within noise of the plain engine
+  assert.ok(withLib < plain * 2 + 50, `plain ${plain.toFixed(0)} ms, with the library ${withLib.toFixed(0)} ms`);
 });
 
 test('simply: loading it does not break the parser-generator read-eval-print loop', () => {

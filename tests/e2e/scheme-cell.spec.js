@@ -143,8 +143,14 @@ test.describe("SchemeWorker controller", () => {
     expect(second.segments.map((s) => s.kind)).toContain("needInput");
     expect(second.segments[second.segments.length - 1]).toEqual({ kind: "value", text: "(2 typed (line))" });
 
+    // Text that reads as a number works in arithmetic once the library is loaded (here a later cell with no #lang line)...
+    const sum = await runCell(page, "(list (+ (bf 105) 1) (< \"2\" 10))");
+    expect(sum.segments).toEqual([{ kind: "value", text: "(6 #t)" }]);
+
+    // ...and Reset takes both the library and that behaviour away.
     await page.evaluate(() => new Promise((r) => lively.identity.SchemeWorker.reset(r)));
     expect((await runCell(page, "(word 'a 'b)")).state).toBe("error");
+    expect((await runCell(page, "(+ \"5\" 1)")).state).toBe("error");
   });
 
   test("a book-style program runs end to end in a cell", async ({ page }) => {

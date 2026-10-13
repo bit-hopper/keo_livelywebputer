@@ -15,11 +15,14 @@
 ;;;  - The engine is case-sensitive, so capital letters can start and continue a
 ;;;    symbol (the original keeps text with capitals as strings, because the
 ;;;    Scheme it ran on folded case).
-;;;  - The original also rewires the whole interpreter (arithmetic that accepts
-;;;    text such as "3", a looser equal?, an always-exact round, its own random).
-;;;    Those would change every other cell on the page, so none of it is applied.
-;;;    Inside this library the loose word comparison is a private helper (used by
-;;;    member?, appearances and match).
+;;;  - The original also rewires the whole interpreter. Arithmetic, comparisons and
+;;;    indexes accepting text such as "05" is kept, but natively: it is switched on
+;;;    (page-wide, until Reset) at the end of this file and only ever turns what
+;;;    would have been an error into a result. The rest (a looser equal?, number?
+;;;    and integer? answering for text, an always-exact round, its own random) would
+;;;    change what other cells compute, so it is not applied. Inside this library
+;;;    the loose word comparison is a private helper (used by member?, appearances
+;;;    and match).
 ;;;  - No file-port procedures (there are no files in a browser cell).
 ;;;  - align never prints a stray leading 0 for a fraction that rounds to 0 digits.
 ;;;  - Capital-letter error names (FIRST, ITEM, ...) and message wording follow the
@@ -181,7 +184,8 @@
         ((list? x) (length x))
         (else (%bad "COUNT" x))))
 
-(define (item n stuff)
+(define (item index stuff)
+  (define n (if (string? index) (or (string->number index) index) index))
   (cond ((not (integer? n))
          (error "Invalid first argument to ITEM (must be an integer):" n))
         ((< n 1)
@@ -533,3 +537,8 @@
   (syntax-rules ()
     ((_) (if #f #f))
     ((_ name rest ...) (begin (set! name (%book-trace-original name)) (untrace rest ...)))))
+
+;;; ---------------------------------------------------------------- text numbers
+
+;; from here on, arithmetic and indexes accept text that reads as a number
+(%text-numbers! #t)
