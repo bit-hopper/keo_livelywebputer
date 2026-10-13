@@ -205,6 +205,9 @@ module('lively.identity.SchemeEditing')
         return op ? op.col : open.col + 1;
       }
       if (isBodyOperator(op.text)) return open.col + 2;
+      // a clause of (cases type expr (variant (field ...) body ...) ...): its body lines sit 2 in
+      var parent = sc.stack[sc.stack.length - 2];
+      if (parent && parent.elems[0] && parent.elems[0].text === 'cases') return open.col + 2;
       if (elems.length >= 2) return elems[1].col;
       return open.col + 2;
     }

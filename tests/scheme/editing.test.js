@@ -123,3 +123,15 @@ test('indentFor: letcc is a body form', () => {
   assert.strictEqual(nextIndent('(letcc hop\n'), 2);
   assert.strictEqual(nextIndent('  (letcc k\n'), 4);
 });
+
+test('indentFor: cases and define-datatype bodies, and the body lines of a cases clause', () => {
+  assert.strictEqual(nextIndent('(cases expr e\n'), 2);
+  assert.strictEqual(nextIndent('(define-datatype expr expr?\n'), 2);
+  // inside a clause the variant name is not a function: body lines go 2 in, not under the field list
+  assert.strictEqual(nextIndent('(cases expr e\n  (add-exp (l r)\n'), 4);
+  assert.strictEqual(nextIndent('(define (f e)\n  (cases expr e\n    (add-exp (l r) (g l)\n'), 6);
+  // an ordinary call inside a clause body still aligns with its first argument
+  assert.strictEqual(nextIndent('(cases expr e\n  (add-exp (l r)\n    (+ (f l)\n'), 7);
+  // a list that is not a cases clause is unchanged
+  assert.strictEqual(nextIndent('(foo (bar 1\n'), 10);
+});
