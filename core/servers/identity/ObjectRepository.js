@@ -2931,6 +2931,22 @@ function listInboxForHandle(handle, opts, thenDo) {
     if (hiddenObjIds && hiddenObjIds.length) {
       records = records.filter(function (r) { return hiddenObjIds.indexOf(r.objId) === -1; });
     }
+
+    // A reply notification outlives the reply and its card, so one whose
+    // reply or card has since been deleted (state.deleted on the latest
+    // version) is dropped here -- otherwise its thread row and unread count
+    // would stay forever for something nobody can open.
+    var replyIds = [];
+    records.forEach(function (r) {
+      if (!(r.reply && r.rootObjId)) return;
+      if (replyIds.indexOf(r.objId) === -1) replyIds.push(r.objId);
+      if (replyIds.indexOf(r.rootObjId) === -1) replyIds.push(r.rootObjId);
+    });
+    _getDeletedObjIds(replyIds, function (err, deleted) {
+    if (err) return thenDo(err);
+    records = records.filter(function (r) {
+      return !(r.reply && r.rootObjId && (deleted[r.objId] || deleted[r.rootObjId]));
+    });
     var plain = [];
     var byRoot = {};
     var rootOrder = [];
@@ -2980,6 +2996,32 @@ function listInboxForHandle(handle, opts, thenDo) {
         });
       });
     });
+    }); // closes _getDeletedObjIds(...)
+  });
+}
+
+// Calls thenDo(null, { [objId]: true }) for each of `objIds` whose latest
+// version carries state.deleted === true (a tombstone, or a returned reply).
+// Objects that don't exist at all are not reported.
+function _getDeletedObjIds(objIds, thenDo) {
+  if (!objIds || !objIds.length) return thenDo(null, {});
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'SELECT o.obj_id FROM objects o' +
+      ' INNER JOIN (' +
+      '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
+      '   WHERE obj_id = ANY($1::text[]) GROUP BY obj_id' +
+      ' ) latest ON o.id = latest.max_id' +
+      ' WHERE (o.envelope #>> \'{state,deleted}\') = \'true\'',
+      [objIds],
+      function (err, result) {
+        if (err) return thenDo(err);
+        var map = {};
+        result.rows.forEach(function (r) { map[r.obj_id] = true; });
+        thenDo(null, map);
+      }
+    );
   });
 }
 
@@ -3070,11 +3112,19 @@ function markAllThreadsRead(handle, did, thenDo) {
 // queries use. Visibility filtering is the caller's job. A reply that was
 // deleted or returned (state.deleted) is skipped, which also drops anything
 // nested under it.
-// opts: { limit (default 300), maxDepth (default 12) }
+// opts: { limit (default REPLY_TREE_MAX_TOTAL), maxDepth (default
+// REPLY_TREE_MAX_DEPTH) }. limit is only checked between levels, so a level
+// is never cut part-way: 305 direct replies all come back.
+// A reply deeper than maxDepth is never returned, so PUT /@:handle/:objId
+// refuses to store one (see _screenNewReply) rather than accept a reply
+// nobody can see.
 // Calls thenDo(null, [envelope...]).
+var REPLY_TREE_MAX_DEPTH = 12;
+var REPLY_TREE_MAX_TOTAL = 300;
+
 function listReplyTree(rootObjId, opts, thenDo) {
-  var maxTotal = (opts && opts.limit) || 300;
-  var maxDepth = (opts && opts.maxDepth) || 12;
+  var maxTotal = (opts && opts.limit) || REPLY_TREE_MAX_TOTAL;
+  var maxDepth = (opts && opts.maxDepth) || REPLY_TREE_MAX_DEPTH;
   withDB(function (err, pool) {
     if (err) return thenDo(err);
     var all = [];
@@ -3269,6 +3319,7 @@ module.exports = {
   setThreadMuted:                setThreadMuted,
   markAllThreadsRead:            markAllThreadsRead,
   listReplyTree:                 listReplyTree,
+  REPLY_TREE_MAX_DEPTH:          REPLY_TREE_MAX_DEPTH,
   putDeliveryRecord:             putDeliveryRecord,
   listDeliveriesForHandle:       listDeliveriesForHandle,
   upsertStar:                    upsertStar,

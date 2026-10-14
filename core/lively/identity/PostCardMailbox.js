@@ -1198,6 +1198,10 @@ module('lively.identity.PostCardMailbox')
 
       // The Inbox tab's unread-reply badge. n === 0 removes it.
       _setInboxBadge: function (n) {
+        // n is always the unread total across every thread, so the menu
+        // bar's dot can follow it.
+        var bar = lively.identity.MenuBarEntry;
+        if (bar && bar.setUnreadReplies) bar.setUnreadReplies(n);
         var btn = this._tabBtns && this._tabBtns.received;
         if (!btn) return;
         var old = btn.querySelector('.pcm-tab-badge');
@@ -1388,6 +1392,7 @@ module('lively.identity.PostCardMailbox')
 
           card.appendChild(to);
           card.appendChild(id);
+          if (rec.reply) card.appendChild(self._makeReturnedReplyQuote(rec));
           card.appendChild(when);
           card.appendChild(self._makeActionsCluster(rec.reply ? [menuBtn] : [menuBtn, openBtn]));
           content.appendChild(card);
@@ -2244,14 +2249,19 @@ module('lively.identity.PostCardMailbox')
 
       _unblockHandle: function (handle, thenDo) {
         var self = this;
-        // No did on hand here (only the handle is shown in the Blocked
-        // list) — unblockDid's did-array filter is a no-op when did is
-        // null, same "stale DID left in blockedDids fails closed, not a
-        // correctness risk" reasoning the old inline version noted.
-        lively.identity.did.unblockDid(null, handle, function (err) {
-          if (err) return thenDo(err);
-          self._loadBlocked();
-          thenDo(null);
+        // Only the handle is shown in the Blocked list, but the server
+        // matches blocks on blockedDids too (a reply or postcard from a
+        // blocked DID is returned even with blockedHandles empty), so the
+        // DID has to come out as well. Resolve it the way _blockHandle did
+        // when adding; if the handle no longer resolves, fall back to
+        // removing just the handle.
+        lively.identity.webKey.resolveHandle(handle, function (err, info) {
+          var did = (!err && info) ? info.did : null;
+          lively.identity.did.unblockDid(did, handle, function (err2) {
+            if (err2) return thenDo(err2);
+            self._loadBlocked();
+            thenDo(null);
+          });
         });
       },
 
@@ -2294,6 +2304,46 @@ module('lively.identity.PostCardMailbox')
         var card = document.createElement('div');
         card.className = 'pcm-card';
         return card;
+      },
+
+      // What the sender wrote in a returned reply. A public reply's text
+      // comes with the record (replyExcerpt); anything else (a private
+      // reply, or a photo-only one) is read from the sender's own stored
+      // copy when they ask, since a private one may need a passkey prompt.
+      _makeReturnedReplyQuote: function (rec) {
+        var box = document.createElement('div');
+        box.style.cssText = 'margin:2px 0 6px;padding:6px 10px;border-left:3px solid var(--pcm-border-strong, #d4d4d8);' +
+          'color:var(--pcm-text-secondary);font-size:12px;white-space:pre-wrap;word-break:break-word;';
+        function showText(text, hasMedia) {
+          box.innerHTML = '';
+          box.textContent = text || (hasMedia ? '(photo or video only)' : '(empty reply)');
+          if (text && hasMedia) box.textContent += '\n+ photo or video';
+        }
+        if (rec.replyExcerpt) {
+          showText(rec.replyExcerpt, false);
+          return box;
+        }
+        var btn = document.createElement('button');
+        btn.className = 'pcm-btn';
+        btn.textContent = 'Show my reply';
+        btn.addEventListener('click', function () {
+          btn.disabled = true;
+          btn.textContent = 'Opening…';
+          lively.identity.mailboxThread.readOwnReplyText(rec.objId, function (err, text, hasMedia) {
+            if (err) {
+              btn.disabled = false;
+              btn.textContent = 'Couldn’t open it — try again';
+              return;
+            }
+            box.style.borderLeft = '3px solid var(--pcm-border-strong, #d4d4d8)';
+            box.style.padding = '6px 10px';
+            showText(text, hasMedia);
+          });
+        });
+        box.style.borderLeft = 'none';
+        box.style.padding = '0';
+        box.appendChild(btn);
+        return box;
       },
 
       // Centered icon + message, used for every "nothing here yet" state

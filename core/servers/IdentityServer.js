@@ -3948,12 +3948,14 @@ module.exports = function (route, app) {
         var hops = 0;
         (function up() {
           if (!(node.replyTo && node.replyTo.objId) || hops >= 25) {
-            return cb(null, { parent: parent, root: node });
+            // hops is the parent's own depth below the root (0 when the
+            // parent IS the root card).
+            return cb(null, { parent: parent, root: node, parentDepth: hops });
           }
           hops++;
           objectRepo.get(node.replyTo.objId, function (err, next) {
             if (err) return cb(err);
-            if (!next) return cb(null, { parent: parent, root: node });
+            if (!next) return cb(null, { parent: parent, root: node, parentDepth: hops });
             node = next;
             up();
           });
@@ -3989,6 +3991,12 @@ module.exports = function (route, app) {
         var parent = ctx.parent;
         if (!_canReadEnvelope(root, req.identity) || !_canReadEnvelope(parent, req.identity)) {
           return cb({ status: 403, message: "Forbidden" });
+        }
+        // The thread view (listReplyTree) only reaches this many levels down;
+        // a reply below that would be stored, notified, and never shown.
+        if (ctx.parentDepth + 1 > objectRepo.REPLY_TREE_MAX_DEPTH) {
+          return cb({ status: 400, message: "This conversation is as deep as it goes (" +
+            objectRepo.REPLY_TREE_MAX_DEPTH + " levels). Reply to the reply above it instead." });
         }
         if (root.visibility !== "public" && envelope.visibility === "public") {
           return cb({ status: 400, message: "A reply to a private card can't be public" });
@@ -4061,6 +4069,13 @@ module.exports = function (route, app) {
       if (!screen || result.duplicate) return cb();
       var now = new Date().toISOString();
       if (screen.returned) {
+        // The sender's Returned list shows what they wrote. Only a public
+        // reply carries readable text (state.title, auto-extracted from the
+        // body); a private one's text is encrypted, so the client decrypts
+        // the sender's own stored copy on demand instead.
+        var excerpt = envelope.visibility === "public" && envelope.state && envelope.state.title
+          ? String(envelope.state.title).slice(0, 200)
+          : null;
         return objectRepo.putDeliveryRecord(req.identity.handle, {
           objId: envelope.objId,
           recipientHandle: screen.rootHandle || "",
@@ -4068,7 +4083,8 @@ module.exports = function (route, app) {
           status: "returned",
           reply: true,
           rootObjId: screen.root.objId,
-          rootTitle: (screen.root.state && screen.root.state.title) || null
+          rootTitle: (screen.root.state && screen.root.state.title) || null,
+          replyExcerpt: excerpt
         }, function (err) {
           if (err) console.warn("[IdentityServer] putDeliveryRecord (returned reply) failed:", err.message);
           cb();

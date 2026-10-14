@@ -46,6 +46,10 @@ module('lively.identity.MailboxThread')
     lively.identity = lively.identity || {};
 
     var MAX_DEPTH_INDENT = 3; // deeper replies stay at the last indent level
+    // How many levels of replies the server will return and accept (the
+    // server's REPLY_TREE_MAX_DEPTH). A reply to a reply already this deep
+    // is attached to that reply's parent instead, shown right beside it.
+    var MAX_REPLY_DEPTH = 12;
 
     function _ensureStyle() {
       var STYLE_ID = 'mailbox-thread-style';
@@ -275,7 +279,8 @@ module('lively.identity.MailboxThread')
       this.opts = opts;
       this.state = null;      // server payload
       this.decoded = {};      // objId -> { snapshot, attachments } | { error }
-      this.replyTo = null;    // objId of the reply being answered (null = the card)
+      this.replyTo = null;    // objId the reply will be filed under (null = the card)
+      this.replyShown = null; // objId the user clicked Reply on, when that was too deep to nest under
       this.attachFile = null; // File chosen in the composer
       this.sending = false;
       this.destroyed = false;
@@ -635,27 +640,57 @@ module('lively.identity.MailboxThread')
 
     // ── composer ─────────────────────────────────────────────────────────────
 
+    // How many levels below the card a reply sits (a direct reply is 1).
+    Thread.prototype.replyDepth = function (objId) {
+      var byId = {};
+      this.state.replies.forEach(function (r) { byId[r.objId] = r; });
+      var depth = 0;
+      var cur = byId[objId];
+      while (cur && depth <= MAX_REPLY_DEPTH + 1) {
+        depth++;
+        cur = byId[cur.replyTo && cur.replyTo.objId];
+      }
+      return depth;
+    };
+
     Thread.prototype.setReplyTarget = function (objId) {
-      this.replyTo = objId;
+      var target = this.state.replies.filter(function (r) { return r.objId === objId; })[0];
+      this.replyShown = null;
+      if (target && this.replyDepth(objId) >= MAX_REPLY_DEPTH) {
+        // Anything under this reply would be one level too deep to be
+        // shown, so the answer goes in beside it, under the same parent.
+        var parentId = target.replyTo && target.replyTo.objId;
+        this.replyShown = objId;
+        this.replyTo = parentId === this.state.root.objId ? null : parentId;
+      } else {
+        this.replyTo = objId;
+      }
       this.renderTarget();
       this.updateNote();
       this.textEl.focus();
+    };
+
+    Thread.prototype.clearReplyTarget = function () {
+      this.replyTo = null;
+      this.replyShown = null;
     };
 
     Thread.prototype.renderTarget = function () {
       var self = this;
       var t = this.targetEl;
       t.innerHTML = '';
-      if (!this.replyTo) { t.hidden = true; return; }
-      var r = this.state.replies.filter(function (x) { return x.objId === self.replyTo; })[0];
-      if (!r) { this.replyTo = null; t.hidden = true; return; }
+      var shownId = this.replyShown || this.replyTo;
+      if (!shownId) { t.hidden = true; return; }
+      var r = this.state.replies.filter(function (x) { return x.objId === shownId; })[0];
+      if (!r) { this.clearReplyTarget(); t.hidden = true; return; }
       t.hidden = false;
-      t.appendChild(document.createTextNode('Replying to @' + (this.handleOf(r.did) || 'unknown')));
+      t.appendChild(document.createTextNode('Replying to @' + (this.handleOf(r.did) || 'unknown') +
+        (this.replyShown ? ' (conversations nest ' + MAX_REPLY_DEPTH + ' deep, so this is shown just beside it)' : '')));
       var x = el('button');
       x.type = 'button';
       x.setAttribute('aria-label', 'Cancel replying to this reply');
       x.appendChild(icon('close'));
-      x.addEventListener('click', function () { self.replyTo = null; self.renderTarget(); self.updateNote(); });
+      x.addEventListener('click', function () { self.clearReplyTarget(); self.renderTarget(); self.updateNote(); });
       t.appendChild(x);
     };
 
@@ -725,6 +760,10 @@ module('lively.identity.MailboxThread')
         dids.push(root.did);
         dids.push(parent.did);
       }
+      // At the depth cap the reply is filed beside the one being answered;
+      // its author still has to be able to read it.
+      var shown = this.replyShown ? this.state.replies.filter(function (r) { return r.objId === self.replyShown; })[0] : null;
+      if (shown) dids.push(shown.did);
       var seen = {};
       return dids.filter(function (d) {
         if (d === me || seen[d]) return false;
@@ -785,7 +824,7 @@ module('lively.identity.MailboxThread')
               self.textEl.value = '';
               self.textEl.style.height = '';
               self.clearAttachment();
-              self.replyTo = null;
+              self.clearReplyTarget();
               self.toast('Reply sent');
               self.load();
             });
@@ -942,9 +981,35 @@ module('lively.identity.MailboxThread')
       return morph;
     }
 
+    // The plain text of one of the signed-in user's own replies, for the
+    // Returned list (a returned reply is never shown in a thread). Reads the
+    // stored copy, decrypting it if the card was private. thenDo(err, text,
+    // hasMedia): text may be '' when the reply was only a photo/video.
+    function readOwnReplyText(objId, thenDo) {
+      var user = lively.identity.did.currentUser();
+      if (!user) return thenDo(new Error('not signed in'));
+      xhrJson('GET', lively.identity.did.baseUrl() + '/@' + encodeURIComponent(user.handle) + '/' + encodeURIComponent(objId), undefined, function (err, env) {
+        if (err) return thenDo(err);
+        decodeReply(env, function (err, decoded) {
+          if (err) return thenDo(err);
+          var parts = [];
+          var hasMedia = !!(decoded.attachments && decoded.attachments.length);
+          (function walk(node) {
+            if (!node) return;
+            if (node.type === 'image' || node.type === 'video') hasMedia = true;
+            if (node.text) parts.push(node.text);
+            (node.content || []).forEach(walk);
+            if (node.type === 'paragraph') parts.push('\n');
+          })(decoded.snapshot);
+          thenDo(null, parts.join('').replace(/\n+/g, '\n').trim(), hasMedia);
+        });
+      });
+    }
+
     lively.identity.mailboxThread = {
       mount: mount,
-      openWindow: openWindow
+      openWindow: openWindow,
+      readOwnReplyText: readOwnReplyText
     };
 
   }); // end module('lively.identity.MailboxThread')

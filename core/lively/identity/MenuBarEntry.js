@@ -17,6 +17,67 @@ module("lively.identity.MenuBarEntry")
       },
     });
 
+    // Unread-reply count for the Mailbox, shown as a dot on the identity
+    // entry (and "Mailbox (n)" in its menu). The count comes from
+    // GET /@handle/inbox?limit=1 (its unreadReplies covers every thread). It
+    // is refreshed on a slow poll, whenever the tab becomes visible again,
+    // and by the Mailbox window itself (PostCardMailbox._setInboxBadge) so the
+    // two never disagree. Lives on the namespace, not in the BuildSpec: spec
+    // methods are rebuilt from source and lose their closure.
+    Object.extend(lively.identity.MenuBarEntry, {
+      UNREAD_POLL_MS: 60000,
+      unreadReplies: 0,
+      _entry: null,
+      _timer: null,
+      _visibilityHooked: false,
+
+      setUnreadReplies: function (n) {
+        this.unreadReplies = n || 0;
+        var e = this._entry;
+        if (e && e.owner && e.showUnread) e.showUnread(this.unreadReplies);
+      },
+
+      refreshUnread: function () {
+        var self = this;
+        var did = lively.identity && lively.identity.did;
+        var user = did && did.isLoggedIn() && did.currentUser();
+        if (!user) return;
+        fetch(did.baseUrl() + "/@" + encodeURIComponent(user.handle) + "/inbox?limit=1", {
+          credentials: "include",
+          headers: { Accept: "application/json" },
+        })
+          .then(function (res) { return res.ok ? res.json() : null; })
+          .then(function (data) {
+            // A sign-out while the request was in flight must not resurrect the dot.
+            if (data && did.isLoggedIn()) self.setUnreadReplies(data.unreadReplies || 0);
+          })
+          .catch(function () { /* keep the last known count */ });
+      },
+
+      startUnreadPolling: function (entry) {
+        var self = this;
+        if (this._timer && this._entry === entry) return;
+        this._entry = entry;
+        if (this._timer) clearInterval(this._timer);
+        this._timer = setInterval(function () {
+          if (!document.hidden) self.refreshUnread();
+        }, this.UNREAD_POLL_MS);
+        if (!this._visibilityHooked) {
+          this._visibilityHooked = true;
+          document.addEventListener("visibilitychange", function () {
+            if (!document.hidden && self._timer) self.refreshUnread();
+          });
+        }
+        this.refreshUnread();
+      },
+
+      stopUnreadPolling: function () {
+        if (this._timer) clearInterval(this._timer);
+        this._timer = null;
+        this.setUnreadReplies(0);
+      },
+    });
+
     lively.require("lively.identity.AmbientPresencePanel").toRun(function () {
       lively.identity.AmbientPresencePanel.init();
     });
@@ -54,6 +115,7 @@ module("lively.identity.MenuBarEntry")
         AVATAR_GAP:    2,
         BASE_PADDING:  6,
         BASE_WIDTH:    80,
+        UNREAD_DOT_SIZE: 9,
 
         morphMenuItems: function morphMenuItems() {
           var self = this;
@@ -72,7 +134,9 @@ module("lively.identity.MenuBarEntry")
             ["Transit",            function () { self.openTransit(); }],
             ["Calendar",           function () { self.openCalendar(); }],
             ["Wallet",             function () { self.openWallet(); }],
-            ["Mailbox",            function () { self.openMailbox(); }],
+            ["Mailbox" + (lively.identity.MenuBarEntry.unreadReplies
+                ? " (" + lively.identity.MenuBarEntry.unreadReplies + ")" : ""),
+                                   function () { self.openMailbox(); }],
             ["Files",              function () { self.openFiles(); }],
             ["Settings",           function () { self.openSettings(); }],
             ["Add device",         function () { self.openRegisterDialog(); }],
@@ -220,6 +284,46 @@ module("lively.identity.MenuBarEntry")
           this.textString = loggedIn ? "@" + lively.identity.did.displayHandle() : "sign in";
           this.updateAvatar(loggedIn ? user.handle : null);
           this.fitWidth();
+          this.placeUnreadDot();
+          if (loggedIn) lively.identity.MenuBarEntry.startUnreadPolling(this);
+          else lively.identity.MenuBarEntry.stopUnreadPolling();
+        },
+
+        // A small red dot on the entry's top-right corner while there are
+        // unread replies; n === 0 removes it. The count itself is in the
+        // tooltip and in the menu's "Mailbox (n)" item.
+        showUnread: function showUnread(n) {
+          var D = this.UNREAD_DOT_SIZE;
+          this.setToolTip && this.setToolTip(n
+            ? n + " unread " + (n === 1 ? "reply" : "replies") + " in your Mailbox"
+            : "Identity — sign in or manage your account");
+          if (!n) {
+            if (this._unreadDot) { this._unreadDot.remove(); this._unreadDot = null; }
+            return;
+          }
+          if (!this._unreadDot) {
+            var dot = new lively.morphic.Box(lively.rect(0, 0, D, D));
+            dot.applyStyle({
+              fill: Color.rgb(225, 29, 72),
+              borderWidth: 1.5,
+              borderColor: Color.white,
+              borderRadius: D / 2,
+            });
+            // Purely decorative: clicks must reach the entry underneath.
+            dot.eventsAreIgnored = true;
+            dot.draggingEnabled = false;
+            dot.droppingEnabled = false;
+            dot.grabbingEnabled = false;
+            this._unreadDot = this.addMorph(dot);
+            dot.renderContext().shapeNode.style.pointerEvents = "none";
+          }
+          this.placeUnreadDot();
+        },
+
+        placeUnreadDot: function placeUnreadDot() {
+          if (!this._unreadDot) return;
+          var D = this.UNREAD_DOT_SIZE;
+          this._unreadDot.setPosition(lively.pt(this.getExtent().x - D - 1, 1));
         },
 
         // Widen the entry (never below its base width) so a long label — a
