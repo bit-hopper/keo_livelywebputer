@@ -920,7 +920,12 @@ module("lively.identity.ConstellationLounge")
         var styleEl = document.createElement("style");
         styleEl.id = "lounge-comment-body-style";
         styleEl.textContent =
-          ".lounge-comment-body{font-size:12.5px;line-height:1.45;color:#1a1a1b;}" +
+          // overflow-wrap:anywhere so a long unbroken string (a pasted URL, a
+          // keyboard mash) wraps at the box edge instead of running ~3500px
+          // wide and making the whole thread scroll sideways. The body's
+          // height is measured off the live node (scrollHeight), so the
+          // wrapped lines are accounted for.
+          ".lounge-comment-body{font-size:12.5px;line-height:1.45;color:#1a1a1b;overflow-wrap:anywhere;}" +
           ".lounge-comment-body p{margin:0 0 6px;}" +
           ".lounge-comment-body p:last-child{margin-bottom:0;}" +
           // Same pill-thumb scrollbar treatment as lively.commerce.Shop's
@@ -4424,7 +4429,7 @@ module("lively.identity.ConstellationLounge")
         placeholder.setExtent(lively.pt(w - PAD * 2, fieldH));
 
         var field = new lively.morphic.Text(lively.rect(PAD, PAD - 2, w - PAD * 2, fieldH), mt.draftText[key] || "");
-        field.applyStyle({ allowInput: true, fixedWidth: true, fixedHeight: true, fontSize: 12, fill: null, borderWidth: 0 });
+        field.applyStyle({ allowInput: true, fixedWidth: true, fixedHeight: true, fontSize: 12, fill: null, borderWidth: 0, clipMode: "auto" });
         placeholder.setVisible(!field.textString);
         var superKeyDown = field.onKeyDown;
         field.onKeyDown = function (evt) {
@@ -5047,7 +5052,9 @@ module("lively.identity.ConstellationLounge")
         placeholder.setExtent(lively.pt(w - PAD * 2, fieldH));
 
         var field = new lively.morphic.Text(lively.rect(PAD, PAD - 2, w - PAD * 2, fieldH), this._draftText[key] || "");
-        field.applyStyle({ allowInput: true, fixedWidth: true, fixedHeight: true, fontSize: 12, fill: null, borderWidth: 0 });
+        // clipMode "auto": the field is a fixed-height box, so without it text
+        // past ~3 lines spilled out over the toolbar and the comment below.
+        field.applyStyle({ allowInput: true, fixedWidth: true, fixedHeight: true, fontSize: 12, fill: null, borderWidth: 0, clipMode: "auto" });
         placeholder.setVisible(!field.textString);
         var superKeyDown = field.onKeyDown;
         field.onKeyDown = function (evt) {
