@@ -1290,6 +1290,25 @@ function _resolveHandlesForDids(dids, thenDo) {
   });
 }
 
+// Same shape as _resolveHandlesForDids, but yields each DID's BASE handle
+// (the account's own registered handle, never its verified domain). Anything
+// used as a storage key or compared against a stored block list must be the
+// base handle; the display handle above is for showing to people only.
+function _resolveBaseHandlesForDids(dids, thenDo) {
+  var uniqueDids = dids.filter(function (d, i, a) { return d && a.indexOf(d) === i; });
+  if (!uniqueDids.length) return thenDo(null, {});
+  var map = {};
+  var remaining = uniqueDids.length;
+  var firstErr = null;
+  uniqueDids.forEach(function (did) {
+    handleRegistry.resolveBaseHandleForDid(did, function (err, handle) {
+      if (err) firstErr = firstErr || err;
+      map[did] = handle || null;
+      if (--remaining === 0) thenDo(firstErr, map);
+    });
+  });
+}
+
 // Batch-resolves DIDs to their profile avatarUrl (or null) — same
 // fan-out/join shape as _resolveHandlesForDids above, reusing the same
 // objectRepo.getProfileForDid lookup GET /@:handle/profile already uses.
@@ -3950,13 +3969,17 @@ module.exports = function (route, app) {
 
     // Decides what happens to a new reply. Calls cb(err, screen) where
     // screen is null (not a reply, or nothing to screen against) or
-    //   { root, notify: false }                       — reply to your own thread
-    //   { root, notify: true, inboxHandle, rootHandle } — deliver to the author
-    //   { root, returned: true, rootHandle }           — blocked either way
+    //   { root, notify: false }                        — nobody to tell (own thread)
+    //   { root, notify: true, inboxHandles, rootHandle } — tell these inboxes
+    //   { root, returned: true, rootHandle }            — blocked either way
+    // (rootHandle is whoever the reply was addressed to, for the replier's
+    // Returned list.)
     // A block in either direction (the card author's list or the replier's
     // own) returns the reply, same as the postal route does for a card; the
     // same check runs against the direct parent's author when that's a
-    // different person. cb's err may carry {status, message}.
+    // different person. cb's err may carry {status, message}. Notified
+    // are the card's author and the author of the reply being answered
+    // (when it isn't the replier); `inboxHandles` lists their inboxes.
     function _screenNewReply(cb) {
       if (!_isNewReply(envelope)) return cb(null, null);
       _findReplyContext(envelope.replyTo.objId, function (err, ctx) {
@@ -3970,11 +3993,22 @@ module.exports = function (route, app) {
         if (root.visibility !== "public" && envelope.visibility === "public") {
           return cb({ status: 400, message: "A reply to a private card can't be public" });
         }
-        if (root.did === req.identity.did) return cb(null, { root: root, notify: false });
+        // Who this reply is for: the card's author and, when it answers
+        // another reply, that reply's author -- minus the replier. Replying
+        // to your own thread answers nobody; replying to someone else's
+        // reply (even as the card's own author) notifies that someone.
+        var others = [];
+        [root.did, parent.did].forEach(function (d) {
+          if (d !== req.identity.did && others.indexOf(d) === -1) others.push(d);
+        });
+        if (!others.length) return cb(null, { root: root, notify: false });
 
-        var others = [root.did];
-        if (parent.did !== root.did && parent.did !== req.identity.did) others.push(parent.did);
+        // Display handles (a verified domain, if the account has one) are
+        // for the replier's Returned list; BASE handles key the inbox files
+        // and match the stored block lists.
         _resolveHandlesForDids(others, function (err, didToHandle) {
+         if (err) return cb(err);
+         _resolveBaseHandlesForDids(others, function (err, baseHandle) {
           if (err) return cb(err);
           objectRepo.getSettingsForDid(req.identity.did, function (err, mine) {
             if (err) return cb(err);
@@ -3985,20 +4019,37 @@ module.exports = function (route, app) {
               objectRepo.getSettingsForDid(otherDid, function (e, theirs) {
                 if (e) firstErr = firstErr || e;
                 if (_settingsBlock(theirs, req.identity.did, req.identity.handle) ||
-                    _settingsBlock(mine, otherDid, didToHandle[otherDid])) {
+                    _settingsBlock(mine, otherDid, baseHandle[otherDid])) {
                   blocked = true;
                 }
                 if (--remaining !== 0) return;
                 if (firstErr) return cb(firstErr);
-                var rootHandle = didToHandle[root.did] || null;
-                if (blocked || !rootHandle) return cb(null, { root: root, returned: true, rootHandle: rootHandle });
-                handleRegistry.resolveForDelivery(rootHandle, function (err, resolved) {
-                  if (err || !resolved) return cb(null, { root: root, returned: true, rootHandle: rootHandle });
-                  cb(null, { root: root, notify: true, inboxHandle: resolved.primaryHandle, rootHandle: rootHandle });
+
+                // The person the reply is addressed to, shown in the
+                // replier's Returned list: the reply's author when answering
+                // one, otherwise the card's author.
+                var targetDid = parent.did !== req.identity.did ? parent.did : root.did;
+                var targetHandle = didToHandle[targetDid] || didToHandle[root.did] || null;
+                // A card author with no resolvable handle can't be mailed:
+                // returned, same as an unknown handle on the postal route.
+                var unreachableRoot = root.did !== req.identity.did && !baseHandle[root.did];
+                if (blocked || unreachableRoot) {
+                  return cb(null, { root: root, returned: true, rootHandle: targetHandle, targetHandle: targetHandle });
+                }
+
+                // File a notification under each recipient's base (primary)
+                // handle. A parent author whose handle no longer resolves is
+                // skipped rather than failing the whole reply.
+                var inboxHandles = [];
+                others.forEach(function (otherDid) {
+                  var h = baseHandle[otherDid];
+                  if (h && inboxHandles.indexOf(h) === -1) inboxHandles.push(h);
                 });
+                cb(null, { root: root, notify: inboxHandles.length > 0, inboxHandles: inboxHandles, rootHandle: targetHandle, targetHandle: targetHandle });
               });
             });
           });
+         });
         });
       });
     }
@@ -4024,16 +4075,19 @@ module.exports = function (route, app) {
         });
       }
       if (screen.notify) {
-        return objectRepo.putInboxRecord(screen.inboxHandle, {
-          reply: true,
-          objId: envelope.objId,
-          rootObjId: screen.root.objId,
-          senderDid: req.identity.did,
-          senderHandle: req.identity.handle,
-          sentAt: now
-        }, function (err) {
-          if (err) console.warn("[IdentityServer] putInboxRecord (reply) failed:", err.message);
-          cb();
+        var left = screen.inboxHandles.length;
+        return screen.inboxHandles.forEach(function (inboxHandle) {
+          objectRepo.putInboxRecord(inboxHandle, {
+            reply: true,
+            objId: envelope.objId,
+            rootObjId: screen.root.objId,
+            senderDid: req.identity.did,
+            senderHandle: req.identity.handle,
+            sentAt: now
+          }, function (err) {
+            if (err) console.warn("[IdentityServer] putInboxRecord (reply) failed:", err.message);
+            if (--left === 0) cb();
+          });
         });
       }
       cb();

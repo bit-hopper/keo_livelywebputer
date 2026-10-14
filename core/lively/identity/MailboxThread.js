@@ -71,6 +71,8 @@ module('lively.identity.MailboxThread')
         '.mbt-btn:disabled { opacity:.5; cursor:default; }',
         '.mbt-btn.accent { background:var(--mbt-accent); border-color:var(--mbt-accent); color:var(--mbt-accent-ink); }',
         '.mbt-btn.ghost { border-color:transparent; background:transparent; color:var(--mbt-text2); }',
+        // An icon-only button is a true circle, not a pill with stretched padding.
+        '.mbt-btn.icon { width:34px; height:34px; padding:0; justify-content:center; border-radius:50%; }',
         '.mbt-btn.ghost:hover:not(:disabled) { background:var(--mbt-bg); border-color:var(--mbt-border); }',
         '.mbt-head { display:flex; align-items:center; gap:8px; padding:8px 12px; background:var(--mbt-surface); border-bottom:1px solid var(--mbt-border); flex:none; }',
         '.mbt-head .t { flex:1; min-width:0; font-weight:650; font-size:13.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }',
@@ -86,8 +88,18 @@ module('lively.identity.MailboxThread')
         '.mbt-sect { font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--mbt-text3); padding-top:4px; }',
         '.mbt-empty { color:var(--mbt-text3); text-align:center; padding:28px 0; }',
         '.mbt-rp { display:flex; flex-direction:column; }',
-        '.mbt-rp-row { display:flex; gap:10px; align-items:flex-start; }',
+        '.mbt-rp-row { display:flex; gap:10px; align-items:stretch; }',
+        '.mbt-avcol { display:flex; flex-direction:column; align-items:center; width:30px; flex:none; }',
         '.mbt-av { width:30px; height:30px; border-radius:50%; flex:none; border:1px solid var(--mbt-border); object-fit:cover; background:#fff; }',
+        // Threading: a rail drops from under a parent\'s avatar (its centre
+        // line, x=15) alongside the parent bubble, then each reply is joined
+        // by an elbow: straight down the rail, one rounded corner, straight
+        // across into the reply\'s own avatar (the same L the rooms chat
+        // draws from a reply back to its parent). Each .mbt-kid is 26px of
+        // left padding wide (the horizontal leg) and 10px of top padding
+        // tall (the gap above it, which the rail crosses); the corner sits
+        // at the avatar\'s vertical centre, 10 + 15 = 25px down.
+        '.mbt-rail { flex:1; width:2px; margin-top:4px; background:var(--mbt-border-strong); border-radius:1px; }',
         '.mbt-bubble { flex:1; min-width:0; background:var(--mbt-surface); border:1px solid var(--mbt-border); border-radius:12px; padding:8px 12px 6px; }',
         '.mbt-rp.fresh > .mbt-rp-row .mbt-bubble { background:var(--mbt-accent-soft); border-color:var(--mbt-accent-soft-border); }',
         '.mbt-rh { display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }',
@@ -103,8 +115,15 @@ module('lively.identity.MailboxThread')
         '.mbt-link { font-family:var(--mbt-font); font-size:12px; font-weight:600; color:var(--mbt-text2); background:none; border:0; padding:2px 8px 2px 0; cursor:pointer; display:inline-flex; gap:4px; align-items:center; }',
         '.mbt-link:hover { color:var(--mbt-accent); }',
         '.mbt-link .mbt-ic { font-size:15px; }',
-        '.mbt-kids { margin:10px 0 0 16px; padding-left:14px; border-left:2px solid var(--mbt-border); display:flex; flex-direction:column; gap:10px; }',
-        '.mbt-kids.flat { margin-left:0; padding-left:0; border-left:0; }',
+        '.mbt-kids { margin:0 0 0 14px; display:flex; flex-direction:column; }',
+        '.mbt-kid { position:relative; padding:10px 0 0 26px; }',
+        '.mbt-kid:before { content:""; position:absolute; left:0; top:0; width:26px; height:26px; box-sizing:border-box;',
+        '  border-left:2px solid var(--mbt-border-strong); border-bottom:2px solid var(--mbt-border-strong); border-bottom-left-radius:11px; }',
+        '.mbt-kid:not(:last-child):after { content:""; position:absolute; left:0; top:26px; bottom:0; border-left:2px solid var(--mbt-border-strong); }',
+        // Past the indent limit replies stay at one level, with no connectors.
+        '.mbt-kids.flat { margin-left:0; }',
+        '.mbt-kids.flat > .mbt-kid { padding-left:0; }',
+        '.mbt-kids.flat > .mbt-kid:before, .mbt-kids.flat > .mbt-kid:after { display:none; }',
         '.mbt-composer { border-top:1px solid var(--mbt-border); background:var(--mbt-surface); padding:10px 12px 8px; display:flex; flex-direction:column; gap:6px; flex:none; position:relative; }',
         '.mbt-target { font-size:12px; color:var(--mbt-text2); background:var(--mbt-bg); border:1px solid var(--mbt-border); border-radius:999px; padding:2px 4px 2px 10px; display:inline-flex; align-items:center; gap:4px; align-self:flex-start; }',
         '.mbt-target button, .mbt-att button { border:0; background:transparent; color:var(--mbt-text3); cursor:pointer; padding:2px; display:grid; place-items:center; }',
@@ -308,7 +327,7 @@ module('lively.identity.MailboxThread')
       comp.appendChild(this.menuEl);
 
       var row = el('div', 'mbt-row');
-      this.attachBtn = btn('', 'add_photo_alternate', 'ghost');
+      this.attachBtn = btn('', 'add_circle', 'ghost icon');
       this.attachBtn.title = 'Attach a photo, GIF or video';
       this.attachBtn.setAttribute('aria-label', 'Attach a photo, GIF or video');
       this.attachBtn.addEventListener('click', function () { self.menuEl.hidden = !self.menuEl.hidden; });
@@ -431,7 +450,7 @@ module('lively.identity.MailboxThread')
       }
       this.headEl.appendChild(el('div', 't', 'Replies to “' + this.cardTitle() + '”'));
       if (isInbox) {
-        var mute = btn(s.muted ? 'Muted' : 'Mute', s.muted ? 'notifications_off' : 'notifications_active', 'ghost');
+        var mute = btn(s.muted ? 'Muted' : 'Mute', s.muted ? 'notifications_off' : 'notifications', 'ghost');
         mute.title = s.muted ? 'Unmute this thread' : 'Mute this thread';
         mute.addEventListener('click', function () { self.toggleMute(); });
         this.headEl.appendChild(mute);
@@ -517,7 +536,7 @@ module('lively.identity.MailboxThread')
       when.appendChild(document.createTextNode('Sent ' + relTime(root.created) + (relTime(root.created) === 'now' ? '' : ' ago')));
       meta.appendChild(when);
       var cnt = el('span');
-      cnt.appendChild(icon('chat_bubble'));
+      cnt.appendChild(icon('mode_comment'));
       var n = this.state.replies.length;
       cnt.appendChild(document.createTextNode(n + (n === 1 ? ' reply' : ' replies')));
       meta.appendChild(cnt);
@@ -543,7 +562,12 @@ module('lively.identity.MailboxThread')
       var av = el('img', 'mbt-av');
       av.alt = '';
       loadAvatar(handle, av);
-      row.appendChild(av);
+      var kids = byParent[r.objId];
+      var indented = !!(kids && kids.length) && depth + 1 < MAX_DEPTH_INDENT;
+      var avcol = el('div', 'mbt-avcol');
+      avcol.appendChild(av);
+      if (indented) avcol.appendChild(el('div', 'mbt-rail'));
+      row.appendChild(avcol);
 
       var bubble = el('div', 'mbt-bubble');
       var head = el('div', 'mbt-rh');
@@ -584,10 +608,13 @@ module('lively.identity.MailboxThread')
       row.appendChild(bubble);
       wrap.appendChild(row);
 
-      var kids = byParent[r.objId];
       if (kids && kids.length) {
-        var kc = el('div', 'mbt-kids' + (depth + 1 >= MAX_DEPTH_INDENT ? ' flat' : ''));
-        kids.forEach(function (k) { kc.appendChild(self.renderNode(k, depth + 1, byParent, fresh, hydrate)); });
+        var kc = el('div', 'mbt-kids' + (indented ? '' : ' flat'));
+        kids.forEach(function (k) {
+          var kid = el('div', 'mbt-kid');
+          kid.appendChild(self.renderNode(k, depth + 1, byParent, fresh, hydrate));
+          kc.appendChild(kid);
+        });
         wrap.appendChild(kc);
       }
       return wrap;

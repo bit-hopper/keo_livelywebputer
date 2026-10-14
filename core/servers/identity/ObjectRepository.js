@@ -2974,7 +2974,7 @@ function listInboxForHandle(handle, opts, thenDo) {
         if (err) return thenDo(err);
         var page = filtered.slice(offset, offset + limit);
         var nextOffset = offset + limit < filtered.length ? offset + limit : null;
-        _enrichWithConstellationTag(page, function (err, enriched) {
+        _enrichWithConstellationTag(page, did, function (err, enriched) {
           if (err) return thenDo(err);
           thenDo(null, { records: enriched, cursor: nextOffset, unreadReplies: unreadReplies });
         });
@@ -3117,7 +3117,7 @@ function listReplyTree(rootObjId, opts, thenDo) {
 // for constellation/kind — no extra round trip. Same bounded-cost per-page
 // envelope lookup _filterRecordsByTitle above already does for search; this
 // just always runs, not only when q is set.
-function _enrichWithConstellationTag(page, thenDo) {
+function _enrichWithConstellationTag(page, viewerDid, thenDo) {
   if (!page.length) return thenDo(null, page);
   var remaining = page.length;
   var firstErr = null;
@@ -3131,11 +3131,16 @@ function _enrichWithConstellationTag(page, thenDo) {
         // Title and audience ride along for the thread rows (and give plain
         // rows a real title instead of a bare objId). recipientDids is the
         // list of DIDs a private card was addressed to; the route resolves
-        // those to handles.
+        // those to handles. Only the card's own author may learn who else
+        // it was sent to: a recipient (or someone notified of a reply on it)
+        // gets an empty list, since a recipient is not told who the other
+        // recipients are.
         rec.title = (envelope.state && envelope.state.title) || null;
         rec.visibility = envelope.visibility || 'public';
         rec.authorDid = envelope.did;
-        rec.recipientDids = ((envelope.record && envelope.record.recipients) || []).map(function (r) { return r.did || r; });
+        rec.recipientDids = envelope.did === viewerDid
+          ? ((envelope.record && envelope.record.recipients) || []).map(function (r) { return r.did || r; })
+          : [];
       }
       if (--remaining === 0) thenDo(firstErr, page);
     });
