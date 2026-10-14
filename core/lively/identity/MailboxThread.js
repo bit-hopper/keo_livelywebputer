@@ -67,7 +67,8 @@ module('lively.identity.MailboxThread')
         '.mbt-root * { box-sizing:border-box; }',
         // The hidden attribute alone loses to the display:flex rules below.
         '.mbt-root [hidden] { display:none !important; }',
-        '.mbt-ic { font-family:"Material Symbols Rounded"; font-size:18px; line-height:1; width:1em; height:1em; overflow:hidden; display:inline-block; vertical-align:middle; flex:none; }',
+        // Icons are <i> elements, which browsers italicize; without font-style:normal every glyph renders slanted.
+        '.mbt-ic { font-family:"Material Symbols Rounded"; font-style:normal; font-size:18px; line-height:1; width:1em; height:1em; overflow:hidden; display:inline-block; vertical-align:middle; flex:none; }',
         '.mbt-btn { display:inline-flex; align-items:center; gap:5px; font-family:var(--mbt-font); font-size:12px; font-weight:600;',
         '  padding:6px 11px; border-radius:999px; border:1px solid var(--mbt-border-strong); background:var(--mbt-surface);',
         '  color:var(--mbt-text); cursor:pointer; }',
