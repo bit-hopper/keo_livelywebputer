@@ -723,6 +723,22 @@ module("lively.identity.PostCardView")
             false,
             this._savedToCollections ? "#16a34a" : null
           ));
+          // Replies: the conversation under this card plus a composer, in
+          // its own small window. Not offered on system cards (join
+          // requests, invites, flags, room messages), which carry a
+          // state.kind and aren't meant to be answered this way, nor when
+          // signed out.
+          if (this._envelope && !(this._envelope.state && this._envelope.state.kind) &&
+              lively.identity.did.currentUser()) {
+            menu.appendChild(makeItem("Replies", "chat_bubble", function () {
+              lively.require("lively.identity.MailboxThread").toRun(function () {
+                lively.identity.mailboxThread.openWindow(
+                  self._handle, self._objId,
+                  (self._envelope.state && self._envelope.state.title) || ""
+                );
+              });
+            }));
+          }
           menu.appendChild(makeItem("Share", "share", function () {
             self._shareLink();
           }));

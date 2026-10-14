@@ -1312,6 +1312,36 @@ function _resolveAvatarsForDids(dids, thenDo) {
   });
 }
 
+// The root card plus every live reply under it that `identity` may read, as
+// full envelopes (encrypted replies stay encrypted; the client decrypts),
+// with a DID -> handle map for everyone involved. Shared by the Inbox thread
+// view and the per-card thread route so both show exactly the same thing.
+// Calls thenDo(err, { status, error } | null, payload). A non-null second
+// argument is an HTTP-shaped failure to relay as-is.
+function _buildThreadPayload(rootObjId, identity, thenDo) {
+  objectRepo.get(rootObjId, function (err, root) {
+    if (err) return thenDo(err);
+    if (!root) return thenDo(null, { status: 404, error: "Object not found: " + rootObjId });
+    if (!_canReadEnvelope(root, identity)) return thenDo(null, { status: 403, error: "Forbidden" });
+    objectRepo.listReplyTree(rootObjId, {}, function (err, replies) {
+      if (err) return thenDo(err);
+      replies = replies
+        .filter(function (e) { return _canReadEnvelope(e, identity); })
+        .map(function (e) { return _trimRecipientsForNonOwner(e, identity); });
+      var dids = [root.did].concat(replies.map(function (e) { return e.did; }));
+      ((root.record && root.record.recipients) || []).forEach(function (r) { dids.push(r.did || r); });
+      _resolveHandlesForDids(dids, function (err, didToHandle) {
+        if (err) return thenDo(err);
+        thenDo(null, null, {
+          root: _trimRecipientsForNonOwner(root, identity),
+          replies: replies,
+          handles: didToHandle
+        });
+      });
+    });
+  });
+}
+
 module.exports = function (route, app) {
   // Keep domain-handle verification status fresh (ProfileCard.js's green
   // tick / yellow "?" badge) — a domain's hosted .well-known file can
@@ -2469,9 +2499,86 @@ module.exports = function (route, app) {
     var q      = req.query.q || null;
     objectRepo.getHiddenObjIdsForDid(req.identity.did, function (err, hiddenObjIds) {
       if (err) return res.status(500).json({ error: String(err) });
-      objectRepo.listInboxForHandle(handle, { limit: limit, offset: offset, hiddenObjIds: hiddenObjIds, q: q }, function (err, result) {
+      objectRepo.listInboxForHandle(handle, { limit: limit, offset: offset, hiddenObjIds: hiddenObjIds, q: q, did: req.identity.did }, function (err, result) {
         if (err) return res.status(500).json({ error: String(err) });
-        res.json(result);
+        // Thread rows name who a private card went to; the repository only
+        // knows DIDs, so resolve them (and the card author) to handles here.
+        var dids = [];
+        result.records.forEach(function (r) {
+          if (!r.thread) return;
+          if (r.authorDid) dids.push(r.authorDid);
+          (r.recipientDids || []).forEach(function (d) { dids.push(d); });
+        });
+        _resolveHandlesForDids(dids, function (err2, didToHandle) {
+          if (err2) return res.status(500).json({ error: String(err2) });
+          result.records.forEach(function (r) {
+            if (!r.thread) return;
+            r.authorHandle = didToHandle[r.authorDid] || null;
+            r.recipientHandles = (r.recipientDids || []).map(function (d) { return didToHandle[d]; }).filter(Boolean);
+          });
+          res.json(result);
+        });
+      });
+    });
+  });
+
+  // ─── inbox reply threads ────────────────────────────────────────────────────
+  // Per-viewer thread state (read marker, mute) and the one-request thread
+  // view. :handle must be the caller's own — a thread lives in the inbox of
+  // the card's author. Registered next to /inbox so it stays ahead of the
+  // /@:handle/:objId routes and the /@:handle/* catch-all.
+
+  function _ownInboxOr403(req, res) {
+    if (req.identity.handle !== req.params.handle) {
+      res.status(403).json({ error: "Forbidden: not your inbox" });
+      return false;
+    }
+    return true;
+  }
+
+  app.post("/@:handle/inbox/threads/read-all", auth.requireAuth, function (req, res) {
+    if (!_ownInboxOr403(req, res)) return;
+    objectRepo.markAllThreadsRead(req.params.handle, req.identity.did, function (err) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json({ ok: true });
+    });
+  });
+
+  app.post("/@:handle/inbox/threads/:rootObjId/read", auth.requireAuth, function (req, res) {
+    if (!_ownInboxOr403(req, res)) return;
+    objectRepo.markThreadRead(req.identity.did, req.params.rootObjId, function (err) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json({ ok: true });
+    });
+  });
+
+  app.put("/@:handle/inbox/threads/:rootObjId/mute", auth.requireAuth, function (req, res) {
+    if (!_ownInboxOr403(req, res)) return;
+    var muted = !!(req.body && req.body.muted);
+    objectRepo.setThreadMuted(req.identity.did, req.params.rootObjId, muted, function (err) {
+      if (err) return res.status(500).json({ error: String(err) });
+      res.json({ ok: true, muted: muted });
+    });
+  });
+
+  // The whole conversation under one of the caller's cards: the root plus
+  // every live reply at any depth, as full envelopes the requester may read.
+  // Encrypted replies come back still encrypted; the client decrypts them.
+  // Does NOT mark the thread read (a GET shouldn't change state) -- the
+  // response carries the previous read marker so the client can highlight
+  // what's new, then calls POST .../read once it has rendered.
+  app.get("/@:handle/inbox/threads/:rootObjId", auth.requireAuth, function (req, res) {
+    if (!_ownInboxOr403(req, res)) return;
+    var rootObjId = req.params.rootObjId;
+    _buildThreadPayload(rootObjId, req.identity, function (err, failure, payload) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (failure) return res.status(failure.status).json({ error: failure.error });
+      objectRepo.getThreadStatesForDid(req.identity.did, function (err, states) {
+        if (err) return res.status(500).json({ error: String(err) });
+        var st = states[rootObjId] || {};
+        payload.lastReadAt = st.lastReadAt || null;
+        payload.muted = !!st.muted;
+        res.json(payload);
       });
     });
   });
@@ -3265,6 +3372,17 @@ module.exports = function (route, app) {
     });
   });
 
+  // The conversation under any card the requester can read -- what the card
+  // view shows below the card, and what lets a recipient answer a card. Same
+  // payload as the Inbox thread route minus the per-viewer read/mute state.
+  app.get("/@:handle/:objId/thread", auth.optionalAuth, function (req, res) {
+    _buildThreadPayload(req.params.objId, req.identity || null, function (err, failure, payload) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (failure) return res.status(failure.status).json({ error: failure.error });
+      res.json(payload);
+    });
+  });
+
   // ─── reactions (PostcardDesignSpec-v2.md §5.1) ─────────────────────────────
   // Sub-route under /:objId, same ordering rationale as /replies above.
   // A did may hold several different emoji reactions on the same card at
@@ -3788,6 +3906,139 @@ module.exports = function (route, app) {
       }
     }
 
+    // ── reply screening ──────────────────────────────────────────────────────
+    // A brand-new postcard carrying replyTo is a reply to a card (a
+    // constellation comment, or an answer to a postcard). Room-chat messages
+    // also carry replyTo, but they're chat, not replies to a card, so they
+    // are left alone. Screening applies only to the genesis write: later
+    // edits of a reply have a prevCid and skip it.
+    function _isNewReply(env) {
+      return env.type === "postcard" && env.replyTo && env.replyTo.objId &&
+        !(env.record && env.record.prevCid) &&
+        !(env.state && env.state.kind === "room-message");
+    }
+
+    // Walks replyTo links up from the direct parent to the thread's root card.
+    // Calls cb(err, { parent, root }) or cb(null, null) when the parent
+    // doesn't exist (the write then proceeds exactly as it always has).
+    function _findReplyContext(parentObjId, cb) {
+      objectRepo.get(parentObjId, function (err, parent) {
+        if (err) return cb(err);
+        if (!parent) return cb(null, null);
+        var node = parent;
+        var hops = 0;
+        (function up() {
+          if (!(node.replyTo && node.replyTo.objId) || hops >= 25) {
+            return cb(null, { parent: parent, root: node });
+          }
+          hops++;
+          objectRepo.get(node.replyTo.objId, function (err, next) {
+            if (err) return cb(err);
+            if (!next) return cb(null, { parent: parent, root: node });
+            node = next;
+            up();
+          });
+        })();
+      });
+    }
+
+    function _settingsBlock(settingsEnv, otherDid, otherHandle) {
+      var s = (settingsEnv && settingsEnv.state) || {};
+      return (s.blockedDids || []).indexOf(otherDid) !== -1 ||
+        !!(otherHandle && (s.blockedHandles || []).indexOf(otherHandle) !== -1);
+    }
+
+    // Decides what happens to a new reply. Calls cb(err, screen) where
+    // screen is null (not a reply, or nothing to screen against) or
+    //   { root, notify: false }                       — reply to your own thread
+    //   { root, notify: true, inboxHandle, rootHandle } — deliver to the author
+    //   { root, returned: true, rootHandle }           — blocked either way
+    // A block in either direction (the card author's list or the replier's
+    // own) returns the reply, same as the postal route does for a card; the
+    // same check runs against the direct parent's author when that's a
+    // different person. cb's err may carry {status, message}.
+    function _screenNewReply(cb) {
+      if (!_isNewReply(envelope)) return cb(null, null);
+      _findReplyContext(envelope.replyTo.objId, function (err, ctx) {
+        if (err) return cb(err);
+        if (!ctx || ctx.root.type !== "postcard") return cb(null, null);
+        var root = ctx.root;
+        var parent = ctx.parent;
+        if (!_canReadEnvelope(root, req.identity) || !_canReadEnvelope(parent, req.identity)) {
+          return cb({ status: 403, message: "Forbidden" });
+        }
+        if (root.visibility !== "public" && envelope.visibility === "public") {
+          return cb({ status: 400, message: "A reply to a private card can't be public" });
+        }
+        if (root.did === req.identity.did) return cb(null, { root: root, notify: false });
+
+        var others = [root.did];
+        if (parent.did !== root.did && parent.did !== req.identity.did) others.push(parent.did);
+        _resolveHandlesForDids(others, function (err, didToHandle) {
+          if (err) return cb(err);
+          objectRepo.getSettingsForDid(req.identity.did, function (err, mine) {
+            if (err) return cb(err);
+            var remaining = others.length;
+            var blocked = false;
+            var firstErr = null;
+            others.forEach(function (otherDid) {
+              objectRepo.getSettingsForDid(otherDid, function (e, theirs) {
+                if (e) firstErr = firstErr || e;
+                if (_settingsBlock(theirs, req.identity.did, req.identity.handle) ||
+                    _settingsBlock(mine, otherDid, didToHandle[otherDid])) {
+                  blocked = true;
+                }
+                if (--remaining !== 0) return;
+                if (firstErr) return cb(firstErr);
+                var rootHandle = didToHandle[root.did] || null;
+                if (blocked || !rootHandle) return cb(null, { root: root, returned: true, rootHandle: rootHandle });
+                handleRegistry.resolveForDelivery(rootHandle, function (err, resolved) {
+                  if (err || !resolved) return cb(null, { root: root, returned: true, rootHandle: rootHandle });
+                  cb(null, { root: root, notify: true, inboxHandle: resolved.primaryHandle, rootHandle: rootHandle });
+                });
+              });
+            });
+          });
+        });
+      });
+    }
+
+    // Once the reply is stored: tell the card's author (a returned reply goes
+    // into the replier's own Returned list instead). Never fails the request
+    // — the reply itself is already saved.
+    function _afterReplyStored(screen, result, cb) {
+      if (!screen || result.duplicate) return cb();
+      var now = new Date().toISOString();
+      if (screen.returned) {
+        return objectRepo.putDeliveryRecord(req.identity.handle, {
+          objId: envelope.objId,
+          recipientHandle: screen.rootHandle || "",
+          sentAt: now,
+          status: "returned",
+          reply: true,
+          rootObjId: screen.root.objId,
+          rootTitle: (screen.root.state && screen.root.state.title) || null
+        }, function (err) {
+          if (err) console.warn("[IdentityServer] putDeliveryRecord (returned reply) failed:", err.message);
+          cb();
+        });
+      }
+      if (screen.notify) {
+        return objectRepo.putInboxRecord(screen.inboxHandle, {
+          reply: true,
+          objId: envelope.objId,
+          rootObjId: screen.root.objId,
+          senderDid: req.identity.did,
+          senderHandle: req.identity.handle,
+          sentAt: now
+        }, function (err) {
+          if (err) console.warn("[IdentityServer] putInboxRecord (reply) failed:", err.message);
+          cb();
+        });
+      }
+      cb();
+    }
+
     function _handleRegistryCheckAndWrite() {
       handleRegistry.resolve(handle, function (err, registeredDid) {
         if (err) return res.status(500).json({ error: String(err) });
@@ -3849,6 +4100,21 @@ module.exports = function (route, app) {
           cb();
         }
 
+        _screenNewReply(function (screenErr, screen) {
+        if (screenErr) {
+          if (screenErr.status) return res.status(screenErr.status).json({ error: screenErr.message });
+          return res.status(500).json({ error: String(screenErr) });
+        }
+        // A returned reply is stored but marked deleted, so every thread,
+        // count and feed (all of which already skip state.deleted) leaves
+        // it out for everyone; the replier sees the same success response a
+        // delivered reply gets and learns of the return from their
+        // Returned list.
+        if (screen && screen.returned) {
+          envelope = Object.assign({}, envelope, {
+            state: Object.assign({}, envelope.state, { deleted: true, returned: true }),
+          });
+        }
         _withComputedPartSize(function () {
           objectRepo.put(envelope, function (err, result) {
             if (err) {
@@ -3871,15 +4137,18 @@ module.exports = function (route, app) {
             // to this objId so other clients can pull the new version. This maps to
             // Wave's WaveBus.publish(). Use lively.net.SessionTracker (L2L) as the
             // transport when implementing. Not needed until live collaboration.
-            res.json({
-              ok: true,
-              objId: result.objId,
-              cid: result.cid,
-              duplicate: result.duplicate || false,
-              changed: result.changed || "content",
+            _afterReplyStored(screen, result, function () {
+              res.json({
+                ok: true,
+                objId: result.objId,
+                cid: result.cid,
+                duplicate: result.duplicate || false,
+                changed: result.changed || "content",
+              });
             });
           });
         });
+        }); // closes _screenNewReply(...)
       });
     }
 

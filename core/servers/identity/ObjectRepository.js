@@ -222,6 +222,18 @@ var DDL =
   '  status     TEXT NOT NULL,' +
   '  expires_at TEXT,' +
   '  updated_at TEXT NOT NULL' +
+  ');\n' +
+  // Per-viewer state for a reply thread in the Mailbox Inbox: when the viewer
+  // last opened it (replies sent after that are unread) and whether they
+  // muted it. Never part of the envelope/CID system -- it's the viewer's own
+  // bookkeeping, same posture as postcard_mailbox_hidden. A thread with no
+  // row yet has never been opened, so every reply in it counts as unread.
+  'CREATE TABLE IF NOT EXISTS inbox_thread_state (' +
+  '  did          TEXT NOT NULL,' +
+  '  root_obj_id  TEXT NOT NULL,' +
+  '  last_read_at TEXT,' +
+  '  muted        BOOLEAN NOT NULL DEFAULT FALSE,' +
+  '  PRIMARY KEY (did, root_obj_id)' +
   ');';
 
 var _bootstrapped = false;
@@ -2889,14 +2901,26 @@ function putInboxRecord(recipientHandle, record, thenDo) {
 //   because some of its rows were hidden.
 //   q — optional title substring filter (§8.1) — see _filterRecordsByTitle.
 // Calls thenDo(null, { records: [...], cursor: Number|null }).
+//
+// Reply notifications ({reply: true, rootObjId, objId: <the reply>}, written
+// by PUT /@:handle/:objId when someone answers a card) are folded here into
+// ONE row per thread instead of one row each: {thread: true, objId:
+// <rootObjId>, sentAt: <newest reply>, replyCount, unread, muted, latest,
+// participants}. A thread row sorts among the plain delivery records by its
+// newest reply, so new activity bubbles an old thread back to the top.
+//   opts.did — the inbox owner's DID, needed to look up read/mute state; if
+//   absent every reply counts as unread and nothing is muted.
+// The result also carries unreadReplies, the unread total across EVERY
+// thread (not just this page), for the Inbox tab's badge.
 function listInboxForHandle(handle, opts, thenDo) {
   var fs = require('fs');
   var limit = (opts && opts.limit) || 20;
   var offset = (opts && opts.offset) || 0;
   var hiddenObjIds = (opts && opts.hiddenObjIds) || null;
   var q = (opts && opts.q) || null;
+  var did = (opts && opts.did) || null;
   var file = path.join(_getInboxDir(), handle + '.jsonl');
-  if (!fs.existsSync(file)) return thenDo(null, { records: [], cursor: null });
+  if (!fs.existsSync(file)) return thenDo(null, { records: [], cursor: null, unreadReplies: 0 });
   fs.readFile(file, 'utf8', function (err, text) {
     if (err) return thenDo(err);
     var lines = text.split('\n').filter(Boolean);
@@ -2907,15 +2931,179 @@ function listInboxForHandle(handle, opts, thenDo) {
     if (hiddenObjIds && hiddenObjIds.length) {
       records = records.filter(function (r) { return hiddenObjIds.indexOf(r.objId) === -1; });
     }
-    _filterRecordsByTitle(records, q, function (err, filtered) {
+    var plain = [];
+    var byRoot = {};
+    var rootOrder = [];
+    records.forEach(function (r) {
+      if (!(r.reply && r.rootObjId)) return plain.push(r);
+      if (!byRoot[r.rootObjId]) { byRoot[r.rootObjId] = []; rootOrder.push(r.rootObjId); }
+      byRoot[r.rootObjId].push(r); // already newest first
+    });
+
+    getThreadStatesForDid(did, function (err, states) {
       if (err) return thenDo(err);
-      var page = filtered.slice(offset, offset + limit);
-      var nextOffset = offset + limit < filtered.length ? offset + limit : null;
-      _enrichWithConstellationTag(page, function (err, enriched) {
+      var unreadReplies = 0;
+      var threads = rootOrder.map(function (rootObjId) {
+        var replies = byRoot[rootObjId];
+        var st = states[rootObjId] || {};
+        var unread = st.muted ? 0 : replies.filter(function (r) {
+          return !st.lastReadAt || r.sentAt > st.lastReadAt;
+        }).length;
+        unreadReplies += unread;
+        var participants = [];
+        replies.forEach(function (r) {
+          if (r.senderHandle && participants.indexOf(r.senderHandle) === -1) participants.push(r.senderHandle);
+        });
+        var latest = replies[0];
+        return {
+          thread: true,
+          objId: rootObjId,
+          rootObjId: rootObjId,
+          sentAt: latest.sentAt,
+          replyCount: replies.length,
+          unread: unread,
+          muted: !!st.muted,
+          latest: { objId: latest.objId, senderDid: latest.senderDid, senderHandle: latest.senderHandle || null, sentAt: latest.sentAt },
+          participants: participants.slice(0, 4)
+        };
+      });
+      var merged = plain.concat(threads).sort(function (a, b) {
+        return a.sentAt < b.sentAt ? 1 : a.sentAt > b.sentAt ? -1 : 0;
+      });
+      _filterRecordsByTitle(merged, q, function (err, filtered) {
         if (err) return thenDo(err);
-        thenDo(null, { records: enriched, cursor: nextOffset });
+        var page = filtered.slice(offset, offset + limit);
+        var nextOffset = offset + limit < filtered.length ? offset + limit : null;
+        _enrichWithConstellationTag(page, function (err, enriched) {
+          if (err) return thenDo(err);
+          thenDo(null, { records: enriched, cursor: nextOffset, unreadReplies: unreadReplies });
+        });
       });
     });
+  });
+}
+
+// ─── inbox thread read/mute state ─────────────────────────────────────────────
+
+// Calls thenDo(null, { [rootObjId]: { lastReadAt, muted } }). A null/empty
+// did yields {} (nothing read, nothing muted).
+function getThreadStatesForDid(did, thenDo) {
+  if (!did) return thenDo(null, {});
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'SELECT root_obj_id, last_read_at, muted FROM inbox_thread_state WHERE did = $1',
+      [did],
+      function (err, result) {
+        if (err) return thenDo(err);
+        var map = {};
+        result.rows.forEach(function (r) {
+          map[r.root_obj_id] = { lastReadAt: r.last_read_at, muted: r.muted };
+        });
+        thenDo(null, map);
+      }
+    );
+  });
+}
+
+// Marks one thread read as of now. Leaves the muted flag alone.
+function markThreadRead(did, rootObjId, thenDo) {
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'INSERT INTO inbox_thread_state (did, root_obj_id, last_read_at, muted) VALUES ($1, $2, $3, FALSE)' +
+      ' ON CONFLICT (did, root_obj_id) DO UPDATE SET last_read_at = EXCLUDED.last_read_at',
+      [did, rootObjId, new Date().toISOString()],
+      function (err) { thenDo(err || null); }
+    );
+  });
+}
+
+// Mutes or unmutes one thread. Leaves last_read_at alone.
+function setThreadMuted(did, rootObjId, muted, thenDo) {
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'INSERT INTO inbox_thread_state (did, root_obj_id, last_read_at, muted) VALUES ($1, $2, NULL, $3)' +
+      ' ON CONFLICT (did, root_obj_id) DO UPDATE SET muted = EXCLUDED.muted',
+      [did, rootObjId, !!muted],
+      function (err) { thenDo(err || null); }
+    );
+  });
+}
+
+// Marks every thread in `handle`'s inbox read as of now.
+function markAllThreadsRead(handle, did, thenDo) {
+  var fs = require('fs');
+  var file = path.join(_getInboxDir(), handle + '.jsonl');
+  if (!fs.existsSync(file)) return thenDo(null);
+  fs.readFile(file, 'utf8', function (err, text) {
+    if (err) return thenDo(err);
+    var roots = [];
+    text.split('\n').filter(Boolean).forEach(function (l) {
+      var r;
+      try { r = JSON.parse(l); } catch (e) { return; }
+      if (r && r.reply && r.rootObjId && roots.indexOf(r.rootObjId) === -1) roots.push(r.rootObjId);
+    });
+    if (!roots.length) return thenDo(null);
+    withDB(function (err, pool) {
+      if (err) return thenDo(err);
+      pool.query(
+        'INSERT INTO inbox_thread_state (did, root_obj_id, last_read_at, muted)' +
+        ' SELECT $1, r, $3, FALSE FROM unnest($2::text[]) AS r' +
+        ' ON CONFLICT (did, root_obj_id) DO UPDATE SET last_read_at = EXCLUDED.last_read_at',
+        [did, roots, new Date().toISOString()],
+        function (err) { thenDo(err || null); }
+      );
+    });
+  });
+}
+
+// ─── reply tree ───────────────────────────────────────────────────────────────
+
+// Every live reply under `rootObjId`, at any depth, as FULL envelopes (payload
+// included, unlike listRepliesForPostcard) oldest first -- the Mailbox thread
+// view renders the whole conversation from one request instead of one
+// metadata fetch per level plus one envelope fetch per reply. Walks one level
+// per query (a parent-id list per level) rather than a recursive CTE so each
+// step reuses the same latest-version-per-obj_id selection the other reply
+// queries use. Visibility filtering is the caller's job. A reply that was
+// deleted or returned (state.deleted) is skipped, which also drops anything
+// nested under it.
+// opts: { limit (default 300), maxDepth (default 12) }
+// Calls thenDo(null, [envelope...]).
+function listReplyTree(rootObjId, opts, thenDo) {
+  var maxTotal = (opts && opts.limit) || 300;
+  var maxDepth = (opts && opts.maxDepth) || 12;
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    var all = [];
+    var frontier = [rootObjId];
+    var depth = 0;
+    (function level() {
+      if (!frontier.length || depth >= maxDepth || all.length >= maxTotal) return thenDo(null, all);
+      pool.query(
+        'SELECT o.envelope FROM objects o' +
+        ' INNER JOIN (' +
+        '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
+        '   WHERE type = \'postcard\'' +
+        '         AND (envelope #>> \'{replyTo,objId}\') = ANY($1::text[])' +
+        '   GROUP BY obj_id' +
+        ' ) latest ON o.id = latest.max_id' +
+        ' WHERE ((o.envelope #>> \'{state,deleted}\') IS NULL' +
+        '        OR (o.envelope #>> \'{state,deleted}\') <> \'true\')' +
+        ' ORDER BY o.id ASC',
+        [frontier],
+        function (err, result) {
+          if (err) return thenDo(err);
+          var envs = result.rows.map(function (r) { return r.envelope; });
+          all = all.concat(envs);
+          frontier = envs.map(function (e) { return e.objId; });
+          depth++;
+          level();
+        }
+      );
+    })();
   });
 }
 
@@ -2940,6 +3128,14 @@ function _enrichWithConstellationTag(page, thenDo) {
         rec.constellation = envelope.constellation || null;
         rec.kind = (envelope.state && envelope.state.kind) || null;
         rec.location = (envelope.state && envelope.state.location) || null;
+        // Title and audience ride along for the thread rows (and give plain
+        // rows a real title instead of a bare objId). recipientDids is the
+        // list of DIDs a private card was addressed to; the route resolves
+        // those to handles.
+        rec.title = (envelope.state && envelope.state.title) || null;
+        rec.visibility = envelope.visibility || 'public';
+        rec.authorDid = envelope.did;
+        rec.recipientDids = ((envelope.record && envelope.record.recipients) || []).map(function (r) { return r.did || r; });
       }
       if (--remaining === 0) thenDo(firstErr, page);
     });
@@ -3063,6 +3259,11 @@ module.exports = {
   setSentAtIfUnset:              setSentAtIfUnset,
   putInboxRecord:                putInboxRecord,
   listInboxForHandle:            listInboxForHandle,
+  getThreadStatesForDid:         getThreadStatesForDid,
+  markThreadRead:                markThreadRead,
+  setThreadMuted:                setThreadMuted,
+  markAllThreadsRead:            markAllThreadsRead,
+  listReplyTree:                 listReplyTree,
   putDeliveryRecord:             putDeliveryRecord,
   listDeliveriesForHandle:       listDeliveriesForHandle,
   upsertStar:                    upsertStar,

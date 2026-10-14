@@ -27,6 +27,7 @@ module('lively.identity.PostCardMailbox')
   .requires(
     'lively.identity.DID',
     'lively.identity.PostCardView',
+    'lively.identity.MailboxThread',
   )
   .toRun(function () {
 
@@ -136,6 +137,30 @@ module('lively.identity.PostCardMailbox')
         '  border-radius: var(--pcm-radius-sm); box-sizing: border-box; font-family: var(--pcm-font);',
         '  background: var(--pcm-surface); color: var(--pcm-text); outline: none; transition: border-color .15s; }',
         '.pcm-row-input:focus { border-color: var(--pcm-accent); }',
+
+        // Inbox: filter chips, reply-thread rows, unread counts.
+        '.pcm-tab-badge { min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--pcm-accent);',
+        '  color: #fff; font-size: 10px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }',
+        '.pcm-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 10px; }',
+        '.pcm-filter { font-size: 11.5px; font-weight: 600; padding: 4px 10px; border-radius: var(--pcm-radius-pill);',
+        '  border: 1px solid var(--pcm-border); background: var(--pcm-surface); color: var(--pcm-text-secondary);',
+        '  cursor: pointer; font-family: var(--pcm-font); display: inline-flex; gap: 6px; align-items: center; }',
+        '.pcm-filter.on { background: var(--pcm-text); border-color: var(--pcm-text); color: #fff; }',
+        '.pcm-filter .n { color: var(--pcm-accent); }',
+        '.pcm-filter.on .n { color: #fff; opacity: .85; }',
+        '.pcm-thread { cursor: pointer; display: flex; gap: 12px; align-items: flex-start; }',
+        '.pcm-thread.unread { border-color: var(--pcm-accent-soft-border); }',
+        '.pcm-thread .body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }',
+        '.pcm-thread .l1 { display: flex; gap: 8px; align-items: baseline; }',
+        '.pcm-thread .ttl { flex: 1; min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+        '.pcm-thread.unread .ttl { font-weight: 700; }',
+        '.pcm-thread .when { flex: none; font-size: 11px; color: var(--pcm-text-secondary); }',
+        '.pcm-thread .l2 { font-size: 12px; color: var(--pcm-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+        '.pcm-thread .side { flex: none; display: flex; align-items: center; }',
+        '.pcm-count { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--pcm-accent); color: #fff;',
+        '  font-size: 11.5px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }',
+        '.pcm-kind { flex: none; font-size: 10.5px; font-weight: 600; padding: 1px 8px; border-radius: var(--pcm-radius-pill);',
+        '  background: var(--pcm-accent-soft); color: var(--pcm-accent); border: 1px solid var(--pcm-accent-soft-border); }',
       ].join('\n');
       document.head.appendChild(styleEl);
     }
@@ -145,7 +170,7 @@ module('lively.identity.PostCardMailbox')
     'serialization', {
       doNotSerialize: [
         '_contentDiv', '_tabBtns', '_openMenuEl', '_openMenuAnchor', '_menuCloseHandler',
-        '_searchBar', '_searchInput', '_contentLoadStarted', '_leafletMap',
+        '_searchBar', '_searchInput', '_contentLoadStarted', '_leafletMap', '_threadCtrl',
       ],
     },
 
@@ -161,6 +186,8 @@ module('lively.identity.PostCardMailbox')
         this._menuCloseHandler = null;
         this._searchQuery = '';
         this._leafletMap = null;
+        this._threadCtrl = null;
+        this._inboxFilter = 'all';
         this._buildChrome();
         // Guards prepareForNewRenderContext below against redundantly
         // re-running _switchTab once this constructor returns and
@@ -330,6 +357,12 @@ module('lively.identity.PostCardMailbox')
         var searchable = tab === 'received' || tab === 'delivered' || tab === 'returned' || tab === 'own' || tab === 'collections';
         if (this._searchBar) this._searchBar.style.display = searchable ? 'flex' : 'none';
 
+        // An open reply thread takes over _contentDiv's whole layout (see
+        // _openThread); give it back its normal geometry on any tab switch.
+        if (this._threadCtrl) { this._threadCtrl.destroy(); this._threadCtrl = null; }
+        this._contentDiv.style.top = '84px';
+        this._contentDiv.style.overflowY = 'auto';
+
         // The Map tab's Leaflet instance owns real DOM nodes inside
         // _contentDiv — tear it down before that div gets wiped below (not
         // after), and before its container is orphaned out from under it.
@@ -389,10 +422,13 @@ module('lively.identity.PostCardMailbox')
           // opening straight to the new Friends tab intermittently rendered
           // a stray Received postcard row on top of it. See _loadFriends's
           // identical guard.
-          if (self._activeTab !== 'received') return;
+          // (An open reply thread owns the content area; a late list
+          // response must not paint over it.)
+          if (self._activeTab !== 'received' || self._threadCtrl) return;
           if (xhr.status !== 200) return self._showError('Could not load inbox (' + xhr.status + ')');
           var result;
           try { result = JSON.parse(xhr.responseText); } catch (e) { return self._showError('Bad response'); }
+          self._setInboxBadge(result.unreadReplies || 0);
           self._renderReceivedRecords(result.records || []);
         };
         xhr.onerror = function () { if (self._activeTab === 'received') self._showError('Network error'); };
@@ -905,14 +941,55 @@ module('lively.identity.PostCardMailbox')
           return;
         }
 
-        records.forEach(function (rec) {
+        // Filter chips: All / Replies (threads) / Postcards / Invites. The
+        // choice lives on the morph so it survives the reloads a search or a
+        // returning-from-a-thread triggers.
+        var filter = self._inboxFilter || 'all';
+        var isInviteRec = function (r) { return r.kind === 'constellation-invite'; };
+        var unreadReplies = records.reduce(function (n, r) { return n + (r.thread ? (r.unread || 0) : 0); }, 0);
+        var chips = document.createElement('div');
+        chips.className = 'pcm-chips';
+        [['all', 'All'], ['replies', 'Replies'], ['cards', 'Postcards'], ['invites', 'Invites']].forEach(function (f) {
+          var b = document.createElement('button');
+          b.className = 'pcm-filter' + (filter === f[0] ? ' on' : '');
+          b.textContent = f[1];
+          if (f[0] === 'replies' && unreadReplies) {
+            var n = document.createElement('span');
+            n.className = 'n';
+            n.textContent = unreadReplies + ' new';
+            b.appendChild(n);
+          }
+          b.addEventListener('click', function () { self._inboxFilter = f[0]; self._renderReceivedRecords(records); });
+          chips.appendChild(b);
+        });
+        if (unreadReplies) {
+          var markAll = self._makeIconTextButton('done_all', 'Mark all read');
+          markAll.style.marginLeft = 'auto';
+          markAll.addEventListener('click', function () { self._markAllThreadsRead(); });
+          chips.appendChild(markAll);
+        }
+        content.appendChild(chips);
+
+        var shown = records.filter(function (r) {
+          if (filter === 'replies') return !!r.thread;
+          if (filter === 'invites') return !r.thread && isInviteRec(r);
+          if (filter === 'cards')   return !r.thread && !isInviteRec(r);
+          return true;
+        });
+        if (!shown.length) {
+          content.appendChild(self._emptyEl('inbox', filter === 'replies' ? 'No replies yet.' : 'Nothing here.'));
+          return;
+        }
+
+        shown.forEach(function (rec) {
+          if (rec.thread) { content.appendChild(self._makeThreadRow(rec)); return; }
           var card = self._makeCard();
 
           var from = self._makeIdentityRow('From: ', rec.senderHandle, rec.senderDid);
 
           var id = document.createElement('div');
           id.style.cssText  = 'color:var(--pcm-text-secondary);font-size:11px;margin-bottom:3px;';
-          id.textContent    = 'Card: ' + rec.objId;
+          id.textContent    = rec.title ? rec.title : 'Card: ' + rec.objId;
 
           var when = document.createElement('div');
           when.style.cssText = 'color:var(--pcm-text-tertiary);font-size:11px;';
@@ -1012,6 +1089,156 @@ module('lively.identity.PostCardMailbox')
           card.appendChild(self._makeActionsCluster(buttons));
           content.appendChild(self._wrapMutedIfNeeded(card, rec));
         });
+      },
+
+      // ── reply threads ─────────────────────────────────────────────────────
+      // Someone answered one of your postcards: the server folds every reply
+      // to a card into one thread record (see ObjectRepository.js's
+      // listInboxForHandle), shown here as a single row that jumps to the
+      // top of the Inbox whenever a new reply lands.
+
+      _makeThreadRow: function (rec) {
+        var self = this;
+        var card = this._makeCard();
+        card.className += ' pcm-thread' + (rec.unread ? ' unread' : '');
+        card.tabIndex = 0;
+        card.setAttribute('role', 'button');
+
+        var latest = rec.latest || {};
+        var who = latest.senderHandle || null;
+        var img = document.createElement('img');
+        img.style.cssText = 'width:40px;height:40px;border-radius:50%;flex:none;border:1px solid var(--pcm-border);box-sizing:border-box;';
+        img.src = lively.identity.postCardUtils.identiconDataUrl(who || latest.senderDid || '', 40);
+        card.appendChild(img);
+        if (who) {
+          fetch(lively.identity.did.baseUrl() + '/@' + encodeURIComponent(who) + '/profile', { credentials: 'include' })
+            .then(function (res) { return res.ok ? res.json() : null; })
+            .then(function (env) {
+              var url = env && env.record && env.record.payload && env.record.payload.avatarUrl;
+              if (url) img.src = url;
+            })
+            .catch(function () {});
+        }
+
+        var body = document.createElement('div');
+        body.className = 'body';
+
+        var l1 = document.createElement('div');
+        l1.className = 'l1';
+        var kind = document.createElement('span');
+        kind.className = 'pcm-kind';
+        kind.textContent = 'Replies';
+        var ttl = document.createElement('span');
+        ttl.className = 'ttl';
+        ttl.textContent = rec.title || 'Untitled postcard';
+        var when = document.createElement('span');
+        when.className = 'when';
+        when.textContent = (rec.muted ? '🔕 ' : '') + self._formatDate(rec.sentAt);
+        l1.appendChild(kind);
+        l1.appendChild(ttl);
+        l1.appendChild(when);
+        body.appendChild(l1);
+
+        var names = (rec.participants || []).map(function (h) { return '@' + h; });
+        var who2 = names.length <= 1 ? names.join('') :
+          names.length === 2 ? names[0] + ' and ' + names[1] :
+          names.slice(0, 2).join(', ') + ' and ' + (names.length - 2) + ' more';
+        var l2 = document.createElement('div');
+        l2.className = 'l2';
+        l2.textContent = (who2 ? who2 + ' · ' : '') +
+          (rec.unread ? rec.unread + ' new of ' + rec.replyCount : rec.replyCount + (rec.replyCount === 1 ? ' reply' : ' replies')) +
+          (rec.visibility && rec.visibility !== 'public' ? ' · private' : '');
+        body.appendChild(l2);
+        card.appendChild(body);
+
+        if (rec.unread) {
+          var side = document.createElement('div');
+          side.className = 'side';
+          var count = document.createElement('span');
+          count.className = 'pcm-count';
+          count.textContent = rec.unread;
+          side.appendChild(count);
+          card.appendChild(side);
+        }
+
+        card.addEventListener('click', function () { self._openThread(rec); });
+        card.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); self._openThread(rec); }
+        });
+        return card;
+      },
+
+      // Replaces the Inbox list with the conversation under one card. The
+      // thread view owns _contentDiv's whole area (header, scroller,
+      // composer) until _switchTab('received') gives it back.
+      _openThread: function (rec) {
+        var self = this;
+        var user = lively.identity.did.currentUser();
+        if (!user) return;
+        this._closePostcardMenu();
+        if (this._threadCtrl) { this._threadCtrl.destroy(); this._threadCtrl = null; }
+        if (this._searchBar) this._searchBar.style.display = 'none';
+        var c = this._contentDiv;
+        c.style.top = '44px';
+        c.style.padding = '0';
+        c.style.overflowY = 'hidden';
+        c.innerHTML = '';
+        var host = document.createElement('div');
+        host.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;';
+        c.appendChild(host);
+        this._threadCtrl = lively.identity.mailboxThread.mount(host, {
+          rootHandle: rec.authorHandle || user.handle,
+          rootObjId: rec.rootObjId,
+          title: rec.title,
+          inbox: true,
+          onBack: function () { self._switchTab('received'); },
+          onRead: function () { self._refreshInboxBadge(); },
+        });
+      },
+
+      // The Inbox tab's unread-reply badge. n === 0 removes it.
+      _setInboxBadge: function (n) {
+        var btn = this._tabBtns && this._tabBtns.received;
+        if (!btn) return;
+        var old = btn.querySelector('.pcm-tab-badge');
+        if (old) old.remove();
+        if (!n) return;
+        var badge = document.createElement('span');
+        badge.className = 'pcm-tab-badge';
+        badge.textContent = n > 99 ? '99+' : String(n);
+        btn.appendChild(badge);
+      },
+
+      // Re-reads just the unread total (limit=1 keeps it cheap) after a
+      // thread is opened, muted or marked read.
+      _refreshInboxBadge: function () {
+        var self = this;
+        var user = lively.identity.did.currentUser();
+        if (!user) return;
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', lively.identity.did.baseUrl() + '/@' + user.handle + '/inbox?limit=1');
+        xhr.withCredentials = true;
+        xhr.onload = function () {
+          if (xhr.status !== 200) return;
+          try { self._setInboxBadge(JSON.parse(xhr.responseText).unreadReplies || 0); } catch (e) { /* badge stays as is */ }
+        };
+        xhr.send();
+      },
+
+      _markAllThreadsRead: function () {
+        var self = this;
+        var user = lively.identity.did.currentUser();
+        if (!user) return;
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', lively.identity.did.baseUrl() + '/@' + user.handle + '/inbox/threads/read-all');
+        xhr.withCredentials = true;
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.onload = function () {
+          if (xhr.status !== 200) return self._showError('Could not mark replies read (' + xhr.status + ')');
+          self._loadReceived();
+        };
+        xhr.onerror = function () { self._showError('Network error'); };
+        xhr.send('{}');
       },
 
       // De-emphasizes a fully-built received-record card for a muted sender
@@ -1121,15 +1348,20 @@ module('lively.identity.PostCardMailbox')
           if (rec.status === 'returned') {
             var badge = document.createElement('span');
             badge.className = 'pcm-badge pcm-badge-danger';
-            badge.textContent = '✉ Returned';
+            badge.textContent = rec.reply ? '✉ Reply returned' : '✉ Returned';
             card.appendChild(badge);
           }
 
           var to = self._makeIdentityRow('To: ', rec.recipientHandle, null);
 
+          // A returned reply was never shown to anyone and its stored copy
+          // is marked deleted, so there is no card to open; say what it was
+          // a reply to instead.
           var id = document.createElement('div');
           id.style.cssText  = 'color:var(--pcm-text-secondary);font-size:11px;margin-bottom:3px;';
-          id.textContent    = 'Card: ' + rec.objId;
+          id.textContent    = rec.reply
+            ? 'Your reply to “' + (rec.rootTitle || 'a postcard') + '”'
+            : 'Card: ' + rec.objId;
 
           var when = document.createElement('div');
           when.style.cssText = 'color:var(--pcm-text-tertiary);font-size:11px;';
@@ -1157,7 +1389,7 @@ module('lively.identity.PostCardMailbox')
           card.appendChild(to);
           card.appendChild(id);
           card.appendChild(when);
-          card.appendChild(self._makeActionsCluster([menuBtn, openBtn]));
+          card.appendChild(self._makeActionsCluster(rec.reply ? [menuBtn] : [menuBtn, openBtn]));
           content.appendChild(card);
         });
       },
