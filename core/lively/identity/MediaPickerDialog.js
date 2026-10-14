@@ -315,10 +315,15 @@ module("lively.identity.MediaPickerDialog")
       // dialog-overlay
       // section calls for. fill:null keeps it invisible while still
       // participating in hit-testing (unlike eventsAreIgnored morphs,
-      // which are explicitly made hit-test-transparent).
+      // which are explicitly made hit-test-transparent). Sized to the
+      // world's own extent, not an oversized rect — a morph reaching past the
+      // world grows the page's scrollable area (a 20000px one made
+      // scrollWidth/scrollHeight 15000 and showed both scrollbars for as long
+      // as the picker was open).
       _buildCatcher: function () {
         var self = this;
-        var c = noDrag(new lively.morphic.Box(lively.rect(-5000, -5000, 20000, 20000)));
+        var worldExtent = $world.getExtent();
+        var c = noDrag(new lively.morphic.Box(lively.rect(0, 0, worldExtent.x, worldExtent.y)));
         c.applyStyle({ fill: null, borderWidth: 0 });
         c.onMouseUp = function (evt) { self.close(); return true; };
         $world.addMorph(c);
