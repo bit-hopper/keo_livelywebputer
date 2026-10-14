@@ -84,6 +84,7 @@ module("lively.identity.ConstellationLounge")
     "lively.identity.ConstellationSettingsDialog",
     "lively.identity.EditEventDialog",
     "lively.identity.ConstellationMap",
+    "lively.identity.MediaPickerDialog",
     "lively.morphic.Complete",
   )
   .toRun(function () {
@@ -318,7 +319,8 @@ module("lively.identity.ConstellationLounge")
         this._threadExpanded = {};
         this._replyBoxOpenFor = null;   // objId of the comment whose inline reply box is open, "ROOT" for the top composer, or null
         this._draftText = {};           // same keys as above -> in-progress composer text, kept across re-renders
-        this._draftAttachment = {};     // same keys -> {uploading:true} while in flight, else {kind, url, name, entry}
+        this._draftAttachment = {};     // same keys -> {uploading:true} while in flight, else {kind, url, name, entry} (entry is null for a picked GIF/sticker: it's a plain Klipy URL, not an uploaded blob)
+        this._mediaPicker = null;       // lazily created by _getMediaPicker — one controller shared by every composer, only one is ever open at a time
         this._didHandleCache = {};      // did -> handle, for authors not already in quickInfo.memberHandles
         this._bodyBoxCache = {};        // reply.objId -> {box, html, width, height} — see _renderCommentNode
         this._threadRerenderTimer = null;
@@ -4970,11 +4972,50 @@ module("lively.identity.ConstellationLounge")
         return row;
       },
 
+      _getMediaPicker: function () {
+        if (!this._mediaPicker) this._mediaPicker = new lively.identity.MediaPickerController();
+        return this._mediaPicker;
+      },
+
+      // Opens the shared GIF/Sticker/Emoji picker (MediaPickerDialog.js,
+      // the same one RoomView.js's chat composer uses) for the composer
+      // identified by key, anchored to its box. Same toggle behavior as
+      // RoomView's: the GIF button while the picker is already open shuts it.
+      _openMediaPicker: function (key, anchorMorph, initialTab) {
+        var self = this;
+        var picker = this._getMediaPicker();
+        if (picker.isOpen()) { picker.close(); return; }
+        picker.open(anchorMorph.globalBounds(), {
+          initialTab: initialTab,
+          onPick: function (payload) { self._onMediaPicked(key, payload); },
+        });
+      },
+
+      // An emoji goes straight into the composer's draft text; a GIF/sticker
+      // is staged like an uploaded image (preview strip, sent with the
+      // Comment button) rather than posted immediately, so it can carry a
+      // caption — except entry is null, since it's a plain Klipy URL and
+      // there's no uploaded blob to reference (see _submitReply). A pick
+      // replaces whatever was staged: one attachment at a time per composer.
+      // Both paths re-render the thread tree, which rebuilds the composer
+      // from this._draftText/this._draftAttachment.
+      _onMediaPicked: function (key, payload) {
+        if (payload.type === "emoji") {
+          this._draftText[key] = (this._draftText[key] || "") + payload.value;
+        } else {
+          this._draftAttachment[key] = {
+            kind: "gif", url: payload.value, name: payload.type === "sticker" ? "Sticker" : "GIF", entry: null,
+          };
+        }
+        this._renderThreadTree();
+      },
+
       // Renders a "join the conversation" (key "ROOT") or per-comment reply
       // composer — a bordered, generously-rounded box with a multi-line
       // Lively Text input (the same allowInput technique the search field
       // above uses, not a raw <textarea>), a toolbar row (image/video are
-      // wired to a real upload; GIF/text-format stay decorative — see this
+      // wired to a real upload, GIF opens the media picker; text-format
+      // stays decorative — see this
       // file's own project memory), an attachment preview strip when
       // something is staged, and pill-shaped Cancel/Comment(Reply) buttons
       // on the right. Renders nothing (and returns y unchanged) for a
@@ -5020,8 +5061,9 @@ module("lively.identity.ConstellationLounge")
         if (staged) this._renderAttachmentPreview(box, key, staged, PAD, PAD + fieldH + 4, w - PAD * 2, PREVIEW_H - 8);
 
         // Toolbar — image/video icons open a real file picker and upload
-        // (see _promptFileUpload/_stageAttachmentUpload below); text-format
-        // and GIF stay decorative for now. text_fields is the vendored
+        // (see _promptFileUpload/_stageAttachmentUpload below); GIF opens
+        // the media picker (_openMediaPicker); text-format stays decorative
+        // for now. text_fields is the vendored
         // Material Symbols ligature for the reference composer's "Aa"
         // text-formatting glyph (renders as a stylized "Tt").
         //
@@ -5071,6 +5113,21 @@ module("lively.identity.ConstellationLounge")
             lbl.setPosition(lively.pt(toolbarX, toolbarY + 7));
             lbl.setExtent(lively.pt(item.w, 16));
             toolbarX += item.w + 6;
+            // makeLabel/beLabel leave eventsAreIgnored = true (see
+            // CLAUDE.md), so flip it back; onMouseUp, not onMouseDown,
+            // because the picker's click-away catcher closes on mouseup —
+            // opening on mousedown would have that same click's mouseup
+            // land on the just-added catcher and shut the picker again.
+            lbl.eventsAreIgnored = false;
+            lbl.draggingEnabled = false;
+            lbl.droppingEnabled = false;
+            lbl.grabbingEnabled = false;
+            lbl.handStyle = "pointer";
+            lbl.onMouseUp = function (evt) {
+              self._openMediaPicker(key, box, "gif");
+              evt.stop();
+              return true;
+            };
           }
         });
 
@@ -5247,7 +5304,7 @@ module("lively.identity.ConstellationLounge")
           return;
         }
 
-        if (staged.kind === "image") {
+        if (staged.kind === "image" || staged.kind === "gif") {
           var thumb = new lively.morphic.Image(lively.rect(0, 0, h - 12, h - 12));
           thumb.setImageURL(staged.url);
           thumb.applyStyle({ borderRadius: 4, borderWidth: 0, clipMode: "hidden" });
@@ -5309,10 +5366,12 @@ module("lively.identity.ConstellationLounge")
           // inline node — a bare image can't be a direct doc.content
           // child. video is `group:'block'`, atom:true, so it's the
           // opposite: a direct doc.content sibling, never paragraph-wrapped.
-          if (attachment.kind === "image") {
+          if (attachment.kind === "image" || attachment.kind === "gif") {
+            // A picked GIF/sticker has no entry (a plain Klipy URL, not an
+            // uploaded blob) so no objId — the renderer falls back to src.
             content.push({
               type: "paragraph",
-              content: [{ type: "image", attrs: { src: attachment.url, alt: attachment.name, title: attachment.name, objId: attachment.entry.objId } }],
+              content: [{ type: "image", attrs: { src: attachment.url, alt: attachment.name, title: attachment.name, objId: attachment.entry ? attachment.entry.objId : null } }],
             });
           } else {
             content.push({ type: "video", attrs: { src: attachment.url, objId: attachment.entry.objId } });
@@ -5325,7 +5384,7 @@ module("lively.identity.ConstellationLounge")
             doc: doc,
             constellation: self._name,
             visibility: "public",
-            attachments: attachment ? [attachment.entry] : [],
+            attachments: attachment && attachment.entry ? [attachment.entry] : [],
             replyTo: { objId: parentObjId, anchor: null },
           }, function (err, envelope) {
             if (err) return thenDo(err);

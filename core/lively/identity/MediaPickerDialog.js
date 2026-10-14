@@ -334,6 +334,13 @@ module("lively.identity.MediaPickerDialog")
         var self = this;
         var x = anchorRect.maxX() - PANEL_W;
         var y = anchorRect.y - PANEL_H - 8;
+        // Opens above the anchor (RoomView's input sits at the bottom of its
+        // window), flips below it when there's no room above (a composer near
+        // the top of the screen), and stays inside the world either way.
+        var worldExtent = $world.getExtent();
+        if (y < 8) y = anchorRect.maxY() + 8;
+        x = Math.max(8, Math.min(x, worldExtent.x - PANEL_W - 8));
+        y = Math.max(8, Math.min(y, worldExtent.y - PANEL_H - 8));
 
         var panel = noDrag(new lively.morphic.Box(lively.rect(x, y, PANEL_W, PANEL_H)));
         panel.isEpiMorph = true;
