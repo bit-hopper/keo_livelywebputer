@@ -284,6 +284,7 @@ module("lively.identity.ConstellationLounge")
     // margin has to be baked into every x/width passed to the render
     // functions below instead.
     var COMMENT_PAD_X = 10;
+    var COMPOSER_MAX_EXTRA = 160;  // most a comment box grows with its text (~10 lines past the base 3); past that the field scrolls
     var COMMENT_TOP_MARGIN = 12;   // small gap above the top ("Start conversation") composer, which otherwise sits flush against the container's top edge
     var THREAD_LINE_COLOR = Color.rgb(224, 227, 230);
     var COMMENT_META_COLOR = Color.rgb(120, 120, 120);
@@ -320,6 +321,9 @@ module("lively.identity.ConstellationLounge")
         this._replyBoxOpenFor = null;   // objId of the comment whose inline reply box is open, "ROOT" for the top composer, or null
         this._draftText = {};           // same keys as above -> in-progress composer text, kept across re-renders
         this._draftAttachment = {};     // same keys -> {uploading:true} while in flight, else {kind, url, name, entry} (entry is null for a picked GIF/sticker: it's a plain Klipy URL, not an uploaded blob)
+        this._draftFieldExtra = {};     // same keys -> px the composer's text field has grown past its base height (see _growComposerWithText)
+        this._composerFields = {};      // same keys -> the live text field of each rendered composer, so a stale timeout from a replaced field can tell it's stale
+        this._pendingComposerFocus = null; // {key, caret} — set just before a grow-triggered rebuild so the recreated field gets focus + caret back
         this._mediaPicker = null;       // lazily created by _getMediaPicker — one controller shared by every composer, only one is ever open at a time
         this._didHandleCache = {};      // did -> handle, for authors not already in quickInfo.memberHandles
         this._bodyBoxCache = {};        // reply.objId -> {box, html, width, height} — see _renderCommentNode
@@ -4977,6 +4981,40 @@ module("lively.identity.ConstellationLounge")
         return row;
       },
 
+      // Grows (or shrinks) a composer's box to fit what's typed in it, up to
+      // COMPOSER_MAX_EXTRA past its base height — beyond that the field
+      // scrolls internally (clipMode "auto"). The box height is derived from
+      // state in _renderComposerIfSignedIn, and the whole thread tree is
+      // rebuilt from state, so growing means: measure, store the extra in
+      // this._draftFieldExtra[key], rebuild, and put focus and the caret
+      // back in the recreated field (via this._pendingComposerFocus). Only
+      // rebuilds when the needed extra actually changes — i.e. when the
+      // text gains or loses a line — not on every keystroke.
+      _growComposerWithText: function (key, field, baseFieldH) {
+        // A rebuild already replaced this field. (field.owner isn't a
+        // usable check: removing the old box from the container leaves
+        // the field's own owner — the box — set.)
+        if (this._composerFields[key] !== field) return;
+        var node = field.renderContext().shapeNode;
+        var content = node && node.firstElementChild;
+        if (!content) return;
+        // The content div has min-height:calc(100% - 4px) of the field's
+        // *current* height, which would pin the reading at whatever height
+        // it already has and so never let the box shrink back — zero the
+        // floor for the read, then restore it.
+        var prevMin = content.style.minHeight;
+        content.style.minHeight = "0px";
+        var contentH = content.offsetHeight;
+        content.style.minHeight = prevMin;
+        // +4: the shapeNode's own fixed vertical padding, which
+        // setExtentHTML subtracts from whatever extent the field is given.
+        var need = Math.max(0, Math.min(COMPOSER_MAX_EXTRA, Math.ceil(contentH + 4 - baseFieldH)));
+        if (need === (this._draftFieldExtra[key] || 0)) return;
+        this._draftFieldExtra[key] = need;
+        this._pendingComposerFocus = { key: key, caret: field.getSelectionRange() };
+        this._renderThreadTree();
+      },
+
       _getMediaPicker: function () {
         if (!this._mediaPicker) this._mediaPicker = new lively.identity.MediaPickerController();
         return this._mediaPicker;
@@ -5035,7 +5073,10 @@ module("lively.identity.ConstellationLounge")
         var isRoot = key === "ROOT";
         var PAD = 14, TOOLBAR_H = 30, BOTTOM_PAD = 12, PREVIEW_H = 48;
         var staged = this._draftAttachment[key];
-        var H = (isRoot ? 112 : 100) + (staged ? PREVIEW_H : 0);
+        // _draftFieldExtra[key]: extra px the text has outgrown the field's
+        // base height by (see _growComposerWithText) — added to the whole
+        // box so the toolbar and everything below move down with it.
+        var H = (isRoot ? 112 : 100) + (staged ? PREVIEW_H : 0) + (this._draftFieldExtra[key] || 0);
         var fieldH = H - PAD - TOOLBAR_H - BOTTOM_PAD - 6 - (staged ? PREVIEW_H : 0);
         var toolbarY = H - BOTTOM_PAD - TOOLBAR_H;
 
@@ -5061,9 +5102,25 @@ module("lively.identity.ConstellationLounge")
           var result = superKeyDown.call(this, evt);
           self._draftText[key] = field.textString;
           placeholder.setVisible(!field.textString);
+          // The typed character isn't in the field yet at keydown, so measure
+          // on the next tick (the same idiom as the rest of this file's
+          // "measure after the DOM has the new content").
+          setTimeout(function () {
+            self._draftText[key] = field.textString;
+            self._growComposerWithText(key, field, fieldH - (self._draftFieldExtra[key] || 0));
+          }, 0);
           return result;
         };
         box.addMorph(field);
+        this._composerFields[key] = field;
+        // Re-focus after a grow-triggered rebuild (_growComposerWithText),
+        // which throws away and recreates this field mid-typing.
+        var pf = this._pendingComposerFocus;
+        if (pf && pf.key === key) {
+          this._pendingComposerFocus = null;
+          field.focus();
+          field.setSelectionRange(pf.caret[0], pf.caret[1]);
+        }
 
         if (staged) this._renderAttachmentPreview(box, key, staged, PAD, PAD + fieldH + 4, w - PAD * 2, PREVIEW_H - 8);
 
@@ -5164,6 +5221,7 @@ module("lively.identity.ConstellationLounge")
             }
             delete self._draftText[key];
             delete self._draftAttachment[key];
+            delete self._draftFieldExtra[key];
             if (!isRoot) self._replyBoxOpenFor = null;
             self._reloadAfterReply(parentObjId);
           });
