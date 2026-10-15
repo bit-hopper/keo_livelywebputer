@@ -1072,6 +1072,15 @@ module("lively.identity.WikiIndex")
           this._gridContentHeight = cards.length ? rowH : 0;
         } else {
           var cols = Math.max(1, Math.floor((gridW + GRID_GAP) / (CARD_W + GRID_GAP)));
+          // Center the block of columns in the span between the panels:
+          // cards are a fixed width, so the columns rarely fill it exactly
+          // and the leftover (~190px at 1923px) used to all sit on the
+          // right. The block is sized by the column count, not the card
+          // count, so a filter that leaves fewer cards doesn't shift the
+          // columns sideways; rows stay left-aligned within the block.
+          var blockW = cols * CARD_W + (cols - 1) * GRID_GAP;
+          this._gridW = blockW;
+          this._gridBox.setPosition(lively.pt(gridX + Math.max(0, Math.floor((gridW - blockW) / 2)), this._gridY));
           var cx = 0, cy = 0, col = 0, tallest = 0;
           cards.forEach(function (card) {
             if (col === cols) {
@@ -1086,7 +1095,7 @@ module("lively.identity.WikiIndex")
             tallest = Math.max(tallest, card._cardH || CARD_H);
           });
           var totalH = cards.length ? cy + tallest : 0;
-          this._gridBox.setExtent(lively.pt(gridW, Math.max(totalH, CARD_H)));
+          this._gridBox.setExtent(lively.pt(blockW, Math.max(totalH, CARD_H)));
           this._gridBox.applyStyle({ clipMode: "visible" });
           this._gridContentHeight = totalH;
         }
@@ -1275,10 +1284,30 @@ module("lively.identity.WikiIndex")
         // paints over it.
         dropdown.renderContext().shapeNode.style.zIndex = "1000";
         this._sortByDropdown = dropdown;
+
+        // Click anywhere else closes it. Its rows are decided when it's
+        // built (the "All pages" row only exists while a page is open), so
+        // a menu left open across a page opening/closing went stale —
+        // confirmed live: opened with no page, then a card click left it
+        // open with its three old rows. A document-level capture listener
+        // sees the click before any morph does; the sort button's own
+        // click is left to its own toggle.
+        this._sortOutsideHandler = function (evt) {
+          var dd = self._sortByDropdown;
+          if (!dd) return;
+          if (dd.renderContext().shapeNode.contains(evt.target)) return;
+          if (self._sortByBox.renderContext().shapeNode.contains(evt.target)) return;
+          self._closeSortByDropdown();
+        };
+        document.addEventListener("mousedown", this._sortOutsideHandler, true);
         this._layout();
       },
 
       _closeSortByDropdown: function () {
+        if (this._sortOutsideHandler) {
+          document.removeEventListener("mousedown", this._sortOutsideHandler, true);
+          this._sortOutsideHandler = null;
+        }
         if (!this._sortByDropdown) return;
         this._sortByDropdown.remove();
         this._sortByDropdown = null;
@@ -1721,6 +1750,7 @@ module("lively.identity.WikiIndex")
         if (view._saveTimer && view._saveNow) view._saveNow();
         view.remove();
         this._activeContentMorph = null;
+        this._closeSortByDropdown();
         this._showSidebarPageList("");
         if (this._sidebarSearchField) this._sidebarSearchField.textString = "";
         if (this._sidebarSearchPlaceholder) this._sidebarSearchPlaceholder.setVisible(true);
@@ -1738,6 +1768,7 @@ module("lively.identity.WikiIndex")
         var view = this._activeContentMorph;
         if (view) view.remove();
         this._activeContentMorph = null;
+        this._closeSortByDropdown();
         this._layoutGrid(); // back to the wrapped grid while the refetch runs
         this._pages = (this._pages || []).filter(function (p) { return p.objId !== objId; });
         this._fetchWikiIndexSilently(function () {
@@ -1764,6 +1795,9 @@ module("lively.identity.WikiIndex")
         // page's own outline — the home button (_showSidebarPageList) is
         // the only way to switch it into "all pages" mode from here.
         this._sidebarMode = "outline";
+        // An open sort menu was built for the no-page state (no "All
+        // pages" row); close it rather than leave it stale.
+        this._closeSortByDropdown();
         if (this._sidebarSearchField) this._sidebarSearchField.textString = "";
         if (this._sidebarSearchPlaceholder) this._sidebarSearchPlaceholder.setVisible(true);
         this._renderSidebarOutline(morph);
