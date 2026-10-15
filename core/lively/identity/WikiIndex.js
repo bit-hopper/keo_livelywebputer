@@ -1214,7 +1214,7 @@ module("lively.identity.WikiIndex")
 
         var self = this;
         // While a page is open the menu gets one more row below the sort
-        // options — "← All pages", the way back from the one-row shelf to
+        // options — "All pages", the way back from the one-row shelf to
         // the wrapped grid. It's an action, not a sort key, so it sits
         // under a divider and never gets the ✓.
         var pageOpen = !!this._activeContentMorph;
@@ -1253,7 +1253,7 @@ module("lively.identity.WikiIndex")
 
           var allRow = new lively.morphic.Text(
             lively.rect(0, rowsBottom + DIVIDER_H, SORT_W, SORT_ITEM_H),
-            "← All pages",
+            "All pages",
           );
           allRow.applyStyle({
             fontSize: 12, fontWeight: "600", textColor: Color.rgb(20, 20, 20),
@@ -1711,7 +1711,7 @@ module("lively.identity.WikiIndex")
         self._setActiveContentMorph(editor);
       },
 
-      // "← All pages": drops the open page/editor and goes back to the
+      // "All pages" (sort-by menu): drops the open page/editor and goes back to the
       // wrapped grid of every page, with the left menu back on the page
       // list. A WikiEditor autosaves on a 2s debounce, so a pending save
       // is flushed first rather than left to a timer on a removed morph.
