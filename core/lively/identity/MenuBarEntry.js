@@ -76,6 +76,55 @@ module("lively.identity.MenuBarEntry")
         this._timer = null;
         this.setUnreadReplies(0);
       },
+
+      // Ends the local half of a session and leaves for the welcome page: clears
+      // IndexedDB (so restoreSession() can't revive it), tells other tabs, then
+      // navigates. Used by sign-out (after the server logout) and by account
+      // deletion (the server already dropped the session).
+      finishSignOut: function () {
+        var did = lively.identity.did;
+        did._currentUser = null;
+        lively.bindings.signal(did, "identityChanged", null);
+        // Clear IndexedDB so restoreSession() cannot revive this session.
+        did.clearSession(function () {
+          // Notify other tabs only after the server session is gone so
+          // their /welcome.html redirect won't see a live session.
+          if (typeof BroadcastChannel !== "undefined") {
+            var _ch = new BroadcastChannel("lively-identity");
+            _ch.postMessage({ type: "signed-out" });
+            _ch.close();
+          }
+          if (lively.Config) lively.Config.askBeforeQuit = false;
+          window.location.href = "/welcome.html";
+        });
+      },
+
+      // Confirm, then end the session. A namespace function (not only the
+      // entry's own method) so the Settings dialog can call it too.
+      signOut: function () {
+        var self = this;
+        var did = lively.identity.did;
+        var user = did.currentUser();
+        $world.confirm(
+          "Sign out as @" + user.handle + "?",
+          function (ok) {
+            if (!ok) return;
+            // Clear in-memory state immediately so the menubar updates now.
+            did._currentUser = null;
+            lively.bindings.signal(did, "identityChanged", null);
+            // Wait for the server to commit the session deletion before
+            // navigating — otherwise /welcome.html sees a live cookie and
+            // bounces back to the user's home world.
+            fetch("/nodejs/IdentityServer/logout", {
+              method: "POST",
+              credentials: "include",
+            }).then(function () { self.finishSignOut(); }).catch(function (err) {
+              console.warn("[Identity] Server logout failed:", err.message);
+              self.finishSignOut();
+            });
+          },
+        );
+      },
     });
 
     lively.require("lively.identity.AmbientPresencePanel").toRun(function () {
@@ -159,43 +208,7 @@ module("lively.identity.MenuBarEntry")
         },
 
         signOut: function signOut() {
-          var did = lively.identity.did;
-          var user = did.currentUser();
-          $world.confirm(
-            "Sign out as @" + user.handle + "?",
-            function (ok) {
-              if (!ok) return;
-              // Clear in-memory state immediately so the menubar updates now.
-              did._currentUser = null;
-              lively.bindings.signal(did, "identityChanged", null);
-
-              function _finishSignOut() {
-                // Clear IndexedDB so restoreSession() cannot revive this session.
-                did.clearSession(function () {
-                  // Notify other tabs only after the server session is gone so
-                  // their /welcome.html redirect won't see a live session.
-                  if (typeof BroadcastChannel !== "undefined") {
-                    var _ch = new BroadcastChannel("lively-identity");
-                    _ch.postMessage({ type: "signed-out" });
-                    _ch.close();
-                  }
-                  if (lively.Config) lively.Config.askBeforeQuit = false;
-                  window.location.href = "/welcome.html";
-                });
-              }
-
-              // Wait for the server to commit the session deletion before
-              // navigating — otherwise /welcome.html sees a live cookie and
-              // bounces back to the user's home world.
-              fetch("/nodejs/IdentityServer/logout", {
-                method: "POST",
-                credentials: "include",
-              }).then(_finishSignOut).catch(function (err) {
-                console.warn("[Identity] Server logout failed:", err.message);
-                _finishSignOut();
-              });
-            },
-          );
+          lively.identity.MenuBarEntry.signOut();
         },
 
         openMyWorlds: function openMyWorlds() {
@@ -232,13 +245,9 @@ module("lively.identity.MenuBarEntry")
           });
         },
 
-        // Placeholder — no settings options exist yet. Opens a blank window
-        // titled "Settings" to be filled in later.
         openSettings: function openSettings() {
-          var box = new lively.morphic.Box(lively.rect(0, 0, 400, 300));
-          box.openInWindow({
-            title: "Settings",
-            pos: lively.morphic.World.current().visibleBounds().center(),
+          lively.require("lively.identity.SettingsDialog").toRun(function () {
+            lively.identity.SettingsDialog.open();
           });
         },
 

@@ -489,10 +489,8 @@ module("lively.identity.AmbientPresencePanel")
       },
 
       openSettings: function openSettings() {
-        var box = new lively.morphic.Box(lively.rect(0, 0, 400, 300));
-        box.openInWindow({
-          title: "Settings",
-          pos: lively.morphic.World.current().visibleBounds().center(),
+        lively.require("lively.identity.SettingsDialog").toRun(function () {
+          lively.identity.SettingsDialog.open();
         });
       },
 
