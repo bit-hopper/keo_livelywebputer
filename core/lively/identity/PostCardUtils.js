@@ -95,8 +95,8 @@ module('lively.identity.PostCardUtils')
         '.lively-code-cell-reset-btn:before{content:"\\21BA";font-size:11px;margin-right:5px;}',
         '.lively-code-cell-run-btn{background:#1a7f37;border-color:#17702f;color:#fff;}',
         '.lively-code-cell-run-btn:hover{background:#16692d;}',
-        '.lively-code-cell-stop-btn{display:none;border-color:#efb4ad;color:#c0392b;}',
-        '.lively-code-cell-stop-btn:hover{background:#fdf0ee;}',
+        '.lively-code-cell-stop-btn{display:none;background:#c0392b;border-color:#a93226;color:#fff;}',
+        '.lively-code-cell-stop-btn:hover{background:#a93226;}',
         '.lively-code-cell-reset-btn:hover{background:#f4f5f9;}',
         '.lively-code-cell-status{margin-left:auto;color:#7a8094;font-size:11.5px;}',
         // Source pane: dark, with its own token palette (the highlight.js theme loaded for
