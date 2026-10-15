@@ -100,6 +100,17 @@ module("lively.identity.WikiIndex")
     // Narrowest the open page may get beside the two panels; below it the
     // panels hide and the page takes the full width (_panelsFit).
     var PAGE_MIN_W = 600;
+
+    // A plain Box/Text defaults to draggable, droppable AND grabbable
+    // (CLAUDE.md), and drag-start is decided by the morph actually under
+    // the cursor — so every morph in a panel needs all three off, not just
+    // its container. Applies to a morph and everything inside it.
+    function noDragTree(m) {
+      m.draggingEnabled = false;
+      m.droppingEnabled = false;
+      m.grabbingEnabled = false;
+      (m.submorphs || []).forEach(noDragTree);
+    }
     var PANEL_PAD = 14;
     var PANEL_HEADER_TOP = 14;
     var PANEL_ITEMS_TOP = PANEL_HEADER_TOP + 26;
@@ -837,6 +848,11 @@ module("lively.identity.WikiIndex")
         header.eventsAreIgnored = true;
         box.addMorph(header);
         this._sidebarHeader = header;
+
+        // Not a draggable part: it was picked up and moved by a plain
+        // click-drag (confirmed live) — same three flags the categories
+        // panel opposite already sets, on every child too.
+        noDragTree(box);
 
         box._itemMorphs = [];
         return box;
@@ -1879,6 +1895,7 @@ module("lively.identity.WikiIndex")
             fontSize: 12, textColor: Color.rgb(170, 170, 170),
           });
           empty.setPosition(lively.pt(16, y));
+          noDragTree(empty);
           box.addMorph(empty);
           box._itemMorphs.push(empty);
           y += 22;
@@ -1906,7 +1923,14 @@ module("lively.identity.WikiIndex")
               itemDiv.style.whiteSpace = "nowrap";
               itemDiv.style.overflow = "hidden";
               itemDiv.style.textOverflow = "ellipsis";
+              // Explicit width: the ellipsis used to rely on the framework's
+              // max-width on this div, which getTextExtentHTML (HTML.js)
+              // strips for any non-"pre" text and never restores — one
+              // measurement call and the names spilled out of the panel
+              // (reproduced live with getTextExtent()).
+              itemDiv.style.width = "calc(100% - 8px)";
             }
+            noDragTree(item);
             item.onMouseDown = function () {
               if (h.el && h.el.scrollIntoView) h.el.scrollIntoView({ behavior: "smooth", block: "start" });
             };
@@ -1950,6 +1974,7 @@ module("lively.identity.WikiIndex")
             { fontSize: 12, textColor: Color.rgb(170, 170, 170) },
           );
           empty.setPosition(lively.pt(16, y));
+          noDragTree(empty);
           box.addMorph(empty);
           box._itemMorphs.push(empty);
           y += 22;
@@ -1971,7 +1996,14 @@ module("lively.identity.WikiIndex")
               itemDiv.style.whiteSpace = "nowrap";
               itemDiv.style.overflow = "hidden";
               itemDiv.style.textOverflow = "ellipsis";
+              // Explicit width: the ellipsis used to rely on the framework's
+              // max-width on this div, which getTextExtentHTML (HTML.js)
+              // strips for any non-"pre" text and never restores — one
+              // measurement call and the names spilled out of the panel
+              // (reproduced live with getTextExtent()).
+              itemDiv.style.width = "calc(100% - 8px)";
             }
+            noDragTree(item);
             item.onMouseDown = function () { self._openPage(page); };
             box._itemMorphs.push(item);
             y += 22;
