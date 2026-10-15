@@ -483,6 +483,135 @@ module("lively.identity.ProfileCard")
           });
         }
 
+        // Orbit widget — under the astro box, same x/width. Two separate
+        // categories live in payload.orbit = { status, spotlights }:
+        //   status     — ONE relationship status, { label, emoji } ("Booked 💋",
+        //                "Dating 💘", "Open ♾️"), drawn as a pill at the top.
+        //   spotlights — up to 3 people from the network, { label, handle }
+        //                ("Opp @gameboy", "Twin @…"), listed below the
+        //                pill; the handle links to that profile.
+        // Visitors only see the card when either is set. orbitBottom feeds the
+        // divider reservation further down.
+        var orbitBottom = by + astroBoxH;
+        (function () {
+          var SPOT_MAX = 3, OROW = 22, PILL_H = 24;
+          var orbitData = payload.orbit || {};
+          var status = orbitData.status && typeof orbitData.status.label === 'string' && orbitData.status.label
+            ? orbitData.status : null;
+          var spots = (orbitData.spotlights || []).filter(function (o) {
+            return o && typeof o.label === 'string' && o.label && typeof o.handle === 'string' && o.handle;
+          }).slice(0, SPOT_MAX);
+          if (!status && !spots.length) return;
+
+          var oy = by + astroBoxH + 8;
+          var CAP_H = 18, SEC_GAP = 10;
+          var both = !!status && spots.length > 0;
+          var oh = 8
+            + (status ? CAP_H + PILL_H + 4 : 0)
+            + (both ? SEC_GAP : 0)
+            + (spots.length ? CAP_H + spots.length * OROW : 0)
+            + 6;
+          var orbitCard = new lively.morphic.Box(lively.rect(bx, oy, BW, oh));
+          orbitCard.applyStyle({ fill: Color.rgb(249, 246, 253),
+            borderRadius: 12, borderColor: Color.rgb(232, 224, 244), borderWidth: 1 });
+          orbitCard.draggingEnabled = false; orbitCard.droppingEnabled = false;
+          orbitCard.grabbingEnabled = false;
+          orbitCard.eventsAreIgnored = true;
+          pane.addMorph(orbitCard);
+
+          function caption(str, capX, capY) {
+            var c = new lively.morphic.Text(lively.rect(capX, capY, 150, 14), str);
+            c.applyStyle({ allowInput: false, fontSize: 9, textColor: Color.rgb(160, 160, 160),
+              fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
+            c.eventsAreIgnored = true;
+            pane.addMorph(c);
+          }
+
+          var cy = oy + 8;
+
+          // Category 1 — relationship status: "Relationship" caption, then
+          // a white pill with the chosen status.
+          if (status) {
+            caption('Relationship', bx + 8, cy + 1);
+            cy += CAP_H;
+            // Snug pill, centered in the card: width comes from the measured
+            // text (canvas, same approach as wrapLineCount — a live-DOM span
+            // read isn't reliable in the tick the morph is added) plus PILL_PAD
+            // each side. The label box adds the shapeNode's own 4px/side
+            // padding back, plus 2px slack so the last glyph never clips.
+            var statusStr = status.emoji ? status.label + ' ' + status.emoji : status.label;
+            var mctx = document.createElement('canvas').getContext('2d');
+            mctx.font = 'bold ' + (11 * 4 / 3) + 'px Helvetica';
+            var textW = Math.ceil(mctx.measureText(statusStr).width);
+            var PILL_PAD = 14;
+            var pillW = Math.min(BW - 20, textW + PILL_PAD * 2);
+            var pillX = bx + Math.round((BW - pillW) / 2);
+            var pill = new lively.morphic.Box(lively.rect(pillX, cy, pillW, PILL_H));
+            pill.applyStyle({ fill: Color.white, borderRadius: PILL_H / 2,
+              borderColor: Color.rgb(232, 224, 244), borderWidth: 1 });
+            pill.draggingEnabled = false; pill.droppingEnabled = false; pill.grabbingEnabled = false;
+            pill.eventsAreIgnored = true;
+            pane.addMorph(pill);
+            // Label first, emoji after — one Text morph so both share a baseline.
+            var slbl = new lively.morphic.Text(
+              lively.rect(pillX + PILL_PAD - 4, cy + 1, pillW - PILL_PAD * 2 + 10, PILL_H - 2),
+              statusStr);
+            slbl.applyStyle({ allowInput: false, fontSize: 11, fontWeight: 'bold',
+              textColor: Color.rgb(35, 35, 35), fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
+            slbl.eventsAreIgnored = true;
+            pane.addMorph(slbl);
+            cy += PILL_H + 4;
+          }
+
+          if (both) {
+            var sep = new lively.morphic.Box(lively.rect(bx + 12, cy + SEC_GAP / 2, BW - 24, 1));
+            sep.applyStyle({ fill: Color.rgb(232, 224, 244), borderWidth: 0 });
+            sep.eventsAreIgnored = true;
+            pane.addMorph(sep);
+            cy += SEC_GAP;
+          }
+
+          // Category 2 — spotlights: "Orbit" caption, then "Label @handle" rows.
+          if (spots.length) {
+            pane.addMorph(ico('orbit', bx + 12, cy, 12, 204, 0, 87));
+            caption('Orbit', bx + 30, cy + 1);
+            cy += CAP_H;
+          }
+          // Handle column starts after the longest label (labels are free text,
+          // up to 10 chars), measured on a canvas.
+          var lctx = document.createElement('canvas').getContext('2d');
+          lctx.font = (11 * 4 / 3) + 'px Helvetica';
+          var labW = 0;
+          spots.forEach(function (o) { labW = Math.max(labW, Math.ceil(lctx.measureText(o.label).width)); });
+          labW = Math.min(labW, 80);
+          spots.forEach(function (o, i) {
+            var ry = cy + i * OROW;
+            var tag = o.handle.replace(/^@/, '');
+            var lx = bx + 12;
+            var lbl = new lively.morphic.Text(lively.rect(lx - 4, ry, labW + 10, OROW - 2), o.label);
+            lbl.applyStyle({ allowInput: false, fontSize: 11, fontWeight: 'normal',
+              textColor: Color.rgb(120, 120, 128),
+              fill: Color.rgba(0, 0, 0, 0), borderWidth: 0 });
+            lbl.eventsAreIgnored = true;
+            pane.addMorph(lbl);
+            var hx = lx + labW + 8;
+            var hm = new lively.morphic.Text(
+              lively.rect(hx - 4, ry, bx + BW - hx - 4, OROW - 2), '@' + tag);
+            hm.applyStyle({ allowInput: false, fontSize: 11, fontWeight: 'bold',
+              textColor: Color.rgb(204, 0, 87), fill: Color.rgba(0, 0, 0, 0),
+              borderWidth: 0, handStyle: 'pointer' });
+            hm.draggingEnabled = false; hm.droppingEnabled = false; hm.grabbingEnabled = false;
+            hm._handle = tag;
+            hm.addScript(function onMouseUp(evt) {
+              lively.identity.ProfileCard.open(this._handle);
+              evt.stop();
+              return true;
+            });
+            pane.addMorph(hm);
+          });
+          orbitBottom = oy + oh;
+        })();
+
         function txt(str, x, top, w, h, size, r, g, b, bold) {
           var t = new lively.morphic.Text(lively.rect(x, top, w, h), str || "");
           t.applyStyle({ allowInput: false, fontSize: size || 12,
@@ -531,14 +660,14 @@ module("lively.identity.ProfileCard")
 
         // Reserve room below the astro-signs box (drawn above at a fixed
         // [by, by+astroBoxH] independent of this y accumulator) so the
-        // divider/Connect row/Friends button below never collide with it
-        // when the left column has little content (short/no bio, no
-        // pronouns, no links) — confirmed live on a bare profile (@candle):
-        // with nothing above pushing y down, dividerY landed just 1px below
-        // astroBoxH's bottom edge, and the Friends button (centered between
-        // the two) rendered 12px inside the astro box.
-        if (hasAstro || self._isOwner) {
-          y = Math.max(y, by + astroBoxH + 40);
+        // divider/Connect row below never collide with it when the left
+        // column has little content (short/no bio, no pronouns, no links) —
+        // confirmed live on a bare profile (@candle): with nothing above
+        // pushing y down, dividerY landed just 1px below astroBoxH's bottom
+        // edge. (The Friends button now sits beside the box, not under it.)
+        // (orbitBottom already includes the orbit card when one is drawn.)
+        if (hasAstro || self._isOwner || orbitBottom > by + astroBoxH) {
+          y = Math.max(y, orbitBottom + 12);
         }
 
         // divider
@@ -812,8 +941,14 @@ module("lively.identity.ProfileCard")
             'pending-outgoing': 'Request sent', 'pending-incoming': 'Respond to request' };
           var friendLabel = FRIEND_LABELS[info.status] || 'Send friend request';
           var btnW = friendLabel.length > 18 ? 150 : friendLabel.length > 9 ? 136 : 108, btnH = 26;
-          var btnX = bx + Math.floor((BW - btnW) / 2);
-          var btnY = Math.round((by + astroBoxH + dividerY) / 2 - btnH / 2);
+          // Sits left of the astro box, vertically centered on it, with the
+          // send-postcard circle (when shown) as part of the same right-aligned
+          // group ending 12px before the box.
+          var viewer = lively.identity.did.currentUser();
+          var showPc = !self._isOwner && !!viewer;
+          var groupW = btnW + (showPc ? 8 + btnH : 0);
+          var btnX = bx - 12 - groupW;
+          var btnY = by + Math.round((astroBoxH - btnH) / 2);
           var friendsBtn = new lively.morphic.Button(lively.rect(btnX, btnY, btnW, btnH), friendLabel);
           friendsBtn.applyStyle({ borderRadius: 26, borderWidth: 1,
             borderColor: Color.rgb(204, 0, 87),
@@ -1179,8 +1314,7 @@ module("lively.identity.ProfileCard")
           // postcard editor with this profile's handle preset as the
           // recipient (private, encrypted to them). Signed-in visitors on
           // someone else's card only — no point postcarding yourself.
-          var viewer = lively.identity.did.currentUser();
-          if (!self._isOwner && viewer) {
+          if (showPc) {
             var pcSize = btnH;
             var pcBtn = new lively.morphic.Text(
               lively.rect(btnX + btnW + 8, btnY, pcSize, pcSize), 'cards_stack');
@@ -1516,8 +1650,9 @@ module("lively.identity.ProfileCard")
           if (isActive) tint(tb, 255, 255, 255); else tint(tb, 90, 90, 98);
         }
         addTabButton("Profile", "profile", 12);
-        addTabButton("Accounts", "accounts", 142);
-        addTabButton("Domain Handle", "domains", 272);
+        addTabButton("Orbit", "orbit", 142);
+        addTabButton("Accounts", "accounts", 272);
+        addTabButton("Domain Handle", "domains", 402);
         y += 40;
 
         if (tab === 'profile') {
@@ -1586,6 +1721,10 @@ module("lively.identity.ProfileCard")
           y += 30;
         }
 
+        } else if (tab === 'orbit') {
+
+        y = self._buildOrbitTab(pane, payload, y, ew);
+
         } else {
 
         y = self._buildDomainTab(pane, y, ew);
@@ -1636,6 +1775,7 @@ module("lively.identity.ProfileCard")
             risingSign:  merged.risingSign  || "",
             ethAddress:  merged.ethAddress  || "",
             socialAccounts: merged.socialAccounts || [],
+            orbit:       merged.orbit       || { status: null, spotlights: [] },
           };
           lively.identity.userSpace.saveProfile(newPayload, function (err) {
             if (err) { alert("Save failed: " + err.message); return; }
@@ -1704,6 +1844,20 @@ module("lively.identity.ProfileCard")
         if (moonInp)   partial.moonSign = moonInp._signIdx >= 0 ? SV[moonInp._signIdx] : '';
         if (risingInp) partial.risingSign = risingInp._signIdx >= 0 ? SV[risingInp._signIdx] : '';
         if (ethInp)    partial.ethAddress = (ethInp.textString || "").trim();
+        // Orbit tab: the status is held on _editPayload by its chips (they
+        // aren't inputs); only the spotlight rows are read here. A row needs
+        // both a label and a handle to count.
+        if (pane.get("pcOrbitLbl0")) {
+          var curOrbit = (this._editPayload && this._editPayload.orbit) || {};
+          var spots = [];
+          for (var oi = 0; oi < 3; oi++) {
+            var oLbl = pane.get("pcOrbitLbl" + oi), oHdl = pane.get("pcOrbitHandle" + oi);
+            var ol = ((oLbl && oLbl.textString) || "").trim().slice(0, 10);
+            var oh = ((oHdl && oHdl.textString) || "").trim().replace(/^@+/, "");
+            if (ol && oh) spots.push({ label: ol, handle: oh });
+          }
+          partial.orbit = { status: curOrbit.status || null, spotlights: spots };
+        }
         return partial;
       },
 
@@ -1961,6 +2115,79 @@ module("lively.identity.ProfileCard")
         return y + 22;
       },
 
+      // Orbit tab: two categories, matching the read view's Orbit widget.
+      //   1. Relationship status — one pick from preset chips (click again to
+      //      clear). Chips aren't inputs, so a pick is written straight onto
+      //      win._editPayload.orbit.status (see PC.orbit.pickStatus).
+      //   2. Spotlights — up to 3 rows of label + @handle inputs
+      //      (pcOrbitLbl<i> / pcOrbitHandle<i>, read by _snapshotEditFields),
+      //      with quick-label chips that fill the first empty label.
+      _buildOrbitTab: function _buildOrbitTab(pane, payload, y, ew) {
+        var PC    = lively.identity.ProfileCard;
+        var ui    = PC.ui;
+        var orbit = payload.orbit || {};
+        var curStatus = orbit.status && orbit.status.label ? orbit.status.label : null;
+        var spots = (orbit.spotlights || []).slice(0, 3);
+
+        // Chip widths come from a canvas measure of the label (same approach
+        // as the read view's pill), plus a flat horizontal margin.
+        var mctx = document.createElement('canvas').getContext('2d');
+        mctx.font = (11 * 4 / 3) + 'px Helvetica';
+        function chipW(str) { return Math.ceil(mctx.measureText(str).width) + 28; }
+
+        y += 8;
+        ui.text(pane, 'Relationship status', 12, y, ew, 18, 11, 60, 60, 68, true);
+        y += 20;
+        ui.text(pane, 'Shown on your card. Click your pick again to clear it.',
+          12, y, ew, 16, 10, 120, 120, 128, false);
+        y += 26;
+
+        var x = 12;
+        PC.ORBIT_STATUSES.forEach(function (s) {
+          var str = s.label + ' ' + s.emoji;
+          var w = chipW(str);
+          if (x + w > 12 + ew) { x = 12; y += 34; }
+          var chip = ui.pill(pane, str, x, y, w, 26, s.label === curStatus, function () {
+            lively.identity.ProfileCard.orbit.pickStatus(this);
+          });
+          chip._orbitStatus = s;
+          x += w + 8;
+        });
+        y += 44;
+
+        ui.text(pane, 'Spotlights', 12, y, ew, 18, 11, 60, 60, 68, true);
+        y += 20;
+        ui.text(pane, 'Tag up to 3 people in your orbit: a short label, then their @handle.',
+          12, y, ew, 16, 10, 120, 120, 128, false);
+        y += 26;
+
+        var LW = 130;
+        ui.text(pane, 'Label', 12, y, LW, 14, 9, 160, 160, 160, false);
+        ui.text(pane, 'Handle', 12 + LW + 8, y, ew - LW - 8, 14, 9, 160, 160, 160, false);
+        y += 16;
+        for (var i = 0; i < 3; i++) {
+          var sp = spots[i] || {};
+          ui.input(pane, 'pcOrbitLbl' + i, 12, y, LW, sp.label || '');
+          ui.input(pane, 'pcOrbitHandle' + i, 12 + LW + 8, y, ew - LW - 8,
+            sp.handle ? '@' + String(sp.handle).replace(/^@+/, '') : '');
+          y += 32;
+        }
+
+        y += 6;
+        ui.text(pane, 'Quick labels', 12, y, ew, 14, 9, 160, 160, 160, false);
+        y += 18;
+        var qx = 12;
+        PC.ORBIT_SPOTLIGHT_LABELS.forEach(function (lab) {
+          var w = chipW(lab);
+          var q = ui.pill(pane, lab, qx, y, w, 24, false, function () {
+            lively.identity.ProfileCard.orbit.fillLabel(this);
+          });
+          q._orbitLabel = lab;
+          qx += w + 8;
+        });
+        return y + 34;
+      },
+
       _buildDomainTab: function _buildDomainTab(pane, y, ew) {
         var self = this;
         var PC   = lively.identity.ProfileCard;
@@ -2178,6 +2405,63 @@ module("lively.identity.ProfileCard")
                  'Libra','Scorpio','Sagittarius','Capricorn','Aquarius','Pisces'],
         GLYPHS: ['♈︎','♉︎','♊︎','♋︎','♌︎','♍︎','♎︎','♏︎','♐︎','♑︎','♒︎','♓︎'],
       },
+      // Orbit presets. Status is single-pick; spotlight labels are quick-fill
+      // suggestions only (the label field itself is free text, 10 chars max).
+      ORBIT_STATUSES: [
+        { label: 'Single',      emoji: '✨' },
+        { label: 'Booked',      emoji: '💋' },
+        { label: 'Dating',      emoji: '💘' },
+        { label: 'Open',        emoji: '♾️' },
+        { label: 'Complicated', emoji: '🌀' },
+      ],
+      ORBIT_SPOTLIGHT_LABELS: ['Opp', 'Twin', 'Bestie', 'Crush'],
+
+      orbit: {
+        // Status chip clicked: toggle it in win._editPayload.orbit.status and
+        // repaint the chips in place (no tab rebuild, so half-typed spotlight
+        // rows aren't lost).
+        pickStatus: function (btn) {
+          var PC  = lively.identity.ProfileCard;
+          var p   = PC.ui.paneOf(btn);
+          var win = p && p._win;
+          if (!win || !btn._orbitStatus) return;
+          var cur  = (win._editPayload && win._editPayload.orbit) || {};
+          var same = cur.status && cur.status.label === btn._orbitStatus.label;
+          var next = same ? null : { label: btn._orbitStatus.label, emoji: btn._orbitStatus.emoji };
+          win._editPayload = Object.assign({}, win._editPayload,
+            { orbit: { status: next, spotlights: cur.spotlights || [] } });
+          PC.orbit.paintStatus(p, next && next.label);
+        },
+
+        // Selected chip = primary (pink fill, white label); the rest = outline.
+        // Model updates on an already-rendered morph don't always reach the
+        // DOM (CLAUDE.md), so fill/border are written to the node as well.
+        paintStatus: function (pane, label) {
+          var PC = lively.identity.ProfileCard;
+          pane.submorphs.forEach(function (m) {
+            if (!m._orbitStatus) return;
+            var on     = m._orbitStatus.label === label;
+            var fill   = on ? PC.PINK : Color.white;
+            var border = on ? PC.PINK : Color.rgb(222, 222, 228);
+            m.applyStyle({ fill: fill, borderColor: border });
+            var n = m.renderContext().shapeNode;
+            n.style.background  = fill.toString();
+            n.style.borderColor = border.toString();
+            if (on) PC.ui.tint(m, 255, 255, 255); else PC.ui.tint(m, 90, 90, 98);
+          });
+        },
+
+        // Quick-label chip: put its label in the first empty label field.
+        fillLabel: function (btn) {
+          var p = lively.identity.ProfileCard.ui.paneOf(btn);
+          if (!p) return;
+          for (var i = 0; i < 3; i++) {
+            var inp = p.get('pcOrbitLbl' + i);
+            if (inp && !(inp.textString || '').trim()) { inp.setTextString(btn._orbitLabel); return; }
+          }
+        },
+      },
+
       signLabel: function (idx) {
         var Z = lively.identity.ProfileCard.ZODIAC;
         return idx < 0 ? 'Not set' : Z.GLYPHS[idx] + '  ' + Z.SIGNS[idx];
