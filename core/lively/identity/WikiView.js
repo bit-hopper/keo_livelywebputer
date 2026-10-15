@@ -59,6 +59,7 @@ module("lively.identity.WikiView")
     "lively.identity.DID",
     "lively.identity.Crypto",
     "lively.identity.WikiEditor",
+    "lively.identity.WikiHistory",
     "lively.identity.PasskeyPrimingDialog",
   )
   .toRun(function () {
@@ -89,6 +90,7 @@ module("lively.identity.WikiView")
           "_contentLoadStarted",
           "_onEdit",
           "_onDeleted",
+          "_history",
           "_heightObserver",
           "_onHeightChanged",
         ],
@@ -493,6 +495,11 @@ module("lively.identity.WikiView")
           this._renderContentArea(envelope);
           this._renderDetails(envelope);
           this._resolveEditAccess();
+          // Coming back from the editor's History button (opts.openHistory)
+          if (this._openHistoryOnLoad) {
+            this._openHistoryOnLoad = false;
+            this._openHistory();
+          }
         },
 
         // Owner-OR-constellation-canWrite (see file header) — resolves
@@ -535,14 +542,14 @@ module("lively.identity.WikiView")
 
         // Default Edit behavior when no embedding caller supplied
         // opts.onEdit (e.g. a bare WikiView.open(...) call from the SSR
-        // share-link page, or WikiPlayback's exit) -- swaps this view for a
+        // share-link page, or a restore from WikiHistory) -- swaps this view for a
         // WikiEditor occupying the exact same owner/position/extent, with
         // no lively.morphic.Window involved either way. WikiEditor.js stays
         // completely unaware of WikiView.js; this file already
         // .requires("lively.identity.WikiEditor") (one-directional, no
         // require cycle), so it's safe to close over WikiEditor.openCard
         // directly here.
-        _startEditDefault: function () {
+        _startEditDefault: function (restore) {
           var owner = this.owner; // a plain property (Core.js's addMorph sets morph.owner = newOwner), not a method
           var pos = this.getPosition();
           var extent = this.getExtent();
@@ -557,8 +564,16 @@ module("lively.identity.WikiView")
             target: owner || null,
             bounds: bounds,
             autoHeight: autoHeight,
-            onSaved: function (h, o) {
-              var view = lively.identity.WikiView.open(h, o, { target: owner || null, bounds: bounds, autoHeight: autoHeight });
+            restore: restore || null,
+            onSaved: function (h, o, extra) {
+              // The editor this view was swapped for has to go once the view
+              // is back; nothing else removes it on this standalone path
+              // (WikiIndex's slot swap does it via _setActiveContentMorph).
+              if (editor) editor.remove();
+              var view = lively.identity.WikiView.open(h, o, {
+                target: owner || null, bounds: bounds, autoHeight: autoHeight,
+                openHistory: !!(extra && extra.openHistory),
+              });
               // target-embed doesn't auto-center/reposition; standalone-in-
               // world does its own centering, so only reposition when we
               // had a real owner slot to return to.
@@ -857,6 +872,11 @@ module("lively.identity.WikiView")
           }
           menu.appendChild(makeItem("Copy link", "link", function () { self._copyShareLink(); }));
           menu.appendChild(makeItem("Download", "download", function () { self._downloadPage(); }));
+          // Full-page views only: embedded fixed-size cards (lounge feed,
+          // canvas placement) have no room for the two-column panel.
+          if (this._autoHeight) {
+            menu.appendChild(makeItem("History", "history", function () { self._openHistory(); }));
+          }
           if (this._canDelete) {
             menu.appendChild(makeItem("Delete page", "delete", function () { self._confirmDeletePage(); }, true));
           }
@@ -885,6 +905,27 @@ module("lively.identity.WikiView")
             document.removeEventListener("mousedown", this._moreMenuOutsideHandler, true);
             this._moreMenuOutsideHandler = null;
           }
+        },
+
+        // Swaps the page body for the version-history panel (WikiHistory.js);
+        // its "Back to page" button swaps it back.
+        _openHistory: function () {
+          if (!this._objId || !this._envelope) return;
+          lively.identity.WikiHistory.open(this);
+        },
+
+        // History panel's Restore: swaps this view for the editor exactly like
+        // Edit does, but hands it an old version's content ({snapshot,
+        // attachments}) to apply and save as a new version. The editor returns
+        // to a read-only view through the same onSaved swap once that save
+        // lands; if the save fails it stays open on the restored content.
+        // Needs write access, same as Edit (the editor re-checks it).
+        _restoreVersion: function (restore) {
+          var self = this;
+          lively.identity.PasskeyPrimingDialog.maybeShow(function () {
+            if (self._onEdit) self._onEdit(self._handle, self._objId, self, restore);
+            else self._startEditDefault(restore);
+          });
         },
 
         // Top entry of the "more" menu when _canEdit is true -- was
@@ -1168,6 +1209,7 @@ module("lively.identity.WikiView")
         view._onDeleted = opts.onDeleted || null;
         view._highlightQuery = opts.highlightQuery || null;
         view._pinkHandle = !!opts.pinkHandle;
+        view._openHistoryOnLoad = !!opts.openHistory;
         // Embedded views (opts.target) keep their fixed box unless the
         // caller opts in; a standalone page view is the whole document, so
         // it grows by default.

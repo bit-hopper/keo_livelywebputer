@@ -917,18 +917,26 @@ function getRecoveryWorldForDid(did, thenDo) {
 }
 
 // List the full version history (all CIDs) for an objId, ascending.
-// Calls thenDo(null, [{ cid, prevCid, createdAt }]).
+// Calls thenDo(null, [{ cid, prevCid, createdAt, name, title, lastEditedBy }]).
+// lastEditedBy is the DID that signed that version (wiki pages only -- set by
+// IdentityServer's _applyWikiContributorTracking); null for versions saved
+// before that tracking existed and for other object types.
 function listVersions(objId, thenDo) {
   withDB(function (err, pool) {
     if (err) return thenDo(err);
     pool.query(
-      'SELECT cid, prev_cid, created_at, envelope #>> \'{state,name}\' AS name ' +
+      'SELECT cid, prev_cid, created_at, envelope #>> \'{state,name}\' AS name, ' +
+      'envelope #>> \'{state,title}\' AS title, ' +
+      'envelope #>> \'{state,lastEditedBy}\' AS last_edited_by ' +
       'FROM objects WHERE obj_id = $1 ORDER BY id ASC',
       [objId],
       function (err, result) {
         if (err) return thenDo(err);
         thenDo(null, result.rows.map(function (r) {
-          return { cid: r.cid, prevCid: r.prev_cid, createdAt: r.created_at, name: r.name };
+          return {
+            cid: r.cid, prevCid: r.prev_cid, createdAt: r.created_at, name: r.name,
+            title: r.title, lastEditedBy: r.last_edited_by,
+          };
         }));
       }
     );

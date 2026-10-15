@@ -601,7 +601,7 @@ function buildPostCardPage(envelope, handle) {
   var payload = envelope.record && envelope.record.payload;
   // Plain postcards (§1.1/§2.3, PostcardDesignSpec-v2.md): `doc` IS the
   // snapshot, same ProseMirror JSON shape _snapshotToHtml already renders —
-  // see PostCardView.js's/WikiPlayback.js's identical branch.
+  // see PostCardView.js's/WikiHistory.js's identical branch.
   var snapshot = payload &&
     (payload.format === 'prosemirror-doc-v1' ? payload.doc : payload.snapshot);
   var staticHtml = '';
@@ -4361,6 +4361,19 @@ module.exports = function (route, app) {
     function _applyWikiContributorTracking(existing) {
       var priorContributors = (existing.state && Array.isArray(existing.state.contributors))
         ? existing.state.contributors : [];
+      // A save with the SAME content as the current head is not an edit
+      // (ObjectRepository.put updates that row in place, as a metadata change).
+      // Typically someone else opening the page in the editor, whose autosave
+      // fires once the sync room hands them the document. Keep who made the
+      // head instead of re-labelling it as theirs: the history panel
+      // (WikiHistory.js) shows state.lastEditedBy per version.
+      if (existing.record && envelope.record && existing.record.cid === envelope.record.cid) {
+        var kept = Object.assign({}, envelope.state, { contributors: priorContributors });
+        if (existing.state && existing.state.lastEditedBy) kept.lastEditedBy = existing.state.lastEditedBy;
+        else delete kept.lastEditedBy;
+        envelope = Object.assign({}, envelope, { state: kept });
+        return;
+      }
       var contributors = priorContributors;
       if (req.identity.did !== envelope.did && priorContributors.indexOf(req.identity.did) === -1) {
         contributors = priorContributors.concat([req.identity.did]);

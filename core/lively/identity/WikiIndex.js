@@ -1814,7 +1814,7 @@ module("lively.identity.WikiIndex")
           var w = self._contentWidth();
           var opts = self._autoHeightOpts({ bounds: lively.rect(0, 0, w, 780) });
           if (envelope) opts.envelope = envelope;
-          opts.onEdit = function (h, o) { self._editExistingPage(h, o); };
+          opts.onEdit = function (h, o, v, restore) { self._editExistingPage(h, o, restore); };
           opts.onDeleted = function (h, o) { self._handlePageDeleted(o); };
           if (extraOpts && extraOpts.highlightQuery) opts.highlightQuery = extraOpts.highlightQuery;
           self._setActiveContentMorph(lively.identity.WikiView.open(handle, page.objId, opts));
@@ -1825,18 +1825,22 @@ module("lively.identity.WikiIndex")
       // (openCard, not newCard) -- wired as _openPage's opts.onEdit so
       // clicking Edit swaps the WikiView in this slot for a WikiEditor in
       // place, symmetric to the editor->view swap _createNewPage already
-      // does on Save.
-      _editExistingPage: function (handle, objId) {
+      // does on Save. `restore` (optional, from the history panel's Restore):
+      // an old version's content for the editor to apply and save as a new
+      // version -- see WikiEditor.openCard's opts.restore.
+      _editExistingPage: function (handle, objId, restore) {
         var self = this;
         var w = self._contentWidth();
         var editor = lively.identity.WikiEditor.openCard(handle, objId, self._autoHeightOpts({
           target: $world,
           bounds: lively.rect(0, 0, w, 780),
-          onSaved: function (h, o) {
+          restore: restore || null,
+          onSaved: function (h, o, extra) {
             self._setActiveContentMorph(lively.identity.WikiView.open(h, o, self._autoHeightOpts({
               target: $world,
               bounds: lively.rect(0, 0, self._contentWidth(), 780),
-              onEdit: function (h2, o2) { self._editExistingPage(h2, o2); },
+              openHistory: !!(extra && extra.openHistory),
+              onEdit: function (h2, o2, v2, r2) { self._editExistingPage(h2, o2, r2); },
               onDeleted: function (h2, o2) { self._handlePageDeleted(o2); },
             })));
           },

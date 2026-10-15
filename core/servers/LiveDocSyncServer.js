@@ -16,10 +16,11 @@
  * "Plain post card room" comment below) dated from when the design's
  * ambition was broader — live multi-user editing *and* version-history
  * playback for every post card, not just wiki-mode ones. See
- * WikiPlayback.js's own header for the matching client-side history: it
- * used to be PostCardPlayback.js before that scope narrowed to wiki-only
- * per PostcardDesignSpec-v2.md §15. The client file got renamed to match
- * at the time; this one never did.
+ * WikiHistory.js's own header for the matching client-side history (a
+ * version-list panel in the wiki view; it replaced the slider-based
+ * WikiPlayback.js, originally PostCardPlayback.js, before that scope
+ * narrowed to wiki-only per PostcardDesignSpec-v2.md §15). The client file
+ * got renamed to match at the time; this one never did.
  *
  * Architecture:
  *   Rides life_star's shared http.Server (the same one SessionTracker.js/

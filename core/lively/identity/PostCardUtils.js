@@ -2,7 +2,7 @@
  * lively.identity.PostCardUtils
  *
  * Shared client-side utilities for rendering ProseMirror snapshot JSON as HTML.
- * Used by PostCardView, WikiView and WikiPlayback, so those stay in sync.
+ * Used by PostCardView, WikiView and WikiHistory, so those stay in sync.
  *
  * NOT shared with the server: IdentityServer.js's `_pmNodeToHtml` is an
  * independent copy for static server-side rendering, and PostCardEditor.js's
@@ -52,7 +52,7 @@ module('lively.identity.PostCardUtils')
     // document.getElementById('lively-postcard-editor-style')) — which never
     // runs unless a PostCardEditor/WikiEditor is actually instantiated. Every
     // read-only render path (PostCardView, WikiView,
-    // WikiPlayback — none of which instantiate the editor just to display a
+    // WikiHistory — none of which instantiate the editor just to display a
     // card) never got this CSS at all, so images/videos rendered at full
     // native pixel size, uncropped by their container. Harmless-looking for
     // a modest-sized photo, but a full-resolution video rendered many times
@@ -675,7 +675,7 @@ module('lively.identity.PostCardUtils')
     }
 
     // BUG FIX: no read-only view (PostCardView, WikiView,
-    // WikiPlayback) ever turned a rendered .lively-embedded-part placeholder
+    // WikiHistory) ever turned a rendered .lively-embedded-part placeholder
     // into the actual live Lively morph it references — confirmed live, the
     // placeholder text is permanent, not just a brief loading state. The
     // live editor's NodeView (_embeddedPartNodeView in PostCardEditor.js/
@@ -789,7 +789,7 @@ module('lively.identity.PostCardUtils')
     }
 
     // Wires up every code_cell placeholder's Run button in a read-only
-    // render (WikiView/WikiPlayback/WikiEditor's own Preview mode -- see
+    // render (WikiView/WikiHistory/WikiEditor's own Preview mode -- see
     // WikiEditor._togglePreview) to the same runCodeCell/stopCodeCell
     // orchestration the live editor's NodeView uses. The read-only source
     // is inert text -- Run just executes whatever static source is already
@@ -923,7 +923,7 @@ module('lively.identity.PostCardUtils')
     //
     // Capped at MAX_LINK_PREVIEWS_PER_CONTAINER fetches per call so a long
     // document full of bare links can't fire off unbounded parallel
-    // requests. Not called from WikiPlayback.js's version viewer, which
+    // requests. Not called from WikiHistory.js's version viewer, which
     // renders many historical entries at once, where a preview card per row
     // would be noisy and expensive.
     var MAX_LINK_PREVIEWS_PER_CONTAINER = 6;
@@ -947,7 +947,7 @@ module('lively.identity.PostCardUtils')
     // own bare-link fallback above). Needed as a SEPARATE step here because
     // linkPreviewCardHtml (used by snapshotToHtml/pmNodeToHtml for every
     // read-only render — PostCardView, WikiView, WikiEditor's preview mode,
-    // WikiPlayback) emits plain inert markup via innerHTML, with no
+    // WikiHistory) emits plain inert markup via innerHTML, with no
     // NodeView-equivalent hook to attach JS behavior at insertion time. A
     // harmless no-op scan when containerEl has no Instagram embed in it —
     // call after setting containerEl.innerHTML, same convention as

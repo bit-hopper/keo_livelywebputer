@@ -57,7 +57,6 @@
 module('lively.identity.WikiEditor')
   .requires(
     'lively.identity.WikiSerializer',
-    'lively.identity.WikiPlayback',
     'lively.identity.WikiPolicy',
     'lively.identity.DID',
     'lively.identity.WebAuthn',
@@ -108,7 +107,7 @@ module('lively.identity.WikiEditor')
         '_previewContainer', '_previewMode', '_activeDropdown', '_outsideClickHandler',
         '_flowEl', '_heightObserver', '_onHeightChanged',
         '_editAccess', '_tokenTimer', '_permissionsRow', '_permPanel', '_permCloseHandler',
-        '_saveInFlight', '_saveRerun', '_saveWaiters'],
+        '_saveInFlight', '_saveRerun', '_saveWaiters', '_restore'],
     },
 
     // ─── initialization ──────────────────────────────────────────────────────────
@@ -873,11 +872,11 @@ module('lively.identity.WikiEditor')
 
         var histBtn = document.createElement('button');
         histBtn.textContent = 'History';
-        histBtn.title = 'View version history (save first)';
+        histBtn.title = 'Save, then view the version history';
         histBtn.style.cssText = 'flex:0 0 auto;width:64px;height:24px;padding:0;font-size:11px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
         histBtn.addEventListener('mousedown', function (e) {
           e.preventDefault(); e.stopPropagation();
-          self._openPlayback();
+          self._openHistory();
         });
         row.appendChild(histBtn);
 
@@ -1187,6 +1186,7 @@ module('lively.identity.WikiEditor')
             self._applyReadOnlyMode();
             self._refreshPermissionsRow();
             self._connectSync();
+            if (self._restore) self._applyRestoreWhenReady();
           }
 
           function onDeserialized(err, doc, payload, info) {
@@ -2978,13 +2978,75 @@ module('lively.identity.WikiEditor')
 
     },
 
-    // ─── playback ─────────────────────────────────────────────────────────────────
+    // ─── history ──────────────────────────────────────────────────────────────────
 
-    'playback', {
+    'history', {
 
-      _openPlayback: function () {
+      // The editor has no history view of its own: the version list lives in
+      // WikiView (WikiHistory.js). Flush any pending edit so the list includes
+      // it, then hand over to the caller (the same swap a Save click does) with
+      // `openHistory` set so the read-only view comes up on the history panel.
+      _openHistory: function () {
+        var self = this;
         if (!this._objId) return alert('Save the page first before viewing history.');
-        lively.identity.WikiPlayback.openPlayback(this._handle, this._objId);
+        if (!this._onSaved) return alert('History opens from the read-only page view.');
+        this._saveNow(function (err) {
+          if (!err) self._onSaved(self._handle, self._objId, { openHistory: true });
+        });
+      },
+
+    },
+
+    // ─── restore ──────────────────────────────────────────────────────────────────
+    // openCard's opts.restore = { snapshot, attachments }: an older version's
+    // content, handed over by the history panel. Done through the editor rather
+    // than by serializing the old payload directly, because a Yjs document only
+    // ever grows -- "going back" has to be a new edit on top of the current
+    // state (replace the whole document), and it has to happen on the live
+    // synced doc so peers in the page's sync room receive it too.
+
+    'restore', {
+
+      // Waits for the sync room to hand over its state first (so the edit is
+      // made on top of whatever is already there, not beside it); gives up
+      // waiting after ~5s (room unreachable) and applies to the loaded state.
+      _applyRestoreWhenReady: function () {
+        var self = this, tries = 0;
+        (function wait() {
+          var p = self.wsProvider;
+          if (!(p && p.synced) && tries++ < 50) return setTimeout(wait, 100);
+          self._applyRestore();
+        })();
+      },
+
+      _applyRestore: function () {
+        var self = this;
+        var r = this._restore;
+        this._restore = null;
+        if (!r || !r.snapshot) return;
+        if (!this._canEdit || this._forceReadOnly) {
+          return alert('You do not have permission to edit this page, so it cannot be restored.');
+        }
+        var prosemirror = this._ProseMirror(), view = this.editorView;
+        if (!view || !prosemirror) return alert('The editor is not ready, so the version could not be restored.');
+        var doc;
+        try {
+          doc = prosemirror.model.Node.fromJSON(view.state.schema, r.snapshot);
+          doc.check();
+        } catch (e) {
+          return alert('That version cannot be restored: ' + (e && e.message || e));
+        }
+        // Blobs the old content points at must stay resolvable from the new version.
+        var known = {};
+        this._attachments = this._attachments || [];
+        this._attachments.forEach(function (a) { known[a.objId] = true; });
+        (r.attachments || []).forEach(function (a) {
+          if (!known[a.objId]) self._attachments.push(a);
+        });
+        view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, doc.content));
+        this._saveNow(function (err) {
+          if (!err && self._onSaved) self._onSaved(self._handle, self._objId);
+        });
       },
 
     },
@@ -3237,10 +3299,15 @@ module('lively.identity.WikiEditor')
       // opts.forceReadOnly: used only by WikiView to embed this editor
       // purely as a render engine for content — strips all editing chrome
       // and disables autosave regardless of ownership.
-      // opts.onSaved(handle, objId): fires once, only after an explicit
+      // opts.onSaved(handle, objId, extra): fires once, only after an explicit
       // Save-button click succeeds (never from the debounced autosave) —
       // lets an embedding caller swap this editor for a read-only view in
-      // place. See _buildSaveControls's Save handler.
+      // place. See _buildSaveControls's Save handler. Also fires after the
+      // History button's save and after a restore's save; extra.openHistory is
+      // set for the former, and the caller should open the new view on its
+      // history panel (WikiView.open's opts.openHistory).
+      // opts.restore ({snapshot, attachments}): an older version's content to
+      // apply and save as a new version once loaded -- see _applyRestore.
       openCard: function (handle, objId, options) {
         var opts = options || {};
         var editor = new lively.identity.WikiEditor(opts.bounds || lively.rect(0, 0, 1180, 780));
@@ -3248,6 +3315,7 @@ module('lively.identity.WikiEditor')
         editor._objId = objId;
         editor._isNew = false;
         editor._forceReadOnly = !!opts.forceReadOnly;
+        editor._restore = opts.restore || null;
         editor._onSaved = opts.onSaved || null;
         editor._autoHeight = !!opts.autoHeight;
         editor._onHeightChanged = opts.onHeightChanged || null;
