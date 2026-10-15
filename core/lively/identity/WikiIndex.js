@@ -39,7 +39,7 @@ module("lively.identity.WikiIndex")
 
     var TOP = 64;              // top margin below the menu bar
     var SIDE_MARGIN = 40;
-    var BACK_BTN_LIFT = 20;    // how far the back pill sits above the header row's TOP
+    var BACK_BTN_LIFT = 10;   // how far the back pill sits above the header row's TOP
     // Header block height: the back pill (34px, top-aligned with the search
     // row) plus the title beneath it. 52 -> 62 along with the title's y
     // moving 28 -> 38 below, so the grid keeps its gap when the back link
@@ -51,6 +51,9 @@ module("lively.identity.WikiIndex")
     // top-right title-only filter box) — sits on its own row, between the
     // header row and the card grid, see _layout/_buildContentSearchBar.
     var SEARCH_BAR_W = 520, SEARCH_BAR_H = 44;
+    // Narrowest the bar is allowed to shrink to, and the width below which
+    // "+ New wiki page" collapses to a "+" circle to give it room back.
+    var SEARCH_BAR_MIN_W = 240, SEARCH_BAR_COMPACT_BELOW = 360;
     var SEARCH_DEBOUNCE_MS = 250;
     var RESULT_ROW_H = 58;      // one search-result dropdown row
     var RESULTS_MAX = 8;
@@ -124,7 +127,7 @@ module("lively.identity.WikiIndex")
         this._didHandleCache = {};
         this._activeContentMorph = null; // a read-only WikiView or an editable WikiEditor
         this._sidebarBox = null;
-        this._sidebarMode = "outline"; // "outline" (current page's headings) | "list" (all wiki pages)
+        this._sidebarMode = "list"; // "outline" (current page's headings) | "list" (all wiki pages); starts as the page list, shown with no page open
         this._sidebarOutline = [];     // cached getOutline() result for the active page
         this._sidebarListQuery = "";
         this._sortBy = "modified";     // "modified" | "created" | "alpha" — see SORT_OPTIONS
@@ -298,6 +301,20 @@ module("lively.identity.WikiIndex")
         $world.addMorph(this._newBtn);
         this._newBtn.setVisible(this._canWrite);
 
+        // Bare "+" circle swapped in by _layout when the header gets too
+        // tight for the full pill (ConstellationLounge.js does the same
+        // for "+ Postcard"). Its own pill so the label/click handling is
+        // the exact same code path; padX 11.5 makes ~11px of "+" glyph
+        // come out to the pill's 34px height, i.e. a circle.
+        this._newBtnCompact = this._buildPill("+", {
+          fill: PILL_BLUE, hover: PILL_BLUE_HOVER, padX: 11.5,
+          tooltip: "New wiki page",
+          onClick: function () { self._promptNewWikiPage(); },
+        });
+        this._newBtnCompactW = this._newBtnCompact.getExtent().x;
+        $world.addMorph(this._newBtnCompact);
+        this._newBtnCompact.setVisible(false);
+
         this._gridBox = new lively.morphic.Box(lively.rect(0, 0, 10, 10));
         this._gridBox.applyStyle({ fill: null, borderWidth: 0 });
         $world.addMorph(this._gridBox);
@@ -439,6 +456,7 @@ module("lively.identity.WikiIndex")
         box.addMorph(icon);
 
         var fieldRect = lively.rect(46, 8, SEARCH_BAR_W - 46 - 16, SEARCH_BAR_H - 16);
+        this._searchBarW = SEARCH_BAR_W;
 
         var placeholder = lively.morphic.Text.makeLabel("Search this wiki…", {
           fontSize: 13, textColor: Color.rgb(170, 170, 170),
@@ -481,6 +499,22 @@ module("lively.identity.WikiIndex")
         });
 
         return box;
+      },
+
+      // The bar is SEARCH_BAR_W wide unless _layout says the header row
+      // is too tight, in which case it shrinks. Re-extents the bar's own
+      // field/placeholder to match (fixed 46px icon gutter left, 16px
+      // right). An open dropdown is closed rather than resized: its rows
+      // were built at the old width.
+      _setSearchBarWidth: function (w) {
+        w = Math.round(w);
+        if (w === this._searchBarW) return;
+        this._searchBarW = w;
+        this._closeSearchDropdown();
+        this._searchBar.setExtent(lively.pt(w, SEARCH_BAR_H));
+        var fieldExt = lively.pt(w - 46 - 16, SEARCH_BAR_H - 16);
+        this._searchField.setExtent(fieldExt);
+        this._searchPlaceholder.setExtent(fieldExt);
       },
 
       // Debounces keystrokes into one round trip per pause instead of
@@ -528,7 +562,7 @@ module("lively.identity.WikiIndex")
         var self = this;
         var rows = results.slice(0, RESULTS_MAX);
         var dropdown = new lively.morphic.Box(
-          lively.rect(0, 0, SEARCH_BAR_W, rows.length ? rows.length * RESULT_ROW_H + 8 : 40),
+          lively.rect(0, 0, this._searchBarW || SEARCH_BAR_W, rows.length ? rows.length * RESULT_ROW_H + 8 : 40),
         );
         dropdown.setFill(Color.white);
         dropdown.applyStyle({ borderWidth: 1.5, borderColor: Color.rgb(236, 64, 122), borderRadius: 10 });
@@ -565,6 +599,13 @@ module("lively.identity.WikiIndex")
         var barPos = this._searchBar.getPosition();
         dropdown.setPosition(lively.pt(barPos.x, barPos.y + SEARCH_BAR_H + 6));
         dropdown.bringToFront();
+        // bringToFront only reorders within the world's own DOM node, but
+        // the categories panel (and menu bar) are enableFixedPositioning()
+        // morphs whose nodes live directly under <body>, painting above
+        // everything in the world regardless of order — confirmed live at
+        // a narrow window, where they covered the result rows' category
+        // chips. An explicit z-index lets the dropdown win against them.
+        dropdown.renderContext().shapeNode.style.zIndex = "1000";
         this._searchDropdown = dropdown;
       },
 
@@ -590,7 +631,7 @@ module("lively.identity.WikiIndex")
         // a row flush against the dropdown's own edges paints its sharp
         // white corners directly over the dropdown's thin border along the
         // straight run, hiding it everywhere except the corner arcs.
-        var ROW_W = SEARCH_BAR_W - 16;
+        var ROW_W = (this._searchBarW || SEARCH_BAR_W) - 16;
         var row = new lively.morphic.Box(lively.rect(0, 0, ROW_W, RESULT_ROW_H));
         row.setFill(Color.white);
         row.applyStyle({ borderWidth: 0 });
@@ -785,6 +826,11 @@ module("lively.identity.WikiIndex")
           fontSize: 11, fontWeight: "700", textColor: Color.rgb(150, 150, 150),
         });
         header.setPosition(lively.pt(16, SIDEBAR_HEADER_TOP));
+        // The label hugs "ON THIS PAGE" at creation (112px) and doesn't
+        // re-hug when its text is swapped, so the longer "ALL WIKI PAGES"
+        // lost its last letter (confirmed live: span 117px in a 112px box).
+        // Full sidebar width instead; 21 is the hugged height it already had.
+        header.setExtent(lively.pt(SIDEBAR_W - 32, 21));
         header.eventsAreIgnored = true;
         box.addMorph(header);
         this._sidebarHeader = header;
@@ -904,6 +950,29 @@ module("lively.identity.WikiIndex")
     // ─── layout ─────────────────────────────────────────────────────────────────
 
     "layout", {
+      // Sizes the title box to its own rendered text. The label hugs its
+      // content, but the shapeNode subtracts ~8px of padding from whatever
+      // extent it's given, so a box exactly as wide as the text clips the
+      // last glyph (confirmed live: "wiki" lost its right edge) — hence
+      // +8 on the width and -4 on x so the visible glyph still lines up
+      // with SIDE_MARGIN. Reads the real span, which is 0 wide right after
+      // addMorph (CLAUDE.md), so it bails then and re-runs once web fonts
+      // have loaded, when the span's width is final.
+      _fitTitleLabel: function () {
+        var label = this._titleLabel;
+        label.setPosition(lively.pt(SIDE_MARGIN - 4, TOP + 38));
+        var span = label.renderContext().shapeNode.querySelector("span");
+        var w = span ? span.getBoundingClientRect().width : 0;
+        if (w > 0) {
+          label.setExtent(lively.pt(Math.ceil(w) + 8, label.getExtent().y));
+        }
+        if (!this._titleFontsHooked && document.fonts && document.fonts.ready) {
+          this._titleFontsHooked = true;
+          var self = this;
+          document.fonts.ready.then(function () { self._fitTitleLabel(); });
+        }
+      },
+
       _layout: function () {
         var W = this._pageW();
 
@@ -912,76 +981,115 @@ module("lively.identity.WikiIndex")
         // bar. The centered search bar below is vertically aligned with
         // this pill's own row, not the sort/new row.
         this._backBtn.setPosition(lively.pt(SIDE_MARGIN, TOP - BACK_BTN_LIFT));
-        this._titleLabel.setPosition(lively.pt(SIDE_MARGIN, TOP + 38));
+        this._fitTitleLabel();
 
-        var newBtnW = this._newBtnW || NEW_BTN_W;
-        this._newBtn.setPosition(lively.pt(W - SIDE_MARGIN - newBtnW, TOP + (HEADER_ROW_H - NEW_BTN_H) / 2));
+        var backBtnW = this._backBtn.getExtent().x;
+        var leftBound = SIDE_MARGIN + backBtnW + 24;
+        var fullNewW = this._newBtnW || NEW_BTN_W;
+        var compactNewW = this._newBtnCompactW || NEW_BTN_H;
+        function sortXFor(newW) { return W - SIDE_MARGIN - newW - SORT_GAP - SORT_W; }
 
-        var sortX = W - SIDE_MARGIN - newBtnW - SORT_GAP - SORT_W;
+        // The bar shrinks first (down to SEARCH_BAR_COMPACT_BELOW), and
+        // only once even that isn't enough does "+ New wiki page" give up
+        // its label and become a bare "+" circle (same degrade as
+        // ConstellationLounge.js's "+ Postcard"), handing ~130px back to
+        // the bar. Both pills are separate morphs; only one is visible.
+        var compactNew = (sortXFor(fullNewW) - 24 - leftBound) < SEARCH_BAR_COMPACT_BELOW;
+        var newBtnW = compactNew ? compactNewW : fullNewW;
+        this._newBtn.setVisible(!!this._canWrite && !compactNew);
+        this._newBtnCompact.setVisible(!!this._canWrite && compactNew);
+        var newBtn = compactNew ? this._newBtnCompact : this._newBtn;
+        newBtn.setPosition(lively.pt(W - SIDE_MARGIN - newBtnW, TOP + (HEADER_ROW_H - NEW_BTN_H) / 2));
+
+        var sortX = sortXFor(newBtnW);
         this._sortByBox.setPosition(lively.pt(sortX, TOP));
         if (this._sortByDropdown) this._sortByDropdown.setPosition(lively.pt(sortX, TOP + SORT_H + 4));
 
-        // The centered full-content search bar shares the back pill's row
+        // The full-content search bar shares the back pill's row
         // (vertically centered against it) rather than sitting on its own
-        // row below the title — fixed-width like every other control in
-        // this header (SORT_W/NEW_BTN_W/SIDEBAR_W never resize on window
-        // resize either), just re-centered horizontally. Centered within
-        // the space between the back pill and the sort-by pill, not the
-        // full page width — centering on W alone would (and, confirmed
-        // live, did) overlap the sort-by/new-page controls on the right
-        // once this row got crowded.
-        var backBtnW = this._backBtn.getExtent().x;
-        var leftBound = SIDE_MARGIN + backBtnW + 24;
+        // row below the title. It's centered on the page itself, but only
+        // has the space between the back pill and the sort-by pill:
+        // SEARCH_BAR_W when that fits, otherwise it shrinks to what's left
+        // (floored at SEARCH_BAR_MIN_W, below which it'd just overlap the
+        // controls — confirmed live at a 1000px window, where a fixed
+        // 520px bar covered ~86px of the sort pill) and is clamped into
+        // that gap instead of centered.
         var rightBound = sortX - 24;
-        var barX = leftBound + Math.round((rightBound - leftBound - SEARCH_BAR_W) / 2);
+        var barW = Math.max(SEARCH_BAR_MIN_W, Math.min(SEARCH_BAR_W, rightBound - leftBound));
+        this._setSearchBarWidth(barW);
+        var barX = Math.max(leftBound, Math.min(Math.round((W - barW) / 2), rightBound - barW));
         var barY = (TOP - BACK_BTN_LIFT) + Math.round((HEADER_ROW_H - SEARCH_BAR_H) / 2);
         this._searchBar.setPosition(lively.pt(barX, barY));
         if (this._searchDropdown) this._searchDropdown.setPosition(lively.pt(barX, barY + SEARCH_BAR_H + 6));
 
-        var gridY = TOP + HEADER_H + GRID_TOP_GAP;
-        this._gridY = gridY;
-        var gridW = Math.max(CARD_W, W - SIDE_MARGIN * 2);
-        this._gridW = gridW;
-        this._gridBox.setPosition(lively.pt(SIDE_MARGIN, gridY));
-        // Height is provisional here — _layoutGrid (below) corrects it to
-        // the single shelf row's real (possibly wrapped-title-grown)
-        // height once cards exist; this only matters before the first
-        // _renderPages call.
-        this._gridBox.setExtent(lively.pt(gridW, CARD_H));
-
+        this._gridY = TOP + HEADER_H + GRID_TOP_GAP;
+        // Position/width/height depend on whether a page is open, so
+        // _layoutGrid owns them (it's also called when that changes).
         this._layoutGrid();
       },
 
-      // One shelf row, not a wrapping multi-row grid — this used to pack
-      // cards into as many rows as the page count needed, which could push
-      // the open wiki view (positioned right below the grid, see
-      // _repositionWikiView) far down the page. Now every card sits in a
-      // single row and the row scrolls horizontally (native overflow, via
-      // clipMode) once there are more cards than fit, so the grid's own
-      // height is always just one row tall regardless of how many wiki
-      // pages exist — freeing the rest of the viewport for the actual page
-      // content. Cards can still be taller than the CARD_H floor if
-      // _fitCard hugs a wrapped title, so the row's height is still the
-      // tallest card actually present, not a hardcoded constant.
+      // Two modes, switched by whether a page is open:
+      //  - no page open: the cards wrap into as many rows as they need,
+      //    filling the space between the left sidebar and the right
+      //    categories panel (the same span the open page uses, see
+      //    _contentWidth), with both panels starting level with the grid.
+      //  - a page open: ONE shelf row across the full width that scrolls
+      //    horizontally (native overflow, via clipMode) once there are
+      //    more cards than fit. The grid used to always be a wrapping
+      //    grid, which pushed the open wiki view (positioned right below
+      //    the grid, see _repositionWikiView) far down the page; one row
+      //    keeps the grid's own height to a single card regardless of how
+      //    many pages exist, freeing the viewport for the page itself.
+      // Cards can be taller than the CARD_H floor if _fitCard hugs a
+      // wrapped title, so row heights come from the tallest card actually
+      // in each row, not a hardcoded constant.
       _layoutGrid: function () {
-        var self = this;
-        var rowH = 0;
-        var x = 0;
-        this._cardMorphs.forEach(function (card) {
-          card.setPosition(lively.pt(x, 0));
-          x += CARD_W + GRID_GAP;
-          rowH = Math.max(rowH, card._cardH || CARD_H);
-        });
-        var contentW = this._cardMorphs.length ? (x - GRID_GAP) : 0;
-        var overflowing = contentW > this._gridW;
+        var pageOpen = !!this._activeContentMorph;
+        var gridX = pageOpen ? SIDE_MARGIN : SIDE_MARGIN + SIDEBAR_W + SIDEBAR_GAP;
+        var gridW = pageOpen
+          ? Math.max(CARD_W, this._pageW() - SIDE_MARGIN * 2)
+          : Math.max(CARD_W, this._contentWidth());
+        this._gridW = gridW;
+        this._gridBox.setPosition(lively.pt(gridX, this._gridY));
 
-        // +16: room for the native horizontal scrollbar so it doesn't clip
-        // the cards' own bottom edge (clipMode's overflow-y is 'hidden').
-        var boxH = this._cardMorphs.length ? rowH + (overflowing ? 16 : 0) : rowH;
-        this._gridBox.setExtent(lively.pt(this._gridW, boxH));
-        this._gridBox.applyStyle({ clipMode: overflowing ? { x: "auto", y: "hidden" } : "visible" });
+        var cards = this._cardMorphs || [];
+        if (pageOpen) {
+          var rowH = 0;
+          var x = 0;
+          cards.forEach(function (card) {
+            card.setPosition(lively.pt(x, 0));
+            x += CARD_W + GRID_GAP;
+            rowH = Math.max(rowH, card._cardH || CARD_H);
+          });
+          var contentW = cards.length ? (x - GRID_GAP) : 0;
+          var overflowing = contentW > gridW;
 
-        this._gridContentHeight = this._cardMorphs.length ? rowH : 0;
+          // +16: room for the native horizontal scrollbar so it doesn't clip
+          // the cards' own bottom edge (clipMode's overflow-y is 'hidden').
+          var boxH = cards.length ? rowH + (overflowing ? 16 : 0) : rowH;
+          this._gridBox.setExtent(lively.pt(gridW, boxH));
+          this._gridBox.applyStyle({ clipMode: overflowing ? { x: "auto", y: "hidden" } : "visible" });
+          this._gridContentHeight = cards.length ? rowH : 0;
+        } else {
+          var cols = Math.max(1, Math.floor((gridW + GRID_GAP) / (CARD_W + GRID_GAP)));
+          var cx = 0, cy = 0, col = 0, tallest = 0;
+          cards.forEach(function (card) {
+            if (col === cols) {
+              col = 0;
+              cx = 0;
+              cy += tallest + GRID_GAP;
+              tallest = 0;
+            }
+            card.setPosition(lively.pt(cx, cy));
+            cx += CARD_W + GRID_GAP;
+            col++;
+            tallest = Math.max(tallest, card._cardH || CARD_H);
+          });
+          var totalH = cards.length ? cy + tallest : 0;
+          this._gridBox.setExtent(lively.pt(gridW, Math.max(totalH, CARD_H)));
+          this._gridBox.applyStyle({ clipMode: "visible" });
+          this._gridContentHeight = totalH;
+        }
         this._repositionWikiView();
       },
 
@@ -1023,7 +1131,11 @@ module("lively.identity.WikiIndex")
       // viewportY + scrollY.
       _pinPanels: function () {
         var scrollY = window.pageYOffset || 0;
-        var naturalY = (this._gridY || 0) + (this._gridContentHeight || 0) + GRID_TOP_GAP;
+        // Level with the grid's top while it fills the middle (no page
+        // open); below the one-row shelf once a page is open.
+        var naturalY = this._activeContentMorph
+          ? (this._gridY || 0) + (this._gridContentHeight || 0) + GRID_TOP_GAP
+          : (this._gridY || 0);
         var viewportY = Math.max(PANEL_STICKY_TOP, naturalY - scrollY);
         // getScrollOffset reads a cached window rect; drop it so it matches
         // the scroll position just read.
@@ -1042,7 +1154,11 @@ module("lively.identity.WikiIndex")
       // background fills all of it (a world is normally viewport-sized).
       _syncPageHeight: function () {
         var m = this._activeContentMorph;
-        var bottom = (m && m.world()) ? m.getPosition().y + m.getExtent().y : 0;
+        // With no page open the bottom is the wrapped card grid's, which
+        // can be taller than the viewport.
+        var bottom = (m && m.world())
+          ? m.getPosition().y + m.getExtent().y
+          : (this._gridY || 0) + (this._gridContentHeight || 0);
         var h = Math.max(window.innerHeight, Math.ceil(bottom + PAGE_BOTTOM_MARGIN));
         // clientWidth, not innerWidth: innerWidth includes the vertical
         // scrollbar this very height creates, which would add a horizontal
@@ -1097,7 +1213,13 @@ module("lively.identity.WikiIndex")
         if (this._sortByDropdown) return this._closeSortByDropdown();
 
         var self = this;
-        var itemsH = SORT_OPTIONS.length * SORT_ITEM_H;
+        // While a page is open the menu gets one more row below the sort
+        // options — "← All pages", the way back from the one-row shelf to
+        // the wrapped grid. It's an action, not a sort key, so it sits
+        // under a divider and never gets the ✓.
+        var pageOpen = !!this._activeContentMorph;
+        var DIVIDER_H = 9;
+        var itemsH = SORT_OPTIONS.length * SORT_ITEM_H + (pageOpen ? DIVIDER_H + SORT_ITEM_H : 0);
         var dropdown = new lively.morphic.Box(lively.rect(0, 0, SORT_W, itemsH + 8));
         dropdown.setFill(Color.white);
         dropdown.applyStyle({ borderWidth: 1, borderColor: Color.rgb(200, 200, 200), borderRadius: 8 });
@@ -1121,7 +1243,37 @@ module("lively.identity.WikiIndex")
           dropdown.addMorph(row);
         });
 
+        if (pageOpen) {
+          var rowsBottom = 4 + SORT_OPTIONS.length * SORT_ITEM_H;
+          var divider = new lively.morphic.Box(lively.rect(10, rowsBottom + 4, SORT_W - 20, 1));
+          divider.setFill(Color.rgb(230, 230, 230));
+          divider.applyStyle({ borderWidth: 0 });
+          divider.eventsAreIgnored = true;
+          dropdown.addMorph(divider);
+
+          var allRow = new lively.morphic.Text(
+            lively.rect(0, rowsBottom + DIVIDER_H, SORT_W, SORT_ITEM_H),
+            "← All pages",
+          );
+          allRow.applyStyle({
+            fontSize: 12, fontWeight: "600", textColor: Color.rgb(20, 20, 20),
+            fill: null, borderWidth: 0, borderColor: null, align: "left",
+          });
+          allRow.renderContext().shapeNode.style.cursor = "pointer";
+          allRow.onMouseDown = function () {
+            self._closeSortByDropdown();
+            self._closeActivePage();
+          };
+          allRow.onMouseOver = function () { allRow.applyStyle({ fill: Color.rgb(245, 245, 245) }); };
+          allRow.onMouseOut = function () { allRow.applyStyle({ fill: null }); };
+          dropdown.addMorph(allRow);
+        }
+
         $world.addMorph(dropdown);
+        // Same stacking fix as the search dropdown: this one spans the top
+        // of the fixed categories panel, whose body-level node otherwise
+        // paints over it.
+        dropdown.renderContext().shapeNode.style.zIndex = "1000";
         this._sortByDropdown = dropdown;
         this._layout();
       },
@@ -1404,6 +1556,7 @@ module("lively.identity.WikiIndex")
           this._gridBox.setExtent(lively.pt(this._gridW || CARD_W, CARD_H));
           this._gridBox.applyStyle({ clipMode: "visible" });
           this._gridContentHeight = 0;
+          this._showPageListIfNoPageOpen();
           this._repositionWikiView();
           return;
         }
@@ -1414,7 +1567,18 @@ module("lively.identity.WikiIndex")
           self._fitCard(card);
           self._cardMorphs.push(card);
         });
+        this._showPageListIfNoPageOpen();
         this._layoutGrid();
+      },
+
+      // With no page open the left menu is the page list (there's no
+      // outline to show), filled in here once the pages exist and again
+      // when they change — before the grid's layout, since _pinPanels only
+      // positions the menu once it's visible. A page's own outline
+      // (_setActiveContentMorph) is never overwritten while one is open.
+      _showPageListIfNoPageOpen: function () {
+        if (this._activeContentMorph || !this._sidebarBox) return;
+        this._renderSidebarPageList(this._sidebarListQuery || "");
       },
 
       _buildPageCard: function (page) {
@@ -1547,6 +1711,23 @@ module("lively.identity.WikiIndex")
         self._setActiveContentMorph(editor);
       },
 
+      // "← All pages": drops the open page/editor and goes back to the
+      // wrapped grid of every page, with the left menu back on the page
+      // list. A WikiEditor autosaves on a 2s debounce, so a pending save
+      // is flushed first rather than left to a timer on a removed morph.
+      _closeActivePage: function () {
+        var view = this._activeContentMorph;
+        if (!view) return;
+        if (view._saveTimer && view._saveNow) view._saveNow();
+        view.remove();
+        this._activeContentMorph = null;
+        this._showSidebarPageList("");
+        if (this._sidebarSearchField) this._sidebarSearchField.textString = "";
+        if (this._sidebarSearchPlaceholder) this._sidebarSearchPlaceholder.setVisible(true);
+        this._layoutGrid();
+        window.scrollTo(0, 0);
+      },
+
       // Runs after WikiView's "Delete page" has permanently removed a page
       // server-side: drops the now-dead view from the content slot, refetches
       // the page list (rather than patching it locally, so the grid and the
@@ -1557,6 +1738,7 @@ module("lively.identity.WikiIndex")
         var view = this._activeContentMorph;
         if (view) view.remove();
         this._activeContentMorph = null;
+        this._layoutGrid(); // back to the wrapped grid while the refetch runs
         this._pages = (this._pages || []).filter(function (p) { return p.objId !== objId; });
         this._fetchWikiIndexSilently(function () {
           self._renderCategoriesPanel();
@@ -1585,7 +1767,8 @@ module("lively.identity.WikiIndex")
         if (this._sidebarSearchField) this._sidebarSearchField.textString = "";
         if (this._sidebarSearchPlaceholder) this._sidebarSearchPlaceholder.setVisible(true);
         this._renderSidebarOutline(morph);
-        this._repositionWikiView();
+        // The grid collapses to its one-row shelf now that a page is open.
+        this._layoutGrid();
       },
 
       // Populates the "On this page" sidebar from the page's real rendered
