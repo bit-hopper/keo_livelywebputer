@@ -993,3 +993,82 @@ test.describe("Scheme source editing", () => {
     await expect(ta).toHaveValue("print(");
   });
 });
+
+test.describe("Code cell auto-sizing", () => {
+  // Real measured geometry, not the style value that was set.
+  const geo = (page) => page.evaluate(() => {
+    const ta = document.querySelector("textarea.lively-code-cell-source");
+    const cell = document.querySelector(".lively-code-cell-node");
+    const back = document.querySelector(".lively-code-cell-backdrop");
+    return {
+      h: ta.offsetHeight, scrollH: ta.scrollHeight, clientH: ta.clientHeight,
+      cellH: cell.offsetHeight, backH: back ? back.offsetHeight : null,
+      overflowY: getComputedStyle(ta).overflowY, resize: getComputedStyle(ta).resize,
+    };
+  });
+  const lines = (n) => Array.from({ length: n }, (_, i) => "(+ " + i + " 1)").join("\n");
+
+  for (const kind of ["Scheme", "Python"]) {
+    test(kind + " cell grows and shrinks with its line count, and caps at the maximum", async ({ page }) => {
+      await openEditor(page);
+      await insertCodeCell(page, kind);
+      const ta = page.locator("textarea.lively-code-cell-source");
+      await ta.click();
+
+      const empty = await geo(page);
+      expect(empty.h).toBe(72);
+      expect(empty.resize).toBe("none");
+
+      // Real typing: each Enter adds a line (Scheme's Enter is auto-indenting, Python's is native).
+      for (let i = 0; i < 9; i++) { await page.keyboard.type("x"); await page.keyboard.press("Enter"); }
+      await page.keyboard.type("x");
+      const ten = await geo(page);
+      expect(Math.abs(ten.h - (10 * 1.55 * 13 + 28))).toBeLessThanOrEqual(2);   // scrollHeight rounds
+      expect(ten.scrollH).toBeLessThanOrEqual(ten.clientH);     // nothing scrolls inside
+      expect(ten.overflowY).toBe("hidden");
+      expect(ten.cellH).toBeGreaterThan(empty.cellH);           // the card itself follows
+      if (kind === "Scheme") expect(ten.backH).toBe(ten.h);     // the backdrop follows
+
+      // Backspacing lines away shrinks it again.
+      for (let i = 0; i < 6; i++) { await page.keyboard.press("Backspace"); await page.keyboard.press("Backspace"); }
+      const few = await geo(page);
+      expect(few.h).toBeLessThan(ten.h);
+
+      // A big paste hits the cap and scrolls inside the box.
+      await ta.fill(lines(80));
+      const big = await geo(page);
+      expect(big.h).toBe(520);
+      expect(big.overflowY).toBe("auto");
+      expect(big.scrollH).toBeGreaterThan(big.clientH);
+
+      // Replacing it with one line collapses back to the minimum.
+      await ta.fill("1");
+      expect((await geo(page)).h).toBe(72);
+    });
+  }
+
+  test("a long line adds a horizontal scrollbar without clipping the last line", async ({ page }) => {
+    await openEditor(page);
+    await insertCodeCell(page, "Scheme");
+    const ta = page.locator("textarea.lively-code-cell-source");
+    await ta.fill(lines(8) + "\n" + "(list " + "1 ".repeat(400) + ")");
+    const g = await geo(page);
+    expect(g.scrollH).toBeLessThanOrEqual(g.clientH);   // vertical content fits; scrollbar room was added
+    // The line really overflows sideways. (Headless Chromium uses overlay scrollbars that take no
+    // room, so the scrollbar's own height can't be asserted here; the point is nothing is clipped.)
+    expect(await page.evaluate(() => { const t = document.querySelector("textarea.lively-code-cell-source"); return t.scrollWidth > t.clientWidth; })).toBe(true);
+  });
+
+  test("an incoming collaborator edit resizes an unfocused cell", async ({ page }) => {
+    await openEditor(page);
+    await insertCodeCell(page, "Scheme");
+    const before = await geo(page);
+    await page.evaluate((src) => {
+      const v = window.__wikiEd.editorView;
+      let pos = null, node = null;
+      v.state.doc.descendants((n, p) => { if (pos === null && n.type.name === "code_cell") { pos = p; node = n; } });
+      v.dispatch(v.state.tr.setNodeMarkup(pos, null, Object.assign({}, node.attrs, { source: src })));
+    }, lines(12));
+    await expect.poll(async () => (await geo(page)).h).toBeGreaterThan(before.h + 100);
+  });
+});

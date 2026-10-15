@@ -1688,6 +1688,46 @@ module('lively.identity.WikiEditor')
         // Scheme source gets bracket matching, auto-close and Lisp indentation.
         var editing = language === 'scheme' ? lively.identity.SchemeEditing.attach(textarea) : null;
 
+        // Grow/shrink the source box with its content, between the stylesheet's min-height (72px) and
+        // MAX_H, beyond which it scrolls inside itself. Measures scrollHeight after collapsing the
+        // box, so the horizontal scrollbar (a long line) is allowed for via offsetHeight - clientHeight.
+        // The collapse would briefly shorten the page, which can clamp the window's scroll position,
+        // so the box's parent is pinned at its current height for the duration of the measure.
+        var MAX_H = 520;
+        var LINE_H = 13 * 1.55, PAD_Y = 28;
+        var lastAutosizeWidth = -1;
+        function autosize() {
+          if (destroyed) return;
+          var h;
+          if (textarea.isConnected && textarea.offsetHeight > 0) {
+            var holder = textarea.parentNode;
+            var holderH = holder.offsetHeight;
+            var prevScroll = textarea.scrollTop;
+            holder.style.minHeight = holderH + 'px';
+            textarea.style.height = 'auto';
+            h = textarea.scrollHeight + (textarea.offsetHeight - textarea.clientHeight);
+            holder.style.minHeight = '';
+            textarea.scrollTop = prevScroll;
+          } else {
+            // Not laid out yet (a NodeView's dom is detached until ProseMirror inserts it): estimate
+            // from the line count, and the ResizeObserver below corrects it once it is on screen.
+            h = Math.ceil(textarea.value.split('\n').length * LINE_H + PAD_Y);
+          }
+          var capped = h > MAX_H;
+          textarea.style.height = Math.min(h, MAX_H) + 'px';
+          textarea.style.overflowY = capped ? 'auto' : 'hidden';
+        }
+        autosize();
+        if (typeof ResizeObserver === 'function') {
+          // Width changes can add/remove the horizontal scrollbar (and the first layout after
+          // insertion arrives here too); height changes are our own and ignored.
+          var resizeObserver = new ResizeObserver(function () {
+            var w = textarea.offsetWidth;
+            if (w !== lastAutosizeWidth) { lastAutosizeWidth = w; autosize(); }
+          });
+          resizeObserver.observe(textarea);
+        }
+
         var output = document.createElement('div');
         output.className = 'lively-code-cell-output lively-code-cell-output-empty';
         output.textContent = 'Run to see output.';
@@ -1717,7 +1757,7 @@ module('lively.identity.WikiEditor')
         textarea.addEventListener('mousedown', function (e) { e.stopPropagation(); });
         textarea.addEventListener('focus', function () { focused = true; });
         textarea.addEventListener('blur', function () { focused = false; commit(); });
-        textarea.addEventListener('input', scheduleCommit);
+        textarea.addEventListener('input', function () { scheduleCommit(); autosize(); });
         textarea.addEventListener('keydown', function (e) {
           e.stopPropagation();
           if (e.key === 'Escape') { e.preventDefault(); commit(); view.focus(); }
@@ -1857,6 +1897,7 @@ module('lively.identity.WikiEditor')
             if (sourceChanged && !focused) {
               textarea.value = node.attrs.source || '';
               if (editing) editing.refresh();
+              autosize();
             }
             return true;
           },
@@ -1869,6 +1910,7 @@ module('lively.identity.WikiEditor')
           destroy: function () {
             destroyed = true;
             if (pendingCommitTimer) clearTimeout(pendingCommitTimer);
+            if (resizeObserver) resizeObserver.disconnect();
             if (editing) editing.destroy();
           },
         };

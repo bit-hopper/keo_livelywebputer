@@ -105,7 +105,8 @@ module('lively.identity.PostCardUtils')
         '.lively-code-cell-source{display:block;width:calc(100% - 24px);box-sizing:border-box;margin:10px 12px;border:none;outline:none;' +
           'background:#1e2230;color:#d7dae0;font-family:' + mono + ';font-size:13px;line-height:1.55;' +
           'padding:14px 16px;tab-size:2;overflow-x:auto;border-radius:10px;}',
-        'textarea.lively-code-cell-source{resize:vertical;min-height:72px;caret-color:#fff;}',
+        // Height is set from the content by WikiEditor's code-cell NodeView (autosize), so no drag handle.
+        'textarea.lively-code-cell-source{resize:none;min-height:72px;caret-color:#fff;}',
         // Scheme editor (SchemeEditing.attach): the textarea goes transparent over a backdrop
         // that paints the matching-bracket highlight. The backdrop copies the textarea's font
         // metrics exactly; no wrapping so columns line up with the indentation logic.
