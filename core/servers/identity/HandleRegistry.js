@@ -85,6 +85,16 @@ var DDL =
   '  did        TEXT PRIMARY KEY,' +
   '  document   TEXT NOT NULL,' +
   '  updated_at TEXT NOT NULL' +
+  ');\n' +
+  // A handle whose account was deleted stays taken forever (settings.md §4.4):
+  // freeing it would let anyone register the name and be mistaken for the
+  // previous owner (the 2026-09-07 @pika incident was a handle collision).
+  // Written by AccountDeletion in the same transaction that removes the
+  // account; read by registration and alias generation.
+  'CREATE TABLE IF NOT EXISTS reserved_handles (' +
+  '  handle     TEXT PRIMARY KEY,' +
+  '  reason     TEXT NOT NULL,' +
+  '  created_at TEXT NOT NULL' +
   ');';
 
 var _bootstrapped = false;
@@ -280,11 +290,13 @@ function createAlias(primaryHandle, did, thenDo) {
       }
       var candidate = _randomAliasCandidate();
       var now = new Date().toISOString();
+      // A reserved (deleted-account) handle is as taken as a live one.
       pool.query(
         'INSERT INTO handles (handle, did, created_at, updated_at, is_alias, primary_handle, revoked_at)' +
-        ' VALUES ($1, $2, $3, $4, true, $5, NULL)',
+        ' SELECT $1, $2, $3, $4, true, $5, NULL' +
+        ' WHERE NOT EXISTS (SELECT 1 FROM reserved_handles WHERE handle = $1)',
         [candidate, did, now, now, primaryHandle],
-        function(err) {
+        function(err, result) {
           if (err) {
             // 23505 = unique_violation
             if (err.code === '23505') {
@@ -292,6 +304,7 @@ function createAlias(primaryHandle, did, thenDo) {
             }
             return thenDo(err);
           }
+          if (!result.rowCount) return attempt(triesLeft - 1);
           thenDo(null, candidate);
         }
       );
@@ -352,6 +365,18 @@ function remove(handle, thenDo) {
     if (err) return thenDo(err);
     pool.query('DELETE FROM handles WHERE handle = $1', [handle], function(err) {
       thenDo(err || null);
+    });
+  });
+}
+
+// True if `handle` was released by a deleted account and is reserved for good.
+// Calls thenDo(err, boolean).
+function isReserved(handle, thenDo) {
+  withDB(function(err, pool) {
+    if (err) return thenDo(err);
+    pool.query('SELECT 1 FROM reserved_handles WHERE handle = $1', [handle], function(err, result) {
+      if (err) return thenDo(err);
+      thenDo(null, result.rows.length > 0);
     });
   });
 }
@@ -565,6 +590,7 @@ module.exports = {
   revokeAlias:      revokeAlias,
   listAll:          listAll,
   remove:           remove,
+  isReserved:       isReserved,
   registerDomain:   registerDomain,
   resolveDomain:    resolveDomain,
   resolveDomainRow: resolveDomainRow,

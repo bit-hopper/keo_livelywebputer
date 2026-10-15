@@ -3285,6 +3285,7 @@ module.exports = {
   deleteVersionsAfter:           deleteVersionsAfter,
   deleteWikiPage:                deleteWikiPage,
   getObjIdsForBlob:             getObjIdsForBlob,
+  blobCidsOf:                    _blobCidsOf,
   addRecipient:                  addRecipient,
   upsertPartAlias:               upsertPartAlias,
   resolvePartAlias:              resolvePartAlias,

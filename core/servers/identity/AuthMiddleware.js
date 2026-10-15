@@ -166,6 +166,15 @@ function verifyRegistration(req, body, thenDo) {
         conflictErr.statusCode = 409;
         return thenDo(conflictErr);
       }
+      // A deleted account's handle is reserved for good (settings.md §4.4) —
+      // same 409 as a live handle, so it can't be told apart by probing.
+      handleRegistry.isReserved(body.handle, function(reservedErr, reserved) {
+      if (reservedErr) return thenDo(reservedErr);
+      if (reserved) {
+        var reservedConflict = new Error('Handle already registered: ' + body.handle);
+        reservedConflict.statusCode = 409;
+        return thenDo(reservedConflict);
+      }
 
       handleRegistry.saveCredential(
         body.credentialId,
@@ -186,6 +195,7 @@ function verifyRegistration(req, body, thenDo) {
           });
         }
       );
+      });
     });
 
   }).catch(function(err) {

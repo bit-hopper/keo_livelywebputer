@@ -81,6 +81,9 @@ var wikiPermissions = require("./identity/WikiPermissions");
 var plusCode = require("./identity/PlusCode");
 var roomPresence = require("./identity/RoomPresence");
 var roomEphemeralMessages = require("./identity/RoomEphemeralMessages");
+var accountData = require("./identity/AccountData");
+var accountDeletion = require("./identity/AccountDeletion");
+var accountExport = require("./identity/AccountExport");
 
 // ─── home-world bootstrap helpers ─────────────────────────────────────────────
 
@@ -3191,6 +3194,127 @@ module.exports = function (route, app) {
       if (err) return res.status(500).json({ error: String(err) });
       if (!changed) return res.status(404).json({ error: "Alias not found: " + alias });
       res.json({ ok: true });
+    });
+  });
+
+  // ─── account: summary + self-service deletion (settings.md §5) ─────────────
+  // Registered here, ahead of the /@:handle/:objId routes below and of this
+  // file's own app.all("/@:handle/*") catch-all (CLAUDE.md, "Server routes").
+  // Owner-only: the URL handle must be the session's handle.
+
+  function _isOwnAccount(req, res) {
+    if (req.identity.handle !== req.params.handle) {
+      res.status(403).json({ error: "Forbidden: not your account" });
+      return false;
+    }
+    return true;
+  }
+
+  // Requires `body.assertion`: a fresh passkey assertion over the challenge from
+  // GET /nodejs/IdentityServer/challenge ({ credentialId, authenticatorData,
+  // clientDataJSON, signature, userHandle }) made with a credential of THIS
+  // account. Calls thenDo() on success; otherwise answers 400/401/403 itself.
+  // The challenge is consumed on every attempt, so an assertion can't be replayed.
+  function _requireFreshPasskey(req, res, thenDo) {
+    var a = (req.body || {}).assertion;
+    if (!a || !a.credentialId || !a.authenticatorData || !a.clientDataJSON || !a.signature) {
+      return res.status(400).json({ error: "A fresh passkey assertion is required", code: "ASSERTION_REQUIRED" });
+    }
+    auth.verifyAuthentication(req, Object.assign({}, a, { handle: req.identity.handle }), function (err, result) {
+      if (err) return res.status(401).json({ error: String(err.message || err), code: "ASSERTION_INVALID" });
+      if (result.did !== req.identity.did) {
+        return res.status(403).json({ error: "Assertion is not for this account", code: "ASSERTION_INVALID" });
+      }
+      thenDo();
+    });
+  }
+
+  // What the account holds, for the delete-flow confirmation screen.
+  app.get("/@:handle/account/summary", auth.requireAuth, function (req, res) {
+    if (!_isOwnAccount(req, res)) return;
+    handleRegistry.withDB(function (err, pool) {
+      if (err) return res.status(500).json({ error: String(err) });
+      accountData.summary(pool, req.identity.did, req.identity.handle, {}, function (err, summary) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json(summary);
+      });
+    });
+  });
+
+  // Body: { confirmHandle, assertion }. `assertion` is a fresh passkey
+  // assertion over the challenge from GET /nodejs/IdentityServer/challenge
+  // ({ credentialId, authenticatorData, clientDataJSON, signature, userHandle }):
+  // a stolen session cookie alone must not be enough to destroy an account.
+  // 409 { code: "BLOCKED", constellations: [...] } when the account created a
+  // constellation (settings.md §4.1); nothing is deleted in that case.
+  app.post("/@:handle/account/delete", auth.requireAuth, function (req, res) {
+    if (!_isOwnAccount(req, res)) return;
+    var body = req.body || {};
+    var did = req.identity.did;
+    var handle = req.identity.handle;
+    if (body.confirmHandle !== handle) {
+      return res.status(400).json({ error: "Type your handle to confirm", code: "CONFIRM_MISMATCH" });
+    }
+    _requireFreshPasskey(req, res, function () {
+      accountDeletion.deleteAccount({
+        did: did,
+        handle: handle,
+        blobStore: blobStore,
+        constellationRegistry: constellationRegistry,
+      }, function (err, report) {
+        if (err) {
+          if (err.code === "BLOCKED") {
+            return res.status(409).json({ error: err.message, code: "BLOCKED", constellations: err.constellations });
+          }
+          if (err.code === "NOT_FOUND") return res.status(404).json({ error: err.message, code: "NOT_FOUND" });
+          console.error("[IdentityServer] account delete failed for @" + handle + ":", err);
+          return res.status(500).json({ error: String(err.message || err), code: err.code || "DELETE_FAILED" });
+        }
+        if (req.session) {
+          delete req.session["identity-did"];
+          delete req.session["identity-handle"];
+          delete req.session["identity-challenge"];
+        }
+        res.json({ ok: true, report: report });
+      });
+    });
+  });
+
+  // Step 1 of the download: trade a fresh passkey assertion for a single-use
+  // token (60 s, bound to this account). A plain navigation can't carry an
+  // assertion, so the file itself is fetched with the token (below). The same
+  // assertion check as deletion — a bulk dump of every ciphertext is at least
+  // as bad to lose to a hijacked session as one account.
+  app.post("/@:handle/account/export-token", auth.requireAuth, function (req, res) {
+    if (!_isOwnAccount(req, res)) return;
+    _requireFreshPasskey(req, res, function () {
+      accountExport.mintToken(req.identity.did, function (err, token) {
+        if (err) return res.status(500).json({ error: String(err.message || err) });
+        res.json({ ok: true, token: token, expiresInSeconds: 60 });
+      });
+    });
+  });
+
+  // Step 2: stream the archive. Needs the session AND the token, and the token
+  // is redeemed atomically, so it works once. The body is streamed (blobs can
+  // be large); if anything fails after the first byte the connection is
+  // destroyed rather than ended, so the client sees a failed download instead
+  // of a truncated archive that looks complete.
+  app.get("/@:handle/account/export", auth.requireAuth, function (req, res) {
+    if (!_isOwnAccount(req, res)) return;
+    accountExport.consumeToken(req.query.token, req.identity.did, function (err, ok) {
+      if (err) return res.status(500).json({ error: String(err.message || err) });
+      if (!ok) return res.status(403).json({ error: "Export token is invalid, expired or already used", code: "TOKEN_INVALID" });
+      res.setHeader("Content-Type", "application/x-keo");
+      res.setHeader("Content-Disposition", 'attachment; filename="' + accountExport.fileName(req.identity.handle) + '"');
+      res.setHeader("Cache-Control", "no-store");
+      accountExport.writeExport({ did: req.identity.did, handle: req.identity.handle, blobStore: blobStore }, res, function (err) {
+        if (err) {
+          console.error("[IdentityServer] account export failed for @" + req.identity.handle + ":", err);
+          return res.destroy();
+        }
+        res.end();
+      });
     });
   });
 
