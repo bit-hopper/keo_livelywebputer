@@ -255,6 +255,7 @@ module("lively.identity.WikiIndex")
           ? "@" + this._shownHandle() + " wiki"
           : "c/" + this._shownName() + " wiki";
         this._buildChrome();
+        this._installStacking();
         this._renderCategoriesPanel();
         this._renderPages();
         this._installMenuBarEntry();
@@ -969,6 +970,38 @@ module("lively.identity.WikiIndex")
     // ─── layout ─────────────────────────────────────────────────────────────────
 
     "layout", {
+      // The two panels (and the menu bar, presence panel) are
+      // enableFixedPositioning morphs: their nodes live directly under
+      // <body>, after the world's own node, so they paint above EVERYTHING
+      // in the world — a window opened onto the canvas (confirmed live: the
+      // Terminal) slid under the left menu and the categories panel.
+      // Reordering inside the world can't fix that, only z-index can: every
+      // world-level morph node gets z-index 1 (beating the panels' auto),
+      // and every OTHER fixed body-level node (menu bar, presence panel) is
+      // lifted to 2 so they stay above windows as they are on other pages.
+      // The observer lifts fixed morphs created later (e.g. the presence
+      // panel after sign-in).
+      _installStacking: function () {
+        if (document.getElementById("wiki-index-stacking")) return;
+        var self = this;
+        var style = document.createElement("style");
+        style.id = "wiki-index-stacking";
+        style.textContent = ".Morph.World > div > .morphNode { z-index: 1; }";
+        document.head.appendChild(style);
+
+        function raiseOthers() {
+          var panels = [self._sidebarBox, self._categoriesPanel].map(function (m) {
+            return m && m.renderContext().shapeNode.parentNode;
+          });
+          Array.prototype.forEach.call(document.body.children, function (c) {
+            if (!c.classList.contains("morphNode") || panels.indexOf(c) !== -1) return;
+            if (window.getComputedStyle(c).position === "fixed") c.style.zIndex = "2";
+          });
+        }
+        raiseOthers();
+        new MutationObserver(raiseOthers).observe(document.body, { childList: true });
+      },
+
       // Sizes the title box to its own rendered text. The label hugs its
       // content, but the shapeNode subtracts ~8px of padding from whatever
       // extent it's given, so a box exactly as wide as the text clips the
