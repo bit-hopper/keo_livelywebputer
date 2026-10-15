@@ -1695,8 +1695,6 @@ module("lively.identity.ProfileCard")
 
         // ── Accounts tab ─────────────────────────────────────────────────
 
-        addField("ETH wallet address", "pcEthAddress", payload.ethAddress || "");
-
         y = self._buildSocials(pane, payload, y, ew);
 
         // ── websites (up to 3 — listed under the social circles on the
@@ -1720,6 +1718,10 @@ module("lively.identity.ProfileCard")
           pane.addMorph(wsInp);
           y += 30;
         }
+
+        // ETH wallet last: the least-used field on this tab.
+        y += 8;
+        addField("ETH wallet address", "pcEthAddress", payload.ethAddress || "");
 
         } else if (tab === 'orbit') {
 
@@ -1946,15 +1948,6 @@ module("lively.identity.ProfileCard")
           { width: 834, height: 160, shape: 'rect', title: 'Crop Banner', basename: 'banner' });
 
         y += 4;
-        // Beside the calculator panel, drop the whole signs block down so its
-        // vertical center lines up with the panel's (stacked layout: no shift).
-        var pw = pane.getExtent().x;
-        // Pickers end at x=326 (right chevron); leave a ~22px gap before the panel.
-        var natalX = 348;
-        var sideBySide = pw - 12 - natalX >= 300;
-        var signsTop = y;                       // top of the calculator panel
-        var SIGNS_H = 22 + 3 * 34 - 8;          // label row + 3 picker rows, minus trailing gap
-        if (sideBySide) y += Math.max(0, Math.round((PC.natal.PANEL_H - SIGNS_H) / 2));
         ui.text(pane, 'Astrological signs', 12, y, ew, 16, 10, 120, 120, 128, false);
         y += 22;
 
@@ -1996,16 +1989,14 @@ module("lively.identity.ProfileCard")
           y += 34;
         });
 
-        // Birth-chart calculator: beside the pickers when the pane is wide
-        // enough, otherwise stacked underneath them.
-        if (sideBySide) {
-          PC.natal.build(pane, natalX, signsTop, Math.min(pw - 12 - natalX, 410));
-          y = Math.max(y, signsTop + PC.natal.PANEL_H);
-        } else {
-          y += 4;
-          PC.natal.build(pane, 12, y, ew);
-          y += PC.natal.PANEL_H;
-        }
+        // Birth-chart calculator: opens as a popup over the tab (PC.natal.open)
+        // and fills the three pickers above.
+        y += 4;
+        ui.pill(pane, 'Calculate from birth chart', 12, y, 196, 26, false, function () {
+          lively.identity.ProfileCard.natal.open(this);
+        });
+        ui.text(pane, 'Your birth details stay on this device.', 220, y + 5, ew - 208, 16, 10, 150, 150, 158, false);
+        y += 32;
         return y + 6;
       },
 
@@ -2480,12 +2471,54 @@ module("lively.identity.ProfileCard")
         return 'rgb(' + lively.identity.ProfileCard.signRgb(idx).join(',') + ')';
       },
 
-      // Birth-chart calculator panel (edit → Profile tab, beside the sign
-      // pickers). Birth date/time/place live only in these inputs: they're
-      // never added to _editPayload or saved, and are cleared after a
-      // successful calculation. Only the three sign pickers are filled.
+      // Birth-chart calculator (edit → Profile tab → "Calculate from birth
+      // chart"), shown as a popup over the tab. Birth date/time/place live
+      // only in these inputs: they're never added to _editPayload or saved,
+      // and are cleared after a successful calculation. Only the three sign
+      // pickers are filled.
       natal: {
         PANEL_H: 328,
+        PANEL_W: 410,
+
+        // Popup: a dimming scrim over the whole pane plus the calculator card
+        // centered on it. They're siblings, not parent/child: mouse dispatch
+        // is capture-first, so a clickable scrim that owned the card would
+        // get every click on the card's own widgets before they did.
+        open: function (btn) {
+          var PC   = lively.identity.ProfileCard, ui = PC.ui;
+          var pane = ui.paneOf(btn);
+          if (!pane || pane.get('pcNatalCard')) return;
+          var ext = pane.getExtent();
+          var scrim = new lively.morphic.Box(lively.rect(0, 0, ext.x, ext.y));
+          scrim.name = 'pcNatalScrim';
+          ui.noDrag(scrim);
+          scrim.applyStyle({ fill: Color.rgba(20, 16, 24, 0.45), borderWidth: 0, handStyle: 'default' });
+          scrim.onMouseUp = function (evt) {
+            evt.stop();
+            lively.identity.ProfileCard.natal.close(this);
+            return true;
+          };
+          pane.addMorph(scrim);
+          var w = Math.min(ext.x - 24, PC.natal.PANEL_W);
+          var card = PC.natal.build(pane, Math.round((ext.x - w) / 2),
+            Math.max(12, Math.round((ext.y - PC.natal.PANEL_H) / 2)), w);
+          var x = ui.iconBtn(card, 'close', w - 30, 4, 120, 120, 128, 'Close');
+          x.onMouseUp = function (evt) {
+            evt.stop();
+            lively.identity.ProfileCard.natal.close(this);
+            return true;
+          };
+        },
+
+        close: function (m) {
+          var pane = lively.identity.ProfileCard.ui.paneOf(m);
+          if (!pane) return;
+          ['pcNatalCard', 'pcNatalScrim'].forEach(function (n) {
+            var x = pane.get(n);
+            if (x) x.remove();
+          });
+        },
+
         INFO: 'Your birth chart details are only used locally on this device to calculate your placements ' +
               'and never saved or sent to a remote server.',
 
