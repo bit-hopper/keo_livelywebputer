@@ -39,7 +39,7 @@
  */
 
 module("lively.identity.WebAuthn")
-  .requires("lively.identity.Crypto")
+  .requires("lively.identity.Crypto", "lively.identity.KeyVault")
   .toRun(function () {
     Object.subclass(
       "lively.identity.WebAuthn",
@@ -512,6 +512,13 @@ module("lively.identity.WebAuthn")
             return thenDo(new Error('deriveKek: credentialId is required'));
           }
 
+          // KeyVault (opt-in) may still be restoring the KEK from the previous
+          // page load: wait for it instead of prompting for a passkey needlessly.
+          if (self._vaultPending) {
+            self._vaultPending.then(function () { self.deriveKek(options, thenDo); });
+            return;
+          }
+
           // Return cached KEK if already derived this session
           if (!self._kekCache) self._kekCache = {};
           if (self._kekCache[credentialId]) {
@@ -554,7 +561,7 @@ module("lively.identity.WebAuthn")
                 ));
               }
               var kek = new Uint8Array(ext.prf.results.first);
-              self._kekCache[credentialId] = kek;
+              self.cacheKek(credentialId, kek);
               settle(null, kek);
             })
             .catch(function (err) { settle(err); });
@@ -601,6 +608,11 @@ module("lively.identity.WebAuthn")
             return thenDo(
               new Error("deriveX25519KeyPair: credentialId is required"),
             );
+          }
+
+          if (self._vaultPending) {
+            self._vaultPending.then(function () { self.deriveX25519KeyPair(options, thenDo); });
+            return;
           }
 
           if (!self._x25519Cache) self._x25519Cache = {};
@@ -671,7 +683,7 @@ module("lively.identity.WebAuthn")
 
                   var pubKey = sodium.crypto_scalarmult_base(privKey);
                   var pair = { publicKey: pubKey, privateKey: privKey };
-                  self._x25519Cache[credentialId] = pair;
+                  self.cacheX25519(credentialId, pair);
                   settle(null, pair);
                 } catch (e) {
                   settle(e);
@@ -681,6 +693,70 @@ module("lively.identity.WebAuthn")
             .catch(function (err) {
               settle(err);
             });
+        },
+      },
+
+      // ─── key cache + optional KeyVault persistence ────────────────────────────────
+
+      // The in-memory caches (_kekCache, _x25519Cache) are what the rest of the
+      // identity code reads. When the user has turned on KeyVault (Settings >
+      // Security), filling a cache also stores an encrypted copy that survives a
+      // reload in this tab, and page start-up (bottom of this file) restores it.
+      // With the setting off (the default) none of this stores or restores anything.
+
+      "vault",
+      {
+        // Fill the KEK cache for `credentialId`. Use this, not a direct assignment.
+        cacheKek: function (credentialId, kek) {
+          if (!this._kekCache) this._kekCache = {};
+          this._kekCache[credentialId] = kek;
+          lively.identity.keyVault.remember("kek:" + credentialId, kek);
+        },
+
+        // pair: { publicKey: Uint8Array[32], privateKey: Uint8Array[32] }
+        cacheX25519: function (credentialId, pair) {
+          if (!this._x25519Cache) this._x25519Cache = {};
+          this._x25519Cache[credentialId] = pair;
+          var both = new Uint8Array(64);
+          both.set(pair.publicKey, 0);
+          both.set(pair.privateKey, 32);
+          lively.identity.keyVault.remember("x25519:" + credentialId, both)
+            .then(function () { both.fill(0); });
+        },
+
+        // Store whatever is already cached (used right after the setting is turned on).
+        persistCachesToVault: function () {
+          var self = this;
+          Object.keys(this._kekCache || {}).forEach(function (id) {
+            lively.identity.keyVault.remember("kek:" + id, self._kekCache[id]);
+          });
+          Object.keys(this._x25519Cache || {}).forEach(function (id) {
+            self.cacheX25519(id, self._x25519Cache[id]);
+          });
+        },
+
+        // Fill the caches from KeyVault. Sets this._vaultPending until done so
+        // deriveKek / deriveX25519KeyPair wait for it rather than prompting.
+        restoreCachesFromVault: function () {
+          var self = this;
+          var kv = lively.identity.keyVault;
+          if (!kv || !kv.isEnabled()) return null;
+          this._vaultPending = kv.recallAll().then(function (all) {
+            Object.keys(all).forEach(function (slot) {
+              var i = slot.indexOf(":");
+              var kind = slot.slice(0, i), credentialId = slot.slice(i + 1), bytes = all[slot];
+              if (kind === "kek" && bytes.length === 32) {
+                if (!self._kekCache) self._kekCache = {};
+                if (!self._kekCache[credentialId]) self._kekCache[credentialId] = bytes;
+              } else if (kind === "x25519" && bytes.length === 64) {
+                if (!self._x25519Cache) self._x25519Cache = {};
+                if (!self._x25519Cache[credentialId]) {
+                  self._x25519Cache[credentialId] = { publicKey: bytes.slice(0, 32), privateKey: bytes.slice(32) };
+                }
+              }
+            });
+          }).catch(function () {}).then(function () { self._vaultPending = null; });
+          return this._vaultPending;
         },
       },
 
@@ -847,4 +923,5 @@ module("lively.identity.WebAuthn")
 
     // Singleton
     lively.identity.webAuthn = new lively.identity.WebAuthn();
+    lively.identity.webAuthn.restoreCachesFromVault();
   }); // end module('lively.identity.WebAuthn')

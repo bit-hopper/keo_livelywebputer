@@ -32,7 +32,7 @@
  */
 
 module("lively.identity.DID")
-  .requires("lively.identity.Crypto")
+  .requires("lively.identity.Crypto", "lively.identity.KeyVault")
   // Note: lively.Config and lively.net.SessionTracker are globally available
   // at load time — no requires() needed for them.
   .toRun(function () {
@@ -403,9 +403,15 @@ module("lively.identity.DID")
           // Use saveMeta so the write goes to the correct "identity" store.
           // Storing null causes loadMeta → JSON.parse("null") = null → !meta
           // is true → restoreSession returns null on the next page load.
-          this.saveMeta(null, function () {
-            thenDo && thenDo(null);
-          });
+          var self = this;
+          function finish() {
+            self.saveMeta(null, function () {
+              thenDo && thenDo(null);
+            });
+          }
+          // Also drop any KeyVault copy of the unlock keys (every tab's, since
+          // this deletes the device key that decrypts them). destroy() never rejects.
+          lively.identity.keyVault.destroy().then(finish, finish);
         },
 
         // Return the current in-memory user record, or null if not logged in.

@@ -30,5 +30,19 @@ module.exports = defineConfig({
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
     },
+    // Cross-engine coverage, scoped to the specs that exercise browser storage /
+    // WebCrypto behaviour where Safari (WebKit) and Firefox could differ.
+    // Install the engines once with:
+    //   node node_modules/@playwright/test/cli.js install firefox webkit
+    {
+      name: "firefox",
+      testMatch: /key-vault\.spec\.js/,
+      use: { ...devices["Desktop Firefox"] },
+    },
+    {
+      name: "webkit",
+      testMatch: /key-vault\.spec\.js/,
+      use: { ...devices["Desktop Safari"] },
+    },
   ],
 });

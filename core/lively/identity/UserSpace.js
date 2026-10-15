@@ -138,8 +138,7 @@ module("lively.identity.UserSpace")
                   };
 
                   var kek = new Uint8Array(prfResults.first);
-                  if (!wa._kekCache) wa._kekCache = {};
-                  wa._kekCache[user.credentialId] = kek;
+                  wa.cacheKek(user.credentialId, kek);
 
                   c.exportPrivateKeyJwk(softKeyPair.privateKey, function (err, softPrivJwk) {
                     if (err) return thenDo(err);

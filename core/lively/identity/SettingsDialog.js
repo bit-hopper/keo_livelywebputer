@@ -24,7 +24,7 @@
  * the two never act on a stale copy.
  *
  * Open: lively.identity.SettingsDialog.open(tab)
- *   tab: "account" (default), "privacy", "feeds" or "delete"
+ *   tab: "account" (default), "privacy", "feeds", "security" or "delete"
  *
  * See settings.md for the spec (export / delete-account tabs are added there).
  */
@@ -32,6 +32,7 @@
 module("lively.identity.SettingsDialog")
   .requires(
     "lively.identity.DID",
+    "lively.identity.KeyVault",
     "lively.identity.WebKey",
     "lively.identity.MenuBarEntry",
     "lively.identity.KeoReader",
@@ -93,7 +94,7 @@ module("lively.identity.SettingsDialog")
       },
 
       load: function load(tab) {
-        this._tab = (tab === "privacy" || tab === "feeds" || tab === "delete") ? tab : "account";
+        this._tab = (tab === "privacy" || tab === "feeds" || tab === "security" || tab === "delete") ? tab : "account";
         this._enterTab();
       },
 
@@ -109,6 +110,8 @@ module("lively.identity.SettingsDialog")
           this._render();
           if (tab === "account" && !this._didDoc) this._loadDidDocument();
           this._loadSummary();
+        } else if (tab === "security") {
+          this._render();
         } else {
           this._relLoaded = false;
           this._render();
@@ -332,10 +335,11 @@ module("lively.identity.SettingsDialog")
           lively.bindings.connect(tb, "fire", tb, "doAction");
           content.addMorph(tb);
         }
-        addTabButton("Account", "account", MARGIN, 110);
-        addTabButton("Privacy", "privacy", MARGIN + 118, 110);
-        addTabButton("Feeds", "feeds", MARGIN + 236, 110);
-        addTabButton("Delete", "delete", MARGIN + 354, 110);
+        addTabButton("Account", "account", MARGIN, 92);
+        addTabButton("Privacy", "privacy", MARGIN + 101, 92);
+        addTabButton("Feeds", "feeds", MARGIN + 202, 92);
+        addTabButton("Security", "security", MARGIN + 303, 92);
+        addTabButton("Delete", "delete", MARGIN + 404, 92);
         y += 28 + 22;
 
         if (!user || !user.handle) {
@@ -479,6 +483,24 @@ module("lively.identity.SettingsDialog")
             y += 36;
           }
 
+        } else if (tab === "security") {
+
+          // ── Security tab ──────────────────────────────────────────────────
+          sectionLabel("Stay unlocked");
+          var kv = lively.identity.keyVault;
+          if (!kv.isSupported()) {
+            noteText("This browser can't do this (it needs IndexedDB and Web Crypto).", 16);
+          } else {
+            var kvOn = kv.isEnabled();
+            paragraph("Normally your passkey is asked for again after every page load. Turn this on to stay unlocked in this tab " +
+              "across page loads, for up to 8 hours. Closing the tab, signing out or turning this off locks it again. " +
+              "While it is on, anyone using this tab can read your private content, so leave it off on a shared computer.");
+            infoRow("Status", kvOn ? "On for this browser" : "Off");
+            y += 6;
+            actionButton(MARGIN, y, 150, kvOn ? "Turn off" : "Turn on", kvOn ? "default" : "accent", "_toggleKeepUnlocked", null);
+            y += 36;
+          }
+
         } else if (!this._relLoaded) {
           noteText("Loading…");
 
@@ -580,6 +602,19 @@ module("lively.identity.SettingsDialog")
           try { document.execCommand("copy"); copied(); } catch (e) { btn.setLabel("Copy DID"); btn.setActive(true); }
           document.body.removeChild(ta);
         }
+      },
+
+      // Turning it on stores whatever is unlocked right now; turning it off
+      // deletes every stored copy (in every tab).
+      _toggleKeepUnlocked: function _toggleKeepUnlocked(arg, btn) {
+        var self = this;
+        var kv = lively.identity.keyVault;
+        var turnOn = !kv.isEnabled();
+        kv.setEnabled(turnOn).then(function (ok) {
+          if (ok && turnOn && lively.identity.webAuthn) lively.identity.webAuthn.persistCachesToVault();
+          self._restore(btn);
+          self._render();
+        });
       },
 
       _signOut: function _signOut(arg, btn) {

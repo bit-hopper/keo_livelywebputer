@@ -457,8 +457,7 @@ module("lively.identity.RegisterDialog")
 
                             var kek = new Uint8Array(prfResults.first);
                             // Cache the KEK for this session
-                            if (!lively.identity.webAuthn._kekCache) lively.identity.webAuthn._kekCache = {};
-                            lively.identity.webAuthn._kekCache[reg.credentialId] = kek;
+                            lively.identity.webAuthn.cacheKek(reg.credentialId, kek);
 
                             // Wrap soft private key with KEK
                             crypto.exportPrivateKeyJwk(softKeyPair.privateKey, function (err, softPrivJwk) {
