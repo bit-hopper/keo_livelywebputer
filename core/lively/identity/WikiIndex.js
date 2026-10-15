@@ -1253,7 +1253,7 @@ module("lively.identity.WikiIndex")
 
           var allRow = new lively.morphic.Text(
             lively.rect(0, rowsBottom + DIVIDER_H, SORT_W, SORT_ITEM_H),
-            "All pages",
+            "    All pages", // 4 spaces, not the sort rows' 3: this row is bolder, whose spaces are narrower, and measured 5px short of their label x
           );
           allRow.applyStyle({
             fontSize: 12, fontWeight: "600", textColor: Color.rgb(20, 20, 20),
