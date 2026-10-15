@@ -97,6 +97,9 @@ module("lively.identity.WikiIndex")
     // viewport y they hold here, clear of the menu bar.
     var PANEL_STICKY_TOP = 48;
     var PAGE_BOTTOM_MARGIN = 48; // world background kept below the open page
+    // Narrowest the open page may get beside the two panels; below it the
+    // panels hide and the page takes the full width (_panelsFit).
+    var PAGE_MIN_W = 600;
     var PANEL_PAD = 14;
     var PANEL_HEADER_TOP = 14;
     var PANEL_ITEMS_TOP = PANEL_HEADER_TOP + 26;
@@ -1000,6 +1003,12 @@ module("lively.identity.WikiIndex")
         this._newBtnCompact.setVisible(!!this._canWrite && compactNew);
         var newBtn = compactNew ? this._newBtnCompact : this._newBtn;
         newBtn.setPosition(lively.pt(W - SIDE_MARGIN - newBtnW, TOP + (HEADER_ROW_H - NEW_BTN_H) / 2));
+        // The hidden variant is kept in bounds too (it counts toward the
+        // page's scroll width even while hidden — a stale far-right spot
+        // from a wider window gave a horizontal scrollbar at 800px).
+        var otherBtn = compactNew ? this._newBtn : this._newBtnCompact;
+        var otherW = compactNew ? fullNewW : compactNewW;
+        otherBtn.setPosition(lively.pt(W - SIDE_MARGIN - otherW, TOP + (HEADER_ROW_H - NEW_BTN_H) / 2));
 
         var sortX = sortXFor(newBtnW);
         this._sortByBox.setPosition(lively.pt(sortX, TOP));
@@ -1048,7 +1057,7 @@ module("lively.identity.WikiIndex")
         var gridX = pageOpen ? SIDE_MARGIN : SIDE_MARGIN + SIDEBAR_W + SIDEBAR_GAP;
         var gridW = pageOpen
           ? Math.max(CARD_W, this._pageW() - SIDE_MARGIN * 2)
-          : Math.max(CARD_W, this._contentWidth());
+          : Math.max(CARD_W, this._spanBetweenPanels());
         this._gridW = gridW;
         this._gridBox.setPosition(lively.pt(gridX, this._gridY));
 
@@ -1113,7 +1122,7 @@ module("lively.identity.WikiIndex")
         var y = (this._gridY || 0) + (this._gridContentHeight || 0) + GRID_TOP_GAP;
         var m = this._activeContentMorph;
         if (m && m.world()) {
-          m.setPosition(lively.pt(SIDE_MARGIN + SIDEBAR_W + SIDEBAR_GAP, y));
+          m.setPosition(lively.pt(this._contentLeft(), y));
           // Keep the page filling the space between the sidebar and the
           // categories panel as the window (or the scrollbar) changes width.
           var w = this._contentWidth(), ext = m.getExtent();
@@ -1149,12 +1158,28 @@ module("lively.identity.WikiIndex")
         // getScrollOffset reads a cached window rect; drop it so it matches
         // the scroll position just read.
         if ($world) $world.cachedWindowBounds = null;
-        if (this._sidebarBox && this._sidebarBox.world() && this._sidebarBox.isVisible()) {
-          this._sidebarBox.setPosition(lively.pt(SIDE_MARGIN, viewportY + scrollY));
+        // Too narrow for the panels beside an open page: hide both (the
+        // page takes their room, see _contentWidth). Only on a change of
+        // state, so the sidebar's own show/hide logic isn't fought every
+        // scroll tick; the sidebar's renders re-check _panelsHidden too.
+        var hidden = this._panelsHidden();
+        if (hidden !== !!this._panelsWereHidden) {
+          this._panelsWereHidden = hidden;
+          if (this._categoriesPanel) this._categoriesPanel.setVisible(!hidden);
+          if (this._sidebarBox) this._sidebarBox.setVisible(!hidden);
         }
+        // Positioned even while hidden: a hidden node still counts toward
+        // the page's scroll width, so one left at its old wide-window spot
+        // gave the page a horizontal scrollbar at narrow widths (measured:
+        // scrollWidth 1883 in an 800px window, from the hidden categories
+        // panel at x=1623).
         if (this._categoriesPanel && this._categoriesPanel.world()) {
           var rightX = this._pageW() - SIDE_MARGIN - RIGHT_PANEL_W;
           this._categoriesPanel.setPosition(lively.pt(rightX, viewportY + scrollY));
+        }
+        if (hidden) return;
+        if (this._sidebarBox && this._sidebarBox.world() && this._sidebarBox.isVisible()) {
+          this._sidebarBox.setPosition(lively.pt(SIDE_MARGIN, viewportY + scrollY));
         }
       },
 
@@ -1202,10 +1227,40 @@ module("lively.identity.WikiIndex")
       // categories panel gutter. Uncapped: the page runs right up to
       // RIGHT_PANEL_GAP from the categories panel, the same gap it has from
       // the sidebar on the left (SIDEBAR_GAP), at any window width.
+      //
+      // When that space would be narrower than PAGE_MIN_W the two panels
+      // give way instead (_panelsFit): the page takes the full width and
+      // _pinPanels hides them while it's open.
       _contentWidth: function () {
+        if (!this._panelsFit()) return Math.max(320, this._pageW() - SIDE_MARGIN * 2);
+        return this._spanBetweenPanels();
+      },
+
+      // The space between the two panels, whether or not a page fills it —
+      // also what the wrapped card grid is centered in (_layoutGrid).
+      _spanBetweenPanels: function () {
         var leftEdge = SIDE_MARGIN + SIDEBAR_W + SIDEBAR_GAP;
         var rightGutter = RIGHT_PANEL_W + RIGHT_PANEL_GAP;
         return Math.max(400, this._pageW() - leftEdge - rightGutter - SIDE_MARGIN);
+      },
+
+      // True while the window is wide enough to show both panels beside a
+      // page at least PAGE_MIN_W wide.
+      _panelsFit: function () {
+        var gutters = SIDE_MARGIN * 2 + SIDEBAR_W + SIDEBAR_GAP + RIGHT_PANEL_W + RIGHT_PANEL_GAP;
+        return this._pageW() - gutters >= PAGE_MIN_W;
+      },
+
+      // The panels are only ever hidden for an open page — with none open
+      // they're the way to find one, so they stay.
+      _panelsHidden: function () {
+        return !!this._activeContentMorph && !this._panelsFit();
+      },
+
+      // Left edge of the open page: past the sidebar, or the page margin
+      // when the panels are hidden.
+      _contentLeft: function () {
+        return this._panelsFit() ? SIDE_MARGIN + SIDEBAR_W + SIDEBAR_GAP : SIDE_MARGIN;
       },
     },
 
@@ -1861,7 +1916,7 @@ module("lively.identity.WikiIndex")
         }
 
         box.setExtent(lively.pt(SIDEBAR_W, y + 14));
-        box.setVisible(true);
+        box.setVisible(!this._panelsHidden());
       },
 
       // Home button handler — switches the sidebar out of "this page's
@@ -1924,7 +1979,7 @@ module("lively.identity.WikiIndex")
         }
 
         box.setExtent(lively.pt(SIDEBAR_W, y + 14));
-        box.setVisible(true);
+        box.setVisible(!this._panelsHidden());
       },
 
       // Wiki pages carry their author's DID only inside the envelope, not
