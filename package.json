@@ -78,6 +78,7 @@
     "build:scheme": "node scripts/build-scheme-lib.js",
     "test:wiki": "node --test \"tests/wiki/*.test.js\"",
     "test:server": "node --test \"tests/server/*.test.js\"",
+    "test:ml": "node --test \"tests/ml/*.test.js\"",
     "test:scheme": "node scripts/build-scheme-lib.js && node --test \"tests/scheme/*.test.js\"",
     "postinstall": "patch-package && node scripts/build-postcard-libs.js && node scripts/build-libsodium.js && node scripts/build-geo-libs.js && node scripts/build-astro-libs.js && node scripts/build-wallet-crypto-libs.js && node scripts/build-wallet-vault-libs.js && node scripts/build-wallet-vault-sodium.js && node scripts/build-privacy-pool-client-libs.js && node scripts/fetch-privacy-pools-circuits.js && node scripts/build-wallet-vault-prover-libs.js && node scripts/build-jenga3d-libs.js && node scripts/copy-pyodide-libs.js"
   }
