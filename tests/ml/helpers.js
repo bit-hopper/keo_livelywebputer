@@ -87,6 +87,7 @@ export function show(n) {
     case 'decs': return n.decs.map(show).join(' ');
     case 'ascribe': return show(n.str) + (n.opaque ? ' :> ' : ' : ') + show(n.sig);
     case 'letstr': return 'let ' + n.decs.map(show).join(' ') + ' in ' + show(n.body) + ' end';
+    case 'open': return 'open ' + n.strid;
     case 'pragma': return '(*# ' + n.name + ': ' + n.value + ' *)';
     default: throw new Error('show ' + n.kind);
   }
