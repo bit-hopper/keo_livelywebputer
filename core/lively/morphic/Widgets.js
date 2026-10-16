@@ -3498,9 +3498,23 @@ lively.morphic.App.subclass('lively.morphic.AbstractDialog',
             moveHorizontal: true,
             moveVertical: true
         });
+        btn.place = place; // left-to-right position in the button row
         this.styleButton(btn, title);
         lively.bindings.connect(btn, 'fire', this, 'removeTopLevel');
         return this.panel.addMorph(btn);
+    },
+
+    buttonPlaces: function() {
+        // Left-to-right slot for each entry of this.buttons: "Cancel" goes
+        // leftmost so that the confirming button always ends up on the right
+        // (the order of this.buttons itself, which result values and number
+        // keys refer to, stays untouched).
+        var idxs = this.buttons.map(function(_, i) { return i; }),
+            isCancel = function(i) { return this.buttons[i] === 'Cancel'; }.bind(this),
+            order = idxs.filter(isCancel).concat(idxs.filter(function(i) { return !isCancel(i); })),
+            places = {};
+        order.forEach(function(buttonIdx, place) { places[buttonIdx] = place; });
+        return places;
     },
 
     buildView: function(extent) {
@@ -3510,8 +3524,9 @@ lively.morphic.App.subclass('lively.morphic.AbstractDialog',
         this.buildPanel(extent.extentAsRectangle());
         this.buildHeader();
         this.buildLabel();
+        var places = this.buttonPlaces();
         this.buttons.each(function(title, idx) {
-            var btn = this.buildButton(title, idx);
+            var btn = this.buildButton(title, places[idx]);
             btn.idx = idx;
             if (title == 'Ok')
                 this.okButton = btn;
@@ -3749,7 +3764,7 @@ lively.morphic.AbstractDialog.subclass('lively.morphic.EditDialog',
         this.defaultInput = defaultInput;
     },
     buildTextInput: function() {
-        var bounds = rect(this.label.bounds().bottomLeft(), this.cancelButton.bounds().topRight()).insetBy(5),
+        var bounds = rect(this.label.bounds().bottomLeft(), this.okButton.bounds().topRight()).insetBy(5),
             input = lively.ide.newCodeEditor(bounds, this.defaultInput || '').applyStyle({
                     resizeWidth: true, moveVertical: true,
                     gutter: false, lineWrapping: true,
@@ -3905,7 +3920,7 @@ lively.morphic.AbstractDialog.subclass('lively.morphic.MultipleChoiceDialog',
         btn.fitToLabel(function() { n(null, btn); });
       },
       function(err, btns) {
-        btns = btns.flatten();
+        btns = btns.flatten().sort(function(a, b) { return a.place - b.place; });
         var minGap = 2 * self.inset,
             width = Math.max(84, btns.invoke("getExtent").pluck("x").max() + 16),
             needed = btns.length * width + (btns.length + 1) * minGap,
