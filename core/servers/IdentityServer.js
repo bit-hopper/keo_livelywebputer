@@ -76,6 +76,7 @@ var dmMailbox = require("./identity/DMMailbox");
 var dmSignalingTokenStore = require("./support/dm-signaling-token-store");
 var cryptoVerify = require("./identity/CryptoVerify");
 var writePolicy = require("./identity/WritePolicy");
+var orbitRules = require("./identity/Orbit");
 var contentRealm = require("./support/content-realm-gate");
 var didHome = require("./identity/DidHome");
 var domainVerifier = require("./identity/DomainVerifier");
@@ -2435,10 +2436,28 @@ module.exports = function (route, app) {
     var limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
     var cursor = req.query.cursor || null;
     var q = req.query.q || null;
+    var hasLocation = req.query.hasLocation === "1";
+    var sort = typeof req.query.sort === "string" ? req.query.sort : null;   // "starred" | "hyphy" | "goosed" | absent (newest first)
 
     handleRegistry.resolve(handle, function (err, did) {
       if (err)  return res.status(500).json({ error: String(err) });
       if (!did) return res.status(404).json({ error: "Handle not found: @" + handle });
+
+      // Anyone other than the owner, and any request using the homestar reel's
+      // extra parameters, goes through the viewer-aware listing, which applies
+      // the visibility rule in SQL so pages and cursors stay correct. The
+      // owner's plain listing (the mailbox "My Postcards" tab) is unchanged.
+      var viewerDidNow = req.identity ? req.identity.did : null;
+      if (viewerDidNow !== did || hasLocation || sort) {
+        return objectRepo.listPostcardsForViewer(did, viewerDidNow,
+          { limit: limit, cursor: cursor, q: q, hasLocation: hasLocation, sort: sort },
+          function (err, result) {
+            if (err) return res.status(500).json({ error: String(err) });
+            result.postcards = result.postcards.map(function (m) { delete m.recipients; return m; });
+            res.json(result);
+          });
+      }
+
       objectRepo.listPostcardsForUser(did, { limit: limit, cursor: cursor, q: q }, function (err, result) {
         if (err) return res.status(500).json({ error: String(err) });
         var viewerDid = req.identity ? req.identity.did : null;
@@ -2465,6 +2484,63 @@ module.exports = function (route, app) {
         objectRepo.getHiddenObjIdsForDid(viewerDid, function (err2, hiddenObjIds) {
           if (err2) return res.status(500).json({ error: String(err2) });
           _finish(hiddenObjIds);
+        });
+      });
+    });
+  });
+
+  // ─── worlds listing (metadata only) ─────────────────────────────────────────
+  // The homestar's worlds widget and featured-worlds picker. GET /@:handle
+  // returns whole envelopes, payloads included; this returns just
+  // [{objId, name, template, visibility, created}] for the worlds the caller may
+  // open. Must be registered before /@:handle/:objId.
+
+  app.get("/@:handle/worlds", auth.optionalAuth, function (req, res) {
+    var handle = req.params.handle;
+    handleRegistry.resolve(handle, function (err, did) {
+      if (err)  return res.status(500).json({ error: String(err) });
+      if (!did) return res.status(404).json({ error: "Handle not found: @" + handle });
+      objectRepo.listWorldsForViewer(did, req.identity ? req.identity.did : null, function (err, worlds) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({ worlds: worlds });
+      });
+    });
+  });
+
+  // ─── orbit (close friends), filtered per viewer ─────────────────────────────
+  // The owner's orbit is stored in state.orbit on their private settings
+  // envelope (Orbit.js has the rules). Members are intersected with the owner's
+  // CURRENT friends here, so an ended friendship drops out at once. A viewer who
+  // may not see the list gets { locked: true, visibility } and nothing else.
+  // Must be registered before /@:handle/:objId.
+
+  app.get("/@:handle/orbit", auth.optionalAuth, function (req, res) {
+    var handle = req.params.handle;
+    handleRegistry.resolve(handle, function (err, ownerDid) {
+      if (err)  return res.status(500).json({ error: String(err) });
+      if (!ownerDid) return res.status(404).json({ error: "Handle not found: @" + handle });
+      var viewerDid = req.identity ? req.identity.did : null;
+
+      objectRepo.getSettingsForDid(ownerDid, function (err, settings) {
+        if (err) return res.status(500).json({ error: String(err) });
+        friendRegistry.listFriends(ownerDid, function (err, friends) {
+          if (err) return res.status(500).json({ error: String(err) });
+          var friendDids = friends.map(function (f) { return f.did; });
+          var orbit = orbitRules.normalize(settings && settings.state && settings.state.orbit, friendDids).orbit
+            || { visibility: orbitRules.DEFAULT_VISIBILITY, members: [], pinned: [] };
+          var isOwner = viewerDid === ownerDid;
+          var allowed = orbitRules.canView(orbit, ownerDid, viewerDid, viewerDid ? friendDids.indexOf(viewerDid) !== -1 : false);
+          if (!allowed) {
+            return res.json({ visibility: orbit.visibility, locked: true, isOwner: false, members: [], pinned: [] });
+          }
+          _resolveHandlesForDids(orbit.members, function (err, handles) {
+            if (err) return res.status(500).json({ error: String(err) });
+            res.json({
+              visibility: orbit.visibility, locked: false, isOwner: isOwner,
+              members: orbit.members.map(function (d) { return { did: d, handle: handles[d] || null }; }),
+              pinned: orbit.pinned
+            });
+          });
         });
       });
     });
@@ -3422,10 +3498,32 @@ module.exports = function (route, app) {
         }),
       });
     }
-    objectRepo.put(envelope, function (err, result) {
-      if (err && err.isConflict) return res.status(409).json({ error: String(err), currentCid: err.currentCid });
-      if (err) return res.status(500).json({ error: String(err) });
-      res.json({ ok: true, objId: result.objId, cid: result.cid, changed: result.changed });
+    // This route checks the incoming envelope's did, but a same-cid write is
+    // stored in place by objId, so the STORED object's owner must match too
+    // (requireAuth proves a cookie, not ownership of the objId).
+    objectRepo.get(envelope.objId, function (getErr, stored) {
+      if (getErr) return res.status(500).json({ error: String(getErr) });
+      if (stored && (stored.type !== 'settings' || !writePolicy.ownsExisting(stored, req.identity))) {
+        return res.status(403).json({ error: "Forbidden: this object belongs to another account", code: "NOT_OWNER" });
+      }
+
+      function _put(env) {
+        objectRepo.put(env, function (err, result) {
+          if (err && err.isConflict) return res.status(409).json({ error: String(err), currentCid: err.currentCid });
+          if (err) return res.status(500).json({ error: String(err) });
+          res.json({ ok: true, objId: result.objId, cid: result.cid, changed: result.changed });
+        });
+      }
+
+      // state.orbit (Orbit.js) must keep its invariants whatever the client sent:
+      // members are friends, pinned is a subset of members.
+      if (!envelope.state || envelope.state.orbit === undefined) return _put(envelope);
+      friendRegistry.listFriends(req.identity.did, function (err, friends) {
+        if (err) return res.status(500).json({ error: String(err) });
+        var checked = orbitRules.normalize(envelope.state.orbit, friends.map(function (f) { return f.did; }));
+        if (checked.error) return res.status(400).json({ error: checked.error, code: "INVALID_ORBIT" });
+        _put(Object.assign({}, envelope, { state: Object.assign({}, envelope.state, { orbit: checked.orbit }) }));
+      });
     });
   });
 
