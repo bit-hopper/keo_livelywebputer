@@ -56,6 +56,7 @@ async function newAccount(browser, handle) {
     dlg._startRegisterCeremony(h, h, "Test");
   }, handle);
   await nav;
+  const homeUrl = page.url(); // /@handle/<home world objId>?welcome=handle
   await page.goto("/blank.html");
   await page.waitForFunction(() => window.$world && lively.identity && lively.identity.did && lively.identity.did.currentUser(), null, { timeout: 90000 });
   const who = await page.evaluate(() => { const u = lively.identity.did.currentUser(); return { handle: u.handle, did: u.did, credentialId: u.credentialId }; });
@@ -64,7 +65,7 @@ async function newAccount(browser, handle) {
   await page.evaluate(() => new Promise((r) => lively.require("lively.identity.WikiEditor").toRun(() =>
     lively.require("lively.identity.WikiView").toRun(() => lively.require("lively.identity.PasskeyPrimingDialog").toRun(r)))));
   await page.evaluate(() => lively.LocalStorage.set(lively.identity.PasskeyPrimingDialog.SKIP_FLAG_KEY, true));
-  return { context, page, cdp, authenticatorId, ...who };
+  return { context, page, cdp, authenticatorId, homeUrl, ...who };
 }
 
 // Removes the account through the deletion feature itself (fails quietly: best effort in a finally block).
