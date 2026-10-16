@@ -15,6 +15,7 @@
 var CODE_CELL_LANGUAGES = {
   python: { id: 'python', label: '🐍 Python', hljsId: 'python', hasReset: false },
   scheme: { id: 'scheme', label: 'λ Scheme', hljsId: 'scheme', hasReset: true },
+  sml: { id: 'sml', label: '🐪 ML', hljsId: 'sml', hasReset: true },
 };
 
 var UNKNOWN_NOTE = 'This page uses a runtime this build doesn\'t have, so this cell can\'t run.';

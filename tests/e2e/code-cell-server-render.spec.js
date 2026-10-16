@@ -1,5 +1,5 @@
 // @ts-check
-// Server-side render of code cells on a real saved wiki page: a Python, a Scheme and an `sml` cell
+// Server-side render of code cells on a real saved wiki page: a Python, a Scheme and an `cobol` cell
 // (a language the build has no runtime for) are saved through the real editor, then the page is
 // fetched with no cookies and no JavaScript, the way a crawler or a link preview sees it. The
 // unknown language must come back as plain text with no Run button, never as Python.
@@ -25,7 +25,7 @@ test("saved page: known cells render with controls, an unknown language as plain
       const cells = [
         { language: "python", source: "print(1)" },
         { language: "scheme", source: "(+ 1 2)" },
-        { language: "sml", source: "fun f x = <b>x</b>" },
+        { language: "cobol", source: "fun f x = <b>x</b>" },
       ];
       const doc = PM.model.Node.fromJSON(v.state.schema, { type: "doc", content: cells.map((attrs) => ({ type: "code_cell", attrs })) });
       v.dispatch(v.state.tr.replaceWith(0, v.state.doc.content.size, doc.content));
@@ -35,7 +35,7 @@ test("saved page: known cells render with controls, an unknown language as plain
     // The saved envelope keeps the unknown language as written.
     const saved = await acct.page.evaluate(([h, o]) => /** @type {any} */ (window).__latestEnvelope(h, o), [handle, objId]);
     const attrs = saved.record.payload.snapshot.content.map((n) => n.attrs);
-    expect(attrs.map((a) => a.language)).toEqual(["python", "scheme", "sml"]);
+    expect(attrs.map((a) => a.language)).toEqual(["python", "scheme", "cobol"]);
 
     // A fresh context: no cookies, so this is the public static page.
     const anon = await request.newContext({ baseURL: baseURL || "http://localhost:9001" });
@@ -47,7 +47,7 @@ test("saved page: known cells render with controls, an unknown language as plain
     // Isolate the three rendered cells.
     const cells = html.split('<div class="lively-code-cell lively-code-cell-node"').slice(1);
     expect(cells).toHaveLength(3);
-    const [py, sc, sml] = cells;
+    const [py, sc, cobol] = cells;
 
     expect(py).toContain('data-language="python"');
     expect(py).toContain("🐍 Python");
@@ -58,12 +58,12 @@ test("saved page: known cells render with controls, an unknown language as plain
     expect(sc).toContain("λ Scheme");
     expect(sc).toContain("lively-code-cell-reset-btn");
 
-    expect(sml).toContain('data-language="sml"');
-    expect(sml).toContain('<span class="lively-code-cell-badge">sml</span>');
-    expect(sml).toContain("fun f x = &lt;b&gt;x&lt;/b&gt;");
-    expect(sml).toContain("this build doesn't have");
+    expect(cobol).toContain('data-language="cobol"');
+    expect(cobol).toContain('<span class="lively-code-cell-badge">cobol</span>');
+    expect(cobol).toContain("fun f x = &lt;b&gt;x&lt;/b&gt;");
+    expect(cobol).toContain("this build doesn't have");
     // Cut at this cell's own closing so a later cell's markup cannot satisfy these.
-    const smlOnly = sml.split("lively-code-cell-output")[0];
+    const smlOnly = cobol.split("lively-code-cell-output")[0];
     expect(smlOnly).not.toMatch(/run-btn|stop-btn|reset-btn|lively-code-cell-status|hljs-/);
   } finally {
     await deleteAccount(acct);

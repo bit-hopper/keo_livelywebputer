@@ -3,6 +3,7 @@ const { test, expect } = require("@playwright/test");
 const hljs = require("highlight.js/lib/core");
 hljs.registerLanguage("python", require("highlight.js/lib/languages/python"));
 hljs.registerLanguage("scheme", require("highlight.js/lib/languages/scheme"));
+hljs.registerLanguage("sml", require("highlight.js/lib/languages/sml"));
 const { CODE_CELL_LANGUAGES, createCodeCellRenderer } = require("../../core/servers/identity/CodeCellRender");
 
 // The code-cell language registry (PostCardUtils.js) and the places that read
@@ -47,16 +48,18 @@ test.describe("code-cell language registry (client)", () => {
         python: pick(U.codeCellLanguage("python")),
         scheme: pick(U.codeCellLanguage("scheme")),
         sml: pick(U.codeCellLanguage("sml")),
+        cobol: pick(U.codeCellLanguage("cobol")),
         // Names that exist on every object must not resolve to a registry row.
         proto: ["constructor", "__proto__", "toString", "hasOwnProperty"].map((v) => U.codeCellLanguage(v).known),
         long: U.codeCellLanguage("x".repeat(100)).label.length,
       };
     });
-    expect(r.list).toEqual(["python", "scheme"]);
+    expect(r.list).toEqual(["python", "scheme", "sml"]);
     expect(r.dflt).toEqual(["python", "python", "python"]);
     expect(r.python).toEqual({ id: "python", known: true, label: "🐍 Python", output: "python", hasReset: false });
     expect(r.scheme).toEqual({ id: "scheme", known: true, label: "λ Scheme", output: "transcript", hasReset: true });
-    expect(r.sml).toEqual({ id: "sml", known: false, label: "sml", output: "none", hasReset: false });
+    expect(r.sml).toEqual({ id: "sml", known: true, label: "🐪 ML", output: "transcript", hasReset: true });
+    expect(r.cobol).toEqual({ id: "cobol", known: false, label: "cobol", output: "none", hasReset: false });
     expect(r.proto).toEqual([false, false, false, false]);
     expect(r.long).toBe(41);
   });
@@ -66,6 +69,7 @@ test.describe("code-cell language registry (client)", () => {
     const css = await page.evaluate(() => document.getElementById("lively-postcard-media-style").textContent);
     expect(css).toContain('.lively-code-cell-node[data-language="python"] .lively-code-cell-badge{background:#fff4cc;color:#7a5600;border-color:#f3dc8a;}');
     expect(css).toContain('.lively-code-cell-node[data-language="scheme"] .lively-code-cell-badge{background:#ede7ff;color:#5233b5;border-color:#d6c9fb;}');
+    expect(css).toContain('.lively-code-cell-node[data-language="sml"] .lively-code-cell-badge{background:#fff0e0;color:#8a4b00;border-color:#f5d3a8;}');
   });
 
   test("an unknown language never runs: no confirm dialog, no worker, Stop/Reset do nothing", async ({ page }) => {
@@ -73,9 +77,9 @@ test.describe("code-cell language registry (client)", () => {
     const r = await page.evaluate(() => new Promise((resolve) => {
       const U = lively.identity.postCardUtils;
       const out = {};
-      out.stop = U.stopCodeCell("sml");
-      U.resetCodeCell("sml", (err) => { out.resetErr = err; });
-      U.provideCodeCellInput("x", "sml");
+      out.stop = U.stopCodeCell("cobol");
+      U.resetCodeCell("cobol", (err) => { out.resetErr = err; });
+      U.provideCodeCellInput("x", "cobol");
       U.runCodeCell("fun f x = x", { onDone: (err, res) => {
         out.runErr = err && err.message;
         out.runRes = res;
@@ -84,7 +88,7 @@ test.describe("code-cell language registry (client)", () => {
         out.dialogs = dialogs;
         out.pyodide = !!(lively.identity.PyodideWorker && lively.identity.PyodideWorker.isRunning && lively.identity.PyodideWorker.isRunning());
         resolve(out);
-      } }, "sml");
+      } }, "cobol");
     }));
     expect(r.runErr).toMatch(/no runtime/);
     expect(r.runRes).toBeUndefined();
@@ -98,10 +102,10 @@ test.describe("code-cell language registry (client)", () => {
 test.describe("unknown language, read-only render", () => {
   test("plain source, the language as the badge, a note, and no Run button", async ({ page }) => {
     await boot(page);
-    await renderCell(page, { language: "sml", source: 'fun f x = x\n(* <b>not markup</b> *)' });
+    await renderCell(page, { language: "cobol", source: 'fun f x = x\n(* <b>not markup</b> *)' });
     const cell = page.locator("#cell-host .lively-code-cell");
-    await expect(cell).toHaveAttribute("data-language", "sml");
-    await expect(cell.locator(".lively-code-cell-badge")).toHaveText("sml");
+    await expect(cell).toHaveAttribute("data-language", "cobol");
+    await expect(cell.locator(".lively-code-cell-badge")).toHaveText("cobol");
     await expect(cell.locator(".lively-code-cell-run-btn, .lively-code-cell-stop-btn, .lively-code-cell-reset-btn, .lively-code-cell-status")).toHaveCount(0);
     await expect(cell.locator(".lively-code-cell-output")).toContainText("this build doesn't have");
     // The source is text, not highlighted markup and not parsed as HTML.
@@ -177,12 +181,12 @@ const cellState = (page) => page.evaluate(() => {
 test.describe("unknown language in the wiki editor", () => {
   test("keeps its id and its editable source, with no way to run it", async ({ page }) => {
     await openEditor(page);
-    await setCell(page, { language: "sml", source: "val x = 1" });
+    await setCell(page, { language: "cobol", source: "val x = 1" });
     await expect(page.locator(".lively-code-cell-node")).toHaveCount(1);
     const s = await cellState(page);
-    expect(s.doc).toEqual([{ lang: "sml", src: "val x = 1" }]);
+    expect(s.doc).toEqual([{ lang: "cobol", src: "val x = 1" }]);
     expect(s.view).toHaveLength(1);
-    expect(s.view[0]).toMatchObject({ lang: "sml", badge: "sml", run: false, stop: false, reset: false, status: false, src: "val x = 1" });
+    expect(s.view[0]).toMatchObject({ lang: "cobol", badge: "cobol", run: false, stop: false, reset: false, status: false, src: "val x = 1" });
     expect(s.view[0].out).toContain("this build doesn't have");
 
     // The source stays editable and the edit reaches the document with the language intact.
@@ -190,19 +194,19 @@ test.describe("unknown language in the wiki editor", () => {
     await ta.fill("val x = 2");
     await ta.blur();
     const after = await cellState(page);
-    expect(after.doc).toEqual([{ lang: "sml", src: "val x = 2" }]);
+    expect(after.doc).toEqual([{ lang: "cobol", src: "val x = 2" }]);
   });
 
   test("a cell that becomes a known language (or back) gets a fresh view", async ({ page }) => {
     await openEditor(page);
-    await setCell(page, { language: "sml", source: "x" });
+    await setCell(page, { language: "cobol", source: "x" });
     await setCell(page, { language: "scheme", source: "(+ 1 2)" });
     let s = await cellState(page);
     expect(s.view).toHaveLength(1);
     expect(s.view[0]).toMatchObject({ lang: "scheme", run: true, stop: true, reset: true, status: true });
-    await setCell(page, { language: "sml", source: "x" });
+    await setCell(page, { language: "cobol", source: "x" });
     s = await cellState(page);
-    expect(s.view[0]).toMatchObject({ lang: "sml", run: false, reset: false, status: false });
+    expect(s.view[0]).toMatchObject({ lang: "cobol", run: false, reset: false, status: false });
   });
 
   test("the Template menu lists one row per registry language", async ({ page }) => {
@@ -210,6 +214,7 @@ test.describe("unknown language in the wiki editor", () => {
     await page.locator('button[title="Template"]').click();
     await expect(page.getByText("Python code cell", { exact: true })).toBeVisible();
     await expect(page.getByText("Scheme code cell", { exact: true })).toBeVisible();
+    await expect(page.getByText("ML code cell", { exact: true })).toBeVisible();
     await page.getByText("Scheme code cell", { exact: true }).click();
     const s = await cellState(page);
     expect(s.doc).toEqual([{ lang: "scheme", src: "" }]);
@@ -241,15 +246,20 @@ test.describe("server-side render", () => {
     expect(sc).toContain("λ Scheme");
     expect(sc).toContain("lively-code-cell-reset-btn");
     expect(sc).toContain("hljs-number");
+    const ml = render({ attrs: { language: "sml", source: "fun f x = x + 1" } });
+    expect(ml).toContain('data-language="sml"');
+    expect(ml).toContain("🐪 ML");
+    expect(ml).toContain("lively-code-cell-reset-btn");
+    expect(ml).toContain("hljs-keyword");
     // No language attr: the schema default.
     expect(render({ attrs: { source: "x" } })).toContain('data-language="python"');
     expect(render({})).toContain('data-language="python"');
   });
 
   test("an unknown language is plain text with a note and no controls", () => {
-    const html = render({ attrs: { language: "sml", source: "fun f x = <b>x</b>" } });
-    expect(html).toContain('data-language="sml"');
-    expect(html).toContain('<span class="lively-code-cell-badge">sml</span>');
+    const html = render({ attrs: { language: "cobol", source: "fun f x = <b>x</b>" } });
+    expect(html).toContain('data-language="cobol"');
+    expect(html).toContain('<span class="lively-code-cell-badge">cobol</span>');
     expect(html).toContain("fun f x = &lt;b&gt;x&lt;/b&gt;");
     expect(html).toContain("this build doesn't have");
     expect(html).not.toMatch(/run-btn|stop-btn|reset-btn|lively-code-cell-status/);

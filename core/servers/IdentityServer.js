@@ -57,6 +57,7 @@ hljs.registerLanguage("markdown", require("highlight.js/lib/languages/markdown")
 hljs.registerLanguage("plaintext", require("highlight.js/lib/languages/plaintext"));
 hljs.registerLanguage("python", require("highlight.js/lib/languages/python"));
 hljs.registerLanguage("scheme", require("highlight.js/lib/languages/scheme"));
+hljs.registerLanguage("sml", require("highlight.js/lib/languages/sml"));
 hljs.registerLanguage("sql", require("highlight.js/lib/languages/sql"));
 hljs.registerLanguage("typescript", require("highlight.js/lib/languages/typescript"));
 hljs.registerLanguage("xml", require("highlight.js/lib/languages/xml"));

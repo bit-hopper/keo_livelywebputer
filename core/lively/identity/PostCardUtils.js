@@ -46,6 +46,7 @@ module('lively.identity.PostCardUtils')
       codeCellGlobal:      codeCellGlobal,
       codeCellLanguageLabel: codeCellLanguageLabel,
       createSchemeOutput:  createSchemeOutput,
+      createTranscriptOutput: createSchemeOutput,
       openImageViewer:     openImageViewer,
     };
 
@@ -88,6 +89,13 @@ module('lively.identity.PostCardUtils')
         confirmBeforeRun: false, hasReset: true, resetTitle: 'Start a fresh Scheme environment for this page',
         cooperativeStop: true, loadingText: 'Loading Scheme…', editing: 'lively.identity.SchemeEditing',
         badge: { background: '#ede7ff', color: '#5233b5', border: '#d6c9fb' },
+      },
+      sml: {
+        id: 'sml', known: true, label: '🐪 ML', hljsId: 'sml', insertLabel: 'ML code cell',
+        output: 'transcript', controller: 'lively.identity.MLWorker',
+        confirmBeforeRun: false, hasReset: true, resetTitle: 'Start a fresh ML environment for this page',
+        cooperativeStop: true, loadingText: 'Loading ML…', editing: null,
+        badge: { background: '#fff0e0', color: '#8a4b00', border: '#f5d3a8' },
       },
     };
 
@@ -214,6 +222,11 @@ module('lively.identity.PostCardUtils')
         '.lively-code-cell-output pre.lively-code-cell-value{color:#1a5fb4;}',
         '.lively-code-cell-output pre.lively-code-cell-value:before{content:"\\21D2  ";color:#9aa0b3;}',
         '.lively-code-cell-output pre.lively-code-cell-note{color:#8a90a3;font-style:italic;}',
+        '.lively-code-cell-output pre.lively-code-cell-warn{color:#8a5a00;background:#fff8e6;' +
+          'border-left:3px solid #e6b84a;padding:6px 10px;border-radius:0 6px 6px 0;}',
+        '.lively-code-cell-output pre.lively-code-cell-tone-ok{color:#1b7a3a;font-style:normal;}',
+        '.lively-code-cell-output pre.lively-code-cell-tone-bad{color:#b3261e;font-style:normal;}',
+        '.lively-code-cell-output .lively-code-cell-errclass{font-weight:600;margin-right:6px;}',
         '.lively-code-cell-output pre.lively-code-cell-echo{color:#8a90a3;}',
         '.lively-code-cell-input-row{display:flex;gap:6px;margin:4px 0;}',
         '.lively-code-cell-input-row input{flex:1;min-width:0;font-family:' + mono + ';font-size:12px;' +
@@ -1605,7 +1618,8 @@ module('lively.identity.PostCardUtils')
     // transcript, unlike Python's one-shot stdout/stderr/result). Shared by
     // WikiEditor's live NodeView and this module's hydrateCodeCells.
     //   start()            clear the pane for a new run
-    //   append(segments)   segments from SchemeWorker: stdout | value | error | status
+    //   append(segments)   segments from a worker: stdout | value | warning | error | status (an error may carry
+    //                      errorClass, shown as a label; a status may carry tone: ok | note | bad)
     //   showInput(submit)  inline one-line input; submit(text|null) answers the cell's read
     //   finish(state, err) end of run; state: done | error | stopped | exit
     function createSchemeOutput(outputEl) {
@@ -1639,9 +1653,17 @@ module('lively.identity.PostCardUtils')
             } else if (seg.kind === 'value') {
               addPre('value', 'lively-code-cell-value', seg.text);
             } else if (seg.kind === 'error') {
-              addPre('error', 'lively-code-cell-stderr', seg.text);
+              var errPre = addPre('error', 'lively-code-cell-stderr', seg.text);
+              if (seg.errorClass) {
+                var label = document.createElement('span');
+                label.className = 'lively-code-cell-errclass';
+                label.textContent = seg.errorClass + ':';
+                errPre.insertBefore(label, errPre.firstChild);
+              }
+            } else if (seg.kind === 'warning') {
+              addPre('warning', 'lively-code-cell-warn', seg.text);
             } else {
-              addPre('status', 'lively-code-cell-note', seg.text);
+              addPre('status', 'lively-code-cell-note' + (seg.tone && seg.tone !== 'note' ? ' lively-code-cell-tone-' + seg.tone : ''), seg.text);
             }
           });
         },
