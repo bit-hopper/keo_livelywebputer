@@ -964,32 +964,9 @@ function _renderHighlightedCode(node) {
   }
 }
 
-// Runnable Python cell (CodeEditorSpec.md §2.3), server-side static render.
-// Matches the client's copy in PostCardUtils.js's renderCodeCell exactly
-// (class names, structure) so the same client-side hydrateCodeCells finds
-// and wires up a server-rendered cell identically to a client-rendered one.
-// Source only -- no output, ever (never persisted; see the schema comment
-// in WikiEditor.js's _buildSchema).
-function _renderCodeCell(node) {
-  var attrs = node.attrs || {};
-  var text = attrs.source || '';
-  var language = attrs.language === 'scheme' ? 'scheme' : 'python';
-  var highlighted;
-  try { highlighted = hljs.highlight(text, { language: language }).value; }
-  catch (e) { highlighted = escapeHtml(text); }
-  return '<div class="lively-code-cell lively-code-cell-node" data-language="' +
-         escapeHtml(language) + '">' +
-         '<div class="lively-code-cell-header">' +
-           '<span class="lively-code-cell-badge">' + (language === 'scheme' ? 'λ Scheme' : '🐍 Python') + '</span>' +
-           '<button type="button" class="lively-code-cell-run-btn" data-hydrate="code-cell">Run</button>' +
-           '<button type="button" class="lively-code-cell-stop-btn">Stop</button>' +
-           (language === 'scheme' ? '<button type="button" class="lively-code-cell-reset-btn">Reset</button>' : '') +
-           '<span class="lively-code-cell-status">Idle</span>' +
-         '</div>' +
-         '<pre class="lively-code-cell-source"><code class="hljs">' + highlighted + '</code></pre>' +
-         '<div class="lively-code-cell-output lively-code-cell-output-empty">Run to see output.</div>' +
-       '</div>';
-}
+// Runnable code cell (CodeEditorSpec.md §2.3), server-side static render --
+// see identity/CodeCellRender.js (language table, unknown-language handling).
+var _renderCodeCell = require("./identity/CodeCellRender").createCodeCellRenderer({ hljs: hljs, escapeHtml: escapeHtml });
 
 // Server-side KaTeX render for static pages (§10.1/F17). Falls back to the
 // raw LaTeX source, escaped, if the input doesn't parse — matches the

@@ -63,6 +63,7 @@ module('lively.identity.WikiEditor')
     'lively.identity.WebKey',
     'lively.identity.FileCrypto',
     'lively.identity.SchemeEditing',
+    'lively.identity.PostCardUtils',
   )
   .toRun(function () {
 
@@ -456,8 +457,9 @@ module('lively.identity.WikiEditor')
           buildPanel: function (panel, close) {
             self._buildDropdownRow(panel, 'Math (inline)', { cmd: 'insertMath', mathType: 'inline' }, close);
             self._buildDropdownRow(panel, 'Math (display)', { cmd: 'insertMath', mathType: 'display' }, close);
-            self._buildDropdownRow(panel, 'Python code cell', { cmd: 'insertCodeCell', language: 'python' }, close);
-            self._buildDropdownRow(panel, 'Scheme code cell', { cmd: 'insertCodeCell', language: 'scheme' }, close);
+            lively.identity.postCardUtils.codeCellLanguageList().forEach(function (def) {
+              self._buildDropdownRow(panel, def.insertLabel, { cmd: 'insertCodeCell', language: def.id }, close);
+            });
           },
         });
 
@@ -1642,8 +1644,11 @@ module('lively.identity.WikiEditor')
         var focused = false;
         var pendingCommitTimer = null;
 
-        var language = node.attrs.language === 'scheme' ? 'scheme' : 'python';
         var postCardUtils = lively.identity.postCardUtils;
+        // The language's registry row (PostCardUtils.js). A language this build has no row for
+        // (`known` false) keeps its id and its editable source but gets no Run/Stop/Reset/status.
+        var langDef = postCardUtils.codeCellLanguage(node.attrs.language);
+        var language = langDef.id;
 
         var dom = document.createElement('div');
         dom.className = 'lively-code-cell-node';
@@ -1653,7 +1658,7 @@ module('lively.identity.WikiEditor')
         header.className = 'lively-code-cell-header';
         var badge = document.createElement('span');
         badge.className = 'lively-code-cell-badge';
-        badge.textContent = postCardUtils.codeCellLanguageLabel(language);
+        badge.textContent = langDef.label;
         var runBtn = document.createElement('button');
         runBtn.type = 'button';
         runBtn.className = 'lively-code-cell-run-btn';
@@ -1663,21 +1668,23 @@ module('lively.identity.WikiEditor')
         stopBtn.className = 'lively-code-cell-stop-btn';
         stopBtn.textContent = 'Stop';
         var resetBtn = null;
-        if (language === 'scheme') {
+        if (langDef.hasReset) {
           resetBtn = document.createElement('button');
           resetBtn.type = 'button';
           resetBtn.className = 'lively-code-cell-reset-btn';
           resetBtn.textContent = 'Reset';
-          resetBtn.title = 'Start a fresh Scheme environment for this page';
+          resetBtn.title = langDef.resetTitle;
         }
         var status = document.createElement('span');
         status.className = 'lively-code-cell-status';
         status.textContent = 'Idle';
         header.appendChild(badge);
-        header.appendChild(runBtn);
-        header.appendChild(stopBtn);
-        if (resetBtn) header.appendChild(resetBtn);
-        header.appendChild(status);
+        if (langDef.known) {
+          header.appendChild(runBtn);
+          header.appendChild(stopBtn);
+          if (resetBtn) header.appendChild(resetBtn);
+          header.appendChild(status);
+        }
         dom.appendChild(header);
 
         var textarea = document.createElement('textarea');
@@ -1685,8 +1692,10 @@ module('lively.identity.WikiEditor')
         textarea.spellcheck = false;
         textarea.value = node.attrs.source || '';
         dom.appendChild(textarea);
-        // Scheme source gets bracket matching, auto-close and Lisp indentation.
-        var editing = language === 'scheme' ? lively.identity.SchemeEditing.attach(textarea) : null;
+        // A language with an editing helper (Scheme: bracket matching, auto-close and Lisp
+        // indentation) gets it; the others keep the plain textarea.
+        var editingHelper = postCardUtils.codeCellGlobal(langDef.editing);
+        var editing = editingHelper ? editingHelper.attach(textarea) : null;
 
         // Grow/shrink the source box with its content, between the stylesheet's min-height (72px) and
         // MAX_H, beyond which it scrolls inside itself. Measures scrollHeight after collapsing the
@@ -1730,7 +1739,9 @@ module('lively.identity.WikiEditor')
 
         var output = document.createElement('div');
         output.className = 'lively-code-cell-output lively-code-cell-output-empty';
-        output.textContent = 'Run to see output.';
+        output.textContent = langDef.known
+          ? 'Run to see output.'
+          : 'This page uses a runtime this build doesn\'t have, so this cell can\'t run.';
         dom.appendChild(output);
 
         // Same pattern as _mathNodeView's commit(): re-reads getPos() at
@@ -1814,30 +1825,30 @@ module('lively.identity.WikiEditor')
           status.textContent = statusText;
         }
 
-        // Scheme cells stream an ordered transcript (stdout / value / error)
+        // Transcript languages (Scheme) stream an ordered transcript (stdout / value / error)
         // and can pause for a line of input; see postCardUtils.createSchemeOutput.
-        var schemeOut = language === 'scheme' ? postCardUtils.createSchemeOutput(output) : null;
-        var SCHEME_STATE_LABEL = { done: 'Ran just now', error: 'Error', stopped: 'Stopped', exit: 'Exited' };
-        function runSchemeCell() {
-          schemeOut.start();
+        var transcriptOut = langDef.output === 'transcript' ? postCardUtils.createSchemeOutput(output) : null;
+        var TRANSCRIPT_STATE_LABEL = { done: 'Ran just now', error: 'Error', stopped: 'Stopped', exit: 'Exited' };
+        function runTranscriptCell() {
+          transcriptOut.start();
           postCardUtils.runCodeCell(textarea.value, {
             onStatus: function (text) { if (!destroyed) setRunning(true, text); },
-            onSegments: function (segments) { if (!destroyed) schemeOut.append(segments); },
+            onSegments: function (segments) { if (!destroyed) transcriptOut.append(segments); },
             onNeedInput: function () {
-              if (destroyed) { postCardUtils.provideCodeCellInput(null); return; }
+              if (destroyed) { postCardUtils.provideCodeCellInput(null, language); return; }
               setRunning(true, 'Waiting for input…');
-              schemeOut.showInput(function (text) {
+              transcriptOut.showInput(function (text) {
                 if (!destroyed) setRunning(true, 'Running…');
-                postCardUtils.provideCodeCellInput(text);
+                postCardUtils.provideCodeCellInput(text, language);
               });
             },
             onDone: function (err, result) {
               if (destroyed) return;
               var state = result && result.state;
-              setRunning(false, err ? 'Error' : (SCHEME_STATE_LABEL[state] || 'Ran just now'));
-              schemeOut.finish(state, err);
+              setRunning(false, err ? 'Error' : (TRANSCRIPT_STATE_LABEL[state] || 'Ran just now'));
+              transcriptOut.finish(state, err);
             },
-          }, 'scheme');
+          }, language);
         }
 
         // Click-to-run, always -- CodeEditorSpec.md §2.3: a cell never
@@ -1851,7 +1862,7 @@ module('lively.identity.WikiEditor')
           e.preventDefault();
           e.stopPropagation();
           commit();
-          if (language === 'scheme') { runSchemeCell(); return; }
+          if (transcriptOut) { runTranscriptCell(); return; }
           lively.identity.postCardUtils.runCodeCell(textarea.value, {
             onStatus: function (text) { if (!destroyed) setRunning(true, text); },
             onDone: function (err, response) {
@@ -1859,13 +1870,13 @@ module('lively.identity.WikiEditor')
               setRunning(false, err ? 'Error' : 'Ran just now');
               renderOutput(response, err);
             },
-          });
+          }, language);
         });
 
         stopBtn.addEventListener('mousedown', function (e) {
           e.preventDefault();
           e.stopPropagation();
-          // A Scheme stop is cooperative: the run's own onDone reports the
+          // A cooperative stop (Scheme): the run's own onDone reports the
           // outcome (and the environment survives). Python's is an immediate
           // worker kill, so this handler updates the UI itself.
           if (postCardUtils.stopCodeCell(language)) setRunning(true, 'Stopping…');
@@ -1887,8 +1898,8 @@ module('lively.identity.WikiEditor')
           update: function (newNode) {
             if (newNode.type !== node.type) return false;
             // The badge, Reset button and editing helpers were built for one language: a cell of
-            // the other language needs a fresh view, not this one relabelled by the document.
-            if ((newNode.attrs.language === 'scheme' ? 'scheme' : 'python') !== language) return false;
+            // another language needs a fresh view, not this one relabelled by the document.
+            if (postCardUtils.codeCellLanguage(newNode.attrs.language).id !== language) return false;
             var sourceChanged = newNode.attrs.source !== node.attrs.source;
             node = newNode;
             // Don't clobber an in-flight local edit on an incoming
@@ -2810,7 +2821,8 @@ module('lively.identity.WikiEditor')
           case 'insertCodeCell': {
             var cellType = state.schema.nodes.code_cell;
             if (!cellType) return;
-            var cellNode = cellType.create({ language: btnDef.language === 'scheme' ? 'scheme' : 'python', source: '' });
+            var cellDef = lively.identity.postCardUtils.codeCellLanguage(btnDef.language);
+            var cellNode = cellType.create({ language: cellDef.known ? cellDef.id : 'python', source: '' });
             this._insertBlockAtom(cellNode);
             break;
           }
