@@ -4833,18 +4833,27 @@ module.exports = function (route, app) {
 
         if (!req.accepts("html")) return res.json(envelope);
 
-        var name = (envelope.state && envelope.state.name) || objId;
-        var page = buildWorldPage(envelope);
-        // Inject a banner so it's clear this is a historical snapshot, not current.
-        var banner =
-          '<div style="position:fixed;top:0;left:0;right:0;z-index:99999;' +
-          'background:#f01a69;color:#fff;font:13px/32px sans-serif;text-align:center;' +
-          'padding:0 12px;">' +
-          '⚠ Viewing snapshot: <b>' + escapeHtml(name) + '</b> — ' +
-          new Date(envelope.created || "").toLocaleString() +
-          ' &nbsp;|&nbsp; <a href="javascript:history.back()" style="color:#fff;text-decoration:underline;">← back to current</a>' +
-          '</div>';
-        res.send(page.replace(/<body/, banner + '<body'));
+        // envelope.created is the object's FIRST-save time (every later save
+        // carries it over from the previous envelope), so it can't date this
+        // snapshot -- the version's own row time does. Falls back to
+        // envelope.created if the version list can't be read.
+        objectRepo.listVersions(objId, function (vErr, versions) {
+          var row = !vErr && (versions || []).filter(function (v) { return v.cid === cid; })[0];
+          var when = (row && row.createdAt) || envelope.created;
+
+          var name = (envelope.state && envelope.state.name) || objId;
+          var page = buildWorldPage(envelope);
+          // Inject a banner so it's clear this is a historical snapshot, not current.
+          var banner =
+            '<div style="position:fixed;top:0;left:0;right:0;z-index:99999;' +
+            'background:#f01a69;color:#fff;font:13px/32px sans-serif;text-align:center;' +
+            'padding:0 12px;">' +
+            '⚠ Viewing snapshot: <b>' + escapeHtml(name) + '</b> — ' +
+            new Date(when || "").toLocaleString() +
+            ' &nbsp;|&nbsp; <a href="javascript:history.back()" style="color:#fff;text-decoration:underline;">← back to current</a>' +
+            '</div>';
+          res.send(page.replace(/<body/, banner + '<body'));
+        });
       });
     });
   });
