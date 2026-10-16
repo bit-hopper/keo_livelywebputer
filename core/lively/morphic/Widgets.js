@@ -20,7 +20,7 @@ lively.morphic.Morph.subclass('lively.morphic.Button',
             align: 'center',
             fixedWidth: true,
             fixedHeight: true,
-            textColor: Color.green,
+            textColor: Color.rgb(51,51,51), // = .Button color in base_theme.css
             clipMode: 'hidden',
             emphasize: {textShadow: {offset: pt(0,1), color: Color.white}},
             allowInput: false
@@ -3367,7 +3367,15 @@ lively.morphic.App.subclass('lively.morphic.AbstractDialog',
 'properties', {
     doNotSerialize: ['lastFocusedMorph'],
     initialViewExtent: lively.pt(300, 90),
-    inset: 4
+    inset: 4,
+    // look: pink-accent frame + title strip, like the identity dialogs
+    // (PasskeyPrimingDialog). Button looks live in base_theme.css
+    // (.lively-dialog-btn), see styleButton below.
+    pad: 12,
+    headerHeight: 22,
+    minWidth: 340,
+    accentColor: Color.rgb(255, 16, 144),
+    title: 'Confirm'
 },
 'initializing', {
 
@@ -3387,29 +3395,61 @@ lively.morphic.App.subclass('lively.morphic.AbstractDialog',
     buildPanel: function(bounds) {
         this.panel = new lively.morphic.Box(bounds);
         this.panel.applyStyle({
-            fill: Color.rgb(210,210,210),
-            borderColor: Color.gray.darker(),
-            borderWidth: 1,
+            fill: Color.rgb(250,250,250),
+            borderColor: this.accentColor,
+            borderWidth: 3,
+            borderRadius: 7,
+            clipMode: 'hidden',
             adjustForNewBounds: true, // layouting
             enableGrabbing: false,
             enableDragging: false,
             lock: true
         });
+        this.panel.addStyleClassName('lively-dialog');
         this.panel.addScript(function focus() {
             if (this.focusTarget) this.focusTarget.focus();
             else $super();
         });
     },
 
+    buildHeader: function() {
+        var p = this.panel;
+        this.header = new lively.morphic.Text(
+            new lively.Rectangle(0, 0, p.getExtent().x, this.headerHeight), this.title).beLabel({
+            fill: this.accentColor,
+            fixedHeight: true, fixedWidth: true,
+            padding: Rectangle.inset(this.pad, 3),
+            borderWidth: 0,
+            enableGrabbing: false, enableDragging: false});
+        this.header.applyStyle({
+            fontFamily: 'Arial, sans-serif', fontSize: 9, textColor: Color.white,
+            resizeWidth: true, clipMode: 'hidden'});
+        p.addMorph(this.header);
+    },
+
+    styleButton: function(btn, title) {
+        // look is entirely CSS (base_theme.css) -- applyStyle on a
+        // procedurally built Button doesn't reliably reach the DOM
+        btn.addStyleClassName('lively-dialog-btn');
+        if (title !== 'Cancel') btn.addStyleClassName('lively-dialog-btn-primary');
+    },
+
     buildLabel: function() {
         var p = this.panel,
             bounds = new lively.Rectangle(
-              this.inset, this.inset, p.getExtent().x - 2*this.inset, 18);
+              this.pad, this.headerHeight + this.pad,
+              p.getExtent().x - 2*this.pad, 22);
         this.label = new lively.morphic.Text(bounds, this.message).beLabel({
-            fill: Color.white,
-            fixedHeight: false, fixedWidth: false,
+            fill: null,
+            fixedHeight: false, fixedWidth: true,
             padding: Rectangle.inset(2,3),
+            // beLabel's default is "pre" (never wraps): a long message
+            // should wrap inside the dialog instead of widening it
+            whiteSpaceHandling: 'pre-wrap',
             enableGrabbing: false, enableDragging: false});
+        this.label.applyStyle({
+            fontFamily: 'Arial, sans-serif', fontSize: 9,
+            textColor: Color.rgb(60,60,60), resizeWidth: true});
         p.addMorph(this.label);
 
         // FIXME ugly hack for wide dialogs:
@@ -3418,7 +3458,10 @@ lively.morphic.App.subclass('lively.morphic.AbstractDialog',
         this.label.fit();
         (function fit() {
             var world = p.world();
-            if (!world)
+            if (!world) return;
+            // first fit() above ran before the dialog was in the world and
+            // was a no-op; now that the text is rendered, fit the wrapped height
+            this.label.fit();
             this.label.cachedBounds = null
             var labelBoundsFit = this.label.bounds(),
                 origPanelExtent = p.getExtent(),
@@ -3447,20 +3490,25 @@ lively.morphic.App.subclass('lively.morphic.AbstractDialog',
     buildButton: function(title, place, total) {
         place = Object.isNumber(place) ? place : 0;
         var mult = (this.buttons.length) - place - 1,
-            bounds = new Rectangle(0,0, 75, 30),
+            bounds = new Rectangle(0,0, 84, 28),
             btn = new lively.morphic.Button(bounds, title),
-            btnWidth = btn.bounds().width + this.inset;
-        btn.align(btn.bounds().bottomRight().addXY(this.inset, this.inset), this.panel.innerBounds().bottomRight().subXY(btnWidth * mult, 0));
+            btnWidth = btn.bounds().width + 2*this.inset;
+        btn.align(btn.bounds().bottomRight().addXY(this.pad, this.pad), this.panel.innerBounds().bottomRight().subXY(btnWidth * mult, 0));
         btn.applyStyle({
             moveHorizontal: true,
             moveVertical: true
         });
+        this.styleButton(btn, title);
         lively.bindings.connect(btn, 'fire', this, 'removeTopLevel');
         return this.panel.addMorph(btn);
     },
 
     buildView: function(extent) {
+        // room for the title strip and some air between label and buttons
+        extent = pt(Math.max(extent.x, this.minWidth),
+                    extent.y + this.headerHeight + this.pad + 2*this.inset);
         this.buildPanel(extent.extentAsRectangle());
+        this.buildHeader();
         this.buildLabel();
         this.buttons.each(function(title, idx) {
             var btn = this.buildButton(title, idx);
@@ -3515,6 +3563,7 @@ lively.morphic.AbstractDialog.subclass('lively.morphic.ConfirmDialog',
 'properties', {
 
     initialViewExtent: lively.pt(260, 70),
+    title: 'Confirm'
 
 },
 'initializing', {
@@ -3548,6 +3597,7 @@ lively.morphic.AbstractDialog.subclass('lively.morphic.InformDialog',
 'properties', {
 
     initialViewExtent: lively.pt(260, 70),
+    title: 'Notice'
 
 },
 'initializing', {
@@ -3574,7 +3624,8 @@ lively.morphic.AbstractDialog.subclass('lively.morphic.PromptDialog',
 // new lively.morphic.PromptDialog('Test', function(input) { alert(input) }).open()
 'properties', {
 
-    initialViewExtent: lively.pt(580, 90),
+    initialViewExtent: lively.pt(580, 96),
+    title: 'Input'
 
 },
 'initializing', {
@@ -3605,6 +3656,7 @@ lively.morphic.AbstractDialog.subclass('lively.morphic.PromptDialog',
           lively.bindings.connect(input, 'onEscPressed', self, 'result', {converter: function() { return null } });
           lively.bindings.connect(self.panel, 'onEscPressed', self, 'result', {converter: function() { return null}});
           input.applyStyle({resizeWidth: true, moveVertical: true});
+          input.addStyleClassName('lively-dialog-input');
           self.inputText = self.panel.focusTarget = self.panel.addMorph(input);
           input.textString = inputString;
         });
@@ -3637,6 +3689,11 @@ lively.morphic.AbstractDialog.subclass('lively.morphic.PromptDialog',
 
 lively.morphic.AbstractDialog.subclass('lively.morphic.PasswordPromptDialog',
 // new lively.morphic.PromptDialog('Test', function(input) { alert(input) }).open()
+'properties', {
+    // a few px taller than the default: the password input is 28px high
+    initialViewExtent: lively.pt(300, 100),
+    title: 'Password'
+},
 'initializing', {
     initialize: function($super, label, callback, defaultInput) {
         $super(label, callback, defaultInput);
@@ -3650,6 +3707,7 @@ lively.morphic.AbstractDialog.subclass('lively.morphic.PasswordPromptDialog',
         lively.bindings.connect(input, 'onEscPressed', this, 'result', {converter: function() { return null } });
         lively.bindings.connect(this.panel, 'onEscPressed', this, 'result', {converter: function() { return null}});
         input.applyStyle({resizeWidth: true, moveVertical: true});
+        input.addStyleClassName('lively-dialog-input');
         this.inputText = this.panel.focusTarget = this.panel.addMorph(input);
     },
 
@@ -3679,6 +3737,9 @@ lively.morphic.AbstractDialog.subclass('lively.morphic.PasswordPromptDialog',
 
 lively.morphic.AbstractDialog.subclass('lively.morphic.EditDialog',
 // new lively.morphic.PromptDialog('Test', function(input) { alert(input) }).open()
+'properties', {
+    title: 'Edit'
+},
 'initializing', {
     initialize: function($super, label, callback, defaultInputOrOptions) {
         this.options = Object.isObject(defaultInputOrOptions) ? defaultInputOrOptions : {};
@@ -3696,6 +3757,7 @@ lively.morphic.AbstractDialog.subclass('lively.morphic.EditDialog',
                     textMode: this.options.textMode || 'text'
                 });
         input.evalEnabled = false;
+        input.addStyleClassName('lively-dialog-input');
         input.setBounds(bounds);
         this.inputText = this.panel.focusTarget = this.panel.addMorph(input);
         input.focus.bind(input).delay(0);
@@ -3780,6 +3842,11 @@ lively.morphic.AbstractDialog.subclass('lively.morphic.EditDialog',
 });
 
 lively.morphic.AbstractDialog.subclass('lively.morphic.MultipleChoiceDialog',
+'properties', {
+    // label + one row of buttons (the title strip etc. is added by AbstractDialog)
+    initialViewExtent: lively.pt(300, 66),
+    title: 'Alert'
+},
 'initializing', {
 
     initialize: function($super, label, choices,  callback) {
@@ -3789,7 +3856,6 @@ lively.morphic.AbstractDialog.subclass('lively.morphic.MultipleChoiceDialog',
     },
 
     buildView: function($super, extent) {
-      extent = extent.maxPt(pt(300, 32 + this.buttons.length * (30 + this.inset)));
       var panel = $super(extent);
       panel.addScript(function onKeyDown(evt) {
         var app = this.ownerApp,
@@ -3818,40 +3884,41 @@ lively.morphic.AbstractDialog.subclass('lively.morphic.MultipleChoiceDialog',
       return panel;
     },
 
-    buildButton: function (title, place) {
-      place = Object.isNumber(place) ? place : 0;
-      var mult = (this.buttons.length) - place - 1,
-          bounds = new Rectangle(0,0, 75, 30),
-          btn = new lively.morphic.Button(bounds, title),
-          btnWidth = btn.bounds().width + this.inset;
-  
+    buildButton: function ($super, title, place) {
+      // placed (bottom-right row, like the other dialogs) by AbstractDialog
+      var btn = $super(title, place);
       btn.dialogValue = title;
-      btn.align(
-        btn.bounds().topCenter(),
-        this.label.bounds().bottomCenter().addXY(0, this.inset).addXY(0, (30 + this.inset) * place));
-      btn.applyStyle({moveHorizontal: true, moveVertical: true});
-      lively.bindings.connect(btn, 'fire', this, 'removeTopLevel');
       lively.bindings.connect(btn, 'fire', this, 'result', {
         converter: function() { return this.sourceObj.dialogValue || this.sourceObj.idx; }
       });
       this.buttonMorphs.push(btn);
-      return this.panel.addMorph(btn);
+      return btn;
   },
 
   fitAndAlignButtons: function(thenDo) {
-    var panel = this.panel;
+    // one row, all buttons the width of the widest label, with equal margins
+    // on the left, right and between them; the dialog widens if the row would
+    // not fit with at least `minGap` everywhere
+    var panel = this.panel, self = this;
     lively.lang.arr.mapAsyncSeries(this.buttonMorphs,
       function(btn, _, n) {
         btn.fitToLabel(function() { n(null, btn); });
       },
       function(err, btns) {
-        var centerX = panel.innerBounds().center().x;
         btns = btns.flatten();
-        var maxWidth = btns.invoke("getExtent").pluck("x").max();
-        btns.forEach(function(btn) {
-          btn.setWidth(maxWidth);
-          btn.setPositionCentered(pt(
-            centerX, btn.bounds().center().y));
+        var minGap = 2 * self.inset,
+            width = Math.max(84, btns.invoke("getExtent").pluck("x").max() + 16),
+            needed = btns.length * width + (btns.length + 1) * minGap,
+            panelWidth = panel.getExtent().x;
+        if (needed > panelWidth) {
+          panel.setExtent(panel.getExtent().withX(needed));
+          panel.moveBy(pt(-(needed - panelWidth) / 2, 0));
+          panelWidth = needed;
+        }
+        var gap = (panelWidth - btns.length * width) / (btns.length + 1);
+        btns.forEach(function(btn, i) {
+          btn.setExtent(pt(width, 28));
+          btn.setPosition(pt(gap + i * (width + gap), btn.getPosition().y));
         });
         thenDo && thenDo();
       });

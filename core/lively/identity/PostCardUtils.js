@@ -1518,8 +1518,8 @@ module('lively.identity.PostCardUtils')
       if (!def.confirmBeforeRun) { start(); return; }
       if (typeof $world === 'undefined' || !$world.multipleChoicePrompt) { onDone(new Error('Run unavailable')); return; }
       $world.multipleChoicePrompt(
-        'Run this Python cell? It executes in your own browser (via Pyodide/WebAssembly) ' +
-        'with the same page privileges as any script here — nothing is sent to a server.',
+        'This Python cell is untrusted and runs locally in your own browser ' +
+        '(via Pyodide/WebAssembly) with the same page privileges as any other script.',
         ['Run', 'Cancel'],
         function (choice) { if (choice === 'Run') start(); }
       );
