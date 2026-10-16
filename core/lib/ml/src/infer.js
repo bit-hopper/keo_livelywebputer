@@ -24,11 +24,11 @@ import { MLError, ungrammatical } from './errors.js';
 import { unify, UnifyFailure } from './unify.js';
 import {
   TVar, TyName, prune, tcon, tfn, ttuple, tInt, tBool, tExn,
-  generalize, instantiate, substitute, admitsEq, typeToString,
+  generalize, instantiate, substitute, admitsEq, typeToString, tyNameText,
 } from './types.js';
+import { moduleMethods, firstAbstract } from './modules.js';
 
 const nonsense = (message, where) => new MLError('nonsense', message, where && (where.loc || where));
-const unsupported = (what, where) => new MLError('syntax', what + ' are not available yet', where && (where.loc || where));
 
 // The type variables written anywhere inside a declaration (annotations), by name.
 function collectTyvars(node, out = new Set()) {
@@ -86,7 +86,12 @@ export class Elaborator {
       if (e.reason === 'equality') {
         throw nonsense('equality is needed here, but ' + this.show(e.a, names) + ' does not admit equality (functions never do)', node);
       }
-      throw nonsense(describe(names), node);
+      const message = describe(names);
+      const hidden = firstAbstract(a) || firstAbstract(b);
+      if (hidden) { // the clash involves a type some signature hides: the book's "signature nonsense"
+        throw new MLError('signature', message + '; ' + tyNameText(hidden) + ' is an abstract type here, so what it is has been hidden', node.loc || node);
+      }
+      throw nonsense(message, node);
     }
   }
 
@@ -102,8 +107,7 @@ export class Elaborator {
       case 'ttuple': return ttuple(ty.items.map((x) => this.elabType(x, tvars)));
       case 'arrow': return tfn(this.elabType(ty.from, tvars), this.elabType(ty.to, tvars));
       case 'tycon': {
-        if (ty.qual) throw unsupported('qualified type names', ty);
-        const entry = this.scope.lookupType(ty.name);
+        const entry = ty.qual ? this.lookupQualType(ty) : this.scope.lookupType(ty.name);
         if (!entry) throw nonsense('the type ' + ty.name + ' is not defined', ty);
         const args = ty.args.map((x) => this.elabType(x, tvars));
         if (entry.kind === 'tyname') {
@@ -140,7 +144,7 @@ export class Elaborator {
   // ---- patterns --------------------------------------------------------------------------------------------
 
   lookupValue(node) {
-    if (node.qual) throw unsupported('qualified names', node);
+    if (node.qual) return this.lookupQualVal(node);
     const info = node.basis ? this.scope.root().lookupVal(node.name) : this.scope.lookupVal(node.name);
     return info;
   }
@@ -154,8 +158,9 @@ export class Elaborator {
         if (info && (info.kind === 'con' || info.kind === 'exn')) {
           if (info.hasArg) throw nonsense(p.name + ' takes an argument, so it cannot stand alone in a pattern', p);
           const ty = instantiate(info.scheme, this.level);
-          return { ty, ir: info.kind === 'con' ? { p: 'con', con: info, arg: null } : { p: 'exn', name: p.name, arg: null } };
+          return { ty, ir: info.kind === 'con' ? { p: 'con', con: info, arg: null } : { p: 'exn', name: p.name, qual: p.qual || null, arg: null } };
         }
+        if (p.qual) throw ungrammatical(p.qual.join('.') + '.' + p.name + ' is not a constructor, so it cannot be a pattern', p.loc);
         if (vars.has(p.name)) throw ungrammatical('the name ' + p.name + ' appears twice in one pattern', p.loc);
         const ty = this.fresh();
         vars.set(p.name, { ty, node: p });
@@ -171,7 +176,7 @@ export class Elaborator {
         const ft = instantiate(info.scheme, this.level); // arg -> result
         const arg = this.pat(p.arg, vars);
         this.unifyOr(arg.ty, ft.from, p.arg, (n) => c.name + ' takes ' + this.show(ft.from, n) + ', but this pattern has type ' + this.show(arg.ty, n));
-        return { ty: ft.to, ir: info.kind === 'con' ? { p: 'con', con: info, arg: arg.ir } : { p: 'exn', name: c.name, arg: arg.ir } };
+        return { ty: ft.to, ir: info.kind === 'con' ? { p: 'con', con: info, arg: arg.ir } : { p: 'exn', name: c.name, qual: c.qual || null, arg: arg.ir } };
       }
       case 'ptuple': {
         const items = p.items.map((x) => this.pat(x, vars));
@@ -276,7 +281,7 @@ export class Elaborator {
     if (!info) throw nonsense(e.name + ' is not defined', e);
     const ty = instantiate(info.scheme, this.level);
     switch (info.kind) {
-      case 'var': case 'exn': return { ty, ir: { op: 'var', name: e.name } };
+      case 'var': case 'exn': return { ty, ir: e.qual ? { op: 'qvar', path: e.qual, name: e.name } : { op: 'var', name: e.name } };
       case 'con': return { ty, ir: { op: 'con', con: info } };
       case 'prim': return { ty, ir: { op: 'prim', name: e.name } };
       default: throw new MLError('internal', 'varExp: ' + info.kind, e.loc);
@@ -313,9 +318,10 @@ export class Elaborator {
       case 'type': this.typeDec(d); return [];
       case 'exception': return [this.exceptionDec(d)];
       case 'local': return [this.localDec(d)];
-      case 'signature': throw unsupported('signatures', d);
-      case 'structure': throw unsupported('structures', d);
-      case 'functor': throw unsupported('functors', d);
+      case 'signature': return this.signatureDec(d);
+      case 'structure': return this.structureDec(d);
+      case 'functor': return this.functorDec(d);
+      case 'open': return this.openDec(d);
       default: throw new MLError('internal', 'dec: ' + d.kind, d.loc);
     }
   }
@@ -460,3 +466,4 @@ export class Elaborator {
   }
 }
 
+Object.assign(Elaborator.prototype, moduleMethods);

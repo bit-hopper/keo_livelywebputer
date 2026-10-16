@@ -10,8 +10,7 @@ import { chunks, chunkSession } from './helpers.js';
 import { typeToString } from '../../core/lib/ml/src/types.js';
 
 const seed = path.join(path.dirname(fileURLToPath(import.meta.url)), 'seed');
-// t5b (the module chapter) joins in with the modules phase.
-const files = ['t4', 't6'];
+const files = ['t4', 't5b', 't6'];
 const have = files.every((f) => fs.existsSync(path.join(seed, f + '.sml')) && fs.existsSync(path.join(seed, f + '.smlnj-output.txt')));
 
 // The output blocks of runchunks.sh: one per chunk, after its "######## c_NNN.sml" header and the quoted source lines.
@@ -43,6 +42,7 @@ const staticError = (block) => /Error:/.test(block) && !/match redundant/.test(b
 // Chunks we decide differently for now, and why. A change here is a decision.
 const KNOWN = [
   [/^val big = \[|^fun subst_c|^val w = \[\]|^Compiler\.Control|^\(subst_c/, 'lists and := are out of the core (until the list phase)'],
+  [/^IntArith2\.plus\(1,2\);/, "SML/NJ prints the name of an abbreviation (IntArith2.number) where we print the type it stands for (int)"],
   [/^4611686018427387903 \+ 1;/, 'our int is 63-bit (a recorded deviation): this literal is legal for us'],
 ];
 

@@ -69,6 +69,80 @@ export function echoText(entry, valueOf, style = 'book', depth = DEFAULT_DEPTH) 
       return 'type ' + head + entry.name + ' = ' + typeToString(entry.body, style, names);
     }
     case 'exception': return 'exception ' + entry.name + (entry.ty ? ' of ' + ofType(entry.ty, style, new Map()) : '');
+    case 'signature': return signatureText(entry.name, entry.sig, style);
+    case 'structure': return structureText(entry.name, entry.env, entry.sigName, style);
+    case 'functor': return functorText(entry.name, entry.fn, style);
     default: return entry.kind;
   }
+}
+
+// ---- modules -------------------------------------------------------------------------------------------------------
+
+const pad = (n) => '  '.repeat(n);
+
+// Where each of a signature's placeholder types sits, as a path: the `a_N.number` a sharing line talks about.
+function flexPaths(env, prefix = [], out = new Map()) {
+  for (const [name, e] of env.types) if (e.kind === 'tyname') out.set(e.tyname, prefix.concat(name).join('.'));
+  for (const [name, s] of env.strs) flexPaths(s.env, prefix.concat(name), out);
+  return out;
+}
+
+// The members of an environment, one line each, at `depth` indentation.
+function memberLines(env, style, depth) {
+  const lines = [];
+  for (const [name, e] of env.types) {
+    if (e.kind === 'abbrev') {
+      const names = new Map();
+      const head = tyvarHead(e.params, style, names);
+      lines.push(pad(depth) + 'type ' + head + name + ' = ' + typeToString(e.body, style, names));
+    } else if (e.tyname.isDatatype && e.tyname.cons.length && e.tyname.cons.every((c) => env.vals.get(c.name) === c.info)) {
+      lines.push(...datatypeText(e.tyname, style).split('\n').map((l) => pad(depth) + l));
+    } else {
+      const head = e.tyname.arity === 0 ? '' : e.tyname.arity === 1 ? (style === 'book' ? 'α ' : "'a ") : '(' + Array.from({ length: e.tyname.arity }, (_, i) => (style === 'book' ? 'αβγδεζηθ'[i] : "'" + 'abcdefgh'[i])).join(', ') + ') ';
+      lines.push(pad(depth) + 'type ' + head + name);
+    }
+  }
+  for (const [name, info] of env.vals) {
+    if (info.kind === 'exn') {
+      lines.push(pad(depth) + 'exception ' + name + (info.hasArg ? ' of ' + ofType(info.scheme.from, style, new Map()) : ''));
+    } else if (info.kind === 'var') {
+      lines.push(pad(depth) + 'val ' + name + ' : ' + typeToString(info.scheme, style, new Map()));
+    }
+  }
+  for (const [name, s] of env.strs) {
+    if (s.sigName) lines.push(pad(depth) + 'structure ' + name + ' : ' + s.sigName);
+    else lines.push(pad(depth) + 'structure ' + name + ' :', pad(depth + 1) + 'sig', ...memberLines(s.env, style, depth + 2), pad(depth + 1) + 'end');
+  }
+  return lines;
+}
+
+const sigBodyLines = (env, style, depth) => [pad(depth) + 'sig', ...memberLines(env, style, depth + 1), pad(depth) + 'end'];
+
+export function signatureText(name, sig, style = 'book') {
+  const lines = sigBodyLines(sig.env, style, 1);
+  const paths = flexPaths(sig.env);
+  const sharing = sig.sharing.map(([a, b]) => '    sharing type ' + (paths.get(a.name) || a.name.name) + ' = ' + (paths.get(b.name) || b.name.name));
+  if (sharing.length) lines.splice(lines.length - 1, 0, ...sharing);
+  return 'signature ' + name + ' =\n' + lines.join('\n');
+}
+
+export function structureText(name, env, sigName, style = 'book') {
+  if (sigName) return 'structure ' + name + ' : ' + sigName;
+  return 'structure ' + name + ' :\n' + sigBodyLines(env, style, 1).join('\n');
+}
+
+export function functorText(name, fn, style = 'book') {
+  const paths = flexPaths(fn.sig.env);
+  let param;
+  if (fn.derived) {
+    const parts = [];
+    for (const [pname, s] of fn.sig.env.strs) parts.push('structure ' + pname + ' : ' + (s.sigName || 'sig … end'));
+    for (const [a, b] of fn.sig.sharing) parts.push('sharing type ' + (paths.get(a.name) || a.name.name) + ' = ' + (paths.get(b.name) || b.name.name));
+    param = parts.join(' ');
+  } else {
+    param = fn.paramName + ' : ' + (fn.sig.name || 'sig … end');
+  }
+  const head = 'functor ' + name + '(' + param + ')';
+  if (fn.resultSigName) return head + ' : ' + fn.resultSigName;
+  return head + ' :\n' + sigBodyLines(fn.result, style, 1).join('\n');
 }

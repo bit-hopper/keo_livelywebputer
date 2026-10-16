@@ -29,6 +29,8 @@ export class TVar {
 }
 
 let nextStamp = 1;
+// The stamp the next TyName will get: everything created after this point has a stamp >= it (a functor's generated types).
+export const currentStamp = () => nextStamp;
 
 export class TyName {
   constructor(name, arity, admitsEq) {
@@ -39,8 +41,15 @@ export class TyName {
     this.params = [];
     this.cons = []; // datatypes: [{name, ty, info}]
     this.isDatatype = false;
+    // modules (MLspec.md section 7)
+    this.path = null;       // ['IntStruct', 'number']: where the type lives, for printing; null for a top-level type
+    this.abstract = false;  // made by opaque ascription or standing for a functor parameter's type: nothing is known about it
+    this.flex = false;      // a signature's `type t` placeholder
   }
 }
+
+// How a type constructor reads in a message: its path if it lives in a structure.
+export const tyNameText = (tn) => (tn.path ? tn.path.join('.') : tn.name);
 
 export const tcon = (name, args = []) => ({ tag: 'con', name, args });
 export const tfn = (from, to) => ({ tag: 'fn', from, to });
@@ -162,6 +171,24 @@ export class Scope {
     this.parent = parent;
     this.vals = new Map();
     this.types = new Map();
+    this.strs = new Map(); // name -> {env: Scope}      a structure's static environment (no parent)
+    this.sigs = new Map(); // name -> Sig               see modules.js
+    this.funs = new Map(); // name -> Functor           see modules.js
+  }
+
+  lookupStr(name) {
+    for (let s = this; s; s = s.parent) if (s.strs.has(name)) return s.strs.get(name);
+    return null;
+  }
+
+  lookupSig(name) {
+    for (let s = this; s; s = s.parent) if (s.sigs.has(name)) return s.sigs.get(name);
+    return null;
+  }
+
+  lookupFun(name) {
+    for (let s = this; s; s = s.parent) if (s.funs.has(name)) return s.funs.get(name);
+    return null;
   }
 
   lookupVal(name) {
@@ -181,6 +208,9 @@ export class Scope {
   mergeInto(target) {
     for (const [k, v] of this.vals) target.vals.set(k, v);
     for (const [k, v] of this.types) target.types.set(k, v);
+    for (const [k, v] of this.strs) target.strs.set(k, v);
+    for (const [k, v] of this.sigs) target.sigs.set(k, v);
+    for (const [k, v] of this.funs) target.funs.set(k, v);
   }
 }
 
@@ -214,9 +244,9 @@ export function typeToString(t, style = 'book', names = new Map()) {
       case 'fn': return operand(x.from) + ' -> ' + operand(x.to);
       case 'tuple': return x.items.length === 0 ? 'unit' : x.items.map(operand).join(' * ');
       case 'con':
-        if (x.args.length === 0) return x.name.name;
-        if (x.args.length === 1) return operand(x.args[0]) + ' ' + x.name.name;
-        return '(' + x.args.map(book).join(', ') + ') ' + x.name.name;
+        if (x.args.length === 0) return tyNameText(x.name);
+        if (x.args.length === 1) return operand(x.args[0]) + ' ' + tyNameText(x.name);
+        return '(' + x.args.map(book).join(', ') + ') ' + tyNameText(x.name);
       default: return '?';
     }
   };
@@ -236,9 +266,9 @@ export function typeToString(t, style = 'book', names = new Map()) {
         return prec >= 2 ? '(' + s + ')' : s;
       }
       case 'con':
-        if (x.args.length === 0) return x.name.name;
-        if (x.args.length === 1) return sml(x.args[0], 3) + ' ' + x.name.name;
-        return '(' + x.args.map((a) => sml(a, 0)).join(', ') + ') ' + x.name.name;
+        if (x.args.length === 0) return tyNameText(x.name);
+        if (x.args.length === 1) return sml(x.args[0], 3) + ' ' + tyNameText(x.name);
+        return '(' + x.args.map((a) => sml(a, 0)).join(', ') + ') ' + tyNameText(x.name);
       default: return '?';
     }
   };

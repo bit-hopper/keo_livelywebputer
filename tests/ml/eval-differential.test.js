@@ -11,7 +11,7 @@ import { chunks } from './helpers.js';
 import { Interpreter } from '../../core/lib/ml/src/interpreter.js';
 
 const seed = path.join(path.dirname(fileURLToPath(import.meta.url)), 'seed');
-const files = ['t4', 't6'];
+const files = ['t4', 't5b', 't6'];
 const have = files.every((f) => fs.existsSync(path.join(seed, f + '.sml')) && fs.existsSync(path.join(seed, f + '.smlnj-output.txt')));
 
 function outputBlocks(text) {
@@ -42,14 +42,21 @@ const KNOWN = [
 ];
 
 // Values we print differently on purpose: SML/NJ hides an exception value's payload (`No_bacon(-)`), we show it.
-const VALUE_KNOWN = [/^val e = No_bacon\(0\);/];
+const VALUE_KNOWN = [
+  /^val e = No_bacon\(0\);/,
+  /^IntArith2\.plus\(1,2\);/, // SML/NJ keeps the name of an abbreviation (`IntArith2.number`) where we print the type it stands for (`int`)
+];
 
 function snapshot(interp) {
-  return { vals: new Map(interp.scope.vals), types: new Map(interp.scope.types), globals: new Map(interp.globals) };
+  const sc = interp.scope;
+  return { vals: new Map(sc.vals), types: new Map(sc.types), strs: new Map(sc.strs), sigs: new Map(sc.sigs), funs: new Map(sc.funs), globals: new Map(interp.globals) };
 }
 function restore(interp, s) {
   interp.scope.vals = new Map(s.vals);
   interp.scope.types = new Map(s.types);
+  interp.scope.strs = new Map(s.strs);
+  interp.scope.sigs = new Map(s.sigs);
+  interp.scope.funs = new Map(s.funs);
   interp.globals = new Map(s.globals);
 }
 

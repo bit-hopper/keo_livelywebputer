@@ -30,7 +30,7 @@ function head(p) {
     case 'con': return {
       key: 'c' + p.con.index, kind: 'con', arity: p.arg ? 1 : 0, sig: p.con.tyname.cons.length, name: p.con.name, tyname: p.con.tyname,
     };
-    case 'exn': return { key: 'e' + p.name, kind: 'exn', arity: p.arg ? 1 : 0, sig: null, name: p.name };
+    case 'exn': return { key: 'e' + (p.qual ? p.qual.join('.') + '.' : '') + p.name, kind: 'exn', arity: p.arg ? 1 : 0, sig: null, name: p.name };
     case 'tuple': return { key: 't', kind: 'tuple', arity: p.items.length, sig: 1 };
     default: throw new MLError('internal', 'patterns: unknown pattern ' + p.p);
   }

@@ -115,6 +115,22 @@ test.describe("MLWorker controller", () => {
     expect(texts(await runCell(page, "1 + 1;"))).toEqual(["value:val it = 2 : int"]);
   });
 
+  test("signatures, structures and functors run in a cell, with signature nonsense reported", async ({ page }) => {
+    await boot(page);
+    const r = await runCell(page, [
+      "signature N = sig type number val succ : number -> number val reveal : number -> int val zero : number end;",
+      "functor Mk() :> N = struct type number = int fun succ(n) = n + 1 fun reveal(n) = n val zero = 0 end;",
+      "structure A = Mk();",
+      "A.reveal(A.succ(A.succ(A.zero)));",
+    ].join("\n"));
+    expect(r.state).toBe("done");
+    expect(texts(r).slice(-2)).toEqual(["value:structure A : N", "value:val it = 2 : int"]);
+    const bad = await runCell(page, "A.succ(1);");
+    expect(bad.state).toBe("error");
+    expect(bad.segments[0]).toMatchObject({ kind: "error", errorClass: "signature" });
+    expect(bad.segments[0].text).toContain("A.number is an abstract type");
+  });
+
   test("the bundle reports a build id", async ({ page }) => {
     await boot(page);
     await runCell(page, "1;");

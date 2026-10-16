@@ -197,23 +197,28 @@ export class Job {
     if (!interp.settings.verdicts || interp.settings.style !== 'book') return false;
     if (item.kind !== 'expstmt' || item.exp.kind !== 'typed' || item.exp.exp.kind !== 'var') return false;
     const ref = item.exp.exp;
-    const info = ref.qual ? null : interp.scope.lookupVal(ref.name);
-    if (!info) return false; // an unknown or qualified name: the ordinary path reports it
+    const shown = (ref.qual ? ref.qual.join('.') + '.' : '') + ref.name;
+    let info = null;
+    if (ref.qual) {
+      interp.elaborator.scope = interp.scope;
+      try { info = interp.elaborator.lookupQualVal(ref); } catch (e) { if (!(e instanceof MLError)) throw e; }
+    } else info = interp.scope.lookupVal(ref.name);
+    if (!info) return false; // an unknown name: the ordinary path reports it
     const principal = typeToString(info.scheme, 'book', new Map());
     try {
       const r = interp.elaborator.elaborateItem(derive(item), interp.scope);
       const asserted = r.echo[0].type;
       if (alphaEqual(asserted, info.scheme)) {
-        this.push({ kind: 'status', tone: 'ok', text: '✓ exactly: ' + ref.name + ' : ' + principal });
+        this.push({ kind: 'status', tone: 'ok', text: '✓ exactly: ' + shown + ' : ' + principal });
       } else {
         this.push({
           kind: 'status', tone: 'note',
-          text: '≈ the actual type is more general: ' + ref.name + ' : ' + principal + ' (you asserted ' + typeToString(asserted, 'book', new Map()) + ')',
+          text: '≈ the actual type is more general: ' + shown + ' : ' + principal + ' (you asserted ' + typeToString(asserted, 'book', new Map()) + ')',
         });
       }
     } catch (e) {
       if (!(e instanceof MLError) || e.errorClass !== 'nonsense') throw e;
-      this.push({ kind: 'status', tone: 'bad', text: '✗ nonsense: ' + e.message + '; the actual type of ' + ref.name + ' is ' + principal });
+      this.push({ kind: 'status', tone: 'bad', text: '✗ nonsense: ' + e.message + '; the actual type of ' + shown + ' is ' + principal });
     }
     return true;
   }

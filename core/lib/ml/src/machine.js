@@ -28,7 +28,7 @@ const conFn = (info) => info._fn || (info._fn = { tag: 'confn', con: info });
 const TRUE = conValue(TRUE_INFO);
 const FALSE = conValue(FALSE_INFO);
 const bool = (b) => (b ? TRUE : FALSE);
-const isTrue = (v) => v.con === TRUE_INFO;
+const isTrue = (v) => v.con.index === 1; // (constructors compare by index: a functor's copies of a datatype are different objects)
 
 class RaiseSignal { constructor(exn) { this.exn = exn; } }
 const divZero = () => new RaiseSignal(BUILTIN_EXN.Div);
@@ -93,7 +93,8 @@ class Linker {
       case 'int': p.value = normInt(p.value); break;
       case 'con': if (p.arg) this.pat(p.arg, sc); break;
       case 'exn': {
-        const r = this.lookup(sc, p.name);
+        if (p.qual) p.skey = 'S:' + p.qual[0];
+        const r = this.lookup(sc, p.qual ? p.skey : p.name);
         p.cell = r === LOCAL ? null : r;
         if (p.arg) this.pat(p.arg, sc);
         break;
@@ -116,6 +117,14 @@ class Linker {
       }
       case 'con': n.val = n.con.hasArg ? conFn(n.con) : conValue(n.con); n.atomic = true; n.t = A_VAL; break;
       case 'prim': n.val = primValue(n.name); n.atomic = true; n.t = A_VAL; break;
+      case 'qvar': { // S.x: the structure S is a local frame or a top-level cell
+        n.key = 'S:' + n.path[0];
+        const r = this.lookup(sc, n.key);
+        n.cell = r === LOCAL ? null : r;
+        n.atomic = true;
+        n.t = A_QVAR;
+        break;
+      }
       case 'tuple': n.items.forEach((x) => this.exp(x, sc)); n.atomic = n.items.every((x) => x.atomic); n.t = A_TUPLE; break;
       case 'conapp': this.exp(n.arg, sc); n.atomic = n.arg.atomic; n.t = A_CONAPP; break;
       case 'app':
@@ -184,6 +193,23 @@ class Linker {
         return after;
       }
       case 'exception': return this.bind(d.binds.map((b) => b.name), sc, top, d);
+      case 'structure': {
+        const after = this.bind(d.binds.map((b) => 'S:' + b.name), sc, top, d);
+        for (const b of d.binds) this.str(b.str, sc);
+        return after;
+      }
+      case 'functor': {
+        const inner = child(sc);
+        inner.map.set('S:' + d.param, LOCAL);
+        this.str(d.body, inner);
+        return this.bind(['F:' + d.name], sc, top, d);
+      }
+      case 'open': {
+        d.key = 'S:' + d.path[0];
+        const r = this.lookup(sc, d.key);
+        d.cell = r === LOCAL ? null : r;
+        return this.bind(d.vals.concat(d.strs.map((n) => 'S:' + n)), sc, false, d);
+      }
       case 'local': {
         const headScope = this.decs(d.head, sc, false);
         const bodyScope = this.decs(d.body, headScope, top);
@@ -193,6 +219,29 @@ class Linker {
         return out;
       }
       default: throw new MLError('internal', 'machine: unknown declaration ' + d.d);
+    }
+  }
+
+  // structure expressions
+  str(s, sc) {
+    switch (s.s) {
+      case 'path': {
+        s.key = 'S:' + s.path[0];
+        const r = this.lookup(sc, s.key);
+        s.cell = r === LOCAL ? null : r;
+        break;
+      }
+      case 'struct': this.decs(s.decs, sc, false); break;
+      case 'apply': {
+        s.fkey = 'F:' + s.fun;
+        const r = this.lookup(sc, s.fkey);
+        s.fcell = r === LOCAL ? null : r;
+        this.str(s.arg, sc);
+        break;
+      }
+      case 'thin': this.str(s.str, sc); break;
+      case 'let': this.str(s.body, this.decs(s.decs, sc, false)); break;
+      default: throw new MLError('internal', 'machine: unknown structure expression ' + s.s);
     }
   }
 
@@ -217,11 +266,16 @@ function matchPat(p, v, env) {
     case 'var': return { name: p.name, value: v, next: env };
     case 'int': return v === p.value ? env : FAIL;
     case 'con':
-      if (v.con !== p.con) return FAIL;
+      if (v.con.index !== p.con.index) return FAIL;
       return p.arg ? matchPat(p.arg, v.arg, env) : env;
     case 'exn': {
       if (v.tag !== 'exn') return FAIL;
-      const ev = p.cell ? p.cell.value : lookupEnv(env, p.name);
+      let ev;
+      if (p.qual) {
+        let st = p.cell ? p.cell.value : lookupEnv(env, p.skey);
+        for (let i = 1; i < p.qual.length; i++) st = st.s.get(p.qual[i]);
+        ev = st.v.get(p.name);
+      } else ev = p.cell ? p.cell.value : lookupEnv(env, p.name);
       if (v.excon !== (ev.tag === 'exn' ? ev.excon : ev)) return FAIL;
       return p.arg ? matchPat(p.arg, v.arg, env) : env;
     }
@@ -237,15 +291,37 @@ function matchPat(p, v, env) {
   }
 }
 
+// ---- structures at run time -----------------------------------------------------------------------------------------
+// A structure value is {tag:'struct', v: Map name -> value, s: Map name -> structure}.
+
+function buildStruct(env, ir) {
+  const v = new Map();
+  const s = new Map();
+  for (const name of ir.vals) v.set(name, lookupEnv(env, name));
+  for (const c of ir.cons) v.set(c.name, c.con.hasArg ? conFn(c.con) : conValue(c.con));
+  for (const name of ir.strs) s.set(name, lookupEnv(env, 'S:' + name));
+  return { tag: 'struct', v, s };
+}
+
+// What a signature lets through: the listed values and, recursively, substructures.
+function thinStruct(st, spec) {
+  const v = new Map();
+  const s = new Map();
+  for (const name of spec.vals) v.set(name, st.v.get(name));
+  for (const name of Object.keys(spec.strs)) s.set(name, thinStruct(st.s.get(name), spec.strs[name]));
+  return { tag: 'struct', v, s };
+}
+
 // ---- the machine ---------------------------------------------------------------------------------------------------
 
 const EVAL = 0; const RET = 1; const APPLY = 2; const RAISE = 3;
 // continuation frames
 const K_HALT = 0; const K_APP1 = 1; const K_APP2 = 2; const K_TUPLE = 3; const K_CONAPP = 4; const K_IF = 5; const K_RAISE = 6;
 const K_HANDLE = 7; const K_DECS = 8; const K_VAL = 9; const K_LETBODY = 10; const K_LOCALBODY = 11; const K_LOCALEND = 12;
+const K_STRUCT_END = 13; const K_APPLYF = 14; const K_THIN = 15; const K_LETSTR = 16; const K_STRBIND = 17;
 
 // what `atom` does with a node (set by the linker)
-const A_LOCAL = 0; const A_CONST = 1; const A_GLOBAL = 2; const A_PRIM2 = 3; const A_VAL = 4; const A_FN = 5; const A_PRIM1 = 6; const A_TUPLE = 7; const A_CONAPP = 8;
+const A_LOCAL = 0; const A_CONST = 1; const A_GLOBAL = 2; const A_PRIM2 = 3; const A_VAL = 4; const A_FN = 5; const A_PRIM1 = 6; const A_TUPLE = 7; const A_CONAPP = 8; const A_QVAR = 9;
 
 const LIMIT = { limit: true };
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -334,6 +410,11 @@ export class ItemRun {
         return out;
       }
       case A_CONAPP: return { tag: 'con', con: n.con, arg: this.atom(n.arg, env) };
+      case A_QVAR: {
+        let st = n.cell ? n.cell.value : lookupEnv(env, n.key);
+        for (let i = 1; i < n.path.length; i++) st = st.s.get(n.path[i]);
+        return st.v.get(n.name);
+      }
       default: throw new MLError('internal', 'machine: not atomic: ' + n.op);
     }
   }
@@ -341,6 +422,7 @@ export class ItemRun {
   evalNode() {
     const n = this.node;
     const env = this.env;
+    if (n.s !== undefined) { this.evalStr(n, env); return; }
     if (n.atomic) { this.value = this.atom(n, env); this.mode = RET; return; }
     switch (n.op) {
       case 'app':
@@ -436,6 +518,18 @@ export class ItemRun {
         this.value = v;
         return;
       }
+      case K_STRUCT_END: this.kont = f.next; this.value = buildStruct(v, f.a); return;
+      case K_APPLYF: {
+        const fv = f.a.fcell ? f.a.fcell.value : lookupEnv(f.b, f.a.fkey);
+        this.kont = f.next;
+        this.node = fv.body;
+        this.env = { name: 'S:' + fv.param, value: v, next: fv.env };
+        this.mode = EVAL;
+        return;
+      }
+      case K_THIN: this.kont = f.next; this.value = thinStruct(v, f.a.spec); return;
+      case K_LETSTR: this.kont = f.next; this.node = f.a; this.env = v; this.mode = EVAL; return;
+      case K_STRBIND: f.c.push(v); f.b++; this.contStr(f); return;
       case K_LOCALEND: {
         // v: the environment after the body; only the body's own frames escape the local declaration
         const headEnv = f.a;
@@ -512,6 +606,23 @@ export class ItemRun {
           this.kont = this.frame(K_VAL, f, d, 0, [], f.c, f.d);
           this.contVal(this.kont);
           return;
+        case 'structure':
+          this.kont = this.frame(K_STRBIND, f, d, 0, [], f.c, f.d);
+          this.contStr(this.kont);
+          return;
+        case 'functor': {
+          const fv = { tag: 'functor', param: d.param, body: d.body, env: f.c };
+          if (f.d) d.cells.get('F:' + d.name).value = fv;
+          else f.c = { name: 'F:' + d.name, value: fv, next: f.c };
+          break;
+        }
+        case 'open': {
+          let st = d.cell ? d.cell.value : lookupEnv(f.c, d.key);
+          for (let i = 1; i < d.path.length; i++) st = st.s.get(d.path[i]);
+          for (const name of d.vals) f.c = { name, value: st.v.get(name), next: f.c };
+          for (const name of d.strs) f.c = { name: 'S:' + name, value: st.s.get(name), next: f.c };
+          break;
+        }
         case 'local':
           this.kont = this.frame(K_LOCALBODY, f, d, f.d, f.c);
           this.kont = this.frame(K_DECS, this.kont, d.head, 0, f.c, false);
@@ -523,6 +634,59 @@ export class ItemRun {
     }
     this.kont = f.next;
     this.value = f.c;
+    this.mode = RET;
+  }
+
+  // structure expressions: `node.s` says which. The result of evaluating one is a structure value.
+  evalStr(n, env) {
+    switch (n.s) {
+      case 'path': {
+        let st = n.cell ? n.cell.value : lookupEnv(env, n.key);
+        for (let i = 1; i < n.path.length; i++) st = st.s.get(n.path[i]);
+        this.value = st;
+        this.mode = RET;
+        return;
+      }
+      case 'struct':
+        this.kont = this.frame(K_STRUCT_END, this.kont, n);
+        this.kont = this.frame(K_DECS, this.kont, n.decs, 0, env, false);
+        this.value = env;
+        this.mode = RET;
+        return;
+      case 'apply':
+        this.kont = this.frame(K_APPLYF, this.kont, n, env);
+        this.node = n.arg;
+        return;
+      case 'thin':
+        this.kont = this.frame(K_THIN, this.kont, n);
+        this.node = n.str;
+        return;
+      case 'let':
+        this.kont = this.frame(K_LETSTR, this.kont, n.body);
+        this.kont = this.frame(K_DECS, this.kont, n.decs, 0, env, false);
+        this.value = env;
+        this.mode = RET;
+        return;
+      default: throw new MLError('internal', 'machine: unknown structure expression ' + n.s);
+    }
+  }
+
+  // K_STRBIND frame: a: the structure declaration, b: next binding, c: the structure values so far, d: env at the start, e: top?
+  contStr(f) {
+    const d = f.a;
+    if (f.b < d.binds.length) {
+      this.node = d.binds[f.b].str;
+      this.env = f.d;
+      this.mode = EVAL;
+      return;
+    }
+    let env = f.d;
+    d.binds.forEach((b, i) => {
+      if (f.e) d.cells.get('S:' + b.name).value = f.c[i];
+      else env = { name: 'S:' + b.name, value: f.c[i], next: env };
+    });
+    this.kont = f.next;
+    this.value = env;
     this.mode = RET;
   }
 

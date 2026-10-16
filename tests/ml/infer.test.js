@@ -258,9 +258,10 @@ test('type names must exist, with the right arity', () => {
   assert.match(rejects("datatype t = T of 'a;"), /^nonsense: the type variable 'a is not bound/);
 });
 
-test('modules are not yet available', () => {
-  assert.match(rejects('structure S = struct end;'), /^syntax: structures are not available yet/);
-  assert.match(rejects('val x = S.y;'), /^syntax: qualified names are not available yet/);
+test('an undefined structure is reported', () => {
+  assert.match(rejects('val x = S.y;'), /^signature: the structure S is not defined/);
+  assert.match(rejects('structure A = B;'), /^signature: the structure B is not defined/);
+  assert.match(rejects('structure A = F(structure x = struct end);'), /^signature: the functor F is not defined/);
 });
 
 // ---- shadowing and the basis -------------------------------------------------------------------------------------
