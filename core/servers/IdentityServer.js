@@ -74,6 +74,7 @@ var friendRegistry = require("./identity/FriendRegistry");
 var dmMailbox = require("./identity/DMMailbox");
 var dmSignalingTokenStore = require("./support/dm-signaling-token-store");
 var cryptoVerify = require("./identity/CryptoVerify");
+var writePolicy = require("./identity/WritePolicy");
 var didHome = require("./identity/DidHome");
 var domainVerifier = require("./identity/DomainVerifier");
 var constellationSpace = require("./identity/ConstellationSpace");
@@ -1853,6 +1854,14 @@ module.exports = function (route, app) {
       // this instance if there is none yet), ignoring whatever it sent.
       handleRegistry.getDIDDocument(did, function (getErr, stored) {
         if (getErr) return res.status(500).json({ error: String(getErr) });
+        // Every signed write is verified against the delegation certs in this
+        // document, and this route is reachable with the session cookie alone,
+        // so it may add to the document or rotate a cert (to one that verifies)
+        // but not strip or tamper with the certs already stored. See WritePolicy.js.
+        var regression = writePolicy.didDocumentRegression(stored, doc);
+        if (regression) {
+          return res.status(403).json({ error: "Forbidden: " + regression, code: "DID_DOCUMENT_REGRESSION" });
+        }
         var toSave = didHome.withHomeService(doc, did, canonicalOrigin(req), stored);
         handleRegistry.saveDIDDocument(did, toSave, function (saveErr) {
           if (saveErr) return res.status(500).json({ error: String(saveErr) });
@@ -4502,7 +4511,20 @@ module.exports = function (route, app) {
     function _afterSignatureCheck(existing, callback) {
       var isMetadataOnlyUpdate = !!(existing && existing.record &&
         existing.record.cid === envelope.record.cid);
-      if (isMetadataOnlyUpdate) return callback();
+      if (isMetadataOnlyUpdate) {
+        // This path stores the WHOLE submitted envelope in place, with no
+        // signature and no cid-versus-payload check, so it must not be able to
+        // change the payload (or the nonce / wrapped DEK that open it): a
+        // caller with only a session cookie could otherwise swap content under
+        // an unchanged cid. Visibility, state and recipients stay changeable.
+        // See WritePolicy.js.
+        var immutableViolation = writePolicy.metadataOnlyViolation(existing, envelope);
+        if (immutableViolation) {
+          return res.status(400).json({ error: immutableViolation, code: "IMMUTABLE_FIELD" });
+        }
+        envelope = writePolicy.pinImmutable(existing, envelope);
+        return callback();
+      }
 
       if (envelope.record.payload !== undefined) {
         var expectedCid = cryptoVerify.computeCid(envelope.record.payload);
@@ -4592,6 +4614,16 @@ module.exports = function (route, app) {
       }
 
       if (envelope.type !== "postcard" && envelope.type !== "wikipage") {
+        // Every other type is strictly owner-only. The checks above only look
+        // at the INCOMING envelope's did, which any signed-in account can set
+        // to its own, so without this a caller could chain a new version onto
+        // someone else's object (same objId, current tip cid as prevCid).
+        if (!writePolicy.ownsExisting(existing, req.identity)) {
+          return res.status(403).json({
+            error: "Forbidden: this object belongs to another account",
+            code: "NOT_OWNER",
+          });
+        }
         return _handleRegistryCheckAndWrite();
       }
 
@@ -5009,6 +5041,16 @@ module.exports = function (route, app) {
       if (req.identity.handle !== handle)
         return res.status(403).json({ error: "Forbidden" });
 
+      // The handle check above only proves the URL names the caller; it says
+      // nothing about whose object `objId` is, and deleteVersionsAfter does
+      // not scope by owner. Without this any signed-in account could cut back
+      // another account's version history.
+      objectRepo.get(objId, function (err, stored) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!stored) return res.status(404).json({ error: "Object not found: " + objId });
+        if (!writePolicy.ownsExisting(stored, req.identity)) {
+          return res.status(403).json({ error: "Forbidden: this object belongs to another account", code: "NOT_OWNER" });
+        }
       objectRepo.deleteVersionsAfter(objId, cid, function (err, result) {
         if (err) return res.status(500).json({ error: String(err) });
         res.json({ ok: true, deleted: result.deleted });
@@ -5021,6 +5063,7 @@ module.exports = function (route, app) {
             if (err) console.warn("[IdentityServer] Failed to reclaim orphaned blob", blobCid, "after revert of", objId, ":", err.message || err);
           });
         });
+      });
       });
     }
   );
