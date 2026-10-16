@@ -91,10 +91,10 @@ test('a • line is a type box: the line is wrapped in ( ... );', () => {
   assert.match(lexError('x • y'), /unexpected character/);
 });
 
-test('reals, strings and stray characters get pointed messages', () => {
+test('reals, a bad string and stray characters get pointed messages', () => {
   assert.match(lexError('1.5'), /^syntax: reals are not part of the core/);
   assert.match(lexError('2e3'), /^syntax: reals are not part/);
-  assert.match(lexError('"hello"'), /^syntax: strings are not part/);
+  assert.match(lexError('"hello'), /^syntax: this string is never closed/);
   assert.match(lexError('_x'), /cannot start with _/);
   assert.match(lexError('x § y'), /unexpected character/);
 });
@@ -105,7 +105,7 @@ test('positions: line, column and offsets', () => {
 });
 
 test('the lexer is lazy: an error late in the source does not stop earlier tokens', () => {
-  const lx = new Lexer('val x = 1; "late"');
+  const lx = new Lexer('val x = 1; "late');
   for (let i = 0; i < 5; i++) assert.notEqual(lx.next().type, 'eof');
   assert.throws(() => lx.next(), (e) => e instanceof MLError);
   assert.equal(lx.next().type, 'eof');   // and it moved past the bad string

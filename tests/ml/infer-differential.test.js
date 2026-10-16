@@ -40,26 +40,30 @@ function smlnjVals(block) {
 const staticError = (block) => /Error:/.test(block) && !/match redundant/.test(block);
 
 // Chunks we decide differently for now, and why. A change here is a decision.
+// Chunks that use lists: legal with the lists basis, rejected without it (the chapter 1-9 programs must behave the same with and
+// without that basis, so the rest of the corpus runs in both modes).
+const LISTS = /^val big = \[|^fun subst_c|^val w = \[\]|^\(subst_c/;
 const KNOWN = [
-  [/^val big = \[|^fun subst_c|^val w = \[\]|^Compiler\.Control|^\(subst_c/, 'lists and := are out of the core (until the list phase)'],
+  [/^Compiler\.Control/, ':= and the SML/NJ compiler structures are not part of the engine'],
   [/^IntArith2\.plus\(1,2\);/, "SML/NJ prints the name of an abbreviation (IntArith2.number) where we print the type it stands for (int)"],
   [/^4611686018427387903 \+ 1;/, 'our int is 63-bit (a recorded deviation): this literal is legal for us'],
 ];
 
-test('seed corpora: accept/reject and principal types agree with SML/NJ', { skip: !have && 'tests/ml/seed is not present' }, () => {
+for (const basis of ['full', 'core']) test('seed corpora (' + basis + ' basis): accept/reject and principal types agree with SML/NJ', { skip: !have && 'tests/ml/seed is not present' }, () => {
   const mismatches = [];
   let compared = 0;
   for (const f of files) {
     const cs = chunks(fs.readFileSync(path.join(seed, f + '.sml'), 'utf8'));
     const blocks = outputBlocks(fs.readFileSync(path.join(seed, f + '.smlnj-output.txt'), 'utf8'));
     assert.equal(cs.length, blocks.length, f + ': chunk/output count');
-    const s = chunkSession('sml');
+    const s = chunkSession('sml', basis);
     cs.forEach((chunk, i) => {
       const block = blocks[i];
       const r = s.run(chunk);
       const ref = staticError(block);
       const tag = f + '#' + i + ' ' + chunk.slice(0, 60).replace(/\s+/g, ' ');
       if (KNOWN.some(([re]) => re.test(chunk))) return;
+      if (basis === 'core' && LISTS.test(chunk)) return;
       if (ref && !r.error) mismatches.push(tag + ' => SML/NJ rejects, we accept');
       else if (!ref && r.error) mismatches.push(tag + ' => SML/NJ accepts, we reject: ' + r.error.errorClass + ': ' + r.error.message);
       else if (!ref) {

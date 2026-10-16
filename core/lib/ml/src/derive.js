@@ -40,9 +40,9 @@ class Deriver {
 
   exp(e) {
     switch (e.kind) {
-      case 'int': case 'var':
+      case 'int': case 'var': case 'string': case 'char':
         return e;
-      case 'tuple':
+      case 'tuple': case 'list': // (a list literal is checked as it stands, so its messages talk about the elements)
         return { ...e, items: e.items.map((x) => this.exp(x)) };
       case 'app':
         return { ...e, fn: this.exp(e.fn), arg: this.exp(e.arg) };

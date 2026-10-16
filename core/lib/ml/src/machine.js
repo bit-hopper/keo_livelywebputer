@@ -12,9 +12,9 @@
 // keeps the binding it was written against even if the name is later redefined (static scope). Local bindings are linked
 // frames {name, value, next} in the environment.
 import { MLError } from './errors.js';
-import { FALSE_INFO, TRUE_INFO } from './basis.js';
+import { FALSE_INFO, TRUE_INFO, NIL_INFO, CONS_INFO } from './basis.js';
 import {
-  BUILTIN_EXN, Overflow, makeExcon, exnValue, normInt, valuesEqual,
+  BUILTIN_EXN, Overflow, makeExcon, exnValue, normInt, valuesEqual, charValue, intText,
   intAdd, intSub, intMul, intNeg, intDiv, intMod,
 } from './values.js';
 
@@ -32,6 +32,24 @@ const isTrue = (v) => v.con.index === 1; // (constructors compare by index: a fu
 
 class RaiseSignal { constructor(exn) { this.exn = exn; } }
 const divZero = () => new RaiseSignal(BUILTIN_EXN.Div);
+const raiseExn = (name) => new RaiseSignal(BUILTIN_EXN[name]);
+
+// ---- lists: ordinary datatype values with stable constructors (basis.js), plus helpers for the primitives ---------------
+
+const UNIT = [];
+const NIL = conValue(NIL_INFO);
+const consCell = (head, tail) => ({ tag: 'con', con: CONS_INFO, arg: [head, tail] });
+const isNil = (l) => l.con.index === 0;
+function listToArray(l) {
+  const out = [];
+  while (!isNil(l)) { out.push(l.arg[0]); l = l.arg[1]; }
+  return out;
+}
+function arrayToList(a, tail = NIL) {
+  let l = tail;
+  for (let i = a.length - 1; i >= 0; i--) l = consCell(a[i], l);
+  return l;
+}
 
 // The binary primitives take their two operands directly (the linker calls them without building the pair when both operands
 // are written out); PRIM_FN takes the pair, for the general case where the argument is any expression.
@@ -41,16 +59,34 @@ const PRIM2 = {
   '*': intMul,
   div: (a, b) => { if (b === 0) throw divZero(); return intDiv(a, b); },
   mod: (a, b) => { if (b === 0) throw divZero(); return intMod(a, b); },
-  '<': (a, b) => bool(a < b),
-  '>': (a, b) => bool(a > b),
-  '<=': (a, b) => bool(a <= b),
-  '>=': (a, b) => bool(a >= b),
+  '<': (a, b) => bool(typeof a === 'object' ? a.c < b.c : a < b), // (ints, strings; a char is an object)
+  '>': (a, b) => bool(typeof a === 'object' ? a.c > b.c : a > b),
+  '<=': (a, b) => bool(typeof a === 'object' ? a.c <= b.c : a <= b),
+  '>=': (a, b) => bool(typeof a === 'object' ? a.c >= b.c : a >= b),
   '=': (a, b) => bool(a === b || valuesEqual(a, b)),
   '<>': (a, b) => bool(a !== b && !valuesEqual(a, b)),
+  '^': (a, b) => a + b,
+  '@': (a, b) => (isNil(a) ? b : arrayToList(listToArray(a), b)),
 };
+// One-argument primitives take (argument, run): `print` needs the run's output sink. The strings and characters are JS strings and
+// interned char objects (a char is a UTF-16 unit, like a JS string index).
 const PRIM_FN = {
   '~': (a) => intNeg(a),
   not: (a) => bool(!isTrue(a)),
+  size: (s) => s.length,
+  hd: (l) => { if (isNil(l)) throw raiseExn('Empty'); return l.arg[0]; },
+  tl: (l) => { if (isNil(l)) throw raiseExn('Empty'); return l.arg[1]; },
+  null: (l) => bool(isNil(l)),
+  length: (l) => { let n = 0; while (!isNil(l)) { n++; l = l.arg[1]; } return n; },
+  rev: (l) => { let r = NIL; while (!isNil(l)) { r = consCell(l.arg[0], r); l = l.arg[1]; } return r; },
+  print: (s, run) => { run.out(s); return UNIT; },
+  str: (c) => c.c,
+  ord: (c) => c.c.charCodeAt(0),
+  chr: (n) => { if (typeof n !== 'number' || n < 0 || n > 0xFFFF) throw raiseExn('Chr'); return charValue(String.fromCharCode(n)); },
+  explode: (s) => { const out = new Array(s.length); for (let i = 0; i < s.length; i++) out[i] = charValue(s[i]); return arrayToList(out); },
+  implode: (l) => listToArray(l).map((c) => c.c).join(''),
+  concat: (l) => listToArray(l).join(''),
+  'Int.toString': (n) => intText(n),
 };
 for (const name of Object.keys(PRIM2)) PRIM_FN[name] = (a) => PRIM2[name](a[0], a[1]);
 const primValue = (name) => ({ tag: 'prim', name, fn: PRIM_FN[name] });
@@ -91,6 +127,7 @@ class Linker {
   pat(p, sc) {
     switch (p.p) {
       case 'int': p.value = normInt(p.value); break;
+      case 'chr': p.cv = charValue(p.value); break;
       case 'con': if (p.arg) this.pat(p.arg, sc); break;
       case 'exn': {
         if (p.qual) p.skey = 'S:' + p.qual[0];
@@ -107,7 +144,7 @@ class Linker {
   // Link an expression; sets `atomic` (evaluable without pushing a frame) on every node.
   exp(n, sc) {
     switch (n.op) {
-      case 'const': n.value = normInt(n.value); n.atomic = true; n.t = A_CONST; break;
+      case 'const': if (typeof n.value === 'number' || typeof n.value === 'bigint') n.value = normInt(n.value); n.atomic = true; n.t = A_CONST; break;
       case 'var': {
         const r = this.lookup(sc, n.name);
         n.cell = r === LOCAL ? null : r;
@@ -126,6 +163,7 @@ class Linker {
         break;
       }
       case 'tuple': n.items.forEach((x) => this.exp(x, sc)); n.atomic = n.items.every((x) => x.atomic); n.t = A_TUPLE; break;
+      case 'list': n.items.forEach((x) => this.exp(x, sc)); n.atomic = n.items.every((x) => x.atomic); n.t = A_LIST; break;
       case 'conapp': this.exp(n.arg, sc); n.atomic = n.arg.atomic; n.t = A_CONAPP; break;
       case 'app':
         this.exp(n.fn, sc);
@@ -265,6 +303,8 @@ function matchPat(p, v, env) {
     case 'wild': return env;
     case 'var': return { name: p.name, value: v, next: env };
     case 'int': return v === p.value ? env : FAIL;
+    case 'str': return v === p.value ? env : FAIL;
+    case 'chr': return v === p.cv ? env : FAIL;
     case 'con':
       if (v.con.index !== p.con.index) return FAIL;
       return p.arg ? matchPat(p.arg, v.arg, env) : env;
@@ -322,6 +362,7 @@ const K_STRUCT_END = 13; const K_APPLYF = 14; const K_THIN = 15; const K_LETSTR 
 
 // what `atom` does with a node (set by the linker)
 const A_LOCAL = 0; const A_CONST = 1; const A_GLOBAL = 2; const A_PRIM2 = 3; const A_VAL = 4; const A_FN = 5; const A_PRIM1 = 6; const A_TUPLE = 7; const A_CONAPP = 8; const A_QVAR = 9;
+const A_LIST = 10;
 
 const LIMIT = { limit: true };
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -333,6 +374,8 @@ export class ItemRun {
   constructor(ir, globals, options = {}) {
     this.globals = globals;
     this.maxDepth = options.maxDepth || DEFAULT_MAX_DEPTH;
+    this.out = options.out || (() => {}); // where `print` writes
+    this.limitReason = null; // 'depth' | 'memory' when state is 'limit'
     const linker = new Linker(globals);
     linker.decs(ir.decs, null, true);
     this.pending = linker.pending;
@@ -382,6 +425,11 @@ export class ItemRun {
       } catch (e) {
         if (e instanceof RaiseSignal) { this.value = e.exn; this.mode = RAISE; } else if (e instanceof Overflow) { this.value = BUILTIN_EXN.Overflow; this.mode = RAISE; } else if (e === LIMIT) {
           this.state = 'limit';
+          this.limitReason = 'depth';
+          this.kont = null;
+        } else if (e instanceof RangeError) { // a string or array past what the engine can hold
+          this.state = 'limit';
+          this.limitReason = 'memory';
           this.kont = null;
         } else throw e;
       }
@@ -402,7 +450,7 @@ export class ItemRun {
       case A_PRIM2: return n.prim2(this.atom(n.left, env), this.atom(n.right, env));
       case A_VAL: return n.val;
       case A_FN: return { tag: 'closure', rules: n.rules, env };
-      case A_PRIM1: return n.primFn(this.atom(n.arg, env));
+      case A_PRIM1: return n.primFn(this.atom(n.arg, env), this);
       case A_TUPLE: {
         const items = n.items;
         const out = new Array(items.length);
@@ -410,6 +458,12 @@ export class ItemRun {
         return out;
       }
       case A_CONAPP: return { tag: 'con', con: n.con, arg: this.atom(n.arg, env) };
+      case A_LIST: {
+        const items = n.items;
+        const vals = new Array(items.length);
+        for (let i = 0; i < items.length; i++) vals[i] = this.atom(items[i], env); // (left to right)
+        return arrayToList(vals);
+      }
       case A_QVAR: {
         let st = n.cell ? n.cell.value : lookupEnv(env, n.key);
         for (let i = 1; i < n.path.length; i++) st = st.s.get(n.path[i]);
@@ -442,6 +496,7 @@ export class ItemRun {
         }
         return;
       case 'tuple': this.kont = this.frame(K_TUPLE, this.kont, n, 0, new Array(n.items.length), env); this.tupleNext(); return;
+      case 'list': this.kont = this.frame(K_TUPLE, this.kont, n, 0, new Array(n.items.length), env, arrayToList); this.tupleNext(); return;
       case 'conapp': this.kont = this.frame(K_CONAPP, this.kont, n.con); this.node = n.arg; return;
       case 'if':
         if (n.cond.atomic) { this.node = isTrue(this.atom(n.cond, env)) ? n.then : n.else; return; }
@@ -564,7 +619,7 @@ export class ItemRun {
       }
       case 'confn': this.value = { tag: 'con', con: fn.con, arg }; this.mode = RET; return;
       case 'excon': this.value = exnValue(fn, arg); this.mode = RET; return;
-      case 'prim': this.value = fn.fn(arg); this.mode = RET; return;
+      case 'prim': this.value = fn.fn(arg, this); this.mode = RET; return;
       default: throw new MLError('internal', 'machine: not a function: ' + fn.tag);
     }
   }

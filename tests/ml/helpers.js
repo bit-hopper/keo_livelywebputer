@@ -31,6 +31,9 @@ export function showPat(p) {
   switch (p.kind) {
     case 'wild': return '_';
     case 'pint': return String(p.value);
+    case 'pstring': return JSON.stringify(p.value);
+    case 'pchar': return '#' + JSON.stringify(p.value);
+    case 'plist': return '[' + p.items.map(showPat).join(', ') + ']';
     case 'pid': return name(p);
     case 'pcon': return '(' + showPat(p.con) + ' ' + showPat(p.arg) + ')';
     case 'ptuple': return '(' + p.items.map(showPat).join(', ') + ')';
@@ -44,6 +47,9 @@ const showMatch = (m) => m.map((r) => showPat(r.pat) + ' => ' + show(r.exp)).joi
 export function show(n) {
   switch (n.kind) {
     case 'int': return String(n.value);
+    case 'string': return JSON.stringify(n.value);
+    case 'char': return '#' + JSON.stringify(n.value);
+    case 'list': return '[' + n.items.map(show).join(', ') + ']';
     case 'var': return name(n);
     case 'tuple': return '(' + n.items.map(show).join(', ') + ')';
     case 'seq': return '(' + n.exps.map(show).join('; ') + ')';
@@ -114,7 +120,7 @@ export const chunks = (text) => text.replace(/\r/g, '').split(/^\(\*--\*\)$/m).m
 // ---- elaboration helpers -----------------------------------------------------------------------------------
 import { derive } from '../../core/lib/ml/src/derive.js';
 import { Elaborator } from '../../core/lib/ml/src/infer.js';
-import { makeBasis } from '../../core/lib/ml/src/basis.js';
+import { makeBasis, CONS_INFO, NIL_INFO } from '../../core/lib/ml/src/basis.js';
 import { typeToString } from '../../core/lib/ml/src/types.js';
 
 // A tiny session: run every item of `source` in order against one global scope, as a cell does. Returns the echo lines
@@ -168,8 +174,8 @@ export function rejects(source, style = 'book') {
 
 // Like session().run, but all-or-nothing per call: if any item fails, nothing the call defined is kept (how the
 // differential harness treats a chunk).
-export function chunkSession(style = 'sml') {
-  const base = makeBasis().child();
+export function chunkSession(style = 'sml', basis = 'full') {
+  const base = makeBasis({ lists: basis !== 'core' }).child();
   const el = new Elaborator({ style });
   return {
     run(source) {
@@ -226,8 +232,14 @@ import { ItemRun, makeGlobals } from '../../core/lib/ml/src/machine.js';
 // A value as plain JS for assertions: ints as numbers (BigInt beyond 2^53), tuples as arrays, a constructor as its name or
 // [name, arg], a function as "fn", an exception value as "exn:Name" or ["exn:Name", arg].
 export function plain(v) {
-  if (typeof v === 'number' || typeof v === 'bigint') return v;
+  if (typeof v === 'number' || typeof v === 'bigint' || typeof v === 'string') return v;
   if (Array.isArray(v)) return v.map(plain);
+  if (v.tag === 'char') return '#' + v.c;
+  if (v.tag === 'con' && (v.con === CONS_INFO || v.con === NIL_INFO)) { // a list: a JS array of its elements
+    const out = [];
+    for (let l = v; l.con === CONS_INFO; l = l.arg[1]) out.push(plain(l.arg[0]));
+    return out;
+  }
   switch (v.tag) {
     case 'con': return v.arg === undefined ? v.con.name : [v.con.name, plain(v.arg)];
     case 'exn': return v.arg === undefined ? 'exn:' + v.excon.name : ['exn:' + v.excon.name, plain(v.arg)];

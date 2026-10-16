@@ -7,28 +7,62 @@
 //   function               fn                         fn
 //   exception value        No_bacon(0)                No_bacon 0
 //   type variables         α β γ                      'a 'b 'c
+//   list, string, char     [1,2,3]  "a\n"  #"a"       the same
 //
-// Types are printed by `typeToString` (types.js). A value deeper than `depth` shows as `…`.
+// Types are printed by `typeToString` (types.js). A value deeper than `depth` shows as `…`, and a list longer than `length`
+// ends in `…` (`...` in sml style, as SML/NJ writes it).
 import { typeToString } from './types.js';
+import { NIL_INFO, CONS_INFO } from './basis.js';
+import { intText } from './values.js';
 
 export const DEFAULT_DEPTH = 100;
+export const DEFAULT_LENGTH = 1000;
 
-const intText = (x) => (x < 0 ? '~' + String(-x) : String(x));
+// A character as it is written inside quotes: SML's escapes (\n \t \" \\ ...), \^A for the other control characters, \ddd
+// (decimal) from 127 to 255 and \uxxxx beyond.
+const ESCAPES = { '"': '\\"', '\\': '\\\\', '\n': '\\n', '\t': '\\t', '\x07': '\\a', '\b': '\\b', '\v': '\\v', '\f': '\\f', '\r': '\\r' };
+function escapeChar(c) {
+  if (Object.prototype.hasOwnProperty.call(ESCAPES, c)) return ESCAPES[c];
+  const code = c.charCodeAt(0);
+  if (code < 32) return '\\^' + String.fromCharCode(code + 64);
+  if (code >= 127 && code < 256) return '\\' + String(code).padStart(3, '0');
+  if (code >= 256) return '\\u' + code.toString(16).padStart(4, '0');
+  return c;
+}
+export const showString = (str) => '"' + Array.from(str, escapeChar).join('') + '"';
+export const showChar = (c) => '#"' + escapeChar(c) + '"';
+
+const isList = (v) => v !== null && typeof v === 'object' && v.tag === 'con' && (v.con === CONS_INFO || v.con === NIL_INFO);
 
 // SML puts a constructor's argument in parentheses unless it is a single token or already bracketed.
 function atomicSml(v) {
-  if (typeof v === 'number' || typeof v === 'bigint' || Array.isArray(v)) return true;
+  if (typeof v === 'number' || typeof v === 'bigint' || typeof v === 'string' || Array.isArray(v) || isList(v)) return true;
   return (v.tag === 'con' || v.tag === 'exn') ? v.arg === undefined : true;
 }
 
-export function showValue(v, style = 'book', depth = DEFAULT_DEPTH) {
+// [a,b,c], walked iteratively so a very long list cannot overflow the JS stack.
+function showList(v, style, depth, length) {
+  const parts = [];
+  let more = false;
+  for (let l = v; l.con === CONS_INFO; l = l.arg[1]) {
+    if (parts.length >= length) { more = true; break; }
+    parts.push(showValue(l.arg[0], style, depth - 1, length));
+  }
+  if (more) parts.push(style === 'book' ? '…' : '...');
+  return '[' + parts.join(',') + ']';
+}
+
+export function showValue(v, style = 'book', depth = DEFAULT_DEPTH, length = DEFAULT_LENGTH) {
   if (depth <= 0) return '…';
   if (typeof v === 'number' || typeof v === 'bigint') return intText(v);
-  if (Array.isArray(v)) return '(' + v.map((x) => showValue(x, style, depth - 1)).join(',') + ')';
+  if (typeof v === 'string') return showString(v);
+  if (Array.isArray(v)) return '(' + v.map((x) => showValue(x, style, depth - 1, length)).join(',') + ')';
+  if (v.tag === 'char') return showChar(v.c);
+  if (isList(v)) return showList(v, style, depth, length);
   if (v.tag === 'con' || v.tag === 'exn') {
     const name = v.tag === 'con' ? v.con.name : v.excon.name;
     if (v.arg === undefined) return name;
-    const arg = showValue(v.arg, style, depth - 1);
+    const arg = showValue(v.arg, style, depth - 1, length);
     if (style === 'book') return Array.isArray(v.arg) && v.arg.length > 1 ? name + arg : name + '(' + arg + ')';
     return name + ' ' + (atomicSml(v.arg) ? arg : '(' + arg + ')');
   }
@@ -59,9 +93,9 @@ export function datatypeText(tn, style = 'book') {
 }
 
 // One echo entry from the elaborator -> its text. `valueOf(name)` gives the run-time value of a `val` entry.
-export function echoText(entry, valueOf, style = 'book', depth = DEFAULT_DEPTH) {
+export function echoText(entry, valueOf, style = 'book', depth = DEFAULT_DEPTH, length = DEFAULT_LENGTH) {
   switch (entry.kind) {
-    case 'val': return 'val ' + entry.name + ' = ' + showValue(valueOf(entry.name), style, depth) + ' : ' + typeToString(entry.type, style, new Map());
+    case 'val': return 'val ' + entry.name + ' = ' + showValue(valueOf(entry.name), style, depth, length) + ' : ' + typeToString(entry.type, style, new Map());
     case 'datatype': return entry.names.map((tn) => datatypeText(tn, style)).join('\n');
     case 'type': {
       const names = new Map();

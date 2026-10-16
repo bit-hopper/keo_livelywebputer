@@ -1,0 +1,470 @@
+######## c_000.sml
+    | val l = [1,2,3];
+val l = [1,2,3] : int list
+
+######## c_001.sml
+    | 1 :: l;
+val it = [1,1,2,3] : int list
+
+######## c_002.sml
+    | l @ [4,5];
+val it = [1,2,3,4,5] : int list
+
+######## c_003.sml
+    | [[1],[2,3],[]];
+val it = [[1],[2,3],[]] : int list list
+
+######## c_004.sml
+    | val e = [];
+val e = [] : 'a list
+
+######## c_005.sml
+    | [1, true];
+stdIn:7.1-7.10 Error: operator and operand don't agree [overload conflict]
+  operator domain: [int ty] * [int ty] list
+  operand:         [int ty] * bool list
+  in expression:
+    1 :: true :: nil
+
+######## c_006.sml
+    | 1 :: 2;
+stdIn:7.1-7.7 Error: operator and operand don't agree [overload conflict]
+  operator domain: [int ty] * [int ty] list
+  operand:         [int ty] * [int ty]
+  in expression:
+    1 :: 2
+
+######## c_007.sml
+    | [1,2] = [1,2];
+val it = true : bool
+
+######## c_008.sml
+    | [1,2] <> [1,3];
+val it = true : bool
+
+######## c_009.sml
+    | (fn x => x) = (fn x => x);
+stdIn:9.1-9.26 Error: operator and operand don't agree [equality type required]
+  operator domain: ''Z * ''Z
+  operand:         ('Y -> 'Y) * ('X -> 'X)
+  in expression:
+    (fn x => x) = (fn x => x)
+
+######## c_010.sml
+    | [(fn x => x)] = [(fn x => x)];
+stdIn:9.1-9.30 Error: operator and operand don't agree [equality type required]
+  operator domain: ''Z * ''Z
+  operand:         ('Y -> 'Y) list * ('X -> 'X) list
+  in expression:
+    (fn x => x) :: nil = (fn x => x) :: nil
+
+######## c_011.sml
+    | fun len [] = 0 | len (_ :: t) = 1 + len t;
+val len = fn : 'a list -> int
+
+######## c_012.sml
+    | len [5,6,7];
+val it = 3 : int
+
+######## c_013.sml
+    | fun second (_ :: y :: _) = y | second _ = 0;
+val second = fn : int list -> int
+
+######## c_014.sml
+    | second [1,2,3];
+val it = 2 : int
+
+######## c_015.sml
+    | second [1];
+val it = 0 : int
+
+######## c_016.sml
+    | fun only [x] = x;
+stdIn:14.5-14.17 Warning: match nonexhaustive
+          x :: nil => ...
+  
+val only = fn : 'a list -> 'a
+
+######## c_017.sml
+    | only [4];
+val it = 4 : int
+
+######## c_018.sml
+    | only [4,5];
+
+uncaught exception Match [nonexhaustive match failure]
+  raised at: stdIn:13.17
+
+######## c_019.sml
+    | fun r [] = 0 | r _ = 1 | r (x :: xs) = 2;
+stdIn:16.5-16.41 Error: match redundant
+          nil => ...
+          _ => ...
+    -->   x :: xs => ...
+  
+
+######## c_020.sml
+    | fun nested [[x]] = x | nested _ = 0;
+val nested = fn : int list list -> int
+
+######## c_021.sml
+    | nested [[9]];
+val it = 9 : int
+
+######## c_022.sml
+    | val (a :: b) = [1,2,3];
+val a = 1 : int
+val b = [2,3] : int list
+
+######## c_023.sml
+    | hd [7,8];
+val it = 7 : int
+
+######## c_024.sml
+    | tl [7,8];
+val it = [8] : int list
+
+######## c_025.sml
+    | hd [];
+stdIn:21.1-21.6 Warning: type vars not generalized because of
+   value restriction are instantiated to dummy types (X1,X2,...)
+
+uncaught exception Empty
+  raised at: smlnj/init/pervasive.sml:209.19-209.24
+
+######## c_026.sml
+    | tl [];
+stdIn:21.1-21.6 Warning: type vars not generalized because of
+   value restriction are instantiated to dummy types (X1,X2,...)
+
+uncaught exception Empty
+  raised at: smlnj/init/pervasive.sml:211.19-211.24
+
+######## c_027.sml
+    | (hd [] handle Empty => 0);
+val it = 0 : int
+
+######## c_028.sml
+    | null [];
+val it = true : bool
+
+######## c_029.sml
+    | null [1];
+val it = false : bool
+
+######## c_030.sml
+    | length [1,2,3,4];
+val it = 4 : int
+
+######## c_031.sml
+    | rev [1,2,3];
+val it = [3,2,1] : int list
+
+######## c_032.sml
+    | rev "abc";
+stdIn:26.1-26.10 Error: operator and operand don't agree [tycon mismatch]
+  operator domain: 'Z list
+  operand:         string
+  in expression:
+    rev "abc"
+
+######## c_033.sml
+    | map (fn x => x + 1) [1,2,3];
+val it = [2,3,4] : int list
+
+######## c_034.sml
+    | map (fn x => (x, x)) ["a","b"];
+val it = [("a","a"),("b","b")] : (string * string) list
+
+######## c_035.sml
+    | val s = "hello";
+val s = "hello" : string
+
+######## c_036.sml
+    | size s;
+val it = 5 : int
+
+######## c_037.sml
+    | s ^ " world";
+val it = "hello world" : string
+
+######## c_038.sml
+    | "a" ^ 5;
+stdIn:31.1-31.8 Error: operator and operand don't agree [overload conflict]
+  operator domain: string * string
+  operand:         string * [int ty]
+  in expression:
+    "a" ^ 5
+
+######## c_039.sml
+    | "a" = "a";
+val it = true : bool
+
+######## c_040.sml
+    | "a" <> "b";
+val it = true : bool
+
+######## c_041.sml
+    | "tab\there";
+val it = "tab\there" : string
+
+######## c_042.sml
+    | "quote\"back\\slash";
+val it = "quote\"back\\slash" : string
+
+######## c_043.sml
+    | "line\nbreak";
+val it = "line\nbreak" : string
+
+######## c_044.sml
+    | "\065\066";
+val it = "AB" : string
+
+######## c_045.sml
+    | "ctl\001end";
+val it = "ctl\^Aend" : string
+
+######## c_046.sml
+    | "hi\200there";
+val it = "hi\200there" : string
+
+######## c_047.sml
+    | #"a";
+val it = #"a" : char
+
+######## c_048.sml
+    | #"\n";
+val it = #"\n" : char
+
+######## c_049.sml
+    | #"a" = #"a";
+val it = true : bool
+
+######## c_050.sml
+    | ord #"a";
+val it = 97 : int
+
+######## c_051.sml
+    | chr 98;
+val it = #"b" : char
+
+######## c_052.sml
+    | chr ~1;
+
+uncaught exception Chr
+  raised at: smlnj/init/built-in.sml:360.17-360.20
+
+######## c_053.sml
+    | str #"z";
+val it = "z" : string
+
+######## c_054.sml
+    | explode "abc";
+val it = [#"a",#"b",#"c"] : char list
+
+######## c_055.sml
+    | implode [#"x", #"y", #"z"];
+val it = "xyz" : string
+
+######## c_056.sml
+    | concat ["ab", "cd", "ef"];
+val it = "abcdef" : string
+
+######## c_057.sml
+    | concat [];
+val it = "" : string
+
+######## c_058.sml
+    | fun greet "bob" = 1 | greet "ann" = 2 | greet _ = 0;
+val greet = fn : string -> int
+
+######## c_059.sml
+    | greet "ann";
+val it = 2 : int
+
+######## c_060.sml
+    | fun vowel #"a" = true | vowel #"e" = true | vowel _ = false;
+val vowel = fn : char -> bool
+
+######## c_061.sml
+    | vowel #"e";
+val it = true : bool
+
+######## c_062.sml
+    | SOME 3;
+val it = SOME 3 : int option
+
+######## c_063.sml
+    | NONE;
+val it = NONE : 'a option
+
+######## c_064.sml
+    | [SOME 1, NONE, SOME 3];
+val it = [SOME 1,NONE,SOME 3] : int option list
+
+######## c_065.sml
+    | valOf (SOME 2);
+val it = 2 : int
+
+######## c_066.sml
+    | valOf NONE;
+stdIn:57.1-57.11 Warning: type vars not generalized because of
+   value restriction are instantiated to dummy types (X1,X2,...)
+
+uncaught exception Option
+  raised at: smlnj/init/pre-perv.sml:21.28-21.34
+
+######## c_067.sml
+    | isSome (SOME 1);
+val it = true : bool
+
+######## c_068.sml
+    | isSome NONE;
+val it = false : bool
+
+######## c_069.sml
+    | fun opt (SOME x) = x | opt NONE = 0;
+val opt = fn : int option -> int
+
+######## c_070.sml
+    | fun opt2 (SOME x) = x;
+stdIn:60.5-60.22 Warning: match nonexhaustive
+          SOME x => ...
+  
+val opt2 = fn : 'a option -> 'a
+
+######## c_071.sml
+    | Int.toString 42;
+[autoloading]
+[library $SMLNJ-BASIS/basis.cm is stable]
+[library $SMLNJ-BASIS/(basis.cm):basis-common.cm is stable]
+[autoloading done]
+val it = "42" : string
+
+######## c_072.sml
+    | Int.toString ~7;
+val it = "~7" : string
+
+######## c_073.sml
+    | print "hello\n";
+hello
+val it = () : unit
+
+######## c_074.sml
+    | print (Int.toString 5 ^ "\n");
+5
+val it = () : unit
+
+######## c_075.sml
+    | (print "a"; print "b"; 3);
+abval it = 3 : int
+
+######## c_076.sml
+    | print 5;
+stdIn:66.1-66.8 Error: operator and operand don't agree [overload conflict]
+  operator domain: string
+  operand:         [int ty]
+  in expression:
+    print 5
+
+######## c_077.sml
+    | datatype 'a list = Empty | Cons of 'a * 'a list;
+datatype 'a list = Cons of 'a * 'a list | Empty
+
+######## c_078.sml
+    | Cons(1, Cons(2, Empty));
+val it = Cons (1,Cons (2,Empty)) : int list
+
+######## c_079.sml
+    | fun clen Empty = 0 | clen (Cons(_, t)) = 1 + clen t;
+val clen = fn : 'a list -> int
+
+######## c_080.sml
+    | clen (Cons(1, Cons(2, Empty)));
+val it = 2 : int
+
+######## c_081.sml
+    | [1,2,3];
+val it = [1,2,3] : int ?.list
+
+######## c_082.sml
+    | clen [1,2,3];
+stdIn:71.1-71.13 Error: operator and operand don't agree [tycon mismatch]
+  operator domain: 'Z list
+  operand:         [int ty] ?.list
+  in expression:
+    clen (1 :: 2 :: 3 :: nil)
+
+######## c_083.sml
+    | datatype shape = Circle of int | Poly of int list;
+datatype shape = Circle of int | Poly of int list
+
+######## c_084.sml
+    | Poly [1,2,3];
+stdIn:72.1-72.13 Error: operator and operand don't agree [tycon mismatch]
+  operator domain: int list
+  operand:         [int ty] ?.list
+  in expression:
+    Poly (1 :: 2 :: 3 :: nil)
+
+######## c_085.sml
+    | Poly [];
+stdIn:72.1-72.8 Error: operator and operand don't agree [tycon mismatch]
+  operator domain: int list
+  operand:         'Z ?.list
+  in expression:
+    Poly nil
+
+######## c_086.sml
+    | fun pair_up x = [x, x];
+val pair_up = fn : 'a -> 'a ?.list
+
+######## c_087.sml
+    | fun flat [] = [] | flat (x :: xs) = x @ flat xs;
+val flat = fn : 'a ?.list ?.list -> 'a ?.list
+
+######## c_088.sml
+    | flat [[1],[2,3],[4]];
+val it = [1,2,3,4] : int ?.list
+
+######## c_089.sml
+    | val big = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25];
+val big = [1,2,3,4,5,6,7,8,9,10,11,12,...] : int ?.list
+
+######## c_090.sml
+    | "a" < "b";
+val it = true : bool
+
+######## c_091.sml
+    | 1 :: [] :: [];
+stdIn:77.1-77.14 Error: operator and operand don't agree [overload conflict]
+  operator domain: [int ty] * [int ty] ?.list
+  operand:         [int ty] * 'Z ?.list ?.list
+  in expression:
+    1 :: nil :: nil
+
+######## c_092.sml
+    | op ::;
+val it = fn : 'a * 'a ?.list -> 'a ?.list
+
+######## c_093.sml
+    | map (op ::) [(1, []), (2, [3])];
+val it = [[1],[2,3]] : int ?.list ?.list
+
+######## c_094.sml
+    | [1,2] @ 3;
+stdIn:79.1-79.10 Error: operator and operand don't agree [overload conflict]
+  operator domain: [int ty] ?.list * [int ty] ?.list
+  operand:         [int ty] ?.list * [int ty]
+  in expression:
+    (1 :: 2 :: nil) @ 3
+
+######## c_095.sml
+    | fun cmp (a, b) = a = b;
+stdIn:79.20 Warning: calling polyEqual
+val cmp = fn : ''a * ''a -> bool
+
+######## c_096.sml
+    | cmp ([1], [1]);
+val it = true : bool
+

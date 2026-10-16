@@ -1,7 +1,8 @@
 // Semantic types (MLspec.md section 6.3) and the static environment.
 //
 //   TVar    a unification variable: mutable `ref` (null while unbound), a `level` for let-generalisation, an `eq`
-//           flag (''a), `rigid` (a type variable written in an annotation: it unifies with nothing but itself, as
+//           flag (''a), an `ord` flag (the variable of an overloaded comparison: it can only become int, string or char,
+//           and defaults to int if nothing else decides; see `ORDERED`), `rigid` (a type variable written in an annotation: it unifies with nothing but itself, as
 //           SML/NJ treats it), and `generic` (quantified: a scheme's own variables; `instantiate` replaces them).
 //   TCon    {tag:'con', name: TyName, args}      a type name applied to its arguments
 //   TFn     {tag:'fn', from, to}
@@ -22,6 +23,7 @@ export class TVar {
     this.ref = null;
     this.level = level;
     this.eq = eq;
+    this.ord = false;
     this.rigid = false;
     this.generic = false;
     this.name = null; // source name, for rigid variables written in an annotation
@@ -62,10 +64,27 @@ export const EXN = new TyName('exn', 0, false);
 export const BOOL = new TyName('bool', 0, true);
 BOOL.isDatatype = true;
 
+// Phase 5a: string and char (equality types), and the two built-in datatypes, `'a list` and `'a option`. Their constructors are
+// filled in by basis.js (once per process, like bool's), so a value built by the machine and a pattern written by a program
+// always share the same ConInfos.
+export const STRING = new TyName('string', 0, true);
+export const CHAR = new TyName('char', 0, true);
+export const LIST = new TyName('list', 1, true);
+LIST.isDatatype = true;
+export const OPTION = new TyName('option', 1, true);
+OPTION.isDatatype = true;
+
+// The types `<`, `>`, `<=` and `>=` work on (SML overloads them on real and word too; there are none here).
+export const ORDERED = new Set([INT, STRING, CHAR]);
+
 export const tInt = tcon(INT);
 export const tBool = tcon(BOOL);
 export const tExn = tcon(EXN);
 export const tUnit = ttuple([]);
+export const tString = tcon(STRING);
+export const tChar = tcon(CHAR);
+export const tList = (t) => tcon(LIST, [t]);
+export const tOption = (t) => tcon(OPTION, [t]);
 
 // ---- inspecting types ----------------------------------------------------------------------------------------
 
@@ -117,7 +136,11 @@ export function freeVars(t, out = []) {
 export function generalize(t, level) {
   t = prune(t);
   switch (t.tag) {
-    case 'var': if (t.level > level) t.generic = true; break;
+    case 'var':
+      // (an overloaded comparison's variable is never quantified: it stays with the enclosing declaration until it is decided
+      // or, at the top level, defaulted to int)
+      if (t.level > level) { if (t.ord) t.level = level; else t.generic = true; }
+      break;
     case 'fn': generalize(t.from, level); generalize(t.to, level); break;
     case 'tuple': t.items.forEach((x) => generalize(x, level)); break;
     case 'con': t.args.forEach((x) => generalize(x, level)); break;
@@ -133,7 +156,7 @@ export function instantiate(t, level, map = new Map()) {
     case 'var': {
       if (!t.generic) return t;
       let v = map.get(t);
-      if (!v) { v = new TVar(level, t.eq); map.set(t, v); }
+      if (!v) { v = new TVar(level, t.eq); v.ord = t.ord; map.set(t, v); }
       return v;
     }
     case 'fn': {

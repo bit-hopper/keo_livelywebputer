@@ -11,7 +11,7 @@
 //   {kind:'warning', text, line, col}          non-exhaustive match (and a redundant one when the page demotes it)
 //   {kind:'error', errorClass, text, line, col}
 //   {kind:'status', text, tone}                verdicts, `Stopped`, `(output truncated)`; tone: ok | note | bad
-//   (kind 'stdout' arrives with `print`)
+//   {kind:'stdout', text}                      what `print` wrote (consecutive writes are one segment)
 // Job states: running | done | error | stopped.
 import { MLError } from './errors.js';
 import { Parser } from './parser.js';
@@ -21,7 +21,7 @@ import { makeBasis } from './basis.js';
 import { checkMatchSites } from './patterns.js';
 import { ItemRun, makeGlobals } from './machine.js';
 import { prune, typeToString } from './types.js';
-import { showValue, echoText, DEFAULT_DEPTH } from './printer.js';
+import { showValue, echoText, DEFAULT_DEPTH, DEFAULT_LENGTH } from './printer.js';
 
 const OUTPUT_CAP = 1000000;
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -51,12 +51,29 @@ function alphaEqual(a, b) {
   return go(a, b);
 }
 
+// The part of the basis that is ML source, because a JavaScript primitive cannot apply a closure (map) and these are three lines
+// each. Run once, silently, into every interpreter that has the lists-and-strings basis; a program may redefine any of them.
+const PRELUDE = `
+fun map f nil = nil
+  | map f (x :: xs) = f x :: map f xs;
+fun isSome NONE = false | isSome (SOME _) = true;
+fun valOf (SOME x) = x | valOf NONE = raise Option;
+`;
+
 export class Interpreter {
+  // settings: style 'book' | 'sml', depth, length, verdicts, redundant (the pragmas of MLspec.md section 5.9), and
+  // basis 'full' (the default: lists, strings, print and the rest of makeBasis) | 'core' (only what chapters 1-10 of the
+  // book use, the engine as it was before the lists phase).
   constructor(settings = {}) {
-    this.settings = { style: 'book', depth: DEFAULT_DEPTH, verdicts: true, redundant: 'error', ...settings };
-    this.scope = makeBasis().child();
+    this.settings = { style: 'book', depth: DEFAULT_DEPTH, length: DEFAULT_LENGTH, verdicts: true, redundant: 'error', basis: 'full', ...settings };
+    const full = this.settings.basis !== 'core';
+    this.scope = makeBasis({ lists: full }).child();
     this.globals = makeGlobals();
     this.elaborator = new Elaborator({ style: this.settings.style });
+    if (full) {
+      const r = this.startRun(PRELUDE).runToCompletion();
+      if (r.state !== 'done') throw new Error('ML prelude failed: ' + JSON.stringify(r.segments));
+    }
   }
 
   startRun(source) { return new Job(this, source); }
@@ -97,14 +114,21 @@ export class Job {
   }
 
   push(seg) {
-    if (this.truncated) return;
+    if (this.truncated) {
+      // past the cap what grows without bound (printing, echo lines, warnings) is dropped, but the lines that say how the cell
+      // ended -- an error, `Stopped`, a verdict -- are small, bounded by the source, and must still get through
+      if (seg.kind === 'error' || seg.kind === 'status') this.segments.push(seg);
+      return;
+    }
     this.emitted += (seg.text || '').length;
     if (this.emitted > OUTPUT_CAP) {
       this.truncated = true;
       this.segments.push({ kind: 'status', text: '(output truncated)', tone: 'note' });
       return;
     }
-    this.segments.push(seg);
+    const last = this.segments[this.segments.length - 1];
+    if (seg.kind === 'stdout' && last && last.kind === 'stdout') last.text += seg.text; // (a print loop is one segment, not a million)
+    else this.segments.push(seg);
   }
 
   fail(e) {
@@ -155,7 +179,8 @@ export class Job {
       });
       if (checked.error) throw checked.error;
       for (const w of checked.warnings) this.push({ kind: 'warning', text: w.message, line: w.line, col: w.col });
-      this.cur = { item, elaborated, run: new ItemRun(elaborated.ir, interp.globals) };
+      const out = (text) => this.push({ kind: 'stdout', text });
+      this.cur = { item, elaborated, run: new ItemRun(elaborated.ir, interp.globals, { out }) };
       if (this.interruptFlag) this.cur.run.interrupt();
     } catch (e) {
       if (e.errorClass === undefined) throw e;
@@ -173,6 +198,11 @@ export class Job {
       case 'depth': {
         const n = Number(v);
         if (Number.isInteger(n) && n > 0) s.depth = n; else this.push({ kind: 'warning', text: 'depth is a positive integer, not ' + v });
+        break;
+      }
+      case 'length': {
+        const n = Number(v);
+        if (Number.isInteger(n) && n > 0) s.length = n; else this.push({ kind: 'warning', text: 'length is a positive integer, not ' + v });
         break;
       }
       case 'verdicts':
@@ -240,11 +270,13 @@ export class Job {
       run.commit();
       elaborated.scope.mergeInto(interp.scope);
       const valueOf = (name) => interp.globals.get(name).value;
-      for (const entry of elaborated.echo) this.push({ kind: 'value', text: echoText(entry, valueOf, interp.settings.style, interp.settings.depth) });
+      for (const entry of elaborated.echo) this.push({ kind: 'value', text: echoText(entry, valueOf, interp.settings.style, interp.settings.depth, interp.settings.length) });
       return;
     }
     if (st === 'raised') {
-      this.push({ kind: 'error', errorClass: 'exception', text: 'uncaught exception ' + showValue(run.exn, interp.settings.style, interp.settings.depth) });
+      this.push({ kind: 'error', errorClass: 'exception', text: 'uncaught exception ' + showValue(run.exn, interp.settings.style, interp.settings.depth, interp.settings.length) });
+    } else if (run.limitReason === 'memory') {
+      this.push({ kind: 'error', errorClass: 'limit', text: 'a string or a list grew past what this page can hold, so this has no value' });
     } else {
       this.push({ kind: 'error', errorClass: 'limit', text: 'the recursion went too deep (more than ' + run.maxDepth + ' frames), so this has no value' });
     }

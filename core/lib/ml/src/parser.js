@@ -15,9 +15,10 @@
 //           exception{binds:[{name,ty}]}  local{head,body}  signature{binds:[{name,sig}]}
 //           structure{binds:[{name,ascription,body}]}  functor{name,param,ascription,body}
 //           expstmt{exp}  pragma{name,value}  bad{error}
-//   exps    int{value} var{name,qual} tuple{items} app{fn,arg,infix?} typed{exp,ty} andalso/orelse{left,right}
+//   exps    int{value} string{value} char{value} list{items} var{name,qual} tuple{items} app{fn,arg,infix?} typed{exp,ty} andalso/orelse{left,right}
 //           if{cond,then,else} case{exp,match} fn{match} let{decs,body} seq{exps} raise{exp} handle{exp,match}
-//   pats    wild  pint{value} pid{name,qual} pcon{con,arg} ptuple{items} ptyped{pat,ty}
+//   pats    wild  pint{value} pstring{value} pchar{value} plist{items} pid{name,qual} pcon{con,arg} ptuple{items} ptyped{pat,ty}
+//           (p :: q is pcon{con: pid '::' basis, arg: ptuple[p, q]}; x :: y in an expression is app{fn: var '::' basis})
 //   types   tyvar{name,eq} tycon{name,qual,args} ttuple{items} arrow{from,to}
 //   sigexp  sig{specs} sigid{name} where{sig,tyvars,tycon,ty}
 //   specs   sigtype{tyvars,name} sigval{name,ty} sigexn{name,ty} sigstruct{name,sig} sharing{tycons}
@@ -28,9 +29,11 @@ import { MLError, syntaxError, ungrammatical } from './errors.js';
 
 const INFIX = {
   '*': 7, div: 7, mod: 7,
-  '+': 6, '-': 6,
+  '+': 6, '-': 6, '^': 6,
+  '::': 5, '@': 5,
   '=': 4, '<>': 4, '<': 4, '>': 4, '<=': 4, '>=': 4,
 };
+const RIGHT_ASSOC = new Set(['::', '@']);
 
 const DEC_STARTERS = new Set([
   'val', 'fun', 'datatype', 'type', 'exception', 'local', 'signature', 'structure', 'functor',
@@ -79,6 +82,8 @@ export class Parser {
     if (t.type === 'eof') return 'the end of the program';
     if (t.type === 'int') return 'the number ' + t.text;
     if (t.type === 'pragma') return 'a pragma';
+    if (t.type === 'string') return 'the string ' + JSON.stringify(t.value);
+    if (t.type === 'char') return 'the character #' + JSON.stringify(t.value);
     return "'" + (t.type === 'id' && t.qual ? t.qual.join('.') + '.' : '') + t.value + "'";
   }
 
@@ -95,9 +100,8 @@ export class Parser {
       }[t.value];
       if (why) throw syntaxError(why + ' not part of the core the book uses', t);
     }
-    if (t.type === 'op' && (t.value === '[' || t.value === ']')) throw syntaxError('lists are not part of the core the book uses (yet)', t);
     if (t.type === 'op' && (t.value === '{' || t.value === '}' || t.value === '#')) throw syntaxError('records are not part of the core the book uses', t);
-    if (t.type === 'sym' && ['::', '@', '^', ':='].includes(t.value)) throw syntaxError('the operator ' + t.value + ' is not part of the core the book uses', t);
+    if (t.type === 'sym' && t.value === ':=') throw syntaxError('the operator := is not part of the core the book uses (there are no references)', t);
     throw syntaxError('unexpected ' + this.describe(t) + (expecting ? '; expected ' + expecting : ''), t);
   }
 
@@ -581,19 +585,19 @@ export class Parser {
       const op = this.peekInfix();
       if (!op || op.prec < minPrec) return left;
       const opTok = this.take();
-      const right = this.parseInfix(op.prec + 1);
-      const fn = { kind: 'var', name: op.name, qual: null, loc: { line: opTok.line, col: opTok.col, start: opTok.start, end: opTok.end } };
+      const right = this.parseInfix(RIGHT_ASSOC.has(op.name) ? op.prec : op.prec + 1);
+      const fn = { kind: 'var', name: op.name, qual: null, basis: op.name === '::', loc: { line: opTok.line, col: opTok.col, start: opTok.start, end: opTok.end } };
       const arg = { kind: 'tuple', items: [left, right], loc: { line: from.line, col: from.col, start: from.start, end: this.prevEnd } };
       left = this.mk('app', from, { fn, arg, infix: true });
     }
   }
 
   startsAtexp(t) {
-    if (t.type === 'int') return true;
+    if (t.type === 'int' || t.type === 'string' || t.type === 'char') return true;
     if (t.type === 'id') return t.qual || (t.value !== 'div' && t.value !== 'mod');
     if (t.type === 'sym') return t.value === '~';
     if (t.type === 'kw') return t.value === 'op' || t.value === 'let';
-    return t.type === 'op' && t.value === '(';
+    return t.type === 'op' && (t.value === '(' || t.value === '[');
   }
 
   parseApp() {
@@ -609,6 +613,17 @@ export class Parser {
   parseAtexp() {
     const t = this.peek();
     if (t.type === 'int') { this.take(); return this.mk('int', t, { value: t.value }); }
+    if (t.type === 'string') { this.take(); return this.mk('string', t, { value: t.value }); }
+    if (t.type === 'char') { this.take(); return this.mk('char', t, { value: t.value }); }
+    if (this.isOp(t, '[')) {
+      this.take();
+      const items = [];
+      if (!this.acceptOp(']')) {
+        do items.push(this.parseExp()); while (this.acceptOp(','));
+        this.expectOp(']', "',' or ']'");
+      }
+      return this.mk('list', t, { items });
+    }
     if (t.type === 'id') { this.take(); return this.mk('var', t, { name: t.value, qual: t.qual }); }
     if (t.type === 'sym' && t.value === '~') { this.take(); return this.mk('var', t, { name: '~', qual: null }); }
     if (this.isKw(t, 'op')) {
@@ -664,11 +679,22 @@ export class Parser {
   // ---- patterns -----------------------------------------------------------------------------------
 
   startsAtpat(t) {
-    if (t.type === 'int' || t.type === 'id') return true;
-    return t.type === 'op' && (t.value === '_' || t.value === '(');
+    if (t.type === 'int' || t.type === 'id' || t.type === 'string' || t.type === 'char') return true;
+    return t.type === 'op' && (t.value === '_' || t.value === '(' || t.value === '[');
   }
 
   parsePat() {
+    const from = this.peek();
+    let p = this.parseConsPat();
+    while (this.atOp(':')) {
+      this.take();
+      p = this.mk('ptyped', from, { pat: p, ty: this.parseType() });
+    }
+    return p;
+  }
+
+  // pat :: pat (right associative), over constructor applications and atomic patterns
+  parseConsPat() {
     const from = this.peek();
     let p;
     // longcon atpat: an identifier applied to a pattern. Whether it is a constructor is decided by the checker.
@@ -680,9 +706,12 @@ export class Parser {
     } else {
       p = this.parseAtpat();
     }
-    while (this.atOp(':')) {
+    const nx = this.peek();
+    if (nx.type === 'sym' && nx.value === '::') {
       this.take();
-      p = this.mk('ptyped', from, { pat: p, ty: this.parseType() });
+      const rest = this.parseConsPat();
+      const con = { kind: 'pid', name: '::', qual: null, basis: true, loc: { line: nx.line, col: nx.col, start: nx.start, end: nx.end } };
+      p = this.mk('pcon', from, { con, arg: this.mk('ptuple', from, { items: [p, rest] }) });
     }
     return p;
   }
@@ -691,6 +720,17 @@ export class Parser {
     const t = this.peek();
     if (this.isOp(t, '_')) { this.take(); return this.mk('wild', t, {}); }
     if (t.type === 'int') { this.take(); return this.mk('pint', t, { value: t.value }); }
+    if (t.type === 'string') { this.take(); return this.mk('pstring', t, { value: t.value }); }
+    if (t.type === 'char') { this.take(); return this.mk('pchar', t, { value: t.value }); }
+    if (this.isOp(t, '[')) {
+      this.take();
+      const items = [];
+      if (!this.acceptOp(']')) {
+        do items.push(this.parsePat()); while (this.acceptOp(','));
+        this.expectOp(']', "',' or ']'");
+      }
+      return this.mk('plist', t, { items });
+    }
     if (t.type === 'id') { this.take(); return this.mk('pid', t, { name: t.value, qual: t.qual }); }
     if (this.isOp(t, '(')) {
       this.take();

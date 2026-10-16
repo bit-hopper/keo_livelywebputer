@@ -4,7 +4,7 @@
 //
 // Input is `Elaborator#elaborateItem(...).matchSites`, a list of {kind:'fn'|'handle'|'val', origin, loc, ruleLocs, ty, rules}
 // whose rules are pattern IR: {p:'wild'} {p:'var'} {p:'int', value} {p:'con', con, arg|null} {p:'exn', name, arg|null}
-// {p:'tuple', items}.
+// {p:'tuple', items}.  (str and chr constants, like int ones, form an infinite signature.)
 //
 //   - a rule that no value can reach is REDUNDANT: an error of class 'redundant' (SML/NJ rejects it too), or a warning
 //     when `redundantAsWarning` is set (MLspec.md decision B);
@@ -27,6 +27,8 @@ function head(p) {
   switch (p.p) {
     case 'wild': case 'var': return null;
     case 'int': return { key: 'i' + p.value, kind: 'int', arity: 0, sig: null, value: p.value };
+    case 'str': return { key: 's' + p.value, kind: 'str', arity: 0, sig: null, value: p.value };
+    case 'chr': return { key: 'h' + p.value, kind: 'chr', arity: 0, sig: null, value: p.value };
     case 'con': return {
       key: 'c' + p.con.index, kind: 'con', arity: p.arg ? 1 : 0, sig: p.con.tyname.cons.length, name: p.con.name, tyname: p.con.tyname,
     };
@@ -91,7 +93,7 @@ function useful(rows, q) {
 
 function build(h, subs) {
   switch (h.kind) {
-    case 'int': return { k: 'int', value: h.value };
+    case 'int': case 'str': case 'chr': return { k: h.kind, value: h.value };
     case 'tuple': return { k: 'tuple', items: subs };
     default: return { k: 'con', name: h.name, args: subs };
   }
@@ -143,10 +145,16 @@ export function showWitness(w, style = 'book') {
   switch (w.k) {
     case 'wild': return '_';
     case 'int': return w.value < 0 ? '~' + (-w.value) : String(w.value);
+    case 'str': return JSON.stringify(w.value);
+    case 'chr': return '#' + JSON.stringify(w.value);
     case 'tuple': return '(' + w.items.map((x) => showWitness(x, style)).join(',') + ')';
     case 'con': {
-      if (w.args.length === 0) return w.name;
+      if (w.args.length === 0) return w.name === 'nil' ? '[]' : w.name;
       const arg = w.args[0];
+      if (w.name === '::' && arg.k === 'tuple' && arg.items.length === 2) { // a list reads  x :: rest
+        const side = (x) => (x.k === 'con' && x.name === '::' && x.args.length ? '(' + showWitness(x, style) + ')' : showWitness(x, style));
+        return side(arg.items[0]) + ' :: ' + showWitness(arg.items[1], style);
+      }
       if (style === 'book') return arg.k === 'tuple' ? w.name + showWitness(arg, style) : w.name + '(' + showWitness(arg, style) + ')';
       const atomic = arg.k === 'wild' || arg.k === 'tuple' || arg.k === 'int' || (arg.k === 'con' && arg.args.length === 0);
       return w.name + ' ' + (atomic ? showWitness(arg, style) : '(' + showWitness(arg, style) + ')');

@@ -36,8 +36,9 @@ function smlnjVals(block) {
 const normal = (s) => s.replace(/\s+/g, ' ').trim();
 
 // Chunks we decide differently on purpose (same list as infer-differential.test.js, plus what only evaluation shows).
+const LISTS = /^val big = \[|^fun subst_c|^val w = \[\]|^\(subst_c/; // legal with the lists basis only; the rest runs in both modes
 const KNOWN = [
-  [/^val big = \[|^fun subst_c|^val w = \[\]|^Compiler\.Control|^\(subst_c/, 'lists and := are out of the core (until the list phase)'],
+  [/^Compiler\.Control/, ':= and the SML/NJ compiler structures are not part of the engine'],
   [/^4611686018427387903 \+ 1;|^fact\(25\)|^val fact25/, 'our int is 63-bit, SML/NJ here is 31-bit (recorded deviation)'],
 ];
 
@@ -60,14 +61,14 @@ function restore(interp, s) {
   interp.globals = new Map(s.globals);
 }
 
-test('seed corpora: values, exceptions and accept/reject agree with SML/NJ', { skip: !have && 'tests/ml/seed is not present' }, () => {
+for (const basis of ['full', 'core']) test('seed corpora (' + basis + ' basis): values, exceptions and accept/reject agree with SML/NJ', { skip: !have && 'tests/ml/seed is not present' }, () => {
   const mismatches = [];
   let compared = 0;
   for (const f of files) {
     const cs = chunks(fs.readFileSync(path.join(seed, f + '.sml'), 'utf8'));
     const blocks = outputBlocks(fs.readFileSync(path.join(seed, f + '.smlnj-output.txt'), 'utf8'));
     assert.equal(cs.length, blocks.length);
-    const interp = new Interpreter({ style: 'sml', redundant: 'error' });
+    const interp = new Interpreter({ style: 'sml', redundant: 'error', basis });
     cs.forEach((chunk, i) => {
       const block = blocks[i];
       const tag = f + '#' + i + ' ' + chunk.slice(0, 50).replace(/\s+/g, ' ');
@@ -78,7 +79,7 @@ test('seed corpora: values, exceptions and accept/reject agree with SML/NJ', { s
       const ourErr = r.segments.find((s) => s.kind === 'error');
       const failed = !!ourErr || r.segments.some((s) => s.kind === 'status' && s.tone === 'bad');
       if (ourErr || theirErr || theirExn) restore(interp, before);
-      if (KNOWN.some(([re]) => re.test(chunk))) { restore(interp, before); return; }
+      if (KNOWN.some(([re]) => re.test(chunk)) || (basis === 'core' && LISTS.test(chunk))) { restore(interp, before); return; }
       if (theirErr && !failed) { mismatches.push(tag + ' => SML/NJ rejects, we accept'); return; }
       if (!theirErr && ourErr && !(theirExn && ourErr.errorClass === 'exception')) {
         mismatches.push(tag + ' => SML/NJ accepts, we fail: ' + ourErr.errorClass + ': ' + ourErr.text);

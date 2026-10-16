@@ -12,9 +12,9 @@
 //   r.matchSites  every match, for the pattern checker: {kind:'fn'|'handle'|'val', origin, loc, ruleLocs, ty, rules:[patIR]}
 //
 // IR. Expressions: {op:'const', value} {op:'var', name} {op:'con', con} {op:'conapp', con, arg} {op:'prim', name}
-//   {op:'tuple', items} {op:'app', fn, arg} {op:'if', cond, then, else} {op:'fn', rules:[{pat, body}], origin}
+//   {op:'list', items} (a list literal [a, b, c])  {op:'tuple', items} {op:'app', fn, arg} {op:'if', cond, then, else} {op:'fn', rules:[{pat, body}], origin}
 //   {op:'let', decs, body} {op:'raise', exp} {op:'handle', exp, rules}
-// Patterns: {p:'wild'} {p:'var', name} {p:'int', value} {p:'con', con, arg|null} {p:'exn', name, arg|null}
+// Patterns: {p:'wild'} {p:'var', name} {p:'int', value} {p:'str', value} {p:'chr', value} {p:'con', con, arg|null} {p:'exn', name, arg|null}
 //   {p:'tuple', items}.   (Exception constructors are run-time values, found by name; datatype constructors are
 //   resolved here to their ConInfo.)
 // Declarations: {d:'val', binds:[{pat, exp}], recs:[{name, exp}]} (binds' expressions run in the old environment, recs'
@@ -23,9 +23,11 @@
 import { MLError, ungrammatical } from './errors.js';
 import { unify, UnifyFailure } from './unify.js';
 import {
-  TVar, TyName, prune, tcon, tfn, ttuple, tInt, tBool, tExn,
-  generalize, instantiate, substitute, admitsEq, typeToString, tyNameText,
+  TVar, TyName, prune, tcon, tfn, ttuple, tInt, tBool, tExn, tString, tChar, tList,
+  generalize, instantiate, substitute, admitsEq, typeToString, tyNameText, freeVars,
 } from './types.js';
+import { hasListBasis, NIL_INFO, CONS_INFO } from './basis.js';
+import { charValue } from './values.js';
 import { moduleMethods, firstAbstract } from './modules.js';
 
 const nonsense = (message, where) => new MLError('nonsense', message, where && (where.loc || where));
@@ -83,15 +85,32 @@ export class Elaborator {
       if (e.reason === 'occurs') {
         throw nonsense('this would need a type that contains itself (a circular type), as in fn x => x x', node);
       }
+      if (e.reason === 'overload') {
+        throw nonsense('< > <= and >= compare an int, a string or a char, but here the operands would have type ' + this.show(e.a, names), node);
+      }
       if (e.reason === 'equality') {
         throw nonsense('equality is needed here, but ' + this.show(e.a, names) + ' does not admit equality (functions never do)', node);
       }
-      const message = describe(names);
+      let message = describe(names);
+      // two different types with one name (a datatype declared again hides the earlier one without replacing it): say so, since
+      // the two would otherwise print identically
+      const x = prune(e.a);
+      const y = prune(e.b);
+      if (x.tag === 'con' && y.tag === 'con' && x.name !== y.name && tyNameText(x.name) === tyNameText(y.name)) {
+        message += '; these are two different types that are both named ' + tyNameText(x.name) + ' (declaring a type again hides the earlier one, it does not replace it)';
+      }
       const hidden = firstAbstract(a) || firstAbstract(b);
       if (hidden) { // the clash involves a type some signature hides: the book's "signature nonsense"
         throw new MLError('signature', message + '; ' + tyNameText(hidden) + ' is an abstract type here, so what it is has been hidden', node.loc || node);
       }
       throw nonsense(message, node);
+    }
+  }
+
+  // List, string and char syntax needs the lists-and-strings basis (an interpreter can be started without it).
+  needBasis(node, what) {
+    if (!hasListBasis(this.scope.root())) {
+      throw nonsense(what + ' are not part of the core basis this interpreter was started with', node);
     }
   }
 
@@ -153,6 +172,20 @@ export class Elaborator {
     switch (p.kind) {
       case 'wild': return { ty: this.fresh(), ir: { p: 'wild' } };
       case 'pint': return { ty: tInt, ir: { p: 'int', value: p.value } };
+      case 'pstring': this.needBasis(p, 'strings'); return { ty: tString, ir: { p: 'str', value: p.value } };
+      case 'pchar': this.needBasis(p, 'characters'); return { ty: tChar, ir: { p: 'chr', value: p.value } };
+      case 'plist': {
+        this.needBasis(p, 'lists');
+        const elem = this.fresh();
+        const items = p.items.map((x, i) => {
+          const r = this.pat(x, vars);
+          this.unifyOr(r.ty, elem, x, (n) => 'the patterns of a list must all have the same type: this one has type ' + this.show(r.ty, n) + ', but the ones before it have type ' + this.show(elem, n));
+          return r;
+        });
+        let ir = { p: 'con', con: NIL_INFO, arg: null };
+        for (let i = items.length - 1; i >= 0; i--) ir = { p: 'con', con: CONS_INFO, arg: { p: 'tuple', items: [items[i].ir, ir] } };
+        return { ty: tList(elem), ir };
+      }
       case 'pid': {
         const info = p.forceVar ? null : this.lookupValue(p);
         if (info && (info.kind === 'con' || info.kind === 'exn')) {
@@ -199,6 +232,18 @@ export class Elaborator {
     switch (e.kind) {
       case 'int': return { ty: tInt, ir: { op: 'const', value: e.value } };
       case 'var': return this.varExp(e);
+      case 'string': this.needBasis(e, 'strings'); return { ty: tString, ir: { op: 'const', value: e.value } };
+      case 'char': this.needBasis(e, 'characters'); return { ty: tChar, ir: { op: 'const', value: charValue(e.value) } };
+      case 'list': {
+        this.needBasis(e, 'lists');
+        const elem = this.fresh();
+        const items = e.items.map((x) => {
+          const r = this.exp(x);
+          this.unifyOr(r.ty, elem, x, (n) => 'the elements of a list must all have the same type: this one has type ' + this.show(r.ty, n) + ', but the ones before it have type ' + this.show(elem, n));
+          return r.ir;
+        });
+        return { ty: tList(elem), ir: { op: 'list', items } };
+      }
       case 'tuple': {
         const items = e.items.map((x) => this.exp(x));
         return { ty: ttuple(items.map((i) => i.ty)), ir: { op: 'tuple', items: items.map((i) => i.ir) } };
@@ -283,7 +328,7 @@ export class Elaborator {
     switch (info.kind) {
       case 'var': case 'exn': return { ty, ir: e.qual ? { op: 'qvar', path: e.qual, name: e.name } : { op: 'var', name: e.name } };
       case 'con': return { ty, ir: { op: 'con', con: info } };
-      case 'prim': return { ty, ir: { op: 'prim', name: e.name } };
+      case 'prim': return { ty, ir: { op: 'prim', name: info.name } };
       default: throw new MLError('internal', 'varExp: ' + info.kind, e.loc);
     }
   }
@@ -372,6 +417,9 @@ export class Elaborator {
       this.level--;
       for (const info of infos) {
         for (const [name, v] of info.vars) {
+          // at the top level a comparison whose operands nothing has pinned down is on ints (the Definition's default); in a
+          // nested declaration it stays open for the enclosing one to decide
+          if (this.level === 0) for (const fv of freeVars(v.ty)) if (fv.ord && !fv.rigid) fv.ref = tInt;
           generalize(v.ty, this.level);
           this.scope.vals.set(name, { kind: 'var', scheme: v.ty });
           this.echo.push({ kind: 'val', name, type: v.ty, expStmt: !!expStmt });

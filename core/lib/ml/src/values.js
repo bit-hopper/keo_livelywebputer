@@ -3,6 +3,10 @@
 //   int         a JS number while it is a safe integer, otherwise a BigInt; always inside -2^62 .. 2^62-1, and always in
 //               the canonical form (so two equal ints are `===`)
 //   datatype    {tag:'con', con: ConInfo, arg}            arg is undefined for a nullary constructor (a shared singleton)
+//   string      a JS string
+//   char        {tag:'char', c}, interned by charValue (so two equal chars are `===`)
+//   list        an ordinary datatype value: nil is the singleton {tag:'con', con: NIL_INFO}, x :: xs is
+//               {tag:'con', con: CONS_INFO, arg: [x, xs]}
 //   tuple       a JS array; unit is the empty array
 //   functions   {tag:'closure', rules, env}  {tag:'confn', con}  {tag:'excon', ...}  {tag:'prim', name}
 //   exception   {tag:'exn', excon, arg}      `excon` is the identity: {tag:'excon', name, id, hasArg}; every evaluation of an
@@ -14,6 +18,16 @@ export const INT_MAX = (1n << 62n) - 1n;
 export function normInt(x) {
   if (typeof x === 'number') return Number.isSafeInteger(x) ? x : normInt(BigInt(x));
   return (x >= -9007199254740991n && x <= 9007199254740991n) ? Number(x) : x;
+}
+
+// SML writes a negative int with ~.
+export const intText = (x) => (x < 0 ? '~' + String(-x) : String(x));
+
+const chars = new Map();
+export function charValue(c) {
+  let v = chars.get(c);
+  if (!v) { v = { tag: 'char', c }; chars.set(c, v); }
+  return v;
 }
 
 export class Overflow extends Error {}
@@ -81,15 +95,16 @@ let nextExcon = 1;
 export const makeExcon = (name, hasArg) => ({ tag: 'excon', name, id: nextExcon++, hasArg });
 export const exnValue = (excon, arg) => ({ tag: 'exn', excon, arg });
 
-// The four exceptions of the initial basis. One identity each, shared by every interpreter in the process: the machine raises
-// these itself (Div, Overflow, Match, Bind), whatever a program later declares under the same name.
+// The exceptions of the initial basis. One identity each, shared by every interpreter in the process: the machine raises
+// these itself (Div, Overflow, Match, Bind; Empty, Option, Chr from the list, option and char primitives), whatever a program
+// later declares under the same name.
 export const BUILTIN_EXN = {};
-for (const name of ['Div', 'Overflow', 'Match', 'Bind']) BUILTIN_EXN[name] = exnValue(makeExcon(name, false), undefined);
+for (const name of ['Div', 'Overflow', 'Match', 'Bind', 'Empty', 'Option', 'Chr']) BUILTIN_EXN[name] = exnValue(makeExcon(name, false), undefined);
 
 // ---- structural equality -------------------------------------------------------------------------------------------
 
-// `=` on values of an equality type: ints, datatype values and tuples (never functions or exceptions, the type checker
-// rules them out). Iterative, so a very long recursive structure cannot overflow the JS stack.
+// `=` on values of an equality type: ints, strings, chars (interned), datatype values and tuples (never functions or
+// exceptions, the type checker rules them out). Iterative, so a very long recursive structure cannot overflow the JS stack.
 export function valuesEqual(a, b) {
   if (a === b) return true;
   if (typeof a === 'number' || typeof b === 'number') return false; // canonical ints: unequal unless ===

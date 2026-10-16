@@ -209,7 +209,7 @@ test('⊗ recovery skips to the end of the item, not into the middle of a let', 
 });
 
 test('⊗ recovery survives a lexical error inside the rejected item', () => {
-  const its = items('⊗ val x = "string";\nval ok = 1;');
+  const its = items('⊗ val x = 1.5;\nval ok = 1;');
   assert.equal(its[0].kind, 'bad');
   assert.equal(its[1].binds[0].pat.name, 'ok');
 });
@@ -220,15 +220,11 @@ test('placeholders are ungrammatical', () => {
 });
 
 test('things outside the core get a pointed message, not a generic syntax error', () => {
-  assert.match(failure('val x = [1, 2];'), /^syntax: lists are not part of the core the book uses/);
-  assert.match(failure('val x = 1 :: nil;'), /^syntax: the operator :: is not part of the core/);
-  assert.match(failure('val x = a ^ b;'), /^syntax: the operator \^ is not part of the core/);
   assert.match(failure('val x = #1 y;'), /^syntax: records are not part of the core/);
   assert.match(failure('open A;'), /^syntax: open is not part of the core/);
   assert.match(failure('infix 5 ++;'), /^syntax: infix declarations are not part of the core/);
   assert.match(failure('val x as y = 1;'), /as patterns are not part of the core/);
   assert.match(failure('while true do 1;'), /while loops are not part of the core/);
-  assert.match(failure('val s = "hi";'), /^syntax: strings are not part of the core/);
   assert.match(failure('val r = 1.5;'), /^syntax: reals are not part of the core/);
   assert.match(failure('Compiler.Control.Print.printDepth := 100;'), /^syntax: the operator := is not part of the core/);
 });
@@ -259,10 +255,7 @@ const haveSeed = seedFiles.every((f) => fs.existsSync(path.join(seed, f)));
 const EXPECTED_FAILURES = [
   [/^datatype int open_faced_sandwich/, /^ungrammatical: a datatype head/],
   [/^datatype fish pizza/, /^ungrammatical: a datatype head/],
-  [/^val big = \[/, /^syntax: lists are not part/],
-  [/^fun subst_c/, /^syntax: lists are not part/],
   [/^Compiler\.Control/, /^syntax: the operator :=/],
-  [/^val w = \[\]/, /^syntax: lists are not part/],
 ];
 
 test('seed corpora: every chunk parses except the known out-of-core and ungrammatical ones', { skip: !haveSeed && 'tests/ml/seed is not present' }, () => {

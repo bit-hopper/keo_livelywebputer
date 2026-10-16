@@ -3,6 +3,7 @@
 //
 // Token: { type, value, line, col, start, end, ...extras }
 //   int       value: number (BigInt beyond 2^53), text
+//   string    value: the text with its escapes decoded       char   value: the one character of #"c"
 //   id        alphanumeric identifier (letters, digits, _ and '); qual: ['A','B'] for A.B.name
 //   sym       symbolic identifier (+ - * < <= <> ^ @ ~ ...); not a reserved symbol
 //   kw        reserved word
@@ -102,10 +103,8 @@ export class Lexer {
       if (isDigit(c) || (c === '~' && isDigit(src[this.i + 1] || ''))) return this._number(from);
       if (isLetter(c)) return this._identifier(from);
       if (c === "'") return this._tyvar(from);
-      if (c === '"') {
-        this._skipString();
-        throw syntaxError('strings are not part of the core the book uses', from);
-      }
+      if (c === '"') return this._string(from);
+      if (c === '#' && src[this.i + 1] === '"') return this._char(from);
       if (c === '_') {
         if (isIdChar(src[this.i + 1] || '')) {
           this.adv();
@@ -154,14 +153,61 @@ export class Lexer {
     return this.tok('pragma', m ? m[2].trim() : null, from, { name: m ? m[1] : body });
   }
 
-  _skipString() {
+  // A string literal with SML's escapes decoded: \a \b \t \n \v \f \r \" \\ \^c \ddd \uxxxx, and \ <blanks, line breaks> \ (a
+  // line continuation, dropped). JavaScript strings are UTF-16, so a character outside the Basic Multilingual Plane counts as two.
+  _string(from) {
     const src = this.src;
+    const SIMPLE = { a: '\x07', b: '\b', t: '\t', n: '\n', v: '\v', f: '\f', r: '\r', '"': '"', '\\': '\\' };
     this.adv();
-    while (this.i < src.length && src[this.i] !== '"' && src[this.i] !== '\n') {
-      if (src[this.i] === '\\') this.adv();
+    let out = '';
+    for (;;) {
+      if (this.i >= src.length) throw syntaxError('this string is never closed (missing ")', from);
+      const c = src[this.i];
+      if (c === '"') { this.adv(); return this.tok('string', out, from); }
+      if (c === '\n') throw syntaxError('a string cannot contain a raw line break: write \\n, or end the line with \\ to continue it', from);
+      if (c !== '\\') { out += c; this.adv(); continue; }
+      const at = this.here();
       this.adv();
+      const e = src[this.i];
+      if (e !== undefined && Object.prototype.hasOwnProperty.call(SIMPLE, e)) { out += SIMPLE[e]; this.adv(); continue; }
+      if (e === '^') {
+        const k = src.charCodeAt(this.i + 1);
+        if (!(k >= 64 && k <= 95)) throw syntaxError('\\^ must be followed by a character from @ to _', at);
+        out += String.fromCharCode(k - 64);
+        this.adv(2);
+        continue;
+      }
+      if (isDigit(e || '')) {
+        const d = src.slice(this.i, this.i + 3);
+        if (!/^[0-9]{3}$/.test(d)) throw syntaxError('a \\ddd escape takes exactly three digits', at);
+        if (Number(d) > 255) throw syntaxError('the escape \\' + d + ' is not a character (the largest is \\255)', at);
+        out += String.fromCharCode(Number(d));
+        this.adv(3);
+        continue;
+      }
+      if (e === 'u') {
+        const d = src.slice(this.i + 1, this.i + 5);
+        if (!/^[0-9a-fA-F]{4}$/.test(d)) throw syntaxError('a \\u escape takes exactly four hexadecimal digits', at);
+        out += String.fromCharCode(parseInt(d, 16));
+        this.adv(5);
+        continue;
+      }
+      if (e === ' ' || e === '\t' || e === '\n' || e === '\r' || e === '\f') { // \ ... \ : a line continuation
+        while (this.i < src.length && ' \t\n\r\f'.includes(src[this.i])) this.adv();
+        if (src[this.i] !== '\\') throw syntaxError('a \\ that starts a line continuation must be closed by another \\', at);
+        this.adv();
+        continue;
+      }
+      throw syntaxError('unknown escape \\' + (e === undefined ? '' : e) + ' in a string', at);
     }
-    if (src[this.i] === '"') this.adv();
+  }
+
+  // #"c": a character literal, exactly one character.
+  _char(from) {
+    this.adv();
+    const t = this._string(this.here());
+    if (t.value.length !== 1) throw syntaxError('a character literal holds exactly one character, but this has ' + t.value.length, from);
+    return this.tok('char', t.value, from);
   }
 
   _number(from) {

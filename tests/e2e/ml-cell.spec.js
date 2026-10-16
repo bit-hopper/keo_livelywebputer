@@ -131,6 +131,45 @@ test.describe("MLWorker controller", () => {
     expect(bad.segments[0].text).toContain("A.number is an abstract type");
   });
 
+  test("lists, strings and print: stdout is its own segment, in order, before the echo", async ({ page }) => {
+    await boot(page);
+    const r = await runCell(page, [
+      "val l = [3, 1, 2];",
+      "print (\"n = \" ^ Int.toString (length l) ^ \"\\n\");",
+      "map (fn x => x * 2) l;",
+      "\"apple\" < \"banana\";",
+      "fun first (x :: _) = x;",
+      "hd [] ;",
+    ].join("\n"));
+    expect(r.state).toBe("error");
+    expect(r.segments.map((s) => s.kind)).toEqual(["value", "stdout", "value", "value", "value", "warning", "value", "error"]);
+    expect(r.segments[1].text).toBe("n = 3\n");
+    expect(texts(r)[3]).toBe("value:val it = [6,2,4] : int list");
+    expect(r.segments[5].text).toContain("first has no clause for []");
+    expect(r.segments[7]).toMatchObject({ errorClass: "exception", text: "uncaught exception Empty" });
+    // the basis is shared state: what a list cell defined is there for the next one
+    expect(texts(await runCell(page, "first l;"))).toEqual(["value:val it = 3 : int"]);
+  });
+
+  test("a print loop is stopped with output flowing, and the page keeps working", async ({ page }) => {
+    await boot(page);
+    const stopped = await page.evaluate(() => new Promise((resolve) => {
+      const W = lively.identity.MLWorker;
+      let chars = 0;
+      W.ensureReady(() => {
+        W.run("fun loop n = (print \"xxxxxxxxxx\"; loop (n + 1)); loop 0;", {
+          onSegments: (s) => s.forEach((x) => { if (x.kind === "stdout") chars += x.text.length; }),
+          onDone: (err, res) => resolve({ err: err && err.message, state: res && res.state, chars, last: res && res.segments && res.segments.map((x) => x.kind + ":" + x.text) }),
+        });
+        setTimeout(() => W.interrupt(), 400);
+      });
+    }));
+    expect(stopped.err).toBeFalsy();
+    expect(stopped.state).toBe("stopped");
+    expect(stopped.chars).toBeGreaterThan(0);
+    expect(texts(await runCell(page, "1 + 1;"))).toEqual(["value:val it = 2 : int"]);
+  });
+
   test("the bundle reports a build id", async ({ page }) => {
     await boot(page);
     await runCell(page, "1;");
@@ -161,6 +200,23 @@ test.describe("read-only ML cell", () => {
     await page.click("#ml-host .lively-code-cell-reset-btn");
     await expect(page.locator("#ml-host .lively-code-cell-status")).toHaveText("Environment reset");
     expect((await runCell(page, "Bottom;")).state).toBe("error");
+  });
+
+  test("print output shows as plain text above the echo, and strings are highlighted", async ({ page }) => {
+    await boot(page);
+    await renderCell(page, { language: "sml", source: "print \"hello\\n\";\n[1, 2, 3] @ [4];\n\"abc\" ^ \"def\";" });
+    const src = page.locator("#ml-host pre.lively-code-cell-source");
+    await expect(src.locator(".hljs-string")).toHaveCount(3);
+    await page.click("#ml-host .lively-code-cell-run-btn");
+    const out = page.locator("#ml-host .lively-code-cell-output");
+    await expect(out.locator("pre.lively-code-cell-stdout")).toHaveText("hello");
+    await expect(out.locator("pre.lively-code-cell-value")).toHaveText([
+      "val it = () : unit",
+      "val it = [1,2,3,4] : int list",
+      "val it = \"abcdef\" : string",
+    ]);
+    // the order on the page is the order of the program: the print comes before the first echo
+    expect(await out.locator("pre").evaluateAll((els) => els.map((e) => e.className.replace("lively-code-cell-", "")))).toEqual(["stdout", "value", "value", "value"]);
   });
 
   test("pragma lines and the book's glyphs are coloured, and a help line sits under the cell", async ({ page }) => {
