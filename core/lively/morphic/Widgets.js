@@ -3373,6 +3373,8 @@ lively.morphic.App.subclass('lively.morphic.AbstractDialog',
     // (.lively-dialog-btn), see styleButton below.
     pad: 12,
     headerHeight: 22,
+    cornerRadius: 8, // shared by the outer frame and the inner body
+    spreadButtons: true, // see layoutButtons
     minWidth: 340,
     accentColor: Color.rgb(255, 16, 144),
     title: 'Confirm'
@@ -3395,10 +3397,10 @@ lively.morphic.App.subclass('lively.morphic.AbstractDialog',
     buildPanel: function(bounds) {
         this.panel = new lively.morphic.Box(bounds);
         this.panel.applyStyle({
-            fill: Color.rgb(250,250,250),
+            fill: this.accentColor, // frame shows through around the rounded body
             borderColor: this.accentColor,
             borderWidth: 3,
-            borderRadius: 7,
+            borderRadius: this.cornerRadius,
             clipMode: 'hidden',
             adjustForNewBounds: true, // layouting
             enableGrabbing: false,
@@ -3422,9 +3424,28 @@ lively.morphic.App.subclass('lively.morphic.AbstractDialog',
             borderWidth: 0,
             enableGrabbing: false, enableDragging: false});
         this.header.applyStyle({
-            fontFamily: 'Arial, sans-serif', fontSize: 9, textColor: Color.white,
+            fontFamily: 'Arial, sans-serif', fontSize: 10, textColor: Color.white,
+            align: 'center',
             resizeWidth: true, clipMode: 'hidden'});
         p.addMorph(this.header);
+    },
+
+    buildBody: function() {
+        // rounded white content area inside the accent frame (the panel
+        // itself is filled with the accent color, see buildPanel)
+        var p = this.panel, ext = p.getExtent(), bw = p.getBorderWidth();
+        // children are positioned from the border-box corner (verified live),
+        // so the area inside the border is x: bw..ext.x-bw, y: ..ext.y-bw
+        this.body = new lively.morphic.Box(new lively.Rectangle(
+            bw, this.headerHeight, ext.x - 2*bw, ext.y - this.headerHeight - bw));
+        this.body.applyStyle({
+            fill: Color.rgb(250,250,250),
+            borderWidth: 0,
+            borderRadius: this.cornerRadius,
+            resizeWidth: true, resizeHeight: true,
+            enableGrabbing: false, enableDragging: false});
+        this.body.eventsAreIgnored = true;
+        p.addMorph(this.body);
     },
 
     styleButton: function(btn, title) {
@@ -3477,7 +3498,10 @@ lively.morphic.App.subclass('lively.morphic.AbstractDialog',
                 // morphsBelowLabel.invoke('moveBy', panelExtent.subPt(origPanelExtent));
                 panelExtent = panelExtent.addXY(0, diff);
             }
+            // many buttons: widen the dialog so the evenly spread row fits
+            panelExtent = panelExtent.withX(Math.max(panelExtent.x, this.minWidthForButtons()));
             p.setExtent(panelExtent);
+            this.layoutButtons(); // buttons follow the (possibly widened) panel
             p.moveBy(panelExtent.subPt(origPanelExtent).scaleBy(0.5).negated());
             var worldBounds = world.visibleBounds(), morphBounds = p.globalBounds();
             if (p.owner && !worldBounds.containsRect(morphBounds)) {
@@ -3517,12 +3541,50 @@ lively.morphic.App.subclass('lively.morphic.AbstractDialog',
         return places;
     },
 
+    spreadableButtons: function() {
+        // the buttons layoutButtons spreads, left to right ([] = leave as is)
+        if (!this.spreadButtons) return [];
+        var btns = this.panel.submorphs
+            .select(function(ea) { return ea.isButton && ea.place !== undefined; })
+            .sort(function(a, b) { return a.place - b.place; });
+        return btns.length < 2 ? [] : btns;
+    },
+
+    minWidthForButtons: function() {
+        // width at which the spread row still has `2*inset` between buttons
+        var btns = this.spreadableButtons();
+        if (!btns.length) return 0;
+        return 2*this.pad + (btns.length - 1) * 2*this.inset +
+            btns.inject(0, function(sum, b) { return sum + b.getExtent().x; });
+    },
+
+    layoutButtons: function() {
+        // two or more buttons keep their snug size and are spread evenly: the
+        // first flush left, the last flush right (same side margins as the
+        // label/input), equal gaps in between. A single button keeps the
+        // bottom-right spot. A row that doesn't fit is left alone here; the
+        // dialog widens to fit it (see the fit step in buildLabel).
+        var btns = this.spreadableButtons();
+        if (!btns.length) return;
+        var pad = this.pad,
+            usable = this.panel.getExtent().x - 2*pad,
+            total = btns.inject(0, function(sum, b) { return sum + b.getExtent().x; }),
+            gap = (usable - total) / (btns.length - 1);
+        if (gap < this.inset) return;
+        var x = pad;
+        btns.forEach(function(btn) {
+            btn.setPosition(pt(x, btn.getPosition().y));
+            x += btn.getExtent().x + gap;
+        });
+    },
+
     buildView: function(extent) {
         // room for the title strip and some air between label and buttons
         extent = pt(Math.max(extent.x, this.minWidth),
                     extent.y + this.headerHeight + this.pad + 2*this.inset);
         this.buildPanel(extent.extentAsRectangle());
         this.buildHeader();
+        this.buildBody();
         this.buildLabel();
         var places = this.buttonPlaces();
         this.buttons.each(function(title, idx) {
@@ -3537,6 +3599,7 @@ lively.morphic.App.subclass('lively.morphic.AbstractDialog',
                     converter: function() {
                       return this.sourceObj.dialogValue || this.sourceObj.idx; }});
         }, this);
+        this.layoutButtons();
         return this.panel;
     }
 
@@ -3860,7 +3923,8 @@ lively.morphic.AbstractDialog.subclass('lively.morphic.MultipleChoiceDialog',
 'properties', {
     // label + one row of buttons (the title strip etc. is added by AbstractDialog)
     initialViewExtent: lively.pt(300, 66),
-    title: 'Alert'
+    title: 'Alert',
+    spreadButtons: false // has its own equal-margin row (fitAndAlignButtons)
 },
 'initializing', {
 
