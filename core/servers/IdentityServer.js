@@ -590,6 +590,44 @@ function buildWalletVaultPage() {
   );
 }
 
+// Identity vault page (Encryption.md §19.5): the cross-origin iframe that holds
+// the passkey-derived KEK / X25519 key and exposes operations over postMessage.
+// `appOrigins` goes into a <meta> the vault script reads as its postMessage
+// allow-list. It comes from the SERVER (never the URL), so a hostile page that
+// frames the vault cannot name itself as the app.
+function buildIdentityVaultPage(appOrigins) {
+  return (
+    "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" +
+    "<meta name=\"vault-app-origins\" content=\"" + escapeHtml(appOrigins.join(",")) + "\">" +
+    "<title>Lively Identity Vault</title>" +
+    "</head><body>" +
+    "<button id=\"unlock\" type=\"button\">Unlock with passkey</button>" +
+    "<script src=\"/core/lib/libsodium/sodium.js\"></script>" +
+    "<script src=\"/core/lively/identity/IdentityVaultFrame.js\"></script>" +
+    "</body></html>"
+  );
+}
+
+// Which app origins may talk to the vault served on this Host. The vault must
+// live at "vault." + the app's host (the RP ID host or a subdomain of it: a
+// sibling origin cannot run the passkey ceremony, see Encryption.md §19.5), so
+// the app origin is the Host with the leading "vault." label removed, same
+// scheme and port. IDENTITY_VAULT_APP_ORIGINS (comma separated) adds more.
+// A Host that does not start with "vault." yields an empty list unless the env
+// var is set: the vault is then inert.
+function identityVaultAppOrigins(req) {
+  var host = String(req.headers.host || "").toLowerCase();
+  var proto = String(req.headers["x-forwarded-proto"] || (req.connection && req.connection.encrypted ? "https" : "http"))
+    .split(",")[0].trim();
+  var origins = [];
+  if (/^vault\.[^.]/.test(host)) origins.push(proto + "://" + host.slice("vault.".length));
+  String(process.env.IDENTITY_VAULT_APP_ORIGINS || "").split(",").forEach(function (o) {
+    o = o.trim().replace(/\/+$/, "");
+    if (/^https?:\/\/[A-Za-z0-9.-]+(:\d+)?$/.test(o) && origins.indexOf(o) === -1) origins.push(o);
+  });
+  return origins;
+}
+
 // Serve a post card envelope as a standalone HTML page (§4.3).
 // Static mode: renders record.payload.snapshot as server-side HTML for fast
 // first paint, crawlers, and link previews — no Lively runtime required.
@@ -1611,6 +1649,22 @@ module.exports = function (route, app) {
     // exists for (§11).
     res.set("Content-Security-Policy", "script-src 'self' 'wasm-unsafe-eval'");
     res.send(buildWalletVaultPage());
+  });
+
+  // ─── Identity vault (Encryption.md §19.5) ──────────────────────────────────
+  // Serve this on its own origin (vault.<app host>). The CSP forbids network
+  // access and inline script; frame-ancestors limits who can embed it to the app
+  // origin(s) computed from Host. Registered with app.get, not app.use (use()
+  // middleware never runs on this server, see CLAUDE.md).
+
+  app.get("/identity-vault", function (req, res) {
+    var origins = identityVaultAppOrigins(req);
+    res.set("Content-Security-Policy",
+      "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'none'; " +
+      "frame-ancestors " + (origins.length ? origins.join(" ") : "'none'"));
+    res.set("Cache-Control", "no-store");
+    res.set("Referrer-Policy", "no-referrer");
+    res.send(buildIdentityVaultPage(origins));
   });
 
   // ─── domain handle → owner's registered handle ─────────────────────────────

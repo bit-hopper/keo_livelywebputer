@@ -39,7 +39,7 @@
  */
 
 module("lively.identity.WebAuthn")
-  .requires("lively.identity.Crypto", "lively.identity.KeyVault")
+  .requires("lively.identity.Crypto", "lively.identity.KeyVault", "lively.identity.IdentityVaultBridge")
   .toRun(function () {
     Object.subclass(
       "lively.identity.WebAuthn",
@@ -540,6 +540,21 @@ module("lively.identity.WebAuthn")
             waiters.forEach(function (waiter) { waiter(err, kek); });
           }
 
+          // Identity vault (Encryption.md §19.5): the ceremony runs in the vault
+          // frame and the cache gets a handle instead of the KEK bytes. One
+          // ceremony fills both caches (KEK and X25519 key).
+          var vault = lively.identity.identityVault;
+          if (vault && vault.isEnabled()) {
+            return vault.deriveKeys({
+              credentialId: credentialId,
+              rpId: options.rpId || (lively.Config && lively.Config.get('identityRpId')) || window.location.hostname,
+              persist: !!(lively.identity.keyVault && lively.identity.keyVault.isEnabled())
+            }, function (err) {
+              if (err) return settle(err);
+              settle(null, self._kekCache[credentialId]);
+            });
+          }
+
           var c = lively.identity.crypto;
           var prfInput = new TextEncoder().encode('lively-kek-v1');
 
@@ -633,6 +648,19 @@ module("lively.identity.WebAuthn")
             waiters.forEach(function (waiter) { waiter(err, pair); });
           }
 
+          // Identity vault (Encryption.md §19.5): see deriveKek.
+          var vault = lively.identity.identityVault;
+          if (vault && vault.isEnabled()) {
+            return vault.deriveKeys({
+              credentialId: credentialId,
+              rpId: options.rpId || (lively.Config && lively.Config.get('identityRpId')) || window.location.hostname,
+              persist: !!(lively.identity.keyVault && lively.identity.keyVault.isEnabled())
+            }, function (err) {
+              if (err) return settle(err);
+              settle(null, self._x25519Cache[credentialId]);
+            });
+          }
+
           var prfInput = new TextEncoder().encode(
             "lively-x25519:" + credentialId,
           );
@@ -709,6 +737,23 @@ module("lively.identity.WebAuthn")
         // Fill the KEK cache for `credentialId`. Use this, not a direct assignment.
         cacheKek: function (credentialId, kek) {
           if (!this._kekCache) this._kekCache = {};
+          var vault = lively.identity.identityVault;
+          // A vault handle holds no key bytes: nothing to persist from this realm.
+          if (vault && vault.isHandle(kek)) {
+            this._kekCache[credentialId] = kek;
+            return;
+          }
+          // Bytes from a ceremony this page ran itself (registration): give them
+          // to the vault and keep only a handle. If the vault cannot take them,
+          // fall back to the bytes so nothing breaks.
+          if (vault && vault.isEnabled() && kek instanceof Uint8Array) {
+            var self = this, handle = vault.makeHandle("kek", credentialId);
+            this._kekCache[credentialId] = handle;
+            vault.adoptKeys(credentialId, { kek: kek }, lively.identity.keyVault.isEnabled(), function () {
+              if (self._kekCache[credentialId] === handle) self._kekCache[credentialId] = kek;
+            });
+            return;
+          }
           this._kekCache[credentialId] = kek;
           lively.identity.keyVault.remember("kek:" + credentialId, kek);
         },
@@ -716,6 +761,21 @@ module("lively.identity.WebAuthn")
         // pair: { publicKey: Uint8Array[32], privateKey: Uint8Array[32] }
         cacheX25519: function (credentialId, pair) {
           if (!this._x25519Cache) this._x25519Cache = {};
+          var vault = lively.identity.identityVault;
+          if (vault && vault.isHandle(pair.privateKey)) {
+            this._x25519Cache[credentialId] = pair;
+            return;
+          }
+          if (vault && vault.isEnabled() && pair.privateKey instanceof Uint8Array) {
+            var self = this, handle = vault.makeHandle("x25519", credentialId);
+            var held = { publicKey: pair.publicKey, privateKey: handle };
+            this._x25519Cache[credentialId] = held;
+            vault.adoptKeys(credentialId, { publicKey: pair.publicKey, privateKey: pair.privateKey },
+              lively.identity.keyVault.isEnabled(), function () {
+                if (self._x25519Cache[credentialId] === held) self._x25519Cache[credentialId] = pair;
+              });
+            return;
+          }
           this._x25519Cache[credentialId] = pair;
           var both = new Uint8Array(64);
           both.set(pair.publicKey, 0);
@@ -727,6 +787,10 @@ module("lively.identity.WebAuthn")
         // Store whatever is already cached (used right after the setting is turned on).
         persistCachesToVault: function () {
           var self = this;
+          if (lively.identity.identityVault && lively.identity.identityVault.isEnabled()) {
+            lively.identity.identityVault.persistAll();
+            return;
+          }
           Object.keys(this._kekCache || {}).forEach(function (id) {
             lively.identity.keyVault.remember("kek:" + id, self._kekCache[id]);
           });
@@ -740,6 +804,14 @@ module("lively.identity.WebAuthn")
         restoreCachesFromVault: function () {
           var self = this;
           var kv = lively.identity.keyVault;
+          // With the identity vault the persisted keys live in the vault's own
+          // origin; ask it which credentials it still holds and fill handles.
+          if (lively.identity.identityVault && lively.identity.identityVault.isEnabled()) {
+            if (!kv || !kv.isEnabled()) return null;
+            this._vaultPending = lively.identity.identityVault.restoreFromVault()
+              .then(function () { self._vaultPending = null; });
+            return this._vaultPending;
+          }
           if (!kv || !kv.isEnabled()) return null;
           this._vaultPending = kv.recallAll().then(function (all) {
             Object.keys(all).forEach(function (slot) {

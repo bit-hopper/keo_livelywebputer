@@ -231,6 +231,10 @@ module("lively.identity.KeyVault")
         destroy: function () {
           var self = this;
           this.forgetAll();
+          // With the identity vault the persisted keys live in the vault's own
+          // origin; sign-out and turning the setting off must wipe them too.
+          var vault = lively.identity.identityVault;
+          if (vault && vault.isEnabled()) vault.destroy();
           if (!this.isSupported()) return Promise.resolve();
           return this._openDb().then(function (db) {
             return self._tx(db, "readwrite", function (s) { return s["delete"](self.DEVICE_KEY); });

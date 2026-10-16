@@ -467,6 +467,10 @@ Object.subclass('lively.identity.Crypto',
   // encKey: Uint8Array (32 bytes) or base64url string.
   // Returns thenDo(null, { ciphertext: <base64url>, nonce: <base64url> }).
   encryptPayload: function(payload, encKey, thenDo) {
+    // Identity vault (Encryption.md §19.5): a handle stands in for the raw key,
+    // which then never exists in this realm; the vault does the operation.
+    var vault = lively.identity.identityVault;
+    if (vault && vault.isHandle(encKey)) return vault.encryptPayload(payload, encKey, thenDo);
     this.withSodium(function(err, sodium) {
       if (err) return thenDo(err);
       try {
@@ -491,6 +495,10 @@ Object.subclass('lively.identity.Crypto',
   // The wrappedDek is stored in the envelope; the dek is used for encryption
   // and then discarded. To recover the dek, call unwrapDek(wrappedDek, kek).
   wrapDek: function(kek, thenDo) {
+    // Identity vault (Encryption.md §19.5): a handle stands in for the raw key,
+    // which then never exists in this realm; the vault does the operation.
+    var vault = lively.identity.identityVault;
+    if (vault && vault.isHandle(kek)) return vault.wrapDek(kek, thenDo);
     this.withSodium(function(err, sodium) {
       if (err) return thenDo(err);
       try {
@@ -517,6 +525,10 @@ Object.subclass('lively.identity.Crypto',
   // kek: Uint8Array or base64url string (32 bytes).
   // Returns thenDo(null, Uint8Array[32] dek).
   unwrapDek: function(wrappedDek, kek, thenDo) {
+    // Identity vault (Encryption.md §19.5): a handle stands in for the raw key,
+    // which then never exists in this realm; the vault does the operation.
+    var vault = lively.identity.identityVault;
+    if (vault && vault.isHandle(kek)) return vault.unwrapDek(wrappedDek, kek, thenDo);
     this.withSodium(function(err, sodium) {
       if (err) return thenDo(err);
       try {
@@ -588,6 +600,10 @@ Object.subclass('lively.identity.Crypto',
   // encKey: Uint8Array (32 bytes) or base64url string.
   // Calls thenDo(null, parsedObject) on success.
   decryptPayload: function(ciphertext, nonce, encKey, thenDo) {
+    // Identity vault (Encryption.md §19.5): a handle stands in for the raw key,
+    // which then never exists in this realm; the vault does the operation.
+    var vault = lively.identity.identityVault;
+    if (vault && vault.isHandle(encKey)) return vault.decryptPayload(ciphertext, nonce, encKey, thenDo);
     this.withSodium(function(err, sodium) {
       if (err) return thenDo(err);
       try {
@@ -762,6 +778,10 @@ Object.subclass('lively.identity.Crypto',
   // recipientX25519PubKey, recipientX25519PrivKey: Uint8Array or base64url strings.
   // Returns thenDo(null, <Uint8Array encKey>).
   openSealedBox: function(wrappedKey, recipientX25519PubKey, recipientX25519PrivKey, thenDo) {
+    // Identity vault (Encryption.md §19.5): a handle stands in for the raw key,
+    // which then never exists in this realm; the vault does the operation.
+    var vault = lively.identity.identityVault;
+    if (vault && vault.isHandle(recipientX25519PrivKey)) return vault.openSealedBox(wrappedKey, recipientX25519PrivKey, thenDo);
     this.withSodium(function(err, sodium) {
       if (err) return thenDo(err);
       try {
