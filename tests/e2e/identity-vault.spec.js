@@ -142,7 +142,7 @@ test.describe("identity vault", () => {
       sealedOpenVault: true, sealedOpenRaw: true, wrongKekRejected: true });
   });
 
-  test("a real consumer works through the vault: EnvelopeSigning decrypts the soft key by handle and signs", async ({ page, context }) => {
+  test("a real consumer works through the vault: EnvelopeSigning signs inside the vault and the soft key never comes back", async ({ page, context }) => {
     await setup(page, context);
     await boot(page);
     await page.evaluate(() => new Promise((r) => lively.require("lively.identity.EnvelopeSigning").toRun(r)));
@@ -167,10 +167,23 @@ test.describe("identity vault", () => {
         const parts = signed.sig.split("."), sg = parts[2], i = 40;
         parts[2] = sg.slice(0, i) + (sg[i] === "A" ? "B" : "A") + sg.slice(i + 1);
         const tampered = await P(c, "verifyJws")(parts.join("."), pubJwk).catch(() => false);
-        return { signed: typeof signed.sig === "string", valid: valid, tamperedRejected: !tampered };
+        // the soft signing key itself never comes back: decryptPayload yields a stub without `d`
+        const stub = await P(c, "decryptPayload")(enc.ciphertext, enc.nonce, wa._kekCache[id]);
+        const stubKeys = Object.keys(stub).sort().join();
+        const data = new TextEncoder().encode("x");
+        const call = (op, args) => new Promise((res) => lively.identity.identityVault.call(op, args, (e, r) => res({ name: e && e.name, ok: !e })));
+        const otherCred = await call("signBytes", { credentialId: "someOtherCredential", token: stub.token, data: data });
+        const own = await call("signBytes", { credentialId: id, token: stub.token, data: data });
+        await call("lock", { credentialId: id });
+        const afterLock = await call("signBytes", { credentialId: id, token: stub.token, data: data });
+        return { signed: typeof signed.sig === "string", valid: valid, tamperedRejected: !tampered,
+          noPrivateScalar: !("d" in stub) && stub.__identityVaultSigner === true, stubKeys: stubKeys,
+          otherCredentialRefused: otherCred.name, ownTokenWorks: own.ok, afterLockRefused: afterLock.name };
       } finally { did.findMethodByCredentialId = orig; }
     }, cred);
-    expect(out).toEqual({ signed: true, valid: true, tamperedRejected: true });
+    expect(out).toEqual({ signed: true, valid: true, tamperedRejected: true, noPrivateScalar: true,
+      stubKeys: "__identityVaultSigner,credentialId,crv,kty,token,x,y",
+      otherCredentialRefused: "NoSigner", ownTokenWorks: true, afterLockRefused: "NoSigner" });
   });
 
   test("Stay unlocked ON: keys survive a reload with zero ceremonies; OFF: they do not", async ({ page, context }) => {
@@ -300,5 +313,112 @@ test.describe("identity vault", () => {
     expect(await signCount(auth)).toBe(before + 1);
     const w = await page.evaluate(() => document.querySelector('iframe[title="Identity vault"]').style.width);
     expect(w).toBe("1px");
+  });
+});
+
+// Engine coverage without a ceremony (Firefox and WebKit have no virtual authenticator):
+// keys are handed to the vault the way registration does, then everything that differs
+// between engines is exercised: the cross-origin iframe, its IndexedDB device key, its
+// sessionStorage blob across a reload, the non-extractable signing key, destroy.
+// Playwright's WebKit is the engine, not Safari (no ITP, no Private Browsing, no iOS).
+test.describe("identity vault storage and operations (no ceremony, all engines)", () => {
+  const CRED = "engineTestCredential";
+
+  async function boot2(page, context) {
+    if (MOCK) {
+      await context.route(VAULT + "/identity-vault", (r) =>
+        r.fulfill({ status: 200, contentType: "text/html", headers: { "Content-Security-Policy": MOCK_CSP, "Cache-Control": "no-store" }, body: MOCK_HTML }));
+    }
+    await page.goto(APP + "/blank.html");
+    await page.waitForFunction(() => window.$world && window.lively && lively.require, null, { timeout: 90000 });
+    await page.evaluate(() => new Promise((r) =>
+      lively.require("lively.identity.WebAuthn", "lively.identity.DID", "lively.identity.IdentityVaultBridge").toRun(r)));
+    await page.waitForFunction(() => !lively.identity.webAuthn._vaultPending);
+    await page.evaluate((vault) => {
+      lively.Config.set("identityVaultOrigin", vault);
+      window.__p = (obj, fn) => (...args) => new Promise((res, rej) => obj[fn](...args, (e, r) => (e ? rej(e) : res(r))));
+    }, VAULT);
+  }
+
+  // hand the vault a KEK and X25519 pair the way registration does; returns the raw copies
+  const adopt = (page) => page.evaluate(async (id) => {
+    const c = lively.identity.crypto, wa = lively.identity.webAuthn;
+    const sodium = await new Promise((res) => c.withSodium((e, sd) => res(sd)));
+    const kek = crypto.getRandomValues(new Uint8Array(32)), kp = sodium.crypto_box_keypair();
+    wa.cacheKek(id, kek);
+    wa.cacheX25519(id, { publicKey: kp.publicKey, privateKey: kp.privateKey });
+    return { kek: Array.from(kek), pub: Array.from(kp.publicKey), priv: Array.from(kp.privateKey) };
+  }, CRED);
+
+  test("operations work in this engine and agree with the page-realm path", async ({ page, context }) => {
+    await boot2(page, context);
+    const raw = await adopt(page);
+    const out = await page.evaluate(async ([id, raw]) => {
+      const c = lively.identity.crypto, wa = lively.identity.webAuthn, P = window.__p;
+      const kekH = wa._kekCache[id], pairH = wa._x25519Cache[id];
+      const res = { handles: !!(kekH.__identityVault && pairH.privateKey.__identityVault) };
+      const w = await P(c, "wrapDek")(kekH);
+      res.wrap = Array.from(await P(c, "unwrapDek")(w.wrappedDek, new Uint8Array(raw.kek))).join() === Array.from(w.dek).join();
+      const dek = crypto.getRandomValues(new Uint8Array(32));
+      const sealed = await P(c, "sealForRecipient")(dek, new Uint8Array(raw.pub));
+      res.seal = Array.from(await P(c, "openSealedBox")(sealed, pairH.publicKey, pairH.privateKey)).join() === Array.from(dek).join();
+      // signing: soft key encrypted under the KEK, decrypted by handle (stub), signed in the vault
+      const kp = await P(c, "generateSigningKeyPair")();
+      const enc = await P(c, "encryptPayload")(await P(c, "exportPrivateKeyJwk")(kp.privateKey), kekH);
+      const stub = await P(c, "decryptPayload")(enc.ciphertext, enc.nonce, kekH);
+      const key = await P(c, "importPrivateKeyJwk")(stub);
+      const jws = await P(c, "signJws")({ hello: "world" }, key);
+      res.stubHasNoScalar = !("d" in stub);
+      res.signature = await P(c, "verifyJws")(jws, await P(c, "exportPublicKeyJwk")(kp.publicKey));
+      return res;
+    }, [CRED, raw]);
+    expect(out).toEqual({ handles: true, wrap: true, seal: true, stubHasNoScalar: true, signature: true });
+  });
+
+  test("Stay unlocked ON survives a reload in this engine; sign-out wipes it", async ({ page, context }) => {
+    await boot2(page, context);
+    await page.evaluate(() => lively.identity.keyVault.setEnabled(true));
+    const raw = await adopt(page);
+    await page.waitForTimeout(800);                                  // the vault persists asynchronously
+    await page.reload();
+    await boot2(page, context);
+    await page.evaluate(() => lively.identity.webAuthn.restoreCachesFromVault());
+    await page.waitForFunction(() => !lively.identity.webAuthn._vaultPending);
+    const back = await page.evaluate(async ([id, raw]) => {
+      const c = lively.identity.crypto, wa = lively.identity.webAuthn, P = window.__p;
+      const kekH = wa._kekCache[id];
+      if (!kekH || !kekH.__identityVault) return { restored: false };
+      const w = await P(c, "wrapDek")(kekH);
+      return { restored: true, sameKek: Array.from(await P(c, "unwrapDek")(w.wrappedDek, new Uint8Array(raw.kek))).join() === Array.from(w.dek).join() };
+    }, [CRED, raw]);
+    expect(back).toEqual({ restored: true, sameKek: true });
+
+    await page.evaluate(() => lively.identity.keyVault.destroy());
+    await page.waitForTimeout(500);
+    await page.evaluate(() => lively.identity.keyVault.setEnabled(true));
+    await page.reload();
+    await boot2(page, context);
+    await page.evaluate(() => lively.identity.webAuthn.restoreCachesFromVault());
+    await page.waitForFunction(() => !lively.identity.webAuthn._vaultPending);
+    expect(await page.evaluate((id) => !!(lively.identity.webAuthn._kekCache && lively.identity.webAuthn._kekCache[id]), CRED)).toBe(false);
+    await page.evaluate(() => lively.identity.keyVault.setEnabled(false));
+  });
+
+  test("the app origin cannot see the vault's storage", async ({ page, context }) => {
+    await boot2(page, context);
+    await adopt(page);
+    await page.evaluate(() => lively.identity.keyVault.setEnabled(true));
+    // round trip first: until the vault document has loaded the frame is a readable about:blank
+    await page.evaluate(() => new Promise((res) => lively.identity.identityVault.call("hello", {}, () => res())));
+    await page.waitForTimeout(500);                                  // let the adopt's persist land
+    const seen = await page.evaluate(async () => ({
+      doc: (() => { try { return document.querySelector('iframe[title="Identity vault"]').contentWindow.document.title; } catch (e) { return e.name; } })(),
+      sessionKeys: Object.keys(sessionStorage).filter((k) => k.indexOf("iv1") >= 0),
+      dbs: (indexedDB.databases ? (await indexedDB.databases()).map((d) => d.name).filter((n) => /identityvault/.test(n)) : []),
+    }));
+    expect(seen.doc).toBe("SecurityError");
+    expect(seen.sessionKeys).toEqual([]);
+    expect(seen.dbs).toEqual([]);
+    await page.evaluate(() => lively.identity.keyVault.setEnabled(false));
   });
 });

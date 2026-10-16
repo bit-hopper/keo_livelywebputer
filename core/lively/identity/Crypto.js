@@ -156,6 +156,9 @@ Object.subclass('lively.identity.Crypto',
   },
 
   importPrivateKeyJwk: function(jwk, thenDo) {
+    // Identity vault: the "key" is a signer stub; the private key stays in the vault.
+    var vault = lively.identity.identityVault;
+    if (vault && vault.isSigner(jwk)) return thenDo(null, jwk);
     crypto.subtle.importKey(
       'jwk',
       jwk,
@@ -370,6 +373,15 @@ Object.subclass('lively.identity.Crypto',
     var canonical = typeof payload === 'string' ? payload : self.canonicalJson(payload);
     var payloadB64 = self.base64urlEncode(new TextEncoder().encode(canonical));
     var signingInput = new TextEncoder().encode(headerB64 + '.' + payloadB64);
+
+    // Identity vault: sign inside the vault with the key it holds for this stub.
+    var vault = lively.identity.identityVault;
+    if (vault && vault.isSigner(privateKey)) {
+      return vault.signBytes(privateKey, signingInput, function(err, signature) {
+        if (err) return thenDo(err);
+        thenDo(null, headerB64 + '.' + payloadB64 + '.' + self.base64urlEncode(new Uint8Array(signature)));
+      });
+    }
 
     crypto.subtle.sign(
       { name: 'ECDSA', hash: { name: 'SHA-256' } },

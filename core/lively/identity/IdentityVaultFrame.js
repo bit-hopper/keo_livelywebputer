@@ -30,9 +30,9 @@
  * sessionStorage (per tab, TTL 8 h, AAD binds slot + expiry). Neither is
  * reachable from the app's origin.
  *
- * What the app does NOT get: the KEK, the X25519 private key. What it still
- * gets: unwrapped DEKs and decrypted payloads (it has to, to show content), and
- * the soft signing key decrypted with decryptPayload (follow-up: sign in here).
+ * What the app does NOT get: the KEK, the X25519 private key, the soft signing
+ * key (decryptPayload returns a signer stub; signBytes signs here). What it still
+ * gets: unwrapped DEKs and decrypted payloads (it has to, to show content).
  * A compromised app realm can still ASK for operations while unlocked.
  */
 (function () {
@@ -48,6 +48,7 @@
   // credentialId -> { kek: Uint8Array|null, pub: Uint8Array|null, priv: Uint8Array|null }
   var mem = {};
   var inflight = {};            // credentialId -> Promise (one ceremony at a time)
+  var signers = {};             // token -> non-extractable ECDSA P-256 CryptoKey (the soft signing key)
   var armed = null;             // { op, args, origin, id } for the click fallback
 
   // ─── small helpers ─────────────────────────────────────────────────────────
@@ -311,8 +312,26 @@
         var sodium = r[0], kek = r[1];
         var pt = sodium.crypto_secretbox_open_easy(unb64u(sodium, a.ciphertext), unb64u(sodium, a.nonce), kek);
         if (!pt) throw fail("Error", "Decryption failed: authentication tag mismatch");
-        return JSON.parse(sodium.to_string(pt));
+        var obj = JSON.parse(sodium.to_string(pt));
+        // The soft signing key is the one secret that used to be handed back to the
+        // page. Keep it here as a non-extractable key and return a stub (the public
+        // half plus a token) that Crypto.importPrivateKeyJwk / signJws route to signBytes.
+        if (obj && obj.kty === "EC" && obj.crv === "P-256" && typeof obj.d === "string") {
+          return crypto.subtle.importKey("jwk", obj, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]).then(function (key) {
+            var token = a.credentialId + "|" + obj.x;
+            signers[token] = key;
+            return { __identityVaultSigner: true, token: token, credentialId: a.credentialId, kty: obj.kty, crv: obj.crv, x: obj.x, y: obj.y };
+          });
+        }
+        return obj;
       });
+    },
+
+    // Raw ES256 signature (r||s) over `data`; the caller builds the JWS signing input.
+    signBytes: function (a) {
+      var key = typeof a.token === "string" && a.token.indexOf(a.credentialId + "|") === 0 ? signers[a.token] : null;
+      if (!key) return Promise.reject(fail("NoSigner", "vault has no signing key for this token (decrypt the signing key again)"));
+      return crypto.subtle.sign({ name: "ECDSA", hash: { name: "SHA-256" } }, key, a.data).then(function (sig) { return new Uint8Array(sig); });
     },
 
     openSealedBox: function (a) {
@@ -326,7 +345,10 @@
 
     lock: function (a) {
       var ids = a && a.credentialId ? [a.credentialId] : Object.keys(mem);
-      ids.forEach(function (id) { var st = mem[id]; if (st) { zero(st.kek); zero(st.priv); } delete mem[id]; });
+      ids.forEach(function (id) {
+        var st = mem[id]; if (st) { zero(st.kek); zero(st.priv); } delete mem[id];
+        Object.keys(signers).forEach(function (t) { if (t.indexOf(id + "|") === 0) delete signers[t]; });
+      });
       return Promise.resolve({ locked: ids.length });
     },
 
@@ -334,6 +356,7 @@
     // device key, so blobs in every tab become unreadable.
     destroy: function () {
       Object.keys(mem).forEach(function (id) { var st = mem[id]; zero(st.kek); zero(st.priv); delete mem[id]; });
+      signers = {};
       forgetAllPersisted();
       return openDb().then(function (db) { return tx(db, "readwrite", function (s) { return s["delete"](DEVICE_KEY); }); })
         .then(function () { return { destroyed: true }; }, function () { return { destroyed: true }; });

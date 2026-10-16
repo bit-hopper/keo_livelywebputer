@@ -36,12 +36,12 @@ module.exports = defineConfig({
     //   node node_modules/@playwright/test/cli.js install firefox webkit
     {
       name: "firefox",
-      testMatch: /key-vault\.spec\.js/,
+      testMatch: /(key-vault|identity-vault)\.spec\.js/,
       use: { ...devices["Desktop Firefox"] },
     },
     {
       name: "webkit",
-      testMatch: /key-vault\.spec\.js/,
+      testMatch: /(key-vault|identity-vault)\.spec\.js/,
       use: { ...devices["Desktop Safari"] },
     },
   ],

@@ -70,6 +70,12 @@ module("lively.identity.IdentityVaultBridge")
           return !!(x && x.__identityVault === true);
         },
 
+        // The stub decryptPayload returns for the soft signing key: public half plus
+        // a token for signBytes. Never contains the private scalar.
+        isSigner: function (x) {
+          return !!(x && x.__identityVaultSigner === true);
+        },
+
         makeHandle: function (kind, credentialId) {
           return {
             __identityVault: true,
@@ -267,6 +273,10 @@ module("lively.identity.IdentityVaultBridge")
           this._op(handle, "decryptPayload", { ciphertext: ciphertext, nonce: nonce }, thenDo);
         },
         openSealedBox: function (wrapped, handle, thenDo) { this._op(handle, "openSealedBox", { wrapped: wrapped }, thenDo); },
+        // signer: the stub from decryptPayload. data: Uint8Array JWS signing input.
+        signBytes: function (signer, data, thenDo) {
+          this.call("signBytes", { credentialId: signer.credentialId, token: signer.token, data: data }, thenDo);
+        },
       },
 
       "lifecycle",
