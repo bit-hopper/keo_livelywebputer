@@ -110,3 +110,85 @@ export function failure(source) {
 
 // Split a corpus into its (*--*)-separated chunks, the way tests/ml/seed/runchunks.sh does.
 export const chunks = (text) => text.replace(/\r/g, '').split(/^\(\*--\*\)$/m).map((c) => c.trim()).filter(Boolean);
+
+// ---- elaboration helpers -----------------------------------------------------------------------------------
+import { derive } from '../../core/lib/ml/src/derive.js';
+import { Elaborator } from '../../core/lib/ml/src/infer.js';
+import { makeBasis } from '../../core/lib/ml/src/basis.js';
+import { typeToString } from '../../core/lib/ml/src/types.js';
+
+// A tiny session: run every item of `source` in order against one global scope, as a cell does. Returns the echo lines
+// ("name : type") of the items that succeeded, and the first error as 'class: message' (items after it do not run).
+export function session(style = 'book') {
+  const global = makeBasis().child();
+  const el = new Elaborator({ style });
+  return {
+    global,
+    run(source) {
+      const lines = [];
+      let error = null;
+      const parser = new Parser(source);
+      try {
+        for (let item; (item = parser.nextItem());) {
+          if (item.kind === 'pragma') continue;
+          const r = el.elaborateItem(derive(item), global);
+          r.scope.mergeInto(global);
+          for (const e of r.echo) lines.push(echoLine(e, style));
+        }
+      } catch (e) {
+        if (e.errorClass === undefined) throw e;
+        error = e.errorClass + ': ' + e.message;
+      }
+      return { lines, error };
+    },
+  };
+}
+
+export function echoLine(e, style = 'book') {
+  switch (e.kind) {
+    case 'val': return e.name + ' : ' + typeToString(e.type, style);
+    case 'datatype': return 'datatype ' + e.names.map((n) => n.name).join(' and ');
+    case 'type': return 'type ' + e.name;
+    case 'exception': return 'exception ' + e.name;
+    default: return e.kind;
+  }
+}
+
+// The echo lines of a source, or throws on an error.
+export function types(source, style = 'book') {
+  const { lines, error } = session(style).run(source);
+  if (error) throw new Error(error);
+  return lines;
+}
+
+// The error a source raises when elaborated ('class: message'), or null.
+export function rejects(source, style = 'book') {
+  return session(style).run(source).error;
+}
+
+// Like session().run, but all-or-nothing per call: if any item fails, nothing the call defined is kept (how the
+// differential harness treats a chunk).
+export function chunkSession(style = 'sml') {
+  const base = makeBasis().child();
+  const el = new Elaborator({ style });
+  return {
+    run(source) {
+      const trial = base.child();
+      const lines = [];
+      try {
+        const parser = new Parser(source);
+        for (let item; (item = parser.nextItem());) {
+          if (item.kind === 'pragma') continue;
+          const r = el.elaborateItem(derive(item), trial);
+          r.scope.mergeInto(trial);
+          for (const e of r.echo) lines.push(e);
+        }
+      } catch (e) {
+        if (e.errorClass === undefined) throw e;
+        return { echo: [], error: e };
+      }
+      trial.mergeInto(base);
+      return { echo: lines, error: null };
+    },
+  };
+}
