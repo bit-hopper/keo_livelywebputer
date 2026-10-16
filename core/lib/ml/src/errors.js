@@ -2,6 +2,7 @@
 //   ungrammatical  the book's ⊗: not a legal form at all
 //   syntax         any other parse failure
 //   nonsense       no type
+//   redundant      a match rule no value can reach (SML/NJ rejects it too; demotable to a warning by a page setting)
 //   signature      signature nonsense / module mismatch
 //   exception      meaningless: an exception reached the top
 //   limit          meaningless: ran out of room (stack depth, Stop)

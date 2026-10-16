@@ -9,7 +9,7 @@
 //   r.echo      what to print, in declaration order:
 //                 {kind:'val', name, type, expStmt?}  {kind:'datatype', names:[TyName]}  {kind:'type', name, params, body}
 //                 {kind:'exception', name, ty}
-//   r.matchSites  every match, for the pattern checker: {kind:'fn'|'handle'|'val', origin, loc, ty, rules:[patIR]}
+//   r.matchSites  every match, for the pattern checker: {kind:'fn'|'handle'|'val', origin, loc, ruleLocs, ty, rules:[patIR]}
 //
 // IR. Expressions: {op:'const', value} {op:'var', name} {op:'con', con} {op:'conapp', con, arg} {op:'prim', name}
 //   {op:'tuple', items} {op:'app', fn, arg} {op:'if', cond, then, else} {op:'fn', rules:[{pat, body}], origin}
@@ -217,7 +217,7 @@ export class Elaborator {
         const param = this.fresh();
         const result = this.fresh();
         const rules = this.rules(e.match, param, result, e, 'result');
-        this.matchSites.push({ kind: 'fn', origin: e.origin, loc: e.loc, ty: param, rules: rules.map((r) => r.pat) });
+        this.matchSites.push({ kind: 'fn', origin: e.origin, loc: e.loc, ruleLocs: e.match.map((r) => r.pat.loc), ty: param, rules: rules.map((r) => r.pat) });
         return { ty: tfn(param, result), ir: { op: 'fn', rules, origin: e.origin } };
       }
       case 'let': {
@@ -245,7 +245,7 @@ export class Elaborator {
       case 'handle': {
         const x = this.exp(e.exp);
         const rules = this.rules(e.match, tExn, x.ty, e, 'handler');
-        this.matchSites.push({ kind: 'handle', loc: e.loc, ty: tExn, rules: rules.map((r) => r.pat) });
+        this.matchSites.push({ kind: 'handle', loc: e.loc, ruleLocs: e.match.map((r) => r.pat.loc), ty: tExn, rules: rules.map((r) => r.pat) });
         return { ty: x.ty, ir: { op: 'handle', exp: x.ir, rules } };
       }
       default:

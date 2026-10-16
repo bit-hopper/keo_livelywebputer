@@ -192,3 +192,30 @@ export function chunkSession(style = 'sml') {
     },
   };
 }
+
+// ---- pattern-check helpers ---------------------------------------------------------------------------------------
+import { checkMatchSites } from '../../core/lib/ml/src/patterns.js';
+
+// Run every item of `source` through parse, derive, elaborate and the pattern checker, as an interpreter would. Returns
+// { warnings: [message], error: 'class: message' | null }; items before the first error keep their definitions.
+export function checked(source, options = {}) {
+  const global = makeBasis().child();
+  const el = new Elaborator({ style: options.style || 'book' });
+  const warnings = [];
+  let error = null;
+  try {
+    const parser = new Parser(source);
+    for (let item; (item = parser.nextItem());) {
+      if (item.kind === 'pragma') continue;
+      const r = el.elaborateItem(derive(item), global);
+      const c = checkMatchSites(r.matchSites, options);
+      if (c.error) throw c.error;
+      warnings.push(...c.warnings.map((w) => w.message));
+      r.scope.mergeInto(global);
+    }
+  } catch (e) {
+    if (e.errorClass === undefined) throw e;
+    error = e.errorClass + ': ' + e.message;
+  }
+  return { warnings, error };
+}
