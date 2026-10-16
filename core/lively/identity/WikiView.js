@@ -686,7 +686,8 @@ module("lively.identity.WikiView")
             envelope.record && envelope.record.cid
               ? lively.identity.postCardUtils.truncateDid(envelope.record.cid)
               : "—";
-          this._dateEl.textContent = this._formatDate(envelope.created);
+          this._dateEl.textContent = "—";
+          this._resolveVersionDate(envelope);
           this._visibilityEl.textContent = envelope.constellation || "—";
 
           var state = envelope.state || {};
@@ -709,6 +710,36 @@ module("lively.identity.WikiView")
             self._renderContributorsRow(contributorDids, didToHandle);
             self._verify(envelope, lastEditedBy ? (didToHandle[lastEditedBy] || null) : null);
           });
+        },
+
+        // envelope.created is when the page was FIRST saved: every later save
+        // carries it over from the previous envelope (WikiSerializer.js), so
+        // it can't say when THIS version was written. The version's own time
+        // is the createdAt of its row in GET .../versions. Falls back to
+        // envelope.created when that list isn't readable (private page viewed
+        // by a non-owner, network error) rather than showing nothing.
+        _resolveVersionDate: function (envelope) {
+          var self = this;
+          var cid = envelope.record && envelope.record.cid;
+          function fallback() { self._dateEl.textContent = self._formatDate(envelope.created); }
+          if (!cid || !this._handle || !this._objId) return fallback();
+          var base = lively.identity.did.baseUrl();
+          var xhr = new XMLHttpRequest();
+          xhr.open("GET", base + "/@" + encodeURIComponent(this._handle) + "/" +
+            encodeURIComponent(this._objId) + "/versions", true);
+          xhr.withCredentials = true;
+          xhr.setRequestHeader("Accept", "application/json");
+          xhr.onload = function () {
+            if (xhr.status !== 200) return fallback();
+            try {
+              var versions = JSON.parse(xhr.responseText).versions || [];
+              var match = versions.filter(function (v) { return v.cid === cid; })[0];
+              if (match && match.createdAt) self._dateEl.textContent = self._formatDate(match.createdAt);
+              else fallback();
+            } catch (e) { fallback(); }
+          };
+          xhr.onerror = fallback;
+          xhr.send();
         },
 
         _renderAuthorRow: function (did, handle) {
