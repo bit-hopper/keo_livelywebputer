@@ -240,6 +240,14 @@ if (!options.defined("noSubservers")) {
     options.lkDir,
     "core/servers/support/nodejs-subserver-auth-gate.js",
   );
+  // Host-based realms (Encryption.md §18.2): keeps hosts that are not the app
+  // realm read-only and away from the login surface. Inert unless LK_APP_HOSTS
+  // is set. Appended after the gate above so it is also started last (= matched
+  // first), for the same route-unshifting reason.
+  subservers["content-realm-gate"] = path.join(
+    options.lkDir,
+    "core/servers/support/content-realm-gate.js",
+  );
 }
 
 // -=-=-=-=-=-=-=-=-=-=-=-

@@ -75,6 +75,7 @@ var dmMailbox = require("./identity/DMMailbox");
 var dmSignalingTokenStore = require("./support/dm-signaling-token-store");
 var cryptoVerify = require("./identity/CryptoVerify");
 var writePolicy = require("./identity/WritePolicy");
+var contentRealm = require("./support/content-realm-gate");
 var didHome = require("./identity/DidHome");
 var domainVerifier = require("./identity/DomainVerifier");
 var constellationSpace = require("./identity/ConstellationSpace");
@@ -3893,6 +3894,13 @@ module.exports = function (route, app) {
       envelope = _trimRecipientsForNonOwner(envelope, req.identity);
 
       if (envelope.type === "world" && req.accepts(["html", "json"]) === "html") {
+        // Someone else's public world runs the author's script in this page,
+        // next to the visitor's session. Send it to the content hostname,
+        // where there is no cookie and none of this origin's storage. A no-op
+        // unless LK_APP_HOSTS and LK_WORLDS_ORIGIN are set. See content-realm-gate.js.
+        if (contentRealm.shouldRedirectToWorlds(req.headers.host, envelope, req.identity)) {
+          return res.redirect(302, contentRealm.worldsUrl(req.originalUrl));
+        }
         var welcomeHandle = null;
         if (req.query.welcome && /^[a-z0-9_]{1,32}$/.test(req.query.welcome)) {
           welcomeHandle = req.query.welcome;
