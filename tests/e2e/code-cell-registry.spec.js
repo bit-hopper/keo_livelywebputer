@@ -231,7 +231,7 @@ test.describe("server-side render", () => {
   test("the server's table matches the client registry", async ({ page }) => {
     await boot(page);
     const client = await page.evaluate(() => lively.identity.postCardUtils.codeCellLanguageList()
-      .map((d) => ({ id: d.id, label: d.label, hljsId: d.hljsId, hasReset: d.hasReset })));
+      .map((d) => ({ id: d.id, label: d.label, hljsId: d.hljsId, hasReset: d.hasReset, help: d.help })));
     const server = Object.keys(CODE_CELL_LANGUAGES).map((id) => CODE_CELL_LANGUAGES[id]);
     expect(server).toEqual(client);
   });
@@ -251,6 +251,11 @@ test.describe("server-side render", () => {
     expect(ml).toContain("🐪 ML");
     expect(ml).toContain("lively-code-cell-reset-btn");
     expect(ml).toContain("hljs-keyword");
+    expect(ml).toContain('<div class="lively-code-cell-help">');
+    expect(ml).toContain("(*# style: book|sml *)");
+    expect(ml).toContain("-&gt; =&gt; :&gt;");
+    expect(sc).not.toContain("lively-code-cell-help");
+    expect(py).not.toContain("lively-code-cell-help");
     // No language attr: the schema default.
     expect(render({ attrs: { source: "x" } })).toContain('data-language="python"');
     expect(render({})).toContain('data-language="python"');

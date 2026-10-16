@@ -63,7 +63,7 @@ var entryContents = [
   "import hljsPlaintext from 'highlight.js/lib/languages/plaintext';",
   "import hljsPython from 'highlight.js/lib/languages/python';",
   "import hljsScheme from 'highlight.js/lib/languages/scheme';",
-  "import hljsSml from 'highlight.js/lib/languages/sml';",
+  "import hljsSml from './core/lib/ml/hljs-ml.js';",
   "import hljsSql from 'highlight.js/lib/languages/sql';",
   "import hljsTypescript from 'highlight.js/lib/languages/typescript';",
   "import hljsXml from 'highlight.js/lib/languages/xml';",

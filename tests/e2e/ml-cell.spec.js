@@ -147,6 +147,27 @@ test.describe("read-only ML cell", () => {
     expect((await runCell(page, "Bottom;")).state).toBe("error");
   });
 
+  test("pragma lines and the book's glyphs are coloured, and a help line sits under the cell", async ({ page }) => {
+    await boot(page);
+    await renderCell(page, { language: "sml", source: "(*# style: sml *)\n(* plain comment *)\n• f : α → α\n⊗ val x = … ;" });
+    const src = page.locator("#ml-host pre.lively-code-cell-source");
+    await expect(src.locator(".hljs-meta").filter({ hasText: "(*# style: sml *)" })).toHaveCount(1);
+    await expect(src.locator(".hljs-comment")).toHaveText(["(* plain comment *)"]);
+    await expect(src.locator(".hljs-meta").filter({ hasText: /^[•⊗]$/ })).toHaveCount(2);
+    await expect(src.locator(".hljs-keyword", { hasText: "→" })).toHaveCount(1);
+    await expect(src.locator(".hljs-symbol", { hasText: "α" })).toHaveCount(2);
+    await expect(src.locator(".hljs-literal", { hasText: "…" })).toHaveCount(1);
+    const help = page.locator("#ml-host .lively-code-cell-help");
+    await expect(help).toHaveCount(1);
+    await expect(help).toContainText("→ ⇒ ▷ for -> => :>");
+    await expect(help).toContainText("(*# verdicts: on|off *)");
+    // below the output pane, and still there after a run
+    expect(await page.evaluate(() => document.querySelector("#ml-host .lively-code-cell-output").nextElementSibling.className)).toBe("lively-code-cell-help");
+    await page.click("#ml-host .lively-code-cell-run-btn");
+    await expect(page.locator("#ml-host .lively-code-cell-status")).not.toHaveText("Running…");
+    await expect(help).toHaveCount(1);
+  });
+
   test("errors carry their class label, warnings and verdicts their own style", async ({ page }) => {
     await boot(page);
     await renderCell(page, {
@@ -202,6 +223,7 @@ test.describe("ML cell in the wiki editor", () => {
     await expect(cell).toHaveCount(1);
     await expect(cell).toHaveAttribute("data-language", "sml");
     await expect(cell.locator(".lively-code-cell-badge")).toHaveText("🐪 ML");
+    await expect(cell.locator(".lively-code-cell-help")).toContainText("Pragmas: (*# style: book|sml *)");
 
     const ta = cell.locator("textarea");
     await ta.fill("fun sq(x) = x * x;\nsq(12);");

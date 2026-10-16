@@ -15,7 +15,10 @@
 var CODE_CELL_LANGUAGES = {
   python: { id: 'python', label: '🐍 Python', hljsId: 'python', hasReset: false },
   scheme: { id: 'scheme', label: 'λ Scheme', hljsId: 'scheme', hasReset: true },
-  sml: { id: 'sml', label: '🐪 ML', hljsId: 'sml', hasReset: true },
+  sml: {
+    id: 'sml', label: '🐪 ML', hljsId: 'sml', hasReset: true,
+    help: "Glyphs accepted: → ⇒ ▷ for -> => :>, and α β γ for 'a 'b 'c. A line starting with • is a type box; ⊗ marks a box the book says is rejected.\nPragmas: (*# style: book|sml *)  (*# depth: N *)  (*# verdicts: on|off *)  (*# redundant: error|warning *)",
+  },
 };
 
 var UNKNOWN_NOTE = 'This page uses a runtime this build doesn\'t have, so this cell can\'t run.';
@@ -60,6 +63,7 @@ function createCodeCellRenderer(deps) {
            '</div>' +
            '<pre class="lively-code-cell-source"><code class="hljs">' + highlighted + '</code></pre>' +
            '<div class="lively-code-cell-output lively-code-cell-output-empty">Run to see output.</div>' +
+           (def.help ? '<div class="lively-code-cell-help">' + escapeHtml(def.help) + '</div>' : '') +
          '</div>';
   };
 }

@@ -1743,6 +1743,12 @@ module('lively.identity.WikiEditor')
           ? 'Run to see output.'
           : 'This page uses a runtime this build doesn\'t have, so this cell can\'t run.';
         dom.appendChild(output);
+        if (langDef.known && langDef.help) {
+          var help = document.createElement('div');
+          help.className = 'lively-code-cell-help';
+          help.textContent = langDef.help;
+          dom.appendChild(help);
+        }
 
         // Same pattern as _mathNodeView's commit(): re-reads getPos() at
         // commit time rather than caching it, since positions shift under

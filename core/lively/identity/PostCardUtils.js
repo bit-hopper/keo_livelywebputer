@@ -75,6 +75,7 @@ module('lively.identity.PostCardUtils')
     //   loadingText      status shown while the runtime loads (transcript languages)
     //   editing          dotted path of an editing helper with attach(textarea), or null
     //   badge            tint of the language badge
+    //   help             optional note shown under the cell (lines separated by newlines), or absent
     var CODE_CELL_LANGUAGES = {
       python: {
         id: 'python', known: true, label: '🐍 Python', hljsId: 'python', insertLabel: 'Python code cell',
@@ -95,6 +96,7 @@ module('lively.identity.PostCardUtils')
         output: 'transcript', controller: 'lively.identity.MLWorker',
         confirmBeforeRun: false, hasReset: true, resetTitle: 'Start a fresh ML environment for this page',
         cooperativeStop: true, loadingText: 'Loading ML…', editing: null,
+        help: "Glyphs accepted: → ⇒ ▷ for -> => :>, and α β γ for 'a 'b 'c. A line starting with • is a type box; ⊗ marks a box the book says is rejected.\nPragmas: (*# style: book|sml *)  (*# depth: N *)  (*# verdicts: on|off *)  (*# redundant: error|warning *)",
         badge: { background: '#fff0e0', color: '#8a4b00', border: '#f5d3a8' },
       },
     };
@@ -227,6 +229,8 @@ module('lively.identity.PostCardUtils')
         '.lively-code-cell-output pre.lively-code-cell-tone-ok{color:#1b7a3a;font-style:normal;}',
         '.lively-code-cell-output pre.lively-code-cell-tone-bad{color:#b3261e;font-style:normal;}',
         '.lively-code-cell-output .lively-code-cell-errclass{font-weight:600;margin-right:6px;}',
+        '.lively-code-cell-help{padding:6px 16px 8px;border-top:1px solid #eef0f5;background:#fcfcfe;color:#8a90a3;' +
+          'font-size:11px;line-height:1.5;white-space:pre-wrap;}',
         '.lively-code-cell-output pre.lively-code-cell-echo{color:#8a90a3;}',
         '.lively-code-cell-input-row{display:flex;gap:6px;margin:4px 0;}',
         '.lively-code-cell-input-row input{flex:1;min-width:0;font-family:' + mono + ';font-size:12px;' +
@@ -2031,6 +2035,7 @@ module('lively.identity.PostCardUtils')
              '</div>' +
              '<pre class="lively-code-cell-source"><code class="hljs">' + highlighted + '</code></pre>' +
              '<div class="lively-code-cell-output lively-code-cell-output-empty">Run to see output.</div>' +
+             (def.help ? '<div class="lively-code-cell-help">' + escapeHtml(def.help) + '</div>' : '') +
            '</div>';
     }
 

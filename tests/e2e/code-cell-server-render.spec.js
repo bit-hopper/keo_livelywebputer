@@ -25,7 +25,7 @@ test("saved page: known cells render with controls, an unknown language as plain
       const cells = [
         { language: "python", source: "print(1)" },
         { language: "scheme", source: "(+ 1 2)" },
-        { language: "sml", source: "fun f x = x + 1" },
+        { language: "sml", source: "(*# style: book *)\nfun f x = x + 1" },
         { language: "cobol", source: "fun f x = <b>x</b>" },
       ];
       const doc = PM.model.Node.fromJSON(v.state.schema, { type: "doc", content: cells.map((attrs) => ({ type: "code_cell", attrs })) });
@@ -64,6 +64,9 @@ test("saved page: known cells render with controls, an unknown language as plain
     expect(ml).toContain("lively-code-cell-run-btn");
     expect(ml).toContain("lively-code-cell-reset-btn");
     expect(ml).toContain("hljs-keyword");
+    expect(ml).toContain('<span class="hljs-meta">(*# style: book *)</span>'); // a pragma, not a comment
+    expect(ml).toContain('<div class="lively-code-cell-help">');
+    expect(ml).toContain("(*# redundant: error|warning *)");
     expect(ml).not.toContain("this build doesn't have");
 
     expect(cobol).toContain('data-language="cobol"');
