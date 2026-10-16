@@ -12,6 +12,10 @@
 // Chromium resolves *.localhost itself; no hosts-file entry is needed.
 const { test, expect } = require("@playwright/test");
 
+// Each test boots the whole Lively world one to three times (reloads), and Firefox/WebKit are
+// slow under parallel load; the default 30 s is too tight for the reload tests.
+test.beforeEach(() => { test.setTimeout(120000); });
+
 const APP = "http://dev.localhost:9001";
 const VAULT = "http://vault.dev.localhost:9001";
 const MOCK = !!process.env.VAULT_MOCK;
@@ -242,7 +246,7 @@ test.describe("identity vault", () => {
     await page.evaluate(() => lively.identity.keyVault.setEnabled(true));
     await derive(page, cred);
     await page.evaluate(() => lively.identity.keyVault.destroy());
-    await page.waitForTimeout(500);
+    await page.evaluate(() => lively.identity.identityVault.destroy());   // resolves once the vault has wiped
     expect(await page.evaluate((id) => !(lively.identity.webAuthn._kekCache && lively.identity.webAuthn._kekCache[id]), cred)).toBe(true);
     await page.evaluate(() => lively.identity.keyVault.setEnabled(true));
     await page.reload();
@@ -340,6 +344,11 @@ test.describe("identity vault storage and operations (no ceremony, all engines)"
     }, VAULT);
   }
 
+  // Resolves when the vault has finished the import (and the persist, if Stay unlocked is on):
+  // an op for the same credential queues behind the pending import, so no fixed sleep is needed.
+  const settled = (page) => page.evaluate((id) => new Promise((res) =>
+    lively.identity.identityVault.call("status", { credentialId: id }, () => res())), CRED);
+
   // hand the vault a KEK and X25519 pair the way registration does; returns the raw copies
   const adopt = (page) => page.evaluate(async (id) => {
     const c = lively.identity.crypto, wa = lively.identity.webAuthn;
@@ -379,7 +388,7 @@ test.describe("identity vault storage and operations (no ceremony, all engines)"
     await boot2(page, context);
     await page.evaluate(() => lively.identity.keyVault.setEnabled(true));
     const raw = await adopt(page);
-    await page.waitForTimeout(800);                                  // the vault persists asynchronously
+    await settled(page);                                             // import + persist finished in the vault
     await page.reload();
     await boot2(page, context);
     await page.evaluate(() => lively.identity.webAuthn.restoreCachesFromVault());
@@ -394,7 +403,7 @@ test.describe("identity vault storage and operations (no ceremony, all engines)"
     expect(back).toEqual({ restored: true, sameKek: true });
 
     await page.evaluate(() => lively.identity.keyVault.destroy());
-    await page.waitForTimeout(500);
+    await page.evaluate(() => lively.identity.identityVault.destroy());   // resolves once the vault has wiped
     await page.evaluate(() => lively.identity.keyVault.setEnabled(true));
     await page.reload();
     await boot2(page, context);
@@ -410,7 +419,7 @@ test.describe("identity vault storage and operations (no ceremony, all engines)"
     await page.evaluate(() => lively.identity.keyVault.setEnabled(true));
     // round trip first: until the vault document has loaded the frame is a readable about:blank
     await page.evaluate(() => new Promise((res) => lively.identity.identityVault.call("hello", {}, () => res())));
-    await page.waitForTimeout(500);                                  // let the adopt's persist land
+    await settled(page);
     const seen = await page.evaluate(async () => ({
       doc: (() => { try { return document.querySelector('iframe[title="Identity vault"]').contentWindow.document.title; } catch (e) { return e.name; } })(),
       sessionKeys: Object.keys(sessionStorage).filter((k) => k.indexOf("iv1") >= 0),
