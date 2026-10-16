@@ -219,3 +219,55 @@ export function checked(source, options = {}) {
   }
   return { warnings, error };
 }
+
+// ---- evaluation helpers ------------------------------------------------------------------------------------------
+import { ItemRun, makeGlobals } from '../../core/lib/ml/src/machine.js';
+
+// A value as plain JS for assertions: ints as numbers (BigInt beyond 2^53), tuples as arrays, a constructor as its name or
+// [name, arg], a function as "fn", an exception value as "exn:Name" or ["exn:Name", arg].
+export function plain(v) {
+  if (typeof v === 'number' || typeof v === 'bigint') return v;
+  if (Array.isArray(v)) return v.map(plain);
+  switch (v.tag) {
+    case 'con': return v.arg === undefined ? v.con.name : [v.con.name, plain(v.arg)];
+    case 'exn': return v.arg === undefined ? 'exn:' + v.excon.name : ['exn:' + v.excon.name, plain(v.arg)];
+    default: return 'fn';
+  }
+}
+
+// Like session(), but also runs each item. Returns { value(name), error, warnings, lastState } -- error is
+// 'class: message' for a static error and 'uncaught: <plain exn>' / 'limit' for a run-time one.
+export function evaluator(options = {}) {
+  const scope = makeBasis().child();
+  const globals = makeGlobals();
+  const el = new Elaborator({ style: 'book' });
+  const state = { error: null, warnings: [], state: null };
+  return {
+    globals,
+    run(source) {
+      state.error = null;
+      const parser = new Parser(source);
+      try {
+        for (let item; (item = parser.nextItem());) {
+          if (item.kind === 'pragma') continue;
+          const r = el.elaborateItem(derive(item), scope);
+          const c = checkMatchSites(r.matchSites, options);
+          if (c.error) throw c.error;
+          state.warnings.push(...c.warnings.map((w) => w.message));
+          const run = new ItemRun(r.ir, globals, options);
+          while (run.step(1e9) === 'running');
+          state.state = run.state;
+          if (run.state === 'raised') { state.error = 'uncaught: ' + JSON.stringify(plain(run.exn), (k, x) => (typeof x === 'bigint' ? String(x) : x)); return state; }
+          if (run.state !== 'done') { state.error = run.state; return state; }
+          run.commit();
+          r.scope.mergeInto(scope);
+        }
+      } catch (e) {
+        if (e.errorClass === undefined) throw e;
+        state.error = e.errorClass + ': ' + e.message;
+      }
+      return state;
+    },
+    value(name) { return plain(globals.get(name).value); },
+  };
+}

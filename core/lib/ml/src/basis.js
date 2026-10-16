@@ -8,6 +8,13 @@ import {
   Scope, TVar, tfn, ttuple, tInt, tBool, tExn, tUnit, INT, BOOL, EXN,
 } from './types.js';
 
+// datatype bool = false | true. Made once per process (not per basis): the machine hands out these very objects as the results
+// of comparisons, so every interpreter's `true` and `false` must be the same ConInfo.
+const boolInfo = (name, index) => ({ kind: 'con', name, scheme: tBool, tyname: BOOL, hasArg: false, index });
+export const FALSE_INFO = boolInfo('false', 0);
+export const TRUE_INFO = boolInfo('true', 1);
+BOOL.cons = [{ name: 'false', ty: null, info: FALSE_INFO }, { name: 'true', ty: null, info: TRUE_INFO }];
+
 export function makeBasis() {
   const root = new Scope();
 
@@ -16,13 +23,8 @@ export function makeBasis() {
   root.types.set('bool', { kind: 'tyname', tyname: BOOL });
   root.types.set('unit', { kind: 'abbrev', params: [], body: tUnit });
 
-  // datatype bool = false | true
-  BOOL.cons = [];
-  [['false', false], ['true', true]].forEach(([name], index) => {
-    const info = { kind: 'con', name, scheme: tBool, tyname: BOOL, hasArg: false, index };
-    BOOL.cons.push({ name, ty: null, info });
-    root.vals.set(name, info);
-  });
+  root.vals.set('false', FALSE_INFO);
+  root.vals.set('true', TRUE_INFO);
 
   const prim = (name, scheme) => root.vals.set(name, { kind: 'prim', name, scheme });
   const intPair = ttuple([tInt, tInt]);
