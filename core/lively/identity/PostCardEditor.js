@@ -49,12 +49,19 @@ module('lively.identity.PostCardEditor')
     'lively.identity.WebAuthn',
     'lively.identity.WebKey',
     'lively.identity.FileCrypto',
+    'lively.identity.AudienceRules',
+    'lively.identity.PostcardAudience',
+    'lively.identity.AudienceDialog',
     'lively.morphic.TextFormattingToolbar',
   )
   .toRun(function () {
 
     // See _resolveRecipientPubKeys (postcard-audit F25).
     var RECIPIENT_KEY_CACHE_TTL_MS = 60 * 1000;
+
+    // The friends/orbit/lists the recorded audience is expanded against. Short, so a
+    // person withdrawn from a list stops being sealed to within seconds of the next save.
+    var AUDIENCE_CTX_TTL_MS = 30 * 1000;
 
     // Shared by paragraph/heading/list_item toDOM/parseDOM (§10.1 align/indent) —
     // module-scope so schema node specs can reference them without a `this`.
@@ -144,10 +151,23 @@ module('lively.identity.PostCardEditor')
         this._statusEl = null;
         this._toolbarDiv = null;
         // Public/Private toggle — 'shared' is not a distinct editor-side state,
-        // it's what serializeEncrypted derives automatically once
-        // _recipientHandles is non-empty.
+        // it's what serializeEncrypted derives automatically once there is
+        // someone to seal to.
         this._visibility = 'public';
+        // Who a private card is sealed to is either its recorded audience
+        // (_audience = { tiers, people }, kept in the owner's settings; expanded
+        // against the current friends/orbit/lists at every save) or, for a card
+        // shared before audiences existed, the flat handle list below.
+        this._audience = null;
+        this._audienceLoaded = false;   // the recorded audience has been read (needed before any private save of an existing card)
+        this._audienceDirty = false;    // chosen before the card had an objId; recorded after its first save
+        this._audienceCtx = null;
+        this._audienceCtxAt = 0;
         this._recipientHandles = [];
+        this._extraRecipientHandles = []; // sealed to as well, for the duration of a Send
+        this._lastSealedHandles = [];
+        this._grantedAttachments = {};
+        this._sentLocked = false;       // delivered to an inbox: permanent, no further edits
         this._visibilityBtn = null;
         // Attachment metadata (§6): { objId, dek, blobCid, blobNonce, name,
         // mime } entries — pass-through inside the postcard payload, hydrated
@@ -942,11 +962,22 @@ module('lively.identity.PostCardEditor')
         actionsDiv.appendChild(statusSpan);
         this._statusEl = statusSpan;
 
-        // Visibility (Public/Private) is now chosen as the first step of the
-        // Send flow itself (_renderVisibilityStep) rather than pre-set here.
+        // Who can see the card: opens the audience dialog (Public, Friends, Orbit,
+        // lists, specific people). Sharing this way leaves the card editable; Send,
+        // next to it, is the permanent one.
+        var audienceBtn = document.createElement('button');
+        audienceBtn.className = 'pce-pill-btn pce-pill-neutral';
+        audienceBtn.addEventListener('mousedown', function (e) {
+          e.preventDefault(); e.stopPropagation();
+          self._openAudienceDialog();
+        });
+        actionsDiv.appendChild(audienceBtn);
+        this._visibilityBtn = audienceBtn;
+        this._updateVisibilityBtn();
+
         var sendBtn = document.createElement('button');
         sendBtn.className = 'pce-pill-btn pce-pill-solid'; // solid: the more consequential, rarer "final" action
-        sendBtn.title = 'Send to a handle';
+        sendBtn.title = 'Send to a handle — delivers the card to their inbox and locks it, so it can no longer be edited';
         var sendIcon = document.createElement('span');
         sendIcon.className = 'pce-pill-glyph';
         sendIcon.textContent = 'send';
@@ -1071,22 +1102,33 @@ module('lively.identity.PostCardEditor')
         }
       },
 
-      _setVisibility: function (value) {
-        if (this._visibility === value) return;
-        this._visibility = value;
-        this._updateVisibilityBtn();
-        this._markEdited();
+      // The audience pill: who can open this card, in the same words as the chip on
+      // the homestar reel. Clicking it opens the audience dialog.
+      _audienceLabel: function () {
+        var R = lively.identity.AudienceRules;
+        if (this._visibility === 'public') return 'Public';
+        if (this._audience) {
+          return this._audienceCtx ? R.ownerChipLabel(this._audience, this._audienceCtx, false) : 'Shared';
+        }
+        var n = (this._recipientHandles || []).length;
+        return n ? n + (n === 1 ? ' person' : ' people') : 'Only me';
       },
 
       _updateVisibilityBtn: function () {
         if (!this._visibilityBtn) return;
         var isPublic = this._visibility === 'public';
-        this._visibilityBtn.textContent = isPublic ? 'Public' : (this._recipientHandles.length ? 'Shared' : 'Private');
-        this._visibilityBtn.title = isPublic
-          ? 'Public — anyone can read. Click to make private.'
-          : 'Encrypted — only you' + (this._recipientHandles.length ? ' and ' + this._recipientHandles.length + ' recipient(s)' : '') + ' can read. Click to make public.';
-        this._visibilityBtn.style.background = isPublic ? '#fff' : '#eef';
-        this._visibilityBtn.style.borderColor = isPublic ? '#ccc' : '#55c';
+        var btn = this._visibilityBtn;
+        btn.innerHTML = '';
+        var icon = document.createElement('span');
+        icon.className = 'pce-pill-glyph';
+        icon.textContent = isPublic ? 'public' : 'lock';
+        btn.appendChild(icon);
+        btn.appendChild(document.createTextNode(this._audienceLabel()));
+        btn.title = isPublic
+          ? 'Public — anyone can read it, and it is not encrypted. Click to change who can see it.'
+          : 'Encrypted — only the people listed can open it. Click to change who can see it. You can keep editing a shared card.';
+        btn.classList.toggle('pce-pill-neutral', isPublic);
+        btn.classList.toggle('pce-pill-accent-soft', !isPublic);
       },
 
       _updateLocationBtn: function () {
@@ -1424,6 +1466,7 @@ module('lively.identity.PostCardEditor')
       // local JS, and _connectSync is a no-op for it.
       _createNewDoc: function () {
         var self = this;
+        this._audienceLoaded = true;
         this._ensureRuntime(function () {
           self._partState = {};
           self._attachEditor();
@@ -1472,7 +1515,15 @@ module('lively.identity.PostCardEditor')
           // constellation-membership write exception is a wikipage-only
           // concept now (IdentityServer.js's PUT route enforces the same).
           self._canEdit = self._isOwner;
+          // A card delivered to an inbox (state.sentAt) is permanent: the server
+          // refuses every later write, so open it read-only and say why.
+          self._sentLocked = !!(envelope.state && envelope.state.sentAt);
+          if (self._sentLocked) self._canEdit = false;
           self._updateVisibilityBtn();
+          // Read who the card is recorded as shared with before anything can save it.
+          if (self._canEdit && self._visibility !== 'public') {
+            self._ensureAudienceLoaded(function () {});
+          }
 
           // mode is what THIS stored version's payload.format actually is:
           // 'wiki' here means legacy yjs-update-v1 (a pre-plain/wiki-split
@@ -2129,7 +2180,9 @@ module('lively.identity.PostCardEditor')
           ].join(';');
           var label = document.createElement('span');
           label.style.cssText = 'font-size:11px;color:#888;font-family:sans-serif;';
-          label.textContent = 'Read-only — shared by @' + (this._handle || '');
+          label.textContent = this._sentLocked
+            ? 'Sent to an inbox, so this card is permanent and can no longer be edited.'
+            : 'Read-only — shared by @' + (this._handle || '');
           this._toolbarDiv.appendChild(label);
         }
         // The floating action cluster is a sibling of toolbarDiv/pmDiv under
@@ -2585,10 +2638,11 @@ module('lively.identity.PostCardEditor')
       },
 
       // Private/shared save: cache the KEK for this session (one WebAuthn
-      // prompt), re-resolve every recipient's current public key (their key
-      // may have changed since the last save, and serializeEncrypted always
-      // reseals a fresh DEK for the full recipient list — there is no
-      // persistent DEK across versions), then encrypt.
+      // prompt), work out who the card is sealed to, re-resolve every
+      // recipient's current public key (their key may have changed since the
+      // last save, and serializeEncrypted always reseals a fresh DEK for the
+      // full recipient list — there is no persistent DEK across versions),
+      // then encrypt.
       _saveNowPrivate: function (user, callback) {
         var self = this;
         var cb = callback || function () {};
@@ -2603,39 +2657,54 @@ module('lively.identity.PostCardEditor')
           wa.deriveKek({ credentialId: user.credentialId, rpId: user.rpId, challenge: ch }, function (err) { cb2(err); });
         }
 
+        function fail(status, err) {
+          console.error('[PostCardEditor] ' + status + ':', err && err.message);
+          self._setStatus('Error (' + status + ')');
+          cb(err);
+        }
+
         withKek(function (err) {
-          if (err) {
-            console.error('[PostCardEditor] deriveKek error:', err.message);
-            self._setStatus('Error (passkey)');
-            return cb(err);
-          }
-          self._resolveRecipientPubKeys(self._recipientHandles, function (_e, result) {
-            if (result.failed.length) {
-              console.warn('[PostCardEditor] Dropping recipient(s) with no published key from this save:', result.failed.join(', '));
-            }
-            var params = {
-              prevEnvelope:  self._envelope || null,
-              constellation: self._constellation,
-              recipients:    result.resolved.map(function (r) {
-                return { did: r.did, x25519PublicKey: r.x25519PublicKey };
-              }),
-              attachments: self._attachments || [],
-              stateMeta: self._composeStateMeta({
-                recipientHandles: result.resolved.map(function (r) { return r.handle; }),
-              }),
-            };
-            var serialize;
-            if (self._isWikiMode) {
-              params.yDoc = self.yDoc;
-              serialize = lively.identity.postCardSerializer.serializeEncrypted;
-            } else {
-              params.doc = self.editorView.state.doc.toJSON();
-              params.partState = self._partState || {};
-              params.backStamps = self._backStamps || [];
-              serialize = lively.identity.postCardSerializer.serializePlainEncrypted;
-            }
-            serialize.call(lively.identity.postCardSerializer, params, function (err, envelope) {
-              self._finishSave(err, envelope, cb);
+          if (err) return fail('passkey', err);
+          // The recorded audience decides who the new version is sealed to, so it
+          // has to be known first: sealing to the handle list alone would withdraw
+          // everyone a card was shared with through its audience.
+          self._ensureAudienceLoaded(function (loadErr) {
+            if (loadErr) return fail('audience', loadErr);
+            self._sealTargetHandles(function (targetErr, handles) {
+              if (targetErr) return fail('audience', targetErr);
+              self._resolveRecipientPubKeys(handles, function (_e, result) {
+                if (result.failed.length) {
+                  console.warn('[PostCardEditor] Dropping recipient(s) with no published key from this save:', result.failed.join(', '));
+                }
+                self._lastSealedHandles = result.resolved.map(function (r) { return r.handle; });
+                // An audience card records the coarse shape of its audience (what a
+                // recipient may see); a card shared by handle records the handles.
+                var meta = self._audience
+                  ? { audience: lively.identity.AudienceRules.mirrorFor(self._audience) }
+                  : { recipientHandles: self._lastSealedHandles };
+                var params = {
+                  prevEnvelope:  self._envelope || null,
+                  constellation: self._constellation,
+                  recipients:    result.resolved.map(function (r) {
+                    return { did: r.did, x25519PublicKey: r.x25519PublicKey };
+                  }),
+                  attachments: self._attachments || [],
+                  stateMeta: self._composeStateMeta(meta),
+                };
+                var serialize;
+                if (self._isWikiMode) {
+                  params.yDoc = self.yDoc;
+                  serialize = lively.identity.postCardSerializer.serializeEncrypted;
+                } else {
+                  params.doc = self.editorView.state.doc.toJSON();
+                  params.partState = self._partState || {};
+                  params.backStamps = self._backStamps || [];
+                  serialize = lively.identity.postCardSerializer.serializePlainEncrypted;
+                }
+                serialize.call(lively.identity.postCardSerializer, params, function (serErr, envelope) {
+                  self._finishSave(serErr, envelope, cb);
+                });
+              });
             });
           });
         });
@@ -2730,12 +2799,27 @@ module('lively.identity.PostCardEditor')
           }
           self._envelope = envelope;
           self._objId = envelope.objId;
-          self._recipientHandles = (envelope.state && envelope.state.recipientHandles) || self._recipientHandles;
+          // A card with a recorded audience is sealed from that, not from a handle
+          // list, so what the envelope names must not turn into a sticky list.
+          if (!self._audience) {
+            self._recipientHandles = (envelope.state && envelope.state.recipientHandles) || self._recipientHandles;
+          }
           self._locationCode = (envelope.state && envelope.state.location) || null;
           self._locationCleared = false;
           self._updateLocationBtn();
           self._reactionsEnabled = !(envelope.state && envelope.state.reactionsEnabled === false);
           self._updateVisibilityBtn();
+          // An audience chosen before the card existed can only be recorded now that
+          // it has an objId. A failure keeps the flag, so the next save tries again.
+          if (self._audienceDirty && envelope.objId) {
+            lively.identity.postcardAudience.setCardAudience(
+              envelope.objId, self._visibility === 'public' ? null : self._audience,
+              function (recErr) {
+                if (recErr) return $world.alert('Saved the card, but could not record who it is shared with: ' + recErr.message);
+                self._audienceDirty = false;
+              });
+          }
+          self._shareAttachmentsWithAudience();
           // If this was a new card, wire up sync now that we have an objId
           if (self._isNew) {
             self._isNew = false;
@@ -2845,6 +2929,153 @@ module('lively.identity.PostCardEditor')
 
     },
 
+    // ─── audience ─────────────────────────────────────────────────────────────────
+    // Who can open a private card. The owner picks it in the audience dialog
+    // (the same one the homestar reel uses); it is recorded in the owner's
+    // settings (state.cardAudiences) and every save seals the new version to it,
+    // expanded against the friends, orbit and lists as they are at that moment.
+
+    'audience', {
+
+      // owner only. fresh: load again even if the copy is recent. thenDo(err, ctx).
+      _ensureAudienceCtx: function (fresh, thenDo) {
+        var self = this;
+        if (!fresh && this._audienceCtx && (Date.now() - this._audienceCtxAt) < AUDIENCE_CTX_TTL_MS) {
+          return thenDo(null, this._audienceCtx);
+        }
+        lively.identity.postcardAudience.loadContext(function (err, ctx) {
+          if (!err) { self._audienceCtx = ctx; self._audienceCtxAt = Date.now(); }
+          thenDo(err, ctx);
+        });
+      },
+
+      // Reads the audience recorded for this card. A card that has no objId yet has
+      // nothing recorded. Saving a private card before this has happened could
+      // seal it to the wrong people, so _saveNowPrivate waits for it.
+      _ensureAudienceLoaded: function (thenDo) {
+        var self = this;
+        if (this._audienceLoaded || !this._objId) return thenDo(null);
+        this._ensureAudienceCtx(true, function (err, ctx) {
+          if (err) return thenDo(err);
+          if (!self._audienceLoaded) {   // the dialog may have set it while this was loading
+            self._audience = ctx.cardAudiences[self._objId] || null;
+            self._audienceLoaded = true;
+          }
+          self._updateVisibilityBtn();
+          thenDo(null);
+        });
+      },
+
+      // The handles of everyone besides the owner the card is to be sealed to: the
+      // recorded audience expanded now, or the flat handle list of a card shared
+      // before audiences existed, plus anyone a Send in progress adds.
+      // thenDo(err, handles)
+      _sealTargetHandles: function (thenDo) {
+        var self = this;
+        var extra = this._extraRecipientHandles || [];
+        function withExtra(list) {
+          var out = list.slice();
+          extra.forEach(function (h) { if (out.indexOf(h) === -1) out.push(h); });
+          return out;
+        }
+        if (!this._audience) return thenDo(null, withExtra(this._recipientHandles || []));
+        this._ensureAudienceCtx(false, function (err, ctx) {
+          if (err) return thenDo(err);
+          var handles = [];
+          lively.identity.AudienceRules.unionDids(self._audience, ctx).forEach(function (did) {
+            if (ctx.handleByDid[did]) handles.push(ctx.handleByDid[did]);
+          });
+          thenDo(null, withExtra(handles));
+        });
+      },
+
+      // The audience button. Public <-> private is a content change (a new plaintext
+      // or encrypted version), which is why it is chosen here and not on the reel.
+      _openAudienceDialog: function () {
+        var self = this;
+        if (!this._canEdit || this._sentLocked) return;
+        this._ensureAudienceCtx(true, function (err, ctx) {
+          if (err) return $world.alert('Could not load your friends and lists: ' + err.message);
+          self._ensureAudienceLoaded(function (loadErr) {
+            if (loadErr) return $world.alert('Could not read who this card is shared with: ' + loadErr.message);
+            var audience = self._audience;
+            var warning = null;
+            var env = self._envelope;
+            if (!audience && self._visibility !== 'public' && env) {
+              // Shared by handle before audiences existed: start from the friends it
+              // is already sealed to. Anyone else it names would lose access on save.
+              var dids = ((env.record && env.record.recipients) || []).map(function (r) { return r.did; });
+              var friends = dids.filter(function (d) { return ctx.friendDids.indexOf(d) !== -1; });
+              audience = { tiers: [], people: friends };
+              var lost = dids.length - friends.length;
+              if (lost > 0) {
+                warning = lost + (lost === 1 ? ' person who is' : ' people who are') + ' not your ' +
+                  (lost === 1 ? 'friend' : 'friends') + ' will lose access if you save.';
+              }
+            }
+            lively.identity.AudienceDialog.open({
+              ctx: ctx,
+              audience: audience,
+              isPublic: self._visibility === 'public',
+              allowPublic: true,
+              subtitle: (env && env.state && env.state.title) || 'This postcard',
+              warning: warning,
+              onSave: function (result) { self._applyAudienceResult(result); },
+            });
+          });
+        });
+      },
+
+      // result = { pub, audience: { tiers, people } } from the dialog. Records the
+      // choice, then saves a new version sealed to it (or published, for Public).
+      _applyAudienceResult: function (result) {
+        var self = this;
+        var nowPublic = !!result.pub;
+        var audience = nowPublic ? null : result.audience;
+        var same = (this._visibility === 'public') === nowPublic &&
+          JSON.stringify(this._audience || null) === JSON.stringify(audience);
+        if (same) return;
+
+        function apply() {
+          self._visibility = nowPublic ? 'public' : 'private';
+          self._audience = audience;
+          self._audienceLoaded = true;
+          self._updateVisibilityBtn();
+          self._userHasEdited = true;
+          // A card that exists is re-saved now so the change takes effect; a new
+          // one saves as usual once it has content.
+          if (self._objId) self._saveNow();
+          else self._scheduleSave();
+        }
+
+        if (!this._objId) {
+          this._audienceDirty = true;   // recorded after the first save, when there is an objId
+          return apply();
+        }
+        // Record the intent first, so a failed save can still be retried from it.
+        lively.identity.postcardAudience.setCardAudience(this._objId, audience, function (err) {
+          if (err) return $world.alert('Could not save the audience: ' + err.message);
+          apply();
+        });
+      },
+
+      // A shared attachment's own blob needs the same people on its access list as
+      // the card (the key to open it travels inside the card). Done once per person
+      // per set of attachments, not on every autosave; non-fatal, see
+      // _grantAttachmentsAccess.
+      _shareAttachmentsWithAudience: function () {
+        var self = this;
+        if (this._visibility === 'public' || !(this._attachments || []).length) return;
+        var key = (this._attachments || []).map(function (a) { return a.objId; }).join(',');
+        (this._lastSealedHandles || []).forEach(function (h) {
+          if (self._grantedAttachments[h] === key) return;
+          self._grantedAttachments[h] = key;
+          self._grantAttachmentsAccess(h, function () {});
+        });
+      },
+
+    },
+
     // ─── send ─────────────────────────────────────────────────────────────────────
     // Per spec §2.3, sending = grant access (reseal the DEK to include the
     // recipient, for private/shared cards) + POST /@:handle/inbox to notify
@@ -2853,15 +3084,14 @@ module('lively.identity.PostCardEditor')
     'send', {
 
       // initialTab: 'handle' (default) or 'constellation' — which Send-to
-      // tab to land on once visibility is chosen. If the panel is already
-      // open on the Send-to step: re-requesting its current tab toggles the
-      // whole flow closed (mirrors the old single-purpose panel's toggle
-      // behavior); requesting the other tab just switches to it. Any other
-      // state (still on the visibility step, or a repeat click) closes it.
+      // tab to land on. If the panel is already open: re-requesting its
+      // current tab toggles it closed (mirrors the old single-purpose panel's
+      // toggle behavior); requesting the other tab just switches to it. Who can
+      // read the card is chosen with the audience button, not here.
       _promptAndSend: function (initialTab) {
         var tab = initialTab === 'constellation' ? 'constellation' : 'handle';
         if (this._sendPanel) {
-          if (this._sendStep === 'sendto' && this._sendPanelTab !== tab) {
+          if (this._sendPanelTab !== tab) {
             this._selectSendTab(tab);
             return;
           }
@@ -2870,16 +3100,14 @@ module('lively.identity.PostCardEditor')
         }
         this._sendPendingTab = tab;
         this._openSendModal();
-        this._renderVisibilityStep();
+        this._renderSendToStep(tab);
       },
 
       // Native overlay on top of a Lively world: must live outside any
       // morph's own DOM subtree (shapeNode) or typing into its inputs
       // silently fails — see CLAUDE.md. One backdrop+panel shell is reused
-      // across the flow's two steps (_renderVisibilityStep, then
-      // _renderSendToStep) — only the panel's contents are swapped, so
-      // listeners bound to the panel itself (stopPropagation, Escape) are
-      // attached once here rather than per step.
+      // across the panel's tabs, so listeners bound to the panel itself
+      // (stopPropagation, Escape) are attached once here.
       _openSendModal: function () {
         var self = this;
         var backdrop = document.createElement('div');
@@ -2911,83 +3139,25 @@ module('lively.identity.PostCardEditor')
         this._sendBackdrop = backdrop;
       },
 
-      // Step 1 of 2: pick Public or Private before choosing a destination —
-      // makes the encryption decision explicit up front rather than relying
-      // on whatever the toolbar's visibility toggle happened to be left at.
-      _renderVisibilityStep: function () {
-        var self = this;
-        var panel = this._sendPanel;
-        this._sendStep = 'visibility';
-        while (panel.firstChild) panel.removeChild(panel.firstChild);
-
-        var title = document.createElement('div');
-        title.textContent = 'Visibility';
-        title.style.cssText = 'font-size:13px;font-weight:700;margin-bottom:4px;color:#222;';
-        panel.appendChild(title);
-
-        var subtitle = document.createElement('div');
-        subtitle.textContent = 'Choose who can read this card';
-        subtitle.style.cssText = 'font-size:11px;color:#666;margin-bottom:10px;';
-        panel.appendChild(subtitle);
-
-        function makeOption(value, icon, label, desc) {
-          var selected = self._visibility === value;
-          var btn = document.createElement('button');
-          btn.style.cssText = [
-            'display:block', 'width:100%', 'text-align:left', 'cursor:pointer',
-            'box-sizing:border-box', 'padding:8px 10px', 'margin-bottom:8px',
-            'border-radius:6px', 'font-family:sans-serif',
-            'border:1px solid ' + (selected ? '#E31361' : '#ccc'),
-            'background:' + (selected ? '#fde6ee' : '#fff'),
-          ].join(';');
-          var labelEl = document.createElement('div');
-          labelEl.textContent = icon + ' ' + label;
-          labelEl.style.cssText = 'font-size:12px;font-weight:600;color:#222;';
-          var descEl = document.createElement('div');
-          descEl.textContent = desc;
-          descEl.style.cssText = 'font-size:11px;color:#666;margin-top:2px;';
-          btn.appendChild(labelEl);
-          btn.appendChild(descEl);
-          btn.addEventListener('mousedown', function (e) {
-            e.preventDefault(); e.stopPropagation();
-            self._setVisibility(value);
-            self._renderSendToStep(self._sendPendingTab);
-          });
-          return btn;
-        }
-
-        panel.appendChild(makeOption('public', '🌐', 'Public', 'Anyone can read this card.'));
-        panel.appendChild(makeOption('private', '🔒', 'Private', 'Encrypted — only chosen recipients can read it.'));
-
-        var cancelRow = document.createElement('div');
-        cancelRow.style.cssText = 'display:flex;justify-content:flex-end;';
-        var cancelBtn = document.createElement('button');
-        cancelBtn.textContent = 'Cancel';
-        cancelBtn.style.cssText = 'font-size:11px;padding:4px 10px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
-        cancelBtn.addEventListener('mousedown', function (e) {
-          e.preventDefault(); e.stopPropagation();
-          self._closeSendPanel();
-        });
-        cancelRow.appendChild(cancelBtn);
-        panel.appendChild(cancelRow);
-      },
-
-      // Step 2 of 2: @handle / c/constellation destination tabs — the panel
-      // this replaced in full before the visibility step was split out.
+      // @handle / c/constellation destination tabs.
       _renderSendToStep: function (tab) {
         var self = this;
         var panel = this._sendPanel;
-        this._sendStep = 'sendto';
         while (panel.firstChild) panel.removeChild(panel.firstChild);
 
-        var backLink = document.createElement('div');
-        backLink.textContent = '← ' + (this._visibility === 'public' ? 'Public' : 'Private') + ', change';
-        backLink.style.cssText = 'font-size:10px;color:#888;cursor:pointer;margin-bottom:8px;';
-        backLink.addEventListener('mousedown', function (e) {
+        var audienceLine = document.createElement('div');
+        audienceLine.style.cssText = 'font-size:10px;color:#888;margin-bottom:8px;';
+        audienceLine.appendChild(document.createTextNode('Who can read it now: ' + this._audienceLabel() + ' · '));
+        var changeLink = document.createElement('span');
+        changeLink.textContent = 'change';
+        changeLink.style.cssText = 'cursor:pointer;text-decoration:underline;';
+        changeLink.addEventListener('mousedown', function (e) {
           e.preventDefault(); e.stopPropagation();
-          self._renderVisibilityStep();
+          self._closeSendPanel();
+          self._openAudienceDialog();
         });
-        panel.appendChild(backLink);
+        audienceLine.appendChild(changeLink);
+        panel.appendChild(audienceLine);
 
         var title = document.createElement('div');
         title.textContent = 'Send to';
@@ -3022,9 +3192,18 @@ module('lively.identity.PostCardEditor')
 
         // ── @handle tab ──
         var handleLabel = document.createElement('div');
-        handleLabel.textContent = this._visibility === 'public' ? 'Send to @handle' : 'Share & send to @handle';
+        handleLabel.textContent = 'Send to @handle';
         handleLabel.style.cssText = 'font-size:11px;color:#666;margin-bottom:6px;';
         handleSection.appendChild(handleLabel);
+
+        // Sending is the one irreversible way to hand a card over; sharing with an
+        // audience is not. Say so before the button, not after.
+        var permanentNote = document.createElement('div');
+        permanentNote.textContent = 'Sending puts the card in their inbox and locks it: you won\u2019t be able to edit it afterward. ' +
+          'To share it and keep editing, use the audience button instead.';
+        permanentNote.style.cssText = 'font-size:11px;line-height:1.35;color:#7a4b00;background:#fff6e0;' +
+          'border:1px solid #f0d9a0;border-radius:4px;padding:6px 8px;margin-bottom:8px;';
+        handleSection.appendChild(permanentNote);
 
         var handleInput = document.createElement('input');
         handleInput.type = 'text';
@@ -3095,7 +3274,7 @@ module('lively.identity.PostCardEditor')
         }
 
         var sendBtn = document.createElement('button');
-        sendBtn.textContent = 'Send';
+        sendBtn.textContent = 'Send & lock';
         sendBtn.style.cssText = 'font-size:11px;padding:4px 10px;cursor:pointer;border:1px solid #E31361;border-radius:3px;background:#fde6ee;';
         function submitHandle() {
           var handle = handleInput.value.trim().replace(/^@/, '');
@@ -3210,7 +3389,6 @@ module('lively.identity.PostCardEditor')
       _closeSendPanel: function () {
         if (this._sendPanel) { this._sendPanel.remove(); this._sendPanel = null; }
         if (this._sendBackdrop) { this._sendBackdrop.remove(); this._sendBackdrop = null; }
-        this._sendStep = null;
         this._sendPendingTab = null;
         this._sendPanelTab = null;
         this._sendPanelTabs = null;
@@ -3240,7 +3418,9 @@ module('lively.identity.PostCardEditor')
       },
 
       // thenDo(err, result) — result is the inbox POST's JSON body
-      // ({ok:true, delivered:true} or the POSTAL_REJECTION shape).
+      // ({ok:true, delivered:true} or the POSTAL_REJECTION shape). Delivering
+      // freezes the card server-side (state.sentAt): this is the permanent way to
+      // hand someone a card, where the audience button is the editable one.
       _doSend: function (handle, thenDo) {
         var self = this;
         if (!this._objId) return thenDo(new Error('Save the card before sending'));
@@ -3270,20 +3450,18 @@ module('lively.identity.PostCardEditor')
               return thenDo(new Error("@" + handle + " hasn't set up encryption yet — cannot share with them."));
             }
 
-            // Grant access — add as a recipient (if not already one) and
-            // reseal, then notify once that's landed.
-            if (self._recipientHandles.indexOf(handle) === -1) {
-              self._recipientHandles = self._recipientHandles.concat([handle]);
-            }
+            // Grant access — seal the card to them as well (on top of whatever
+            // audience it has) and notify once that has landed.
+            self._extraRecipientHandles = [handle];
             self._saveNow(function (saveErr) {
+              self._extraRecipientHandles = [];
               if (saveErr) return thenDo(saveErr);
-              // _saveNow -> _finishSave refreshes _recipientHandles from the
-              // envelope actually stored. If the handle isn't in it, their key
-              // couldn't be resolved and they were silently dropped from
-              // record.recipients (see _resolveRecipientPubKeys) — don't
+              // If the handle isn't among the people the stored version was sealed
+              // to, their key couldn't be resolved and they were silently dropped
+              // from record.recipients (see _resolveRecipientPubKeys) — don't
               // notify someone who was never actually granted access, or
               // they'd see the card in their inbox and hit a 403 opening it.
-              if (self._recipientHandles.indexOf(handle) === -1) {
+              if (self._lastSealedHandles.indexOf(handle) === -1) {
                 return thenDo(new Error("@" + handle + " hasn't set up encryption yet — cannot share with them."));
               }
               // §6: sync each attachment's own transport ACL to the new
@@ -4212,11 +4390,14 @@ module('lively.identity.PostCardEditor')
         if (!this._handle) return cb(new Error('No handle'));
 
         function withRecipients(cb) {
-          if (self._visibility === 'public' || !self._recipientHandles || !self._recipientHandles.length) {
-            return cb([]);
-          }
-          self._resolveRecipientPubKeys(self._recipientHandles, function (_e, result) {
-            cb(result.resolved.map(function (r) { return { did: r.did, x25519PublicKey: r.x25519PublicKey }; }));
+          if (self._visibility === 'public') return cb([]);
+          self._ensureAudienceLoaded(function () {
+            self._sealTargetHandles(function (targetErr, handles) {
+              if (targetErr || !handles.length) return cb([]);
+              self._resolveRecipientPubKeys(handles, function (_e, result) {
+                cb(result.resolved.map(function (r) { return { did: r.did, x25519PublicKey: r.x25519PublicKey }; }));
+              });
+            });
           });
         }
 
