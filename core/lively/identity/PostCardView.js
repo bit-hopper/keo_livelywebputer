@@ -77,6 +77,7 @@ module("lively.identity.PostCardView")
           "_visibilityEl",
           "_verifyBadgeEl",
           "_moreBtn",
+          "_audienceChipEl",
           "_moreMenuEl",
           "_moreMenuOutsideHandler",
           "_footerEl",
@@ -432,6 +433,72 @@ module("lively.identity.PostCardView")
           });
           front.appendChild(moreBtn);
           this._moreBtn = moreBtn;
+          this._renderAudienceChip();
+        },
+
+        // Opt-in (options.audienceChip / setAudienceChip): a small pill in the handle
+        // row that says who the card is shared with. chip = { label, icon?, title?,
+        // onClick? }; with no onClick it is a plain label (what a viewer sees), with
+        // one it is a button (the owner's, which opens the audience dialog). null
+        // removes it. The handle text gives up the room the chip takes.
+        setAudienceChip: function (chip) {
+          this._audienceChip = chip || null;
+          this._renderAudienceChip();
+        },
+
+        _renderAudienceChip: function () {
+          if (!this._frontEl) return;
+          var self = this;
+          if (this._audienceChipEl) {
+            this._audienceChipEl.remove();
+            this._audienceChipEl = null;
+          }
+          var chip = this._audienceChip;
+          if (this._handleEl) this._handleEl.style.right = "40px";
+          if (!chip || !chip.label) return;
+          var clickable = typeof chip.onClick === "function";
+          var el = document.createElement(clickable ? "button" : "div");
+          el.className = "lively-postcard-view-audience-chip";
+          if (chip.title) el.title = chip.title;
+          var icon = chip.icon
+            ? '<span class="material-symbols-rounded" style="font-size:14px;line-height:1;margin-right:4px;">' + chip.icon + "</span>"
+            : "";
+          el.innerHTML = icon + "<span></span>";
+          el.lastChild.textContent = chip.label;
+          el.style.cssText = [
+            "position:absolute",
+            "top:13px",
+            "right:40px",
+            "height:26px",
+            "box-sizing:border-box",
+            "display:flex",
+            "align-items:center",
+            "padding:0 10px",
+            "border-radius:13px",
+            "font-size:11px",
+            "white-space:nowrap",
+            "border:1px solid " + (clickable ? "#e8497e" : "#ddd"),
+            "background:" + (clickable ? "#fdeef3" : "#fafafa"),
+            "color:" + (clickable ? "#CC0057" : "#666"),
+            "cursor:" + (clickable ? "pointer" : "default"),
+          ].join(";");
+          if (clickable) {
+            ["mousedown", "click"].forEach(function (t) {
+              el.addEventListener(t, function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (t === "click") chip.onClick(self);
+              });
+            });
+          }
+          this._frontEl.appendChild(el);
+          this._audienceChipEl = el;
+          // The handle text ends before the chip begins (40px for the menu button,
+          // the chip's own width, and a gap). offsetWidth is 0 until the card is laid
+          // out; 140 is a generous stand-in so a long handle still ellipsizes clear of it.
+          if (this._handleEl) {
+            this._handleEl.style.right = (40 + (el.offsetWidth || 140) + 8) + "px";
+          }
         },
 
         _buildBackContents: function (back) {
@@ -927,6 +994,7 @@ module("lively.identity.PostCardView")
           this._savedToCollections = false;
 
           this._loadAvatar();
+          if (this._onEnvelope) this._onEnvelope(envelope, this);
           this._titleEl.textContent =
             (envelope.state && envelope.state.title) || "(untitled)";
           // The "more" button itself stays visible for every viewer --
@@ -2040,6 +2108,10 @@ module("lively.identity.PostCardView")
       //   (compactMode or showCommentChip) — the caller fetches this once
       //   up front so the chip doesn't flip from blank to a number after
       //   the fact.
+      // options.audienceChip -> opt-in { label, icon?, title?, onClick? } pill in the
+      //   handle row saying who the card is shared with (see setAudienceChip).
+      // options.onEnvelope -> fired with (envelope, view) each time the card has
+      //   an envelope to show, so a caller can set the chip from what is stored.
       // options.onToggleComments -> fired with this._objId when the comment
       //   chip is clicked (compactMode or showCommentChip) — expand/collapse
       //   state lives in the caller, not in this view.
@@ -2060,6 +2132,8 @@ module("lively.identity.PostCardView")
         view._commentCount = opts.commentCount || 0;
         view._commentsExpanded = false;
         view._onToggleComments = opts.onToggleComments || null;
+        view._audienceChip = opts.audienceChip || null;
+        view._onEnvelope = opts.onEnvelope || null;
         if (opts.target) {
           opts.target.addMorph(view);
           view._setup();

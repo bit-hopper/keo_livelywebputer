@@ -165,3 +165,94 @@ test('sameMirror: compares by value', () => {
   assert.equal(rules.sameMirror(undefined, null), true);
   assert.equal(rules.sameMirror(undefined, { tiers: [] }), false);
 });
+
+// ─── the dialog's state and the chip labels ────────────────────────────────────
+
+const dctx = Object.assign({}, ctx, {
+  lists: [{ id: 'club', name: 'Book club', memberDids: ['did:c', 'did:d'] }, { id: 'empty', name: 'Nobody', memberDids: [] }]
+});
+
+test('stateFromAudience / audienceFromState round trip, with tiers in a fixed order', () => {
+  const s = rules.stateFromAudience({ tiers: ['list:club', 'orbit', 'friends'], people: ['did:a'] }, false);
+  assert.deepEqual(s, { pub: false, friends: true, orbit: true, lists: { club: true }, people: ['did:a'] });
+  assert.deepEqual(rules.audienceFromState(s, dctx), { tiers: ['friends', 'orbit', 'list:club'], people: ['did:a'] });
+});
+
+test('stateFromAudience: a public card starts with only Public ticked', () => {
+  assert.deepEqual(rules.stateFromAudience({ tiers: ['friends'] }, true),
+    { pub: true, friends: false, orbit: false, lists: {}, people: [] });
+});
+
+test('toggle: ticking Public clears every other choice, and ticking anything else clears Public', () => {
+  let s = rules.stateFromAudience({ tiers: ['friends', 'list:club'], people: ['did:a'] }, false);
+  s = rules.toggle(s, 'pub');
+  assert.deepEqual(s, { pub: true, friends: false, orbit: false, lists: {}, people: [] });
+  s = rules.toggle(s, 'orbit');
+  assert.deepEqual(s, { pub: false, friends: false, orbit: true, lists: {}, people: [] });
+  s = rules.toggle(s, 'pub');
+  s = rules.toggle(s, 'list:club');
+  assert.equal(s.pub, false);
+  assert.deepEqual(s.lists, { club: true });
+  s = rules.toggle(rules.toggle(rules.emptyState(), 'pub'), 'pub');                  // un-ticking Public leaves nothing ticked
+  assert.deepEqual(s, rules.emptyState());
+});
+
+test('toggle: a second click un-ticks, and an unknown key changes nothing', () => {
+  let s = rules.toggle(rules.emptyState(), 'friends');
+  assert.equal(s.friends, true);
+  s = rules.toggle(s, 'friends');
+  assert.equal(s.friends, false);
+  assert.deepEqual(rules.toggle(rules.emptyState(), 'bogus'), rules.emptyState());
+});
+
+test('togglePerson: adds and removes a named person, and ticking one clears Public', () => {
+  let s = rules.toggle(rules.emptyState(), 'pub');
+  s = rules.togglePerson(s, 'did:a');
+  assert.deepEqual(s.people, ['did:a']);
+  assert.equal(s.pub, false);
+  s = rules.togglePerson(s, 'did:b');
+  s = rules.togglePerson(s, 'did:a');
+  assert.deepEqual(s.people, ['did:b']);
+});
+
+test('toggle functions do not mutate the state they are given', () => {
+  const s = rules.stateFromAudience({ tiers: ['friends', 'list:club'], people: ['did:a'] }, false);
+  const copy = JSON.parse(JSON.stringify(s));
+  rules.toggle(s, 'orbit'); rules.toggle(s, 'list:club'); rules.toggle(s, 'pub'); rules.togglePerson(s, 'did:b');
+  assert.deepEqual(s, copy);
+});
+
+test('sealedCount: the de-duplicated union, and nobody for Public', () => {
+  const s = rules.stateFromAudience({ tiers: ['friends', 'orbit', 'list:club'], people: ['did:a'] }, false);
+  assert.equal(rules.sealedCount(s, dctx), 4);
+  assert.equal(rules.sealedCount(rules.stateFromAudience({ tiers: ['orbit'] }, false), dctx), 2);
+  assert.equal(rules.sealedCount(rules.stateFromAudience(null, true), dctx), 0);
+});
+
+test('footerText: says what is true of each state', () => {
+  assert.equal(rules.footerText(rules.stateFromAudience(null, true), dctx), 'Anyone can read this card. It is not encrypted.');
+  assert.equal(rules.footerText(rules.emptyState(), dctx), 'Only you can open this card.');
+  assert.equal(rules.footerText(rules.stateFromAudience({ tiers: ['list:empty'] }, false), dctx), 'Only you can open this card.');
+  assert.equal(rules.footerText(rules.stateFromAudience({ people: ['did:a'] }, false), dctx), 'Sealed to 1 person. Only they can open it.');
+  assert.equal(rules.footerText(rules.stateFromAudience({ tiers: ['friends'] }, false), dctx), 'Sealed to 4 people. Only they can open it.');
+});
+
+test('ownerChipLabel: names the ticked sets with the de-duplicated count', () => {
+  assert.equal(rules.ownerChipLabel({ tiers: ['friends'] }, dctx, false), 'Friends · 4');
+  assert.equal(rules.ownerChipLabel({ tiers: ['orbit', 'list:club'] }, dctx, false), 'Orbit + Book club · 4');
+  assert.equal(rules.ownerChipLabel({ tiers: ['friends', 'orbit', 'list:club'] }, dctx, false), '3 audiences · 4');
+  assert.equal(rules.ownerChipLabel({ tiers: [], people: ['did:a'] }, dctx, false), 'Specific people · 1');
+  assert.equal(rules.ownerChipLabel({ tiers: [], people: [] }, dctx, false), 'Only me');
+  assert.equal(rules.ownerChipLabel(null, dctx, false), 'Only me');
+  assert.equal(rules.ownerChipLabel({ tiers: ['friends'] }, dctx, true), 'Public');
+});
+
+test('viewerChipLabel: only Friends / Orbit by name, never a list or a person', () => {
+  assert.equal(rules.viewerChipLabel('public', null), 'Public');
+  assert.equal(rules.viewerChipLabel('shared', { tiers: ['friends'] }), 'Friends');
+  assert.equal(rules.viewerChipLabel('shared', { tiers: ['orbit'], custom: true }), 'Orbit');
+  assert.equal(rules.viewerChipLabel('shared', { tiers: ['friends', 'orbit'] }), 'Friends + Orbit');
+  assert.equal(rules.viewerChipLabel('shared', { tiers: [], custom: true }), 'Just a few people');
+  assert.equal(rules.viewerChipLabel('shared', undefined), 'Just a few people');
+  assert.equal(rules.viewerChipLabel('private', { tiers: [] }), null);
+});

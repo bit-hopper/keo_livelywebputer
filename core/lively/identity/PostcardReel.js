@@ -29,6 +29,9 @@ module("lively.identity.PostcardReel")
     "lively.identity.HomestarUI",
     "lively.identity.PostCardView",
     "lively.identity.MailboxThread",
+    "lively.identity.PostcardAudience",
+    "lively.identity.AudienceRules",
+    "lively.identity.AudienceDialog",
     "lively.morphic.Complete",
   )
   .toRun(function () {
@@ -86,11 +89,13 @@ module("lively.identity.PostcardReel")
         this._threadOpen = false;       // the comment thread under the card is showing
         this._thread = null;            // its MailboxThread controller
         this._counts = {};              // objId -> reply count, for the comment chip
+        this._audienceCtx = null;       // owner only: friends, orbit, lists, per-card audiences
         this._w = 0;
 
         this._build();
         this._installKeys();
         this._fetchFeed();
+        if (this._isOwner) this._autoSyncAudiences();
       },
 
       dispose: function () {
@@ -443,6 +448,7 @@ module("lively.identity.PostcardReel")
           previewMode: true,
           homestar: true,
           showCommentChip: true,
+          onEnvelope: function (env, view) { self._showAudienceChip(env, view); },
           commentCount: this._counts[objId] || 0,
           onToggleComments: function () { self._toggleThread(); },
           bounds: lively.rect(0, 0, this._cardW, this._cardH),
@@ -485,6 +491,132 @@ module("lively.identity.PostcardReel")
           this._cardH = h;
           this._changed();
         }
+      },
+    },
+
+    "audience", {
+      // The chip in the card's handle row: who it is shared with. A viewer sees only
+      // the sets that are not private to the owner; the owner sees their own sets
+      // with the count, and (for a card that can still change) clicks it to edit.
+      _showAudienceChip: function (env, view) {
+        var self = this;
+        var R = lively.identity.AudienceRules;
+        var isPublic = env.visibility === "public";
+        if (!this._isOwner) {
+          var shown = R.viewerChipLabel(env.visibility, env.state && env.state.audience);
+          view.setAudienceChip(shown ? { label: shown, icon: isPublic ? "public" : "lock", title: "Who can see this postcard" } : null);
+          return;
+        }
+        var frozen = !!(env.state && env.state.sentAt);
+        var chipFor = function (ctx) {
+          var rec = ctx && ctx.cardAudiences[env.objId];
+          var recips = (env.record && env.record.recipients) || [];
+          var text;
+          if (isPublic) text = "Public";
+          else if (rec) text = R.ownerChipLabel(rec, ctx, false);
+          else text = recips.length ? recips.length + (recips.length === 1 ? " person" : " people") : "Only me";
+          var chip = { label: text, icon: isPublic ? "public" : "lock", title: "Who can see this postcard" };
+          if (isPublic) chip.title = "Public cards are changed in the editor";
+          else if (frozen) chip.title = "Already sent, so its audience can no longer change";
+          else {
+            chip.title = "Change who can see this postcard";
+            chip.onClick = function () { self._openAudienceDialog(env, view); };
+          }
+          return chip;
+        };
+        view.setAudienceChip(chipFor(this._audienceCtx));
+        // The counts need the friend/orbit/list data; once it is here, redraw the chip.
+        this._ensureAudienceCtx(false, function (err, ctx) {
+          if (err || view._envelope !== env) return;        // failed, or the view has moved on
+          view.setAudienceChip(chipFor(ctx));
+        });
+      },
+
+      // owner only. fresh: load again even if cached. thenDo(err, ctx).
+      _ensureAudienceCtx: function (fresh, thenDo) {
+        var self = this;
+        if (this._audienceCtx && !fresh) return thenDo(null, this._audienceCtx);
+        lively.identity.postcardAudience.loadContext(function (err, ctx) {
+          if (!err) self._audienceCtx = ctx;
+          thenDo(err, ctx);
+        });
+      },
+
+      _openAudienceDialog: function (env, view) {
+        var self = this;
+        this._ensureAudienceCtx(true, function (err, ctx) {
+          if (err) return $world.alert("Could not load your friends and lists: " + err.message);
+          var rec = ctx.cardAudiences[env.objId];
+          var audience = rec, warning = null;
+          if (!rec) {
+            // A card shared before audiences existed: start from the friends it is
+            // already sealed to. Anyone else it names would lose access on save.
+            var dids = ((env.record && env.record.recipients) || []).map(function (r) { return r.did; });
+            var friends = dids.filter(function (d) { return ctx.friendDids.indexOf(d) !== -1; });
+            audience = { tiers: [], people: friends };
+            var lost = dids.length - friends.length;
+            if (lost > 0) {
+              warning = lost + (lost === 1 ? " person who is" : " people who are") + " not your " +
+                (lost === 1 ? "friend" : "friends") + " will lose access if you save.";
+            }
+          }
+          lively.identity.AudienceDialog.open({
+            ctx: ctx,
+            audience: audience,
+            isPublic: false,
+            allowPublic: false,
+            publicNote: "Public cards and private cards are changed in the editor",
+            subtitle: (env.state && env.state.title) || "(untitled)",
+            warning: warning,
+            onSave: function (result) { self._applyAudience(env, view, result); },
+          });
+        });
+      },
+
+      // Record the new audience, then bring this one card in line with it (which may
+      // ask for the passkey once if the session has no key cached yet).
+      _applyAudience: function (env, view, result) {
+        var self = this;
+        var pa = lively.identity.postcardAudience;
+        var objId = env.objId;
+        view.setAudienceChip({ label: "Saving\u2026", icon: "lock" });
+        function fail(msg) {
+          $world.alert(msg);
+          self._renderCard(objId);
+        }
+        pa.setCardAudience(objId, result.audience, function (err) {
+          if (err) return fail("Could not save the audience: " + err.message);
+          self._ensureAudienceCtx(true, function (ctxErr, ctx) {
+            if (ctxErr) return fail("Saved the audience, but could not load your friends to update the card: " + ctxErr.message);
+            pa.syncCard(objId, ctx, function (syncErr, r) {
+              if (syncErr) return fail("Saved the audience, but updating the card failed: " + syncErr.message);
+              var missed = (r.failed || []).map(function (f) { return "@" + (ctx.handleByDid[f.did] || "someone"); });
+              if (missed.length) {
+                $world.alert("Could not share with " + missed.join(", ") + " yet (they may not have set up encryption). " +
+                  "It will be tried again the next time your homestar opens.");
+              }
+              self._renderCard(objId);
+            });
+          });
+        });
+      },
+
+      // On page load, bring every card's recipients up to date with the friends,
+      // orbit and lists as they are now. Quiet: it never opens a passkey prompt (a
+      // sync with no cached key waits for the next time), and a failure is only logged.
+      _autoSyncAudiences: function () {
+        var self = this;
+        setTimeout(function () {
+          lively.identity.postcardAudience.syncAudiences({ onlyIfKekCached: true }, function (err, report) {
+            if (err) return console.warn("[PostcardReel] audience sync failed:", err.message || err);
+            if (report.failed && report.failed.length) console.warn("[PostcardReel] audience sync: some cards failed", report.failed);
+            if (report.updated && report.updated.length) {
+              self._audienceCtx = null;
+              var card = self._feed[self._index];
+              if (card) self._renderCard(card.objId);
+            }
+          });
+        }, 1500);
       },
     },
 

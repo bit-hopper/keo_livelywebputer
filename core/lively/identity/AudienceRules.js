@@ -115,8 +115,135 @@ module('lively.identity.AudienceRules')
       return JSON.stringify(a || null) === JSON.stringify(b || null);
     }
 
+    // ─── the audience dialog's state, and the chip labels ──────────────────────
+    //
+    // state = { pub: bool, friends: bool, orbit: bool, lists: { <id>: true }, people: [did] }
+    // is what the checkboxes show. Public is exclusive: ticking it clears everything
+    // else, and ticking anything else clears it.
+
+    function emptyState() {
+      return { pub: false, friends: false, orbit: false, lists: {}, people: [] };
+    }
+
+    function stateFromAudience(audience, isPublic) {
+      var s = emptyState();
+      if (isPublic) { s.pub = true; return s; }
+      var a = audience || {};
+      (a.tiers || []).forEach(function (t) {
+        if (t === TIER_FRIENDS) s.friends = true;
+        else if (t === TIER_ORBIT) s.orbit = true;
+        else if (typeof t === 'string' && t.indexOf(LIST_PREFIX) === 0) s.lists[t.slice(LIST_PREFIX.length)] = true;
+      });
+      s.people = (a.people || []).slice();
+      return s;
+    }
+
+    // Tiers come out in a fixed order (friends, orbit, then lists in the order the
+    // owner keeps them) so equal audiences compare equal.
+    function audienceFromState(state, ctx) {
+      var tiers = [];
+      if (state.friends) tiers.push(TIER_FRIENDS);
+      if (state.orbit) tiers.push(TIER_ORBIT);
+      ((ctx && ctx.lists) || []).forEach(function (l) {
+        if (state.lists[l.id]) tiers.push(LIST_PREFIX + l.id);
+      });
+      return { tiers: tiers, people: state.people.slice() };
+    }
+
+    // Returns a new state with one checkbox flipped. key is 'pub', 'friends',
+    // 'orbit' or 'list:<id>'.
+    function toggle(state, key) {
+      var s = { pub: state.pub, friends: state.friends, orbit: state.orbit,
+                lists: Object.assign({}, state.lists), people: state.people.slice() };
+      var on;
+      if (key === 'pub') {
+        on = !s.pub;
+        if (on) s = emptyState();
+        s.pub = on;
+        return s;
+      }
+      if (key === TIER_FRIENDS) { on = s.friends = !s.friends; }
+      else if (key === TIER_ORBIT) { on = s.orbit = !s.orbit; }
+      else if (typeof key === 'string' && key.indexOf(LIST_PREFIX) === 0) {
+        var id = key.slice(LIST_PREFIX.length);
+        on = !s.lists[id];
+        if (on) s.lists[id] = true; else delete s.lists[id];
+      } else return s;
+      if (on) s.pub = false;
+      return s;
+    }
+
+    function togglePerson(state, did) {
+      var s = toggle(state, '__none__');
+      var at = s.people.indexOf(did);
+      if (at === -1) { s.people.push(did); s.pub = false; } else s.people.splice(at, 1);
+      return s;
+    }
+
+    // How many people would be able to open the card: the de-duplicated union of
+    // everything ticked. Public has no recipients (the card is not encrypted).
+    function sealedCount(state, ctx) {
+      if (state.pub) return 0;
+      return unionDids(audienceFromState(state, ctx), ctx).length;
+    }
+
+    function plural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
+
+    function footerText(state, ctx) {
+      if (state.pub) return 'Anyone can read this card. It is not encrypted.';
+      var n = sealedCount(state, ctx);
+      if (!n) return 'Only you can open this card.';
+      return 'Sealed to ' + plural(n, 'person', 'people') + '. Only they can open it.';
+    }
+
+    // The owner's chip: the ticked sets joined, then the de-duplicated count, e.g.
+    // "Friends · 14", "Orbit + Book club · 9", or "3 audiences · 22" when the names
+    // would not fit.
+    function ownerChipLabel(audience, ctx, isPublic) {
+      if (isPublic) return 'Public';
+      var a = audience || {};
+      var names = [];
+      (a.tiers || []).forEach(function (t) {
+        if (t === TIER_FRIENDS) names.push('Friends');
+        else if (t === TIER_ORBIT) names.push('Orbit');
+        else if (typeof t === 'string' && t.indexOf(LIST_PREFIX) === 0) {
+          var id = t.slice(LIST_PREFIX.length);
+          var list = ((ctx && ctx.lists) || []).filter(function (l) { return l.id === id; })[0];
+          if (list) names.push(list.name);
+        }
+      });
+      if ((a.people || []).length) names.push('Specific people');
+      var count = unionDids(a, ctx).length;
+      if (!names.length) return 'Only me';
+      var joined = names.length <= 2 ? names.join(' + ') : names.length + ' audiences';
+      return joined + ' · ' + count;
+    }
+
+    // What anyone but the owner sees: only the sets that are not private to the
+    // owner (Friends, Orbit), never a list name or a person. A card shared with
+    // nothing but a list or named people reads "Just a few people", and so does an
+    // older shared card that has no recorded audience.
+    function viewerChipLabel(visibility, mirror) {
+      if (visibility === 'public') return 'Public';
+      if (visibility !== 'shared') return null;
+      var tiers = (mirror && mirror.tiers) || [];
+      var names = [];
+      if (tiers.indexOf(TIER_FRIENDS) !== -1) names.push('Friends');
+      if (tiers.indexOf(TIER_ORBIT) !== -1) names.push('Orbit');
+      return names.length ? names.join(' + ') : 'Just a few people';
+    }
+
     lively.identity = lively.identity || {};
     lively.identity.AudienceRules = {
+      emptyState: emptyState,
+      stateFromAudience: stateFromAudience,
+      audienceFromState: audienceFromState,
+      toggle: toggle,
+      togglePerson: togglePerson,
+      sealedCount: sealedCount,
+      footerText: footerText,
+      ownerChipLabel: ownerChipLabel,
+      viewerChipLabel: viewerChipLabel,
       TIER_FRIENDS: TIER_FRIENDS,
       TIER_ORBIT: TIER_ORBIT,
       LIST_PREFIX: LIST_PREFIX,

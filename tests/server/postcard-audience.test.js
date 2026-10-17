@@ -84,6 +84,11 @@ function setup(serverState) {
   };
 }
 
+// Puts a KEK into the stubbed WebAuthn cache (or takes it out) for the current user.
+function lively_kekCached(on) {
+  global.lively.identity.webAuthn._kekCache = on ? { [user.credentialId]: 'KEK' } : {};
+}
+
 const call = (fn, ...args) => new Promise((resolve, reject) => {
   fn(...args, (err, result) => (err ? reject(err) : resolve(result)));
 });
@@ -439,4 +444,31 @@ test('every request asks for JSON, because GET /@handle/<objId> answers "*/*" wi
     assert.ok(t.requests.length >= 5);
     for (const r of t.requests) assert.equal(r.headers.Accept, 'application/json', r.method + ' ' + r.url);
   } finally { t.restore(); }
+});
+
+test('syncAudiences with onlyIfKekCached does nothing, and asks for no passkey, when the KEK is not cached', async () => {
+  const server = { routes: {} };
+  const t = setup(server);
+  try {
+    const report = await call(t.api.syncAudiences.bind(t.api), { onlyIfKekCached: true });
+    assert.equal(report.deferred, true);
+    assert.equal(t.requests.length, 0, 'nothing is even fetched');
+    assert.equal(t.calls.kek, 0);
+  } finally { t.restore(); }
+});
+
+test('syncAudiences with onlyIfKekCached runs normally when the KEK is cached', async () => {
+  const server = { routes: {
+    'GET /@me/friends': () => ({ status: 200, json: { friends: [] } }),
+    'GET /@me/orbit': () => ({ status: 200, json: { members: [] } }),
+    'GET /@me/settings': () => ({ status: 200, json: { state: {} } })
+  } };
+  const t = setup(server);
+  try {
+    lively_kekCached(true);
+    const report = await call(t.api.syncAudiences.bind(t.api), { onlyIfKekCached: true });
+    assert.equal(report.deferred, undefined);
+    assert.deepEqual(report.updated, []);
+    assert.equal(t.requests.filter((r) => r.url === '/@me/friends').length, 1);
+  } finally { lively_kekCached(false); t.restore(); }
 });

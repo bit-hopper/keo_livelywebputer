@@ -323,12 +323,29 @@ module('lively.identity.PostcardAudience')
         });
       },
 
+      // True when the owner's KEK is already in the session cache, so a sync can seal
+      // and sign without asking for the passkey.
+      kekIsCached: function () {
+        var user = lively.identity.did.currentUser();
+        var wa = lively.identity.webAuthn;
+        return !!(user && wa && wa._kekCache && wa._kekCache[user.credentialId]);
+      },
+
       // Sync every card that has a recorded audience, one after another. Run it when
       // the homestar opens and after friends, the orbit or a list change.
-      // thenDo(err, { updated: [result], skipped: [result], failed: [{objId, error}] }).
+      // syncAudiences([opts,] thenDo) -> thenDo(err, { updated: [result],
+      //   skipped: [result], failed: [{objId, error}] }).
+      // opts.onlyIfKekCached: a sync nobody asked for (the one on page load) must not
+      //   open a passkey prompt; without a cached KEK it does nothing and reports
+      //   { deferred: true }.
       // A second call while one is running returns { busy: true } straight away.
-      syncAudiences: function (thenDo) {
+      syncAudiences: function (opts, thenDo) {
         var self = this;
+        if (typeof opts === 'function') { thenDo = opts; opts = {}; }
+        opts = opts || {};
+        if (opts.onlyIfKekCached && !this.kekIsCached()) {
+          return thenDo(null, { deferred: true, updated: [], skipped: [], failed: [] });
+        }
         if (this._syncing) return thenDo(null, { busy: true, updated: [], skipped: [], failed: [] });
         this._syncing = true;
         function finish(err, report) { self._syncing = false; thenDo(err, report); }
