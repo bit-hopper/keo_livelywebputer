@@ -169,6 +169,11 @@ module('lively.identity.PostCardEditor')
         this._grantedAttachments = {};
         this._sentLocked = false;       // delivered to an inbox: permanent, no further edits
         this._visibilityBtn = null;
+        this._title = '';               // explicit, unencrypted title (private/shared cards; see _buildTitleRow)
+        this._titleChangePending = false;
+        this._titleRow = null;
+        this._titleInput = null;
+        this._titleNote = null;
         this._quietBtn = null;
         this._quietEdit = false;        // this editing session's saves ask readers not to be notified (state.editMinor)
         // Attachment metadata (§6): { objId, dek, blobCid, blobNonce, name,
@@ -295,6 +300,10 @@ module('lively.identity.PostCardEditor')
       // top offset has to stay in sync with it (see _buildChrome/pmDiv below).
       _TOOLBAR_HEIGHT: 70,
 
+      // The title row under the toolbar, shown for a private or shared card only (a
+      // public card's title is its first line). pmDiv's top offset follows it.
+      _TITLE_ROW_HEIGHT: 84,
+
       // Reserved bottom padding on pmDiv so real content never renders
       // underneath the floating action cluster (which hovers over the
       // content area rather than reserving its own docked strip).
@@ -349,6 +358,7 @@ module('lively.identity.PostCardEditor')
         this._buildToolbar(toolbarDiv);
 
         this._buildLinkPreview(shapeNode);
+        this._buildTitleRow(shapeNode);
 
         // ProseMirror container div. The 'selectable' class matters, not just
         // cosmetically: Lively's global base stylesheet (Main.js) sets
@@ -378,6 +388,7 @@ module('lively.identity.PostCardEditor')
         ].join(';');
         shapeNode.appendChild(pmDiv);
         this._pmContainer = pmDiv;
+        this._updateTitleRow();
 
         // Back-of-card stamp arranger (hidden until _showBackView) — a plain
         // DOM sibling of pmDiv, same event-isolation treatment below.
@@ -1149,6 +1160,118 @@ module('lively.identity.PostCardEditor')
         btn.classList.toggle('pce-pill-neutral', isPublic);
         btn.classList.toggle('pce-pill-accent-soft', !isPublic);
         this._updateQuietBtn();
+        this._updateTitleRow();
+      },
+
+      // A private or shared card has no title unless the author gives it one, because a
+      // title is stored in the clear (an encrypted card's title cannot be searched by the
+      // server otherwise, and the old auto-extracted first line leaked the card's text).
+      // This row is where the author opts in, and says plainly what that means.
+      _buildTitleRow: function (shapeNode) {
+        var self = this;
+        var row = document.createElement('div');
+        row.className = 'pce-title-row';
+        row.style.cssText = [
+          'position:absolute', 'top:' + this._TOOLBAR_HEIGHT + 'px', 'left:0', 'right:0',
+          'height:' + this._TITLE_ROW_HEIGHT + 'px', 'box-sizing:border-box', 'padding:8px 20px',
+          'background:#fffaf0', 'border-bottom:1px solid #f0e3c4', 'overflow:hidden',
+          'font-family:sans-serif', 'display:none',
+        ].join(';');
+
+        var line = document.createElement('div');
+        line.style.cssText = 'display:flex;align-items:center;gap:10px;height:32px;';
+        var lab = document.createElement('span');
+        lab.textContent = 'Title';
+        lab.style.cssText = 'font-size:12px;font-weight:600;color:#5a4a1a;flex:0 0 auto;';
+        line.appendChild(lab);
+
+        var badge = document.createElement('span');
+        badge.style.cssText = 'flex:0 0 auto;display:flex;align-items:center;gap:3px;height:20px;padding:0 8px 0 5px;' +
+          'border-radius:10px;background:#fdeec8;border:1px solid #e6c870;color:#7a5200;font-size:11px;font-weight:600;';
+        var badgeIcon = document.createElement('span');
+        badgeIcon.className = 'material-symbols-rounded';
+        badgeIcon.textContent = 'lock_open';
+        badgeIcon.style.cssText = 'font-size:14px;line-height:1;';
+        badge.appendChild(badgeIcon);
+        badge.appendChild(document.createTextNode('Not encrypted'));
+        line.appendChild(badge);
+
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.maxLength = 120;
+        input.placeholder = 'Optional. Name this card so you can find it again';
+        input.setAttribute('aria-label', 'Card title (not encrypted)');
+        input.style.cssText = 'flex:1 1 auto;min-width:0;height:30px;box-sizing:border-box;padding:0 10px;font:13px sans-serif;' +
+          'color:#2a2438;border:1px solid #e0d2a8;border-radius:8px;outline:none;background:#fff;user-select:text;';
+        input.addEventListener('focus', function () { input.style.borderColor = '#CC0057'; });
+        input.addEventListener('blur', function () { input.style.borderColor = '#e0d2a8'; });
+        input.addEventListener('input', function () { self._setTitle(input.value); });
+        // Keys typed here are not the editor's: same treatment as the font-size field.
+        input.addEventListener('keydown', function (e) { e.stopPropagation(); });
+        line.appendChild(input);
+
+        var useFirst = document.createElement('button');
+        useFirst.textContent = 'Use first line';
+        useFirst.title = 'Copy the first line of the card into the title (it will then be stored unencrypted)';
+        useFirst.style.cssText = 'flex:0 0 auto;height:26px;padding:0 10px;border:1px solid #e0d2a8;border-radius:13px;' +
+          'background:#fff;color:#5a4a1a;font-size:11px;cursor:pointer;';
+        useFirst.addEventListener('mousedown', function (e) {
+          e.preventDefault(); e.stopPropagation();
+          var first = self.editorView && self.editorView.state.doc.firstChild;
+          var text = first ? first.textContent.trim().slice(0, 120) : '';
+          if (!text) return self._setStatus('The first line is empty');
+          input.value = text;
+          self._setTitle(text);
+        });
+        line.appendChild(useFirst);
+        row.appendChild(line);
+
+        var note = document.createElement('div');
+        note.style.cssText = 'margin-top:4px;font-size:11px;line-height:1.35;color:#7a5c00;';
+        row.appendChild(note);
+
+        shapeNode.appendChild(row);
+        this._titleRow = row;
+        this._titleInput = input;
+        this._titleNote = note;
+      },
+
+      _setTitle: function (text) {
+        this._title = String(text || '');
+        this._titleChangePending = true;
+        this._markEdited();
+        this._updateTitleRow();
+      },
+
+      // Is the card shared with anyone but its author, as far as the editor knows?
+      _sharedWithOthers: function () {
+        if (this._hasReaders()) return true;
+        var a = this._audience;
+        if (a && ((a.tiers || []).length || (a.people || []).length)) return true;
+        return (this._recipientHandles || []).length > 0;
+      },
+
+      // Shows the row for a private or shared card that can be edited, keeps the input and
+      // the note in step with the model, and moves the content down by the row's height.
+      _updateTitleRow: function () {
+        var row = this._titleRow;
+        if (!row) return;
+        // A read-only or frozen card hides the row and has already laid out its own content
+        // area (_applyReadOnlyMode); do not move it.
+        if (this._canEdit === false) { row.style.display = 'none'; return; }
+        var show = this._visibility !== 'public';
+        row.style.display = show ? '' : 'none';
+        if (this._pmContainer) {
+          this._pmContainer.style.top = (this._TOOLBAR_HEIGHT + (show ? this._TITLE_ROW_HEIGHT : 0)) + 'px';
+        }
+        if (!show) return;
+        if (this._titleInput && this._titleInput.value !== (this._title || '')) this._titleInput.value = this._title || '';
+        if (this._titleNote) {
+          var who = this._sharedWithOthers() ? 'the server and everyone you share this card with' : 'the server';
+          this._titleNote.textContent = 'Searchable in your mailbox. Stored in the clear, so ' + who +
+            ' can read it. The text of the card stays encrypted.';
+          this._titleNote.style.fontWeight = (this._title || '').trim() ? '600' : '400';
+        }
       },
 
       // Can anyone but the owner read the stored version? Same rule as the server's
@@ -1302,7 +1425,7 @@ module('lively.identity.PostCardEditor')
       // text differs from the last saved version: that is a real edit.
       _minorEditMeta: function () {
         if (this._quietEdit && this._hasReaders()) return { editMinor: true };
-        if (!this._audienceChangePending || this._savedDocJson == null) return {};
+        if (!(this._audienceChangePending || this._titleChangePending) || this._savedDocJson == null) return {};
         return this._savedDocJson === this._currentDocJson() ? { editMinor: true } : {};
       },
 
@@ -1594,6 +1717,11 @@ module('lively.identity.PostCardEditor')
           // refuses every later write, so open it read-only and say why.
           self._sentLocked = !!(envelope.state && envelope.state.sentAt);
           if (self._sentLocked) self._canEdit = false;
+          // A public card's title is normally its auto-extracted first line, which must not
+          // become an unencrypted title if the card is later made private; only a title the
+          // author set (or any title on an encrypted card, which can only be explicit) is kept.
+          var loadedState = envelope.state || {};
+          self._title = (envelope.visibility !== 'public' || loadedState.titleExplicit) ? (loadedState.title || '') : '';
           self._updateVisibilityBtn();
           // Read who the card is recorded as shared with before anything can save it.
           if (self._canEdit && self._visibility !== 'public') {
@@ -2266,6 +2394,7 @@ module('lively.identity.PostCardEditor')
         // the innerHTML='' above and must be hidden explicitly.
         if (this._floatingActionsDiv) this._floatingActionsDiv.style.display = 'none';
         if (this._floatingBackActionsDiv) this._floatingBackActionsDiv.style.display = 'none';
+        if (this._titleRow) this._titleRow.style.display = 'none';
         if (this._pmContainer) {
           this._pmContainer.style.top = '28px';
           this._pmContainer.style.bottom = '0';
@@ -2696,8 +2825,10 @@ module('lively.identity.PostCardEditor')
           visibility:    'public',
           attachments:   this._attachments || [],
           stateMeta:     this._composeStateMeta(),
-          // title omitted — PostCardSerializer extracts it from the first PM block (§10.5)
+          // title omitted unless the author set one — PostCardSerializer extracts it from the first PM block (§10.5)
         };
+        var explicitTitle = (this._title || '').trim();
+        if (explicitTitle) { params.title = explicitTitle; params.titleExplicit = true; }
         var serialize;
         if (this._isWikiMode) {
           params.yDoc = this.yDoc;
@@ -2759,9 +2890,12 @@ module('lively.identity.PostCardEditor')
                 var meta = self._audience
                   ? { audience: lively.identity.AudienceRules.mirrorFor(self._audience) }
                   : { recipientHandles: self._lastSealedHandles };
+                var title = (self._title || '').trim();
                 var params = {
                   prevEnvelope:  self._envelope || null,
                   constellation: self._constellation,
+                  title:         title || undefined,
+                  titleExplicit: !!title,
                   recipients:    result.resolved.map(function (r) {
                     return { did: r.did, x25519PublicKey: r.x25519PublicKey };
                   }),
@@ -2878,6 +3012,7 @@ module('lively.identity.PostCardEditor')
           self._objId = envelope.objId;
           self._savedDocJson = self._docJsonAtSave === undefined ? self._savedDocJson : self._docJsonAtSave;
           self._audienceChangePending = false;
+          self._titleChangePending = false;
           // A card with a recorded audience is sealed from that, not from a handle
           // list, so what the envelope names must not turn into a sticky list.
           if (!self._audience) {

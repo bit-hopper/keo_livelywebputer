@@ -28,11 +28,11 @@ async function boot(page) {
     id.postcardAudience.loadContext = (cb) => (w.__ctxFails ? cb(new Error("offline")) : cb(null, JSON.parse(JSON.stringify(w.__ctx))));
     id.postcardAudience.setCardAudience = (objId, audience, cb) => { calls.recorded.push({ objId, audience }); cb(null); };
     id.postCardSerializer.serializePlainEncrypted = (params, cb) => {
-      calls.params.push({ kind: "encrypted", recipients: params.recipients.map((r) => r.did), stateMeta: params.stateMeta });
+      calls.params.push({ kind: "encrypted", recipients: params.recipients.map((r) => r.did), stateMeta: params.stateMeta, title: params.title, titleExplicit: params.titleExplicit });
       cb(null, { objId: "card1", visibility: "shared", state: params.stateMeta, record: {} });
     };
     id.postCardSerializer.serializePlainToEnvelope = (params, cb) => {
-      calls.params.push({ kind: "public" });
+      calls.params.push({ kind: "public", title: params.title, titleExplicit: params.titleExplicit });
       cb(null, { objId: "card1", visibility: "public", state: params.stateMeta, record: {} });
     };
     w.$world.alert = (m) => calls.alerts.push(String(m));
@@ -294,4 +294,111 @@ test("quiet edit is ignored for a card nobody else can read", async ({ page }) =
     Object.assign(e, { _quietEdit: true, _envelope: null });
   });
   expect(await page.evaluate(() => /** @type {any} */ (window).__editor._composeStateMeta().editMinor)).toBeUndefined();
+});
+
+test("an encrypted card is saved with the author's title, marked explicit, and without one when it is empty", async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => {
+    const w = /** @type {any} */ (window);
+    w.__ctx.cardAudiences = { card1: { tiers: ["friends"], people: [] } };
+    Object.assign(w.__editor, { _objId: "card1", _visibility: "private" });
+  });
+  expect(await save(page)).toBeNull();
+  let c = await calls(page);
+  expect(c.params[0].title).toBeUndefined();
+  expect(c.params[0].titleExplicit).toBe(false);
+  await page.evaluate(() => { /** @type {any} */ (window).__editor._title = "  Dinner plans  "; });
+  expect(await save(page)).toBeNull();
+  c = await calls(page);
+  expect(c.params[1].title).toBe("Dinner plans");
+  expect(c.params[1].titleExplicit).toBe(true);
+});
+
+test("a public card keeps its auto title unless the author set one", async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => { Object.assign(/** @type {any} */ (window).__editor, { _objId: "card1", _visibility: "public" }); });
+  expect(await save(page)).toBeNull();
+  await page.evaluate(() => { /** @type {any} */ (window).__editor._title = "Pinned title"; });
+  expect(await save(page)).toBeNull();
+  const c = await calls(page);
+  expect(c.params[0].title).toBeUndefined();
+  expect(c.params[0].titleExplicit).toBeUndefined();
+  expect(c.params[1].title).toBe("Pinned title");
+  expect(c.params[1].titleExplicit).toBe(true);
+});
+
+test("a save that only changes the title is minor, so readers are not notified of a rename", async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => {
+    const e = /** @type {any} */ (window).__editor;
+    Object.assign(e, { _objId: "card1", _visibility: "private", _audienceLoaded: true });
+    e._noteDocSaved();
+    e._titleChangePending = true;
+  });
+  await page.evaluate(() => { const e = /** @type {any} */ (window).__editor; e._title = "Renamed"; });
+  expect(await save(page)).toBeNull();
+  expect((await calls(page)).params[0].stateMeta.editMinor).toBe(true);
+  expect(await save(page)).toBeNull();                              // flag cleared after the save
+  expect((await calls(page)).params[1].stateMeta.editMinor).toBeUndefined();
+});
+
+test("the title row shows for a private card, says it is not encrypted, and follows who can read the card", async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => { /** @type {any} */ (window).__real = lively.identity.PostCardEditor.newCard("me"); });
+  await page.waitForFunction(() => /** @type {any} */ (window).__real._titleRow && /** @type {any} */ (window).__real.editorView, null, { timeout: 30000 });
+  const read = (extra) => page.evaluate((extra) => {
+    const e = /** @type {any} */ (window).__real;
+    if (extra) Object.assign(e, extra);
+    e._updateVisibilityBtn();
+    return {
+      shown: e._titleRow.style.display !== "none",
+      note: e._titleNote.textContent,
+      badge: e._titleRow.textContent,
+      pmTop: e._pmContainer.style.top,
+    };
+  }, extra || null);
+
+  // A public card's title is its first line: no row, content directly under the toolbar.
+  let r = await read({ _visibility: "public" });
+  expect(r.shown).toBe(false);
+  expect(r.pmTop).toBe("70px");
+  // Only me: the server can read it.
+  r = await read({ _visibility: "private", _audience: { tiers: [], people: [] }, _recipientHandles: [], _envelope: null });
+  expect(r.shown).toBe(true);
+  expect(r.badge).toContain("Not encrypted");
+  expect(r.note).toContain("Searchable in your mailbox");
+  expect(r.note).toContain("the server can read it");
+  expect(r.note).not.toContain("everyone you share");
+  expect(r.pmTop).toBe("154px");                                    // toolbar 70 + title row 84
+  // Shared: the people it is shared with can read it too.
+  r = await read({ _audience: { tiers: ["friends"], people: [] } });
+  expect(r.note).toContain("the server and everyone you share this card with can read it");
+  // A frozen / read-only card hides the row.
+  r = await read({ _canEdit: false });
+  expect(r.shown).toBe(false);
+});
+
+test("typing in the title row sets the title, marks the card edited, and Use first line copies the first line", async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => {
+    const w = /** @type {any} */ (window);
+    w.__real = lively.identity.PostCardEditor.newCard("me");
+  });
+  await page.waitForFunction(() => /** @type {any} */ (window).__real._titleInput && /** @type {any} */ (window).__real.editorView, null, { timeout: 30000 });
+  await page.evaluate(() => { const e = /** @type {any} */ (window).__real; e._visibility = "private"; e._updateVisibilityBtn(); e._userHasEdited = false; });
+  await page.locator('input[aria-label="Card title (not encrypted)"]').fill("Book club notes");
+  const after = await page.evaluate(() => { const e = /** @type {any} */ (window).__real; return { title: e._title, edited: e._userHasEdited, pending: e._titleChangePending }; });
+  expect(after).toEqual({ title: "Book club notes", edited: true, pending: true });
+  // Use first line: fill the editor's first block, then click the helper.
+  await page.evaluate(() => {
+    const e = /** @type {any} */ (window).__real;
+    const st = e.editorView.state;
+    e.editorView.dispatch(st.tr.insertText("First line of the card"));
+  });
+  await page.evaluate(() => {
+    const e = /** @type {any} */ (window).__real;
+    [...e._titleRow.querySelectorAll("button")].find((b) => /first line/i.test(b.textContent)).dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+  });
+  expect(await page.evaluate(() => /** @type {any} */ (window).__real._title)).toBe("First line of the card");
+  expect(await page.locator('input[aria-label="Card title (not encrypted)"]').inputValue()).toBe("First line of the card");
 });
