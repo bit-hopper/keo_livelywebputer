@@ -3310,7 +3310,11 @@ module('lively.identity.WikiEditor')
             fontSize:   { attrs: { size: {} },
                           parseDOM: [{ style: 'font-size', getAttrs: function(v) { return { size: v }; } }],
                           toDOM: function(m) { return ['span', { style: 'font-size:' + m.attrs.size }, 0]; } },
+            // inclusive:false — text typed at the end of a link is plain text,
+            // not more of the link (otherwise the space after a link is
+            // swallowed into it and renders as an underlined run).
             link:   { attrs: { href: { default: '' }, title: { default: null }, objId: { default: null } },
+                      inclusive: false,
                       parseDOM: [{ tag: 'a[href]', getAttrs: function(d) {
                         return { href: d.getAttribute('href'), title: d.getAttribute('title'),
                                  objId: d.getAttribute('data-attachment-obj-id') || null };
