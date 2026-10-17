@@ -987,7 +987,7 @@ module('lively.identity.PostCardMailbox')
 
         shown.forEach(function (rec) {
           if (rec.thread) { content.appendChild(self._makeThreadRow(rec)); return; }
-          if (isEditRow(rec)) { content.appendChild(self._makeEditRow(rec)); return; }
+          if (isEditRow(rec)) { content.appendChild(self._wrapMutedIfNeeded(self._makeEditRow(rec), rec)); return; }
           var card = self._makeCard();
 
           var from = self._makeIdentityRow('From: ', rec.senderHandle, rec.senderDid);
@@ -1151,8 +1151,12 @@ module('lively.identity.PostCardMailbox')
         var l2 = document.createElement('div');
         l2.className = 'l2';
         l2.textContent = (who2 ? who2 + ' · ' : '') +
-          (rec.unread ? rec.unread + ' new of ' + rec.replyCount : rec.replyCount + (rec.replyCount === 1 ? ' reply' : ' replies')) +
-          (rec.edited ? ' · edited by @' + (rec.edited.senderHandle || 'the author') : '') +
+          // The unread count of a row that carries an edit notice includes the edit, so it can
+          // exceed the reply count; say "N new" after the edit instead of "N new of M replies".
+          (rec.edited
+            ? rec.replyCount + (rec.replyCount === 1 ? ' reply' : ' replies') +
+              ' · edited by @' + (rec.edited.senderHandle || 'the author') + (rec.unread ? ' · ' + rec.unread + ' new' : '')
+            : (rec.unread ? rec.unread + ' new of ' + rec.replyCount : rec.replyCount + (rec.replyCount === 1 ? ' reply' : ' replies'))) +
           (rec.visibility && rec.visibility !== 'public' ? ' · private' : '');
         body.appendChild(l2);
         card.appendChild(body);
@@ -1351,7 +1355,9 @@ module('lively.identity.PostCardMailbox')
         card.style.opacity = '0.55';
         card.appendChild(summary);
         card.appendChild(wrap);
-        summary.addEventListener('click', function () {
+        summary.addEventListener('click', function (e) {
+          // A row that is itself clickable (an edit notice) must not also act on this.
+          e.stopPropagation();
           var showing = wrap.style.display !== 'none';
           wrap.style.display = showing ? 'none' : '';
           card.style.opacity = showing ? '0.55' : '1';
