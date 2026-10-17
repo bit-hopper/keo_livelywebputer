@@ -255,7 +255,56 @@ module('lively.identity.AudienceRules')
     }
 
     lively.identity = lively.identity || {};
+    // ─── named lists ─────────────────────────────────────────────────────────
+    // Limits match core/servers/identity/AudienceLists.js, which enforces them.
+
+    var MAX_LISTS = 50;
+    var MAX_LIST_NAME = 60;
+    var MAX_LIST_MEMBERS = 200;
+
+    // An opaque id for a new list: letters and digits only (what the server accepts),
+    // and not one that is already in use. `random` is Math.random in the browser;
+    // a test passes its own.
+    function newListId(lists, random) {
+      random = random || Math.random;
+      var taken = {};
+      (lists || []).forEach(function (l) { taken[l.id] = true; });
+      for (;;) {
+        var id = 'l';
+        for (var i = 0; i < 9; i++) id += Math.floor(random() * 36).toString(36);
+        if (!taken[id]) return id;
+      }
+    }
+
+    // Why `name` cannot be used for a list, or null. exceptId is the list being renamed
+    // (it may keep its own name). Names are compared ignoring case and spacing, so two
+    // lists cannot look the same in the dialog.
+    function listNameError(name, lists, exceptId) {
+      var n = String(name == null ? '' : name).trim();
+      if (!n) return 'Give the list a name';
+      if (n.length > MAX_LIST_NAME) return 'A list name can have at most ' + MAX_LIST_NAME + ' characters';
+      var key = n.toLowerCase().replace(/\s+/g, ' ');
+      var clash = (lists || []).some(function (l) {
+        return l.id !== exceptId && String(l.name).trim().toLowerCase().replace(/\s+/g, ' ') === key;
+      });
+      return clash ? 'You already have a list with that name' : null;
+    }
+
+    // dids with `did` added, or removed when it is already there. Returns a new array.
+    function toggleDid(dids, did) {
+      var out = (dids || []).slice();
+      var i = out.indexOf(did);
+      if (i === -1) out.push(did); else out.splice(i, 1);
+      return out;
+    }
+
     lively.identity.AudienceRules = {
+      MAX_LISTS: MAX_LISTS,
+      MAX_LIST_NAME: MAX_LIST_NAME,
+      MAX_LIST_MEMBERS: MAX_LIST_MEMBERS,
+      newListId: newListId,
+      listNameError: listNameError,
+      toggleDid: toggleDid,
       emptyState: emptyState,
       isOnlyMe: isOnlyMe,
       stateFromAudience: stateFromAudience,

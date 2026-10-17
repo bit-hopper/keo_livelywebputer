@@ -25,7 +25,7 @@
  */
 
 module("lively.identity.AudienceDialog")
-  .requires("lively.morphic.Complete", "lively.identity.HomestarUI", "lively.identity.AudienceRules")
+  .requires("lively.morphic.Complete", "lively.identity.HomestarUI", "lively.identity.AudienceRules", "lively.identity.ListsDialog")
   .toRun(function () {
 
     var UI = lively.identity.HomestarUI;
@@ -99,6 +99,26 @@ module("lively.identity.AudienceDialog")
       var result = { pub: this.state.pub, audience: R.audienceFromState(this.state, this.ctx) };
       this.close();
       if (this.opts.onSave) this.opts.onSave(result);
+    };
+
+    // Make, rename or delete lists without leaving this dialog. The lists live in the
+    // shared ctx, so this redraws from it; a list that is gone is unticked. The cards
+    // that use a list are brought in line by the quiet sync (it never prompts for the
+    // passkey) and otherwise the next time the homestar opens.
+    Dialog.prototype.manageLists = function () {
+      var self = this;
+      lively.identity.ListsDialog.open({
+        ctx: this.ctx,
+        onChange: function (lists) {
+          var kept = {};
+          lists.forEach(function (l) { if (self.state.lists[l.id]) kept[l.id] = true; });
+          self.state = Object.assign({}, self.state, { lists: kept });
+          if (self.scrim) self.render();
+          lively.identity.postcardAudience.syncAudiences({ onlyIfKekCached: true }, function (err) {
+            if (err) console.warn("[AudienceDialog] audience sync after a list change failed:", err.message || err);
+          });
+        },
+      });
     };
 
     Dialog.prototype.set = function (state) {
@@ -262,8 +282,11 @@ module("lively.identity.AudienceDialog")
       y += 6;
       var save = UI.pill(0, y, "Save", { primary: true, w: 92, onClick: function () { self.save(); } });
       var cancel = UI.pill(0, y, "Cancel", { w: 92, onClick: function () { self.cancel(); } });
+      var manage = UI.pill(0, y, "Manage lists", { w: 116, onClick: function () { self.manageLists(); } });
       save.setPosition(lively.pt(W - PAD - 92, y));
       cancel.setPosition(lively.pt(W - PAD - 92 - 100, y));
+      manage.setPosition(lively.pt(PAD, y));
+      panel.addMorph(manage);
       panel.addMorph(cancel);
       panel.addMorph(save);
       y += 30 + 22;

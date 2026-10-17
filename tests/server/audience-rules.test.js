@@ -297,3 +297,35 @@ test('toggle me: choosing it again leaves it chosen, and ticking anything else l
   assert.equal(rules.isOnlyMe(rules.toggle(me, 'me')), true);
   assert.equal(rules.isOnlyMe(rules.toggle(me, 'friends')), false);
 });
+
+test('newListId: letters and digits only, and never an id already in use', () => {
+  const id = rules.newListId([{ id: 'taken' }]);
+  assert.match(id, /^[A-Za-z0-9]{1,64}$/);
+  // A random source that first collides with an existing id must be skipped.
+  const seq = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5];
+  let i = 0;
+  const taken = [{ id: 'l' + '0'.repeat(9) }];
+  assert.equal(rules.newListId(taken, () => seq[i++]), 'l' + 'i'.repeat(9));
+});
+
+test('listNameError: empty, too long and duplicate names are refused', () => {
+  const lists = [{ id: 'a', name: 'Book club' }, { id: 'b', name: 'Family' }];
+  assert.equal(rules.listNameError('', lists), 'Give the list a name');
+  assert.equal(rules.listNameError('   ', lists), 'Give the list a name');
+  assert.match(rules.listNameError('x'.repeat(61), lists), /at most 60/);
+  assert.match(rules.listNameError('  book   CLUB ', lists), /already have a list/);
+  assert.equal(rules.listNameError('Work', lists), null);
+});
+
+test('listNameError: a list may keep its own name when it is renamed', () => {
+  const lists = [{ id: 'a', name: 'Book club' }, { id: 'b', name: 'Family' }];
+  assert.equal(rules.listNameError('Book club', lists, 'a'), null);
+  assert.match(rules.listNameError('Family', lists, 'a'), /already have a list/);
+});
+
+test('toggleDid adds and removes without touching the original', () => {
+  const a = ['did:a'];
+  assert.deepEqual(rules.toggleDid(a, 'did:b'), ['did:a', 'did:b']);
+  assert.deepEqual(rules.toggleDid(a, 'did:a'), []);
+  assert.deepEqual(a, ['did:a']);
+});
