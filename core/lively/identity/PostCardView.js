@@ -68,6 +68,8 @@ module("lively.identity.PostCardView")
           "_stampEl",
           "_stampLayerEl",
           "_postmarkEl",
+          "_hostRowEl",
+          "_hostEl",
           "_addrEl",
           "_didEl",
           "_cidEl",
@@ -1346,6 +1348,7 @@ module("lively.identity.PostCardView")
           var stampColor =
             envelope.visibility === "public" ? "#888" : "#5566cc";
           this._stampEl.style.color = stampColor;
+          this._applyHostRow(envelope);
           if (this._homestarBack) this._applyHomestarBack(envelope);
         },
 
@@ -1443,9 +1446,55 @@ module("lively.identity.PostCardView")
           this._postmarkEl.style.display = narrow ? "none" : "block";
           if (narrow) {
             this._addrEl.style.left = "14px";
-            this._addrEl.style.top = "168px";
+            this._addrEl.style.top = "196px";   // below the five meta rows
             if (meta) meta.style.right = "14px";
           }
+        },
+
+        // "Host:" row right after "From:" on every full card back: the author's home
+        // instance, from the "#home" service entry in their DID document (the same
+        // source the profile card's "Hosted on" line reads). The row stays hidden
+        // until that is known, and is never guessed. Answers are cached per handle.
+        _applyHostRow: function (envelope) {
+          var self = this;
+          var meta = this._backEl.querySelector(".lively-postcard-view-meta");
+          var fromRow = this._didEl && this._didEl.parentNode;
+          if (!meta || !fromRow) return;
+          if (!this._hostRowEl) {
+            var r = document.createElement("div");
+            var l = document.createElement("span");
+            l.textContent = "Host: ";
+            l.style.color = "#999";
+            var v = document.createElement("span");
+            r.appendChild(l);
+            r.appendChild(v);
+            r.style.display = "none";
+            meta.insertBefore(r, fromRow.nextSibling);
+            this._hostRowEl = r;
+            this._hostEl = v;
+          }
+          var handle = this._handle;
+          if (!handle) return;
+          var cache = lively.identity.PostCardView._homeHosts || (lively.identity.PostCardView._homeHosts = {});
+          function show(host) {
+            if (!host || self._envelope !== envelope || !self._hostRowEl) return;
+            self._hostEl.textContent = host;
+            self._hostRowEl.style.display = "";
+          }
+          if (cache[handle] !== undefined) return show(cache[handle]);
+          fetch("/@" + encodeURIComponent(handle) + "/did-document", { credentials: "include" })
+            .then(function (res) { return res.ok ? res.json() : null; })
+            .then(function (doc) {
+              var host = null;
+              ((doc && Array.isArray(doc.service)) ? doc.service : []).forEach(function (svc) {
+                if (!host && svc && svc.id === doc.id + "#home" && typeof svc.serviceEndpoint === "string") {
+                  host = svc.serviceEndpoint.replace(/^https?:\/\//, "").replace(/\/+$/, "") || null;
+                }
+              });
+              cache[handle] = host;
+              show(host);
+            })
+            .catch(function () {});   // not cached: a later card retries
         },
 
         // payload.backStamps: [{ objId, x, y, w, ar }] — x/y/w are fractions
