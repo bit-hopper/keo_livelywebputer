@@ -165,7 +165,7 @@ test("an audience chosen on a new card is recorded after its first save", async 
   expect(await page.evaluate(() => /** @type {any} */ (window).__editor._audienceDirty)).toBe(false);
 });
 
-test("the send panel has no visibility step and says Send locks the card", async ({ page }) => {
+test("the send panel has no visibility step and says Send freezes the card", async ({ page }) => {
   await boot(page);
   const text = await page.evaluate(() => {
     const e = /** @type {any} */ (window).__editor;
@@ -176,8 +176,8 @@ test("the send panel has no visibility step and says Send locks the card", async
     e._closeSendPanel();
     return t;
   });
-  expect(text).toContain("locks it");
-  expect(text).toContain("Send & lock");
+  expect(text).toContain("freezes it");
+  expect(text).toContain("Send & Freeze");
   expect(text).not.toContain("Choose who can read this card");
 });
 
@@ -191,7 +191,7 @@ test("a card delivered to an inbox opens read-only with the reason", async ({ pa
     e._applyReadOnlyMode();
     return tb.textContent;
   });
-  expect(label).toContain("permanent");
+  expect(label).toContain("frozen");
 });
 
 test("the audience pill shows in a real editor and opens the dialog", async ({ page }) => {
@@ -210,7 +210,7 @@ test("the audience pill shows in a real editor and opens the dialog", async ({ p
   await page.waitForFunction((n) => $world.submorphs.length > n, before, { timeout: 15000 });
   // The dialog is a morph; read what it actually rendered.
   const shown = await page.evaluate(() => $world.submorphs.filter((m) => m.isBox || m.constructor.type === 'lively.morphic.Box').pop().renderContext().shapeNode.textContent);
-  const hasFriends = /Who can see this postcard/.test(shown) && /Friends/.test(shown) && /Orbit/.test(shown);
+  const hasFriends = /Who can see this postcard/.test(shown) && /Friends/.test(shown) && /Orbit/.test(shown) && /Only me/.test(shown);
   expect(hasFriends).toBe(true);
 });
 

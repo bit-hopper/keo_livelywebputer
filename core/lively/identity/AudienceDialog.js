@@ -236,6 +236,13 @@ module("lively.identity.AudienceDialog")
         y += this._picker(panel, y) + 8;
       }
 
+      this._row(panel, {
+        y: y, icon: "lock", title: "Only me", on: R.isOnlyMe(st),
+        desc: "Encrypted. Only you can open it",
+        onClick: function () { self.pickerOpen = false; self.set(R.toggle(st, "me")); }
+      });
+      y += ROW_H;
+
       y += 8;
       var textW = W - 2 * PAD;
       var footer = R.footerText(st, ctx);

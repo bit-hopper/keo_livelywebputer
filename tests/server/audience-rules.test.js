@@ -272,3 +272,28 @@ test('sinceCidFor: an older entry with no baseline stays without one', () => {
   const prev = [{ did: 'did:a', sealedDek: 's' }];
   assert.equal(rules.sinceCidFor(prev, 'did:a', 'V5'), undefined);
 });
+
+test('isOnlyMe: true when nothing is ticked and the card is not public', () => {
+  assert.equal(rules.isOnlyMe(rules.emptyState()), true);
+  assert.equal(rules.isOnlyMe(rules.toggle(rules.emptyState(), 'friends')), false);
+  assert.equal(rules.isOnlyMe(rules.toggle(rules.emptyState(), 'pub')), false);
+  assert.equal(rules.isOnlyMe(rules.togglePerson(rules.emptyState(), 'did:a')), false);
+  assert.equal(rules.isOnlyMe(rules.toggle(rules.emptyState(), 'list:club')), false);
+});
+
+test('toggle me: clears every other choice, including Public and people', () => {
+  let s = rules.toggle(rules.emptyState(), 'friends');
+  s = rules.toggle(s, 'orbit');
+  s = rules.toggle(s, 'list:club');
+  s = rules.togglePerson(s, 'did:a');
+  const me = rules.toggle(s, 'me');
+  assert.equal(rules.isOnlyMe(me), true);
+  assert.deepEqual(rules.audienceFromState(me, ctx), { tiers: [], people: [] });
+  assert.equal(rules.toggle(rules.toggle(rules.emptyState(), 'pub'), 'me').pub, false);
+});
+
+test('toggle me: choosing it again leaves it chosen, and ticking anything else leaves it', () => {
+  const me = rules.toggle(rules.emptyState(), 'me');
+  assert.equal(rules.isOnlyMe(rules.toggle(me, 'me')), true);
+  assert.equal(rules.isOnlyMe(rules.toggle(me, 'friends')), false);
+});

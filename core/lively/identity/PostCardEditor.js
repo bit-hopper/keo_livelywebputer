@@ -977,7 +977,7 @@ module('lively.identity.PostCardEditor')
 
         var sendBtn = document.createElement('button');
         sendBtn.className = 'pce-pill-btn pce-pill-solid'; // solid: the more consequential, rarer "final" action
-        sendBtn.title = 'Send to a handle — delivers the card to their inbox and locks it, so it can no longer be edited';
+        sendBtn.title = 'Send to a handle — delivers the card to their inbox and freezes it, so it can no longer be edited';
         var sendIcon = document.createElement('span');
         sendIcon.className = 'pce-pill-glyph';
         sendIcon.textContent = 'send';
@@ -2184,7 +2184,7 @@ module('lively.identity.PostCardEditor')
           var label = document.createElement('span');
           label.style.cssText = 'font-size:11px;color:#888;font-family:sans-serif;';
           label.textContent = this._sentLocked
-            ? 'Sent to an inbox, so this card is permanent and can no longer be edited.'
+            ? 'Sent to an inbox, so this card is frozen and can no longer be edited.'
             : 'Read-only — shared by @' + (this._handle || '');
           this._toolbarDiv.appendChild(label);
         }
@@ -3202,7 +3202,7 @@ module('lively.identity.PostCardEditor')
         // Sending is the one irreversible way to hand a card over; sharing with an
         // audience is not. Say so before the button, not after.
         var permanentNote = document.createElement('div');
-        permanentNote.textContent = 'Sending puts the card in their inbox and locks it: you won\u2019t be able to edit it afterward. ' +
+        permanentNote.textContent = 'Sending puts the card in their inbox and freezes it: you won\u2019t be able to edit it afterward. ' +
           'To share it and keep editing, use the audience button instead.';
         permanentNote.style.cssText = 'font-size:11px;line-height:1.35;color:#7a4b00;background:#fff6e0;' +
           'border:1px solid #f0d9a0;border-radius:4px;padding:6px 8px;margin-bottom:8px;';
@@ -3277,7 +3277,7 @@ module('lively.identity.PostCardEditor')
         }
 
         var sendBtn = document.createElement('button');
-        sendBtn.textContent = 'Send & lock';
+        sendBtn.textContent = 'Send & Freeze';
         sendBtn.style.cssText = 'font-size:11px;padding:4px 10px;cursor:pointer;border:1px solid #E31361;border-radius:3px;background:#fde6ee;';
         function submitHandle() {
           var handle = handleInput.value.trim().replace(/^@/, '');

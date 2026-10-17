@@ -162,12 +162,21 @@ module('lively.identity.AudienceRules')
       return { tiers: tiers, people: state.people.slice() };
     }
 
+    // Nothing is ticked and the card is not public: only the owner can open it.
+    // Shown as its own row ("Only me"), which is exclusive like Public.
+    function isOnlyMe(state) {
+      return !state.pub && !state.friends && !state.orbit && !state.people.length &&
+        Object.keys(state.lists).length === 0;
+    }
+
     // Returns a new state with one checkbox flipped. key is 'pub', 'friends',
-    // 'orbit' or 'list:<id>'.
+    // 'orbit', 'list:<id>' or 'me' (clears everything else; it cannot be unticked,
+    // choosing someone else is how you leave it).
     function toggle(state, key) {
       var s = { pub: state.pub, friends: state.friends, orbit: state.orbit,
                 lists: Object.assign({}, state.lists), people: state.people.slice() };
       var on;
+      if (key === 'me') return emptyState();
       if (key === 'pub') {
         on = !s.pub;
         if (on) s = emptyState();
@@ -248,6 +257,7 @@ module('lively.identity.AudienceRules')
     lively.identity = lively.identity || {};
     lively.identity.AudienceRules = {
       emptyState: emptyState,
+      isOnlyMe: isOnlyMe,
       stateFromAudience: stateFromAudience,
       audienceFromState: audienceFromState,
       toggle: toggle,
