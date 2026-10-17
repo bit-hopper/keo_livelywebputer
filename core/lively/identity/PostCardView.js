@@ -1307,7 +1307,9 @@ module("lively.identity.PostCardView")
           // ConstellationLounge._extractReplyBodyHtml's identical posture
           // for encrypted replies.
           if (this._compactMode) {
-            this._contentEl.textContent = "🔒 Encrypted";
+            this._contentEl.textContent = "";
+            this._contentEl.appendChild(lively.identity.postCardUtils.lockGlyph({ size: 15 }));
+            this._contentEl.appendChild(document.createTextNode(" Encrypted"));
             return;
           }
 
@@ -1320,10 +1322,7 @@ module("lively.identity.PostCardView")
           lock.style.cssText =
             "display:flex;flex-direction:column;align-items:center;justify-content:center;" +
             "height:100%;color:#999;gap:8px;";
-          var icon = document.createElement("div");
-          icon.textContent = "🔒";
-          icon.style.fontSize = "22px";
-          lock.appendChild(icon);
+          lock.appendChild(lively.identity.postCardUtils.lockGlyph({ size: 28 }));
           var label = document.createElement("div");
           label.textContent = "Encrypted";
           label.style.fontSize = "11px";

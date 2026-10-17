@@ -3263,13 +3263,11 @@ module('lively.identity.PostCardEditor')
                 sendBtn.disabled = false;
                 self._resolveRecipientPubKeys([handle], function (_e, result) {
                   if (handleInput.value.trim().replace(/^@/, '') !== handle) return; // stale
-                  if (result.resolved.length) {
-                    handleMsg.textContent = '🔒 can receive encrypted cards';
-                    handleMsg.style.color = '#2a2';
-                  } else {
-                    handleMsg.textContent = "🔓 hasn't set up encryption yet";
-                    handleMsg.style.color = '#c60';
-                  }
+                  var canSeal = result.resolved.length > 0;
+                  handleMsg.textContent = '';
+                  handleMsg.appendChild(lively.identity.postCardUtils.lockGlyph({ size: 14, open: !canSeal }));
+                  handleMsg.appendChild(document.createTextNode(canSeal ? ' can receive encrypted cards' : " hasn't set up encryption yet"));
+                  handleMsg.style.color = canSeal ? '#2a2' : '#c60';
                 });
               });
             }, 400);

@@ -4603,7 +4603,8 @@ module("lively.identity.ConstellationLounge")
       _extractReplyBodyHtml: function (envelope, err) {
         if (err || !envelope) return '<span style="color:#999;font-style:italic;">(could not load)</span>';
         if (envelope.visibility !== "public") {
-          return '<span style="color:#999;font-style:italic;">🔒 Encrypted reply</span>';
+          return '<span style="color:#999;font-style:italic;">' +
+            lively.identity.postCardUtils.lockGlyphHtml({ size: 15 }) + ' Encrypted reply</span>';
         }
         var payload = envelope.record && envelope.record.payload;
         var snapshot = payload &&

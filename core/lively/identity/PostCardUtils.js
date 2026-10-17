@@ -24,6 +24,8 @@ module('lively.identity.PostCardUtils')
       escapeHtml:          escapeHtml,
       identiconDataUrl:    identiconDataUrl,
       truncateDid:         truncateDid,
+      lockGlyph:           lockGlyph,
+      lockGlyphHtml:       lockGlyphHtml,
       truncateAddress:     truncateAddress,
       excerptText:         excerptText,
       buildPreviewSplit:   buildPreviewSplit,
@@ -2100,6 +2102,32 @@ module('lively.identity.PostCardUtils')
     function truncateDid(did) {
       var s = String(did || '');
       return s.length > 36 ? s.slice(0, 20) + '…' + s.slice(-12) : s;
+    }
+
+    // The pink Material Symbols lock that marks an encrypted card or reply,
+    // in place of the lock emoji. opts: { size (px, default 14), open (the
+    // unlocked variant), color (default the brand pink) }. The glyph is a
+    // ligature name in the icon font, so size it from `size` rather than by
+    // measuring it (CLAUDE.md: the font loads async).
+    var LOCK_PINK = '#E31361';
+    function _lockGlyphStyle(opts) {
+      var o = opts || {};
+      // Single quotes around the font name: lockGlyphHtml embeds this in a
+      // double-quoted style attribute.
+      return "font-family:'Material Symbols Rounded';font-style:normal;font-weight:normal;" +
+        'font-size:' + (o.size || 14) + 'px;line-height:1;color:' + (o.color || LOCK_PINK) + ';' +
+        'display:inline-block;width:1em;height:1em;overflow:hidden;vertical-align:-0.2em;';
+    }
+    function lockGlyph(opts) {
+      var el = document.createElement('span');
+      el.setAttribute('aria-hidden', 'true');
+      el.style.cssText = _lockGlyphStyle(opts);
+      el.textContent = (opts && opts.open) ? 'lock_open' : 'lock';
+      return el;
+    }
+    function lockGlyphHtml(opts) {
+      return '<span aria-hidden="true" style="' + _lockGlyphStyle(opts) + '">' +
+        ((opts && opts.open) ? 'lock_open' : 'lock') + '</span>';
     }
 
     // Shortened display form of a wallet address (e.g. "0x998b…c4a2"):

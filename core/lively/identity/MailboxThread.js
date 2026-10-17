@@ -593,7 +593,10 @@ module('lively.identity.MailboxThread')
       var d = this.decoded[r.objId];
       if (!d || d.error || !d.snapshot) {
         body.className += ' mbt-locked';
-        body.textContent = d && d.error ? '🔒 Could not open this reply' : '';
+        if (d && d.error) {
+          body.appendChild(lively.identity.postCardUtils.lockGlyph({ size: 16 }));
+          body.appendChild(document.createTextNode(' Could not open this reply'));
+        }
       } else {
         body.innerHTML = lively.identity.postCardUtils.snapshotToHtml(d.snapshot, { suppressEmbeds: false });
         hydrate.push(function () {
