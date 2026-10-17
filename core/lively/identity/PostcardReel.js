@@ -111,10 +111,17 @@ module("lively.identity.PostcardReel")
         var panel = UI.panel(lively.rect(0, 0, 400, 300));
         this._panel = panel;
 
-        panel.addMorph(icon(lively.rect(20, 18, 24, 24), "mail", 20, PINK));
-        panel.addMorph(label(lively.rect(50, 16, 200, 24), "Postcards", { px: 17, bold: true }));
+        // The default postmark (an Image of the SVG, 150:80 aspect) is this
+        // panel's mark. It is wider than a glyph, so the labels start further right.
+        var mark = new lively.morphic.Image(
+          lively.rect(18, 31, 50, 27), lively.identity.PostCardView.postmarkIconUrl(PINK.toString()));
+        mark.applyStyle({ fill: null, borderWidth: 0 });
+        noDrag(mark);
+        mark.eventsAreIgnored = true;
+        panel.addMorph(mark);
+        panel.addMorph(label(lively.rect(78, 16, 200, 24), "Postcards", { px: 17, bold: true }));
         var sub = this._isOwner ? "Shared by you" : (this._viewer ? "Shared with you" : "Shared with everyone");
-        panel.addMorph(label(lively.rect(50, 40, 200, 20), sub, { px: 12, color: MUTED }));
+        panel.addMorph(label(lively.rect(78, 40, 200, 20), sub, { px: 12, color: MUTED }));
 
         this._newBtn = null;
         if (this._isOwner) {
@@ -314,7 +321,7 @@ module("lively.identity.PostcardReel")
         var box = this._emptyBox;
         (box.submorphs || []).slice().forEach(function (m) { m.remove(); });
         this._emptyContent = null;
-        var title, body, button = null, glyph = "mail";
+        var title, body, button = null, glyph = "postmark";   // "postmark" = the default postmark Image, see _layoutEmpty
         if (!this._loaded) {
           title = "Loading…"; body = "";
         } else if (this._isOwner) {
@@ -335,7 +342,17 @@ module("lively.identity.PostcardReel")
         var box = this._emptyBox;
         if (!c) return;
         (box.submorphs || []).slice().forEach(function (m) { m.remove(); });
-        box.addMorph(icon(lively.rect(Math.round((aw - 36) / 2), 28, 36, 36), c.glyph, 30, PINK));
+        if (c.glyph === "postmark") {
+          // 150:80 aspect, centered where the 36px glyphs sit.
+          var mark = new lively.morphic.Image(
+            lively.rect(Math.round((aw - 68) / 2), 26, 68, 36), lively.identity.PostCardView.postmarkIconUrl(PINK.toString()));
+          mark.applyStyle({ fill: null, borderWidth: 0 });
+          noDrag(mark);
+          mark.eventsAreIgnored = true;
+          box.addMorph(mark);
+        } else {
+          box.addMorph(icon(lively.rect(Math.round((aw - 36) / 2), 28, 36, 36), c.glyph, 30, PINK));
+        }
         box.addMorph(label(lively.rect(20, 74, aw - 40, 24), c.title, { px: 16, bold: true, align: "center" }));
         if (c.body) box.addMorph(label(lively.rect(30, 100, aw - 60, 40), c.body, { px: 13, color: MUTED, wrap: true, align: "center" }));
         if (c.button) {

@@ -1478,11 +1478,10 @@ module("lively.identity.PostCardView")
           var year = ok ? String(created.getFullYear()) : "";
           var loc = envelope.state && envelope.state.location;
           var place = loc ? String(loc).replace(/[^0-9A-Za-z]/g, "").slice(0, 8).toUpperCase() : "";
-          // No place: the star-cluster icon (three 5-point stars, the same path
-          // as ConstellationLounge.js's CLUSTERS_STAR_PATH, 24x24 viewBox) takes
-          // the place line's spot. Scaled to ~0.85 and centered on x=40, y=28.5
-          // so it sits in the ring above the date.
-          var STAR_CLUSTER_PATH = "M9.00 7.00L10.94 11.83L16.13 12.18L12.14 15.52L13.41 20.57L9.00 17.80L4.59 20.57L5.86 15.52L1.87 12.18L7.06 11.83ZM18.00 2.40L19.18 5.38L22.37 5.58L19.90 7.62L20.70 10.72L18.00 9.00L15.30 10.72L16.10 7.62L13.63 5.58L16.82 5.38ZM19.00 15.50L19.76 17.45L21.85 17.57L20.24 18.90L20.76 20.93L19.00 19.80L17.24 20.93L17.76 18.90L16.15 17.57L18.24 17.45Z";
+          // No place: the star-cluster icon takes the place line's spot. Scaled
+          // to ~0.85 and centered on x=40, y=28.5 so it sits in the ring above
+          // the date.
+          var STAR_CLUSTER_PATH = lively.identity.PostCardView.STAR_CLUSTER_PATH;
           var wave = [20, 32, 44, 56].map(function (y) {
             return '<path d="M80 ' + y + ' q8 -6 16 0 t16 0 t16 0 t16 0"/>';
           }).join("");
@@ -2093,6 +2092,30 @@ module("lively.identity.PostCardView")
           if (++attempts > 25) return;
           setTimeout(tryDisable, 200);
         })();
+      },
+
+      // Three 5-point stars in descending sizes (24x24 viewBox) — the same shape
+      // as ConstellationLounge.js's CLUSTERS_STAR_PATH. The postmark's no-location
+      // stand-in (_applyHomestarBack) and postmarkIconUrl draw it.
+      STAR_CLUSTER_PATH: "M9.00 7.00L10.94 11.83L16.13 12.18L12.14 15.52L13.41 20.57L9.00 17.80L4.59 20.57L5.86 15.52L1.87 12.18L7.06 11.83ZM18.00 2.40L19.18 5.38L22.37 5.58L19.90 7.62L20.70 10.72L18.00 9.00L15.30 10.72L16.10 7.62L13.63 5.58L16.82 5.38ZM19.00 15.50L19.76 17.45L21.85 17.57L20.24 18.90L20.76 20.93L19.00 19.80L17.24 20.93L17.76 18.90L16.15 17.57L18.24 17.45Z",
+
+      // The default postmark (double ring, four cancel waves, star cluster, tilted
+      // like the card back's) as an SVG data URL, for an Image morph. No date or
+      // place text: it is meant for icon sizes, where that wouldn't read.
+      // Natural size is 150x80 (give the Image that aspect ratio).
+      postmarkIconUrl: function (color) {
+        var wave = [20, 32, 44, 56].map(function (y) {
+          return '<path d="M80 ' + y + ' q8 -6 16 0 t16 0 t16 0 t16 0"/>';
+        }).join("");
+        // The cluster is 26.6 wide at scale 1.3; translate centers its bbox
+        // (12.12, 11.65 in icon space) on the ring's center (40, 40).
+        var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 150 80">' +
+          '<g transform="rotate(-8 75 40)">' +
+          '<g fill="none" stroke="' + color + '" stroke-width="3"><circle cx="40" cy="40" r="33"/>' +
+          '<circle cx="40" cy="40" r="26" stroke-width="1.5" stroke-dasharray="2 3"/>' + wave + "</g>" +
+          '<path fill="' + color + '" transform="translate(24.2 24.9) scale(1.3)" d="' +
+          lively.identity.PostCardView.STAR_CLUSTER_PATH + '"/></g></svg>';
+        return "data:image/svg+xml;utf8," + encodeURIComponent(svg);
       },
 
       // options.target      -> embed via target.addMorph(view)
