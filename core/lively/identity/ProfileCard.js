@@ -80,7 +80,7 @@ module("lively.identity.ProfileCard")
         document.head.appendChild(styleEl);
       },
 
-      loadProfile: function loadProfile(handle, worldObjId) {
+      loadProfile: function loadProfile(handle) {
         var self   = this;
         var user   = lively.identity.did.currentUser();
         var target = handle || (user && user.handle);
@@ -88,7 +88,9 @@ module("lively.identity.ProfileCard")
 
         self._handle      = target;
         self._isOwner     = !!(user && user.handle === target);
-        self._worldObjId  = worldObjId || null;
+        // The Enter button opens this handle's homestar, so it is pointless on
+        // that very page (the card is a window over it there).
+        self._showEnter   = decodeURIComponent(window.location.pathname).replace(/\/+$/, "") !== "/@" + target;
 
         fetch("/@" + target + "/profile", { credentials: "include" })
           .then(function (res) {
@@ -851,9 +853,9 @@ module("lively.identity.ProfileCard")
           // pane's bottom-right, owner only) doesn't fit in what's left below
           // it. Runs before the Edit button is placed, which reads the
           // pane's final height.
-          // 44 whenever a bottom-right button (Edit and/or Enter World) will
-          // sit at ph - 36 below the card; visitors without a world need less.
-          var needPaneH = cardTop + cardH + ((self._isOwner || self._worldObjId) ? 44 : 14);
+          // 44 whenever a bottom-right button (Edit and/or Enter) will sit at
+          // ph - 36 below the card; a visitor on that homestar needs less.
+          var needPaneH = cardTop + cardH + ((self._isOwner || self._showEnter) ? 44 : 14);
           var havePaneH = pane.getExtent().y;
           if (needPaneH > havePaneH) {
             var we = self.getExtent();
@@ -969,7 +971,7 @@ module("lively.identity.ProfileCard")
                 { method: 'POST', credentials: 'include' })
                 .then(function (r) {
                   if (!r.ok) alert('Could not send friend request (HTTP ' + r.status + ')');
-                  if (win) win.loadProfile(win._handle, win._worldObjId);
+                  if (win) win.loadProfile(win._handle);
                 });
               return;
             }
@@ -1200,7 +1202,7 @@ module("lively.identity.ProfileCard")
                   .then(function () {
                     var w = self_.owner && self_.owner.owner && self_.owner.owner.owner;
                     self_.owner.remove();
-                    if (w) w.loadProfile(w._handle, w._worldObjId);
+                    if (w) w.loadProfile(w._handle);
                   });
               });
               lively.bindings.connect(cancelBtn, 'fire', cancelBtn, 'doAction');
@@ -1227,7 +1229,7 @@ module("lively.identity.ProfileCard")
                   .then(function () {
                     var w = self_.owner && self_.owner.owner && self_.owner.owner.owner;
                     self_.owner.remove();
-                    if (w) w.loadProfile(w._handle, w._worldObjId);
+                    if (w) w.loadProfile(w._handle);
                   });
               });
               declineBtn.addScript(function doAction() {
@@ -1239,7 +1241,7 @@ module("lively.identity.ProfileCard")
                   .then(function () {
                     var w = self_.owner && self_.owner.owner && self_.owner.owner.owner;
                     self_.owner.remove();
-                    if (w) w.loadProfile(w._handle, w._worldObjId);
+                    if (w) w.loadProfile(w._handle);
                   });
               });
               lively.bindings.connect(acceptBtn, 'fire', acceptBtn, 'doAction');
@@ -1258,7 +1260,7 @@ module("lively.identity.ProfileCard")
                   .then(function () {
                     var w = self_.owner && self_.owner.owner && self_.owner.owner.owner;
                     self_.owner.remove();
-                    if (w) w.loadProfile(w._handle, w._worldObjId);
+                    if (w) w.loadProfile(w._handle);
                   });
               });
               lively.bindings.connect(reqBtn, 'fire', reqBtn, 'doAction');
@@ -1522,25 +1524,23 @@ module("lively.identity.ProfileCard")
 
         var ph = pane.getExtent().y;
 
-        // Enter World button — only shown when this handle has a world to
-        // link to (passed in from IdentityServer.js's GET /@:handle when it
-        // renders this card as the handle's landing page). Sits to the left
-        // of the owner's Edit button when both are present, otherwise takes
-        // the Edit button's usual bottom-right slot.
-        if (self._worldObjId) {
+        // Enter button — opens this handle's homestar (GET /@:handle). Hidden
+        // when the card is already open over that page. Sits to the left of
+        // the owner's Edit button when both are present, otherwise takes the
+        // Edit button's usual bottom-right slot.
+        if (self._showEnter) {
           var EW = 130;
           var ex = self._isOwner ? (pw - 78 - 8 - EW) : (pw - EW - 12);
           var worldBtn = new lively.morphic.Button(
-            lively.rect(ex, ph - 36, EW, 26), "Enter World →");
+            lively.rect(ex, ph - 36, EW, 26), "Enter Home →");
           worldBtn.applyStyle({ fill: Color.rgb(255, 255, 255),
             borderColor: Color.rgb(204, 0, 87), borderRadius: 13,
             fontSize: 12, textColor: Color.rgb(204, 0, 87), borderWidth: 1 });
           worldBtn.setAppearanceStylingMode(false);
           worldBtn.setBorderStylingMode(false);
-          worldBtn._targetHandle     = handle;
-          worldBtn._targetWorldObjId = self._worldObjId;
+          worldBtn._targetHandle = handle;
           worldBtn.addScript(function doAction() {
-            window.location.href = '/@' + this._targetHandle + '/' + this._targetWorldObjId;
+            window.location.href = '/@' + encodeURIComponent(this._targetHandle);
           });
           lively.bindings.connect(worldBtn, 'fire', worldBtn, 'doAction');
           pane.addMorph(worldBtn);
@@ -2370,16 +2370,13 @@ module("lively.identity.ProfileCard")
     });
 
     lively.identity.ProfileCard = {
-      // worldObjId (optional): when given, the card shows an "Enter World →"
-      // button linking to /@handle/worldObjId — used when this card is the
-      // handle's own landing page (see IdentityServer.js's GET /@:handle).
-      open: function (handle, worldObjId) {
+      open: function (handle) {
         var win    = lively.BuildSpec("lively.identity.ProfileCard").createMorph();
         var user   = lively.identity.did.currentUser();
         var target = handle || (user && user.handle);
         win.setTitle(target ? "Profile — @" + target : "Profile");
         win.openInWorldCenter();
-        win.loadProfile(handle || null, worldObjId || null);
+        win.loadProfile(handle || null);
         return win;
       },
     };

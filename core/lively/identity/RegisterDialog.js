@@ -561,9 +561,11 @@ module("lively.identity.RegisterDialog")
                           // "still shows no encryption" report (alongside the
                           // DID-document sync gap fixed in DID.js#saveDocument).
                           function proceed() {
+                            // homeWorldObjId is only in the response for a brand-new
+                            // account; adding a device to an existing one stays put.
                             if (serverBody.homeWorldObjId) {
                               if (typeof lively !== 'undefined' && lively.Config) lively.Config.askBeforeQuit = false;
-                              window.location.href = "/@" + handle + "/" + serverBody.homeWorldObjId + "?welcome=" + encodeURIComponent(handle);
+                              window.location.href = "/@" + encodeURIComponent(handle);
                             } else {
                               self.remove();
                             }

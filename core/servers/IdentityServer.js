@@ -285,7 +285,7 @@ function createHomeWorld(did, thenDo) {
       visibility: "public",
       created: new Date().toISOString(),
       record: { cid: computeCidSync(worldJso), prevCid: null, payload: worldJso },
-      state: { name: "Home" },
+      state: { name: "Workshop" },
     };
     objectRepo.put(envelope, function (putErr) {
       if (putErr) {
@@ -298,9 +298,12 @@ function createHomeWorld(did, thenDo) {
 }
 
 // Creates a blank profile envelope for a newly registered user.
+// homeWorldObjId (optional) is the world createHomeWorld just made; the
+// homestar features it, so a new user's page lists it from the start.
 // Calls thenDo(err, objId|null).
-function createDefaultProfile(did, handle, thenDo) {
+function createDefaultProfile(did, handle, thenDo, homeWorldObjId) {
   var payload = { displayName: handle || '', bio: '', avatarUrl: null, bannerUrl: null, links: [] };
+  if (homeWorldObjId) payload.homestar = { featuredWorlds: [homeWorldObjId] };
   var objId   = genObjId();
   var envelope = {
     objId:      objId,
@@ -531,38 +534,82 @@ function buildWarpDropPage() {
   );
 }
 
-// Serves a handle's profile-card landing page at GET /@:handle (html
-// negotiation branch, see the route below): a plain Lively world (no saved
-// envelope) that opens lively.identity.ProfileCard for this handle
-// immediately on boot, instead of redirecting into the handle's saved home
-// world. worldObjId (nullable — the handle may not have a world at all) is
-// threaded through so ProfileCard.open can show an "Enter World" link.
-// Modeled on buildWarpDropPage() above, same manuallyCreateWorld /
-// showMenuBar:false reasoning.
-function buildProfileCardPage(handle, worldObjId) {
-  var title = escapeHtml("@" + handle);
+// Serves a handle's homestar at GET /@:handle (html negotiation branch, see the
+// route below): a plain Lively world (no saved envelope) whose UI is built from
+// morphs by lively.identity.Homestar, the way the constellation lounge is.
+// `data` is { handle, displayHandle, did, viewer: {did, handle}|null, isOwner,
+// profile } and is embedded as JSON for the controller, so it knows who is
+// looking without a round trip (and without racing the client-side session
+// restore). The static skeleton below is only for a fast first paint of what the
+// route already has; the controller removes it once the real chrome is up.
+function buildHomestarPage(handle, data) {
+  var profile = data.profile || {};
+  var shown = data.displayHandle || handle;
+  var name = profile.displayName || shown;
+  var title = escapeHtml(name === shown ? "@" + shown : name + " (@" + shown + ")");
+  var dataJson = JSON.stringify(data).replace(/</g, "\u003c");
+
+  var avatarSrc = profile.avatarUrl ? safeHref(profile.avatarUrl) : "#";
+  var avatarHtml = avatarSrc !== "#"
+    ? '<img class="hs-avatar" src="' + escapeHtml(avatarSrc) + '" alt="">'
+    : '<div class="hs-avatar hs-avatar-initial">' + escapeHtml(String(name).charAt(0).toUpperCase()) + '</div>';
+
   return (
-    "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" +
-    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
-    "<meta name=\"apple-mobile-web-app-capable\" content=\"yes\">" +
-    "<link rel=\"shortcut icon\" href=\"/core/media/lively.ico\">" +
-    "<title>" + title + "</title>" +
-    "<script>window.Config={" +
-    "codeBase:location.protocol+'//'+location.host+'/core/'," +
-    "rootPath:location.protocol+'//'+location.host+'/'," +
-    "manuallyCreateWorld:true," +
-    "showMenuBar:false," +
-    "lively2livelyEnableConnectionIndicator:false," +
-    "onStartWorld:function(){" +
-    "lively.require('lively.identity.ProfileCard').toRun(function(){" +
-    "lively.identity.ProfileCard.open(" + JSON.stringify(handle) + "," +
-    JSON.stringify(worldObjId || null) + ");" +
-    "});" +
-    "}" +
-    "}</script>" +
-    "</head><body>" +
-    "<script type=\"text/javascript\" src=\"/core/lively/bootstrap.js\"></script>" +
-    "</body></html>"
+    '<!DOCTYPE html><html lang="en"><head>' +
+    '<meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<meta name="apple-mobile-web-app-capable" content="yes">' +
+    '<link rel="shortcut icon" href="/core/media/lively.ico">' +
+    '<title>' + title + '</title>' +
+    '<style>' +
+    'body{margin:0;font-family:system-ui,sans-serif;background:#faf8fc}' +
+    // position:fixed so removing the skeleton moves nothing (same reasoning as
+    // the lounge's .lounge-static: a flow element that tall collapsing is a
+    // large layout shift).
+    '.hs-static{position:fixed;top:0;left:0;right:0;bottom:0;overflow:hidden}' +
+    '.hs-banner{height:168px;background:linear-gradient(135deg,#1a1440,#3b2a6b 55%,#e8497e)}' +
+    '.hs-body{position:relative;max-width:1240px;margin:0 auto;padding:0 24px}' +
+    '.hs-avatar{position:absolute;top:-54px;left:24px;width:108px;height:108px;border-radius:50%;' +
+    'border:4px solid #fff;box-sizing:border-box;object-fit:cover;background:#fff}' +
+    '.hs-avatar-initial{display:flex;align-items:center;justify-content:center;font-size:44px;' +
+    'font-weight:700;color:#e8497e;background:#fdebf3}' +
+    '.hs-text{padding:14px 0 0 128px}' +
+    '.hs-name{font-size:26px;font-weight:700;color:#2a2438}' +
+    '.hs-handle{margin-top:2px;color:#7a7390;font-size:14px}' +
+    '.hs-bio{margin-top:12px;color:#5b5470;font-size:14px;line-height:1.5;max-width:640px}' +
+    '.hs-loader{position:fixed;bottom:12px;right:12px;font-size:12px;color:#999;background:#fff;' +
+    'border:1px solid #eee;border-radius:4px;padding:4px 8px}' +
+    '</style>' +
+    '</head><body>' +
+    '<div class="hs-static" id="homestar-static">' +
+    '<div class="hs-banner"></div>' +
+    '<div class="hs-body">' + avatarHtml +
+    '<div class="hs-text"><div class="hs-name">' + escapeHtml(name) + '</div>' +
+    '<div class="hs-handle">@' + escapeHtml(shown) + '</div>' +
+    (profile.bio ? '<div class="hs-bio">' + escapeHtml(profile.bio) + '</div>' : '') +
+    '</div></div></div>' +
+    '<div class="hs-loader" id="homestar-loader">Loading…</div>' +
+    // A global, not a JSON <script> element: bootstrap replaces the body before
+    // onStartWorld runs, so the element would be gone. dataJson has no raw "<",
+    // and a JSON object literal is a valid JS expression.
+    '<script>window.__homestarData=' + dataJson + ';</script>' +
+    '<script src="/core/lib/postcard/postcard-runtime.js"></script>' +
+    '<script>window.Config={' +
+    'codeBase:location.protocol+"//"+location.host+"/core/",' +
+    'rootPath:location.protocol+"//"+location.host+"/",' +
+    'manuallyCreateWorld:true,' +
+    // The homestar is a place its owner uses (mailbox, files, DMs and the
+    // worlds browser all hang off the menu bar), so the menu bar stays.
+    'onStartWorld:function(){' +
+    // No unsaved local state to protect; the exit warning would only block bfcache.
+    'if(lively.Config)lively.Config.askBeforeQuit=false;' +
+    'lively.require("lively.identity.Homestar").toRun(function(){' +
+    'lively.identity.Homestar.open(window.__homestarData);' +
+    '});' +
+    '}' +
+    '}</script>' +
+    '<script src="/core/lively/bootstrap.js"></script>' +
+    '</body></html>'
   );
 }
 
@@ -1505,7 +1552,7 @@ module.exports = function (route, app) {
                   res.json(resp);
                 });
               });
-            });
+            }, homeWorldObjId);
           });
         });
       } else {
@@ -1518,7 +1565,7 @@ module.exports = function (route, app) {
                 res.json(resp);
               });
             });
-          });
+          }, homeWorldObjId);
         });
       }
     });
@@ -1588,25 +1635,15 @@ module.exports = function (route, app) {
 
   // ─── welcome.html redirect for signed-in users ────────────────────────────
   // Intercept GET /welcome.html before the static file server.
-  // Visitors with a valid session cookie and a saved world are redirected
-  // straight to their home world so they don't have to click "login" again.
-  // Everyone else (true anonymous visitors, and signed-in visitors who
-  // haven't saved a world yet — both are "landing page" traffic) gets the
-  // static welcome world with the lofi social map (LocalMap.js) mounted
-  // into it, via getWelcomeHtmlWithMap() below.
+  // Visitors with a valid session cookie are redirected straight to their
+  // homestar so they don't have to click "login" again. Everyone else (true
+  // anonymous visitors) is "landing page" traffic and gets the static welcome
+  // world with the lofi social map (LocalMap.js) mounted into it, via
+  // getWelcomeHtmlWithMap() below.
 
   app.get("/welcome.html", auth.optionalAuth, function (req, res) {
-    function serveWelcomeWithMap() {
-      res.send(getWelcomeHtmlWithMap());
-    }
-    if (!req.identity) return serveWelcomeWithMap();
-    objectRepo.listForUser(req.identity.did, function (err, envelopes) {
-      if (err || !envelopes || !envelopes.length) return serveWelcomeWithMap();
-      var worlds = envelopes.filter(function (e) { return e.type === "world"; });
-      if (!worlds.length) return serveWelcomeWithMap();
-      worlds.sort(function (a, b) { return a.created < b.created ? -1 : 1; });
-      res.redirect("/@" + req.identity.handle + "/" + worlds[0].objId);
-    });
+    if (!req.identity) return res.send(getWelcomeHtmlWithMap());
+    res.redirect("/@" + req.identity.handle);
   });
 
   // ─── WarpDrop standalone entry point ───────────────────────────────────────
@@ -1736,6 +1773,30 @@ module.exports = function (route, app) {
         return res.status(404).json({ error: "Handle not found: @" + handle });
       }
 
+      // A browser hitting the bare handle (a shared/typed profile link,
+      // including a verified domain handle) gets that handle's homestar; the
+      // JSON manifest below is for API clients (LoginDialog.js etc.) — same
+      // content negotiation as every /@:handle/:objId route. The homestar
+      // loads what it shows through its own viewer-filtered routes, so this
+      // branch never lists the handle's objects.
+      if (req.accepts(["html", "json"]) === "html") {
+        var viewer = req.identity ? { did: req.identity.did, handle: req.identity.handle } : null;
+        return objectRepo.getProfileForDid(did, function (pErr, profileEnv) {
+          if (pErr) return res.status(500).json({ error: String(pErr) });
+          handleRegistry.resolveHandleForDid(did, function (hErr, displayHandle) {
+            var profile = (profileEnv && profileEnv.record && profileEnv.record.payload) || {};
+            res.send(buildHomestarPage(handle, {
+              handle: handle,
+              displayHandle: displayHandle || handle,
+              did: did,
+              viewer: viewer,
+              isOwner: !!viewer && viewer.did === did,
+              profile: profile,
+            }));
+          });
+        });
+      }
+
       objectRepo.listForUser(did, function (err, envelopes) {
         if (err) return res.status(500).json({ error: String(err) });
         // Phase 1 (Roadmap.md §2) enforces visibility/recipients on the
@@ -1753,24 +1814,6 @@ module.exports = function (route, app) {
         var visible = envelopes
           .filter(function (e) { return _canReadEnvelope(e, req.identity); })
           .map(function (e) { return _trimRecipientsForNonOwner(e, req.identity); });
-
-        // A browser hitting the bare handle (e.g. a shared/typed profile
-        // link, including a verified domain handle) wants the handle's
-        // profile card rendered, not the JSON manifest this route otherwise
-        // exists to serve API clients (LoginDialog.js etc.) — same content
-        // negotiation pattern as every /@:handle/:objId route below. The
-        // handle's saved world (if any) is still reachable via the "Enter
-        // World" link ProfileCard.open renders — earliest-created world
-        // wins, same tie-break welcome.html's own-world redirect used to
-        // use here directly, but scoped to only the worlds this caller can
-        // actually see.
-        if (req.accepts(["html", "json"]) === "html") {
-          var worlds = visible.filter(function (e) { return e.type === "world"; });
-          worlds.sort(function (a, b) { return a.created < b.created ? -1 : 1; });
-          return res.send(
-            buildProfileCardPage(handle, worlds.length ? worlds[0].objId : null),
-          );
-        }
 
         // `handle` is the name to display (verified domain if it has one);
         // `registeredHandle` is the account's own handle.

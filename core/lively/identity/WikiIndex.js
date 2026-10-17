@@ -372,7 +372,7 @@ module("lively.identity.WikiIndex")
         // runs (eventsAreIgnored was true, cursor "default").
         return this._buildPill(label, {
           fill: PILL_PINK, hover: PILL_PINK_HOVER, padX: 14,
-          tooltip: isPersonal ? "Back to your home world" : "Back to c/" + this._scope.name,
+          tooltip: isPersonal ? "Back to your homestar" : "Back to c/" + this._scope.name,
           onClick: function () { window.location.href = href; },
         });
       },
@@ -2252,7 +2252,7 @@ module("lively.identity.WikiIndex")
           ? "/@" + encodeURIComponent(this._shownHandle())
           : "/c/" + encodeURIComponent(this._shownName());
         var tooltip = isPersonal
-          ? "@" + this._shownHandle() + " — back to your home world"
+          ? "@" + this._shownHandle() + " — back to your homestar"
           : "Constellation " + this._shownName() + " — back to c/" + this._shownName();
         entry.currentWorldDisplayName = function () { return label; };
         entry.toolTip = tooltip;

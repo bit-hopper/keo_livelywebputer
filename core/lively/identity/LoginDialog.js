@@ -445,26 +445,17 @@ module("lively.identity.LoginDialog")
 
       // ─── post-login sync ────────────────────────────────────────────────────────
 
+      // Signing in lands on the account's own homestar. Someone signing in while
+      // already on one of their own pages (a world, a postcard) stays put, except
+      // on their homestar itself, which reloads so it renders the owner's view.
       _redirectAfterLogin: function _redirectAfterLogin(handle) {
-        var pathHandle = (window.location.pathname.match(/^\/@([^\/]+)/) || [])[1];
-        if (pathHandle === handle) return;
+        var path = window.location.pathname;
+        var pathHandle = (path.match(/^\/@([^\/]+)/) || [])[1];
+        var onOwnHomestar = pathHandle === handle && /^\/@[^\/]+\/?$/.test(path);
+        if (pathHandle === handle && !onOwnHomestar) return;
         if (typeof lively !== 'undefined' && lively.Config) lively.Config.askBeforeQuit = false;
-        // Explicit Accept header required: the server's /@:handle route content-
-        // negotiates (redirects to the world's HTML page for a browser navigation,
-        // returns JSON otherwise) via req.accepts(["html","json"]) — a bare fetch()
-        // sends "Accept: */*", which that check resolves to "html" (first match),
-        // so without this header the server 302s here, fetch follows it silently,
-        // and .json() throws on the HTML body — swallowed by the catch below,
-        // leaving the user stuck on the login page with no visible error.
-        fetch('/@' + handle, { credentials: 'include', headers: { 'Accept': 'application/json' } })
-          .then(function (r) { return r.json(); })
-          .then(function (body) {
-            var worlds = (body.objects || []).filter(function (e) { return e.type === 'world'; });
-            if (!worlds.length) return;
-            worlds.sort(function (a, b) { return a.created < b.created ? -1 : 1; });
-            window.location.href = '/@' + handle + '/' + worlds[0].objId;
-          })
-          .catch(function () {});
+        if (onOwnHomestar) return window.location.reload();
+        window.location.href = '/@' + encodeURIComponent(handle);
       },
 
       _backgroundSync: function _backgroundSync(handle) {

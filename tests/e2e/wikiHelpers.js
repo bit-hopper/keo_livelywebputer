@@ -47,8 +47,8 @@ async function newAccount(browser, handle) {
   await page.goto("/blank.html");
   await page.waitForFunction(() => window.$world && window.lively && lively.identity && lively.identity.did, null, { timeout: 90000 });
 
-  // the dialog ends by navigating to the new account's home world
-  const nav = page.waitForURL(/welcome=/, { timeout: 90000 });
+  // the dialog ends by navigating to the new account's homestar
+  const nav = page.waitForURL((u) => u.pathname === "/@" + handle, { timeout: 90000 });
   await page.evaluate(async (h) => {
     await new Promise((r) => lively.require("lively.identity.RegisterDialog").toRun(r));
     const dlg = lively.BuildSpec("lively.identity.RegisterDialog").createMorph();
@@ -56,7 +56,9 @@ async function newAccount(browser, handle) {
     dlg._startRegisterCeremony(h, h, "Test");
   }, handle);
   await nav;
-  const homeUrl = page.url(); // /@handle/<home world objId>?welcome=handle
+  // the account's own home world (the oldest one), as a full URL: /@handle/<objId>
+  const worlds = await page.evaluate(async (h) => (await (await fetch("/@" + h + "/worlds", { credentials: "include" })).json()).worlds, handle);
+  const homeUrl = new URL("/@" + handle + "/" + worlds[0].objId, page.url()).href;
   await page.goto("/blank.html");
   await page.waitForFunction(() => window.$world && lively.identity && lively.identity.did && lively.identity.did.currentUser(), null, { timeout: 90000 });
   const who = await page.evaluate(() => { const u = lively.identity.did.currentUser(); return { handle: u.handle, did: u.did, credentialId: u.credentialId }; });

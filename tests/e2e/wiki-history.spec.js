@@ -58,8 +58,8 @@ test("history panel: groups, diffs, compare, restore, back", async ({ browser })
 
   try {
     // Register through the real dialog's ceremony (not a bare /register call): saving a page needs the
-    // soft signing key + delegation cert it sets up. It ends by navigating to the new account's home world.
-    const nav = page.waitForURL(/welcome=/, { timeout: 90000 });
+    // soft signing key + delegation cert it sets up. It ends by navigating to the new account's homestar.
+    const nav = page.waitForURL((u) => u.pathname === "/@" + ha, { timeout: 90000 });
     await page.evaluate(async (h) => {
       await new Promise((r) => lively.require("lively.identity.RegisterDialog").toRun(r));
       const dlg = lively.BuildSpec("lively.identity.RegisterDialog").createMorph();

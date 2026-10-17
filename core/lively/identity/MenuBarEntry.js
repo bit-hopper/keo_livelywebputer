@@ -175,6 +175,7 @@ module("lively.identity.MenuBarEntry")
             ];
           }
           return [
+            ["My homestar",        function () { self.openMyHomestar(); }],
             ["Compose",            function () { self.newPostcard(); }],
             ["My profile",         function () { self.openMyProfile(); }],
             ["Messages",           function () { self.openMessages(); }],
@@ -267,6 +268,10 @@ module("lively.identity.MenuBarEntry")
           lively.require("lively.identity.Wallet").toRun(function () {
             lively.identity.Wallet.open();
           });
+        },
+
+        openMyHomestar: function openMyHomestar() {
+          window.location.href = "/@" + encodeURIComponent(lively.identity.did.currentUser().handle);
         },
 
         openMyProfile: function openMyProfile() {

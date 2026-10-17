@@ -40,7 +40,7 @@ test.beforeAll(async ({ browser, playwright }) => {
   const R = Math.random().toString(36).slice(2, 6);
   A = await newAccount(browser, "hometest_ca" + R);
   B = await newAccount(browser, "hometest_cb" + R);
-  homePath = new URL(A.homeUrl).pathname; // drop ?welcome=
+  homePath = new URL(A.homeUrl).pathname;
 });
 
 test.afterAll(async () => {
