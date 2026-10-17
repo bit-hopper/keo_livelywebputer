@@ -33,6 +33,7 @@ function setup(serverState) {
       crypto: {
         computeCid: (payload, cb) => cb(null, 'cid-of-' + JSON.stringify(payload)),
         unwrapDek: (wrapped, kek, cb) => { calls.unwrap++; cb(null, 'DEK'); },
+        decryptPayload: (payload, nonce, dek, cb) => cb(null, serverState.payload || { attachments: [] }),
         sealForRecipient: (dek, pub, cb) => { calls.seal.push(pub); cb(null, 'sealed-with-' + pub); }
       },
       webAuthn: { deriveKek: (opts, cb) => { calls.kek++; cb(null, 'KEK'); } },
@@ -471,4 +472,66 @@ test('syncAudiences with onlyIfKekCached runs normally when the KEK is cached', 
     assert.deepEqual(report.updated, []);
     assert.equal(t.requests.filter((r) => r.url === '/@me/friends').length, 1);
   } finally { lively_kekCached(false); t.restore(); }
+});
+
+// ─── attachments: the people a card is shared with can open its files ──────────────
+
+const fileCard = () => card({ record: { cid: 'C1', prevCid: null, payload: 'ciphertext', nonce: 'n', wrappedDek: 'wrapped',
+  recipients: [{ did: 'did:a', sealedDek: 'sealed-with-pubA' }] } });
+
+test('syncCard: a person added is granted access to every file the card carries', async () => {
+  const server = {
+    payload: { attachments: [{ objId: 'fileA' }, { objId: 'fileB' }, { objId: 'fileA' }] },
+    routes: {
+      'GET /@me/card1': () => ({ status: 200, json: fileCard() }),
+      'GET /@bo/profile': () => profileEnvelope('did:b', 'pubB'),
+      'PUT /@me/card1': () => ({ status: 200, json: { ok: true } }),
+      'POST /nodejs/IdentityServer/grant-access/fileA': () => ({ status: 200, json: { ok: true } }),
+      'POST /nodejs/IdentityServer/grant-access/fileB': () => ({ status: 200, json: { ok: true } })
+    } };
+  const t = setup(server);
+  try {
+    const r = await call(t.api.syncCard.bind(t.api), 'card1', ctxFor());
+    assert.equal(r.result, 'updated');
+    assert.equal(r.fileGrantsFailed, undefined);
+    const grants = t.requests.filter((q) => q.method === 'POST').map((q) => ({ url: q.url, body: q.body }));
+    assert.deepEqual(grants.map((g) => g.url).sort(), [
+      '/nodejs/IdentityServer/grant-access/fileA', '/nodejs/IdentityServer/grant-access/fileB']);
+    grants.forEach((g) => assert.deepEqual(g.body, { recipientHandle: 'bo' }));
+  } finally { t.restore(); }
+});
+
+test('syncCard: a failed file grant is reported and the card is still shared', async () => {
+  const server = {
+    payload: { attachments: [{ objId: 'fileA' }] },
+    routes: {
+      'GET /@me/card1': () => ({ status: 200, json: fileCard() }),
+      'GET /@bo/profile': () => profileEnvelope('did:b', 'pubB'),
+      'PUT /@me/card1': () => ({ status: 200, json: { ok: true } }),
+      'POST /nodejs/IdentityServer/grant-access/fileA': () => ({ status: 403, json: {} })
+    } };
+  const t = setup(server);
+  try {
+    const r = await call(t.api.syncCard.bind(t.api), 'card1', ctxFor());
+    assert.equal(r.result, 'updated');
+    assert.deepEqual(r.added, ['did:b']);
+    assert.deepEqual(r.fileGrantsFailed, [{ objId: 'fileA', did: 'did:b', error: 'HTTP 403' }]);
+  } finally { t.restore(); }
+});
+
+test('syncCard: withdrawing someone grants nothing and never opens the card', async () => {
+  const server = {
+    payload: { attachments: [{ objId: 'fileA' }] },
+    routes: {
+      'GET /@me/card1': () => ({ status: 200, json: card({ record: { cid: 'C1', prevCid: null, payload: 'ciphertext', nonce: 'n', wrappedDek: 'wrapped',
+        recipients: [{ did: 'did:a', sealedDek: 'sA' }, { did: 'did:b', sealedDek: 'sB' }] } }) }),
+      'PUT /@me/card1': () => ({ status: 200, json: { ok: true } })
+    } };
+  const t = setup(server);
+  try {
+    const r = await call(t.api.syncCard.bind(t.api), 'card1', ctxFor({ cardAudiences: { card1: { tiers: ['orbit'], people: [] } } }));
+    assert.equal(r.result, 'updated');
+    assert.equal(t.requests.filter((q) => q.method === 'POST').length, 0);
+    assert.equal(t.calls.unwrap, 0);
+  } finally { t.restore(); }
 });

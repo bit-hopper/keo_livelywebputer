@@ -280,7 +280,9 @@ module('lively.identity.PostcardAudience')
             return skip('current');
           }
 
-          function write(recipients, failedAdds, added) {
+          // fileIds: the files the card carries, for the people in `added` to be
+          // granted access to as well (see _grantFiles).
+          function write(recipients, failedAdds, added, fileIds) {
             var next = Object.assign({}, env, {
               visibility: R.visibilityFor(recipients.length),
               record: Object.assign({}, env.record, { recipients: recipients }),
@@ -294,9 +296,14 @@ module('lively.identity.PostcardAudience')
                 if (putErr) return thenDo(putErr);
                 if (putRes.status === 409) return skip('sent');
                 if (putRes.status !== 200 && putRes.status !== 201) return thenDo(failure('Saving ' + objId, putRes));
-                thenDo(null, {
+                var result = {
                   objId: objId, result: 'updated',
                   added: added, removed: plan.remove, failed: failedAdds
+                };
+                if (!added.length || !fileIds || !fileIds.length) return thenDo(null, result);
+                self._grantFiles(fileIds, added, ctx, function (grantFailed) {
+                  if (grantFailed.length) result.fileGrantsFailed = grantFailed;
+                  thenDo(null, result);
                 });
               });
             });
@@ -308,22 +315,67 @@ module('lively.identity.PostcardAudience')
             if (kekErr) return thenDo(kekErr);
             c.unwrapDek(env.record.wrappedDek, kek, function (dekErr, dek) {
               if (dekErr) return thenDo(dekErr);
-              self._sealFor(dek, plan.add, ctx, function (_e, sealResult) {
-                // A person added here is sealed into this version (the cid stays the
-                // same), which is the baseline a later "edited since" diff starts from.
-                var added = sealResult.sealed.map(function (e) {
-                  return { did: e.did, sealedDek: e.sealedDek, sinceCid: env.record.cid };
+              self._fileIds(env, dek, function (fileIds) {
+                self._sealFor(dek, plan.add, ctx, function (_e, sealResult) {
+                  // A person added here is sealed into this version (the cid stays the
+                  // same), which is the baseline a later "edited since" diff starts from.
+                  var added = sealResult.sealed.map(function (e) {
+                    return { did: e.did, sealedDek: e.sealedDek, sinceCid: env.record.cid };
+                  });
+                  var recipients = plan.keep.concat(added);
+                  // Nobody could be added and nobody is being withdrawn: writing would
+                  // only re-sign an unchanged card on every sync. Report it instead.
+                  if (!sealResult.sealed.length && !plan.remove.length && sameMirror &&
+                      env.visibility === R.visibilityFor(recipients.length)) {
+                    return thenDo(null, { objId: objId, result: 'skipped', reason: 'unsealable', failed: sealResult.failed });
+                  }
+                  write(recipients, sealResult.failed, sealResult.sealed.map(function (s) { return s.did; }), fileIds);
                 });
-                var recipients = plan.keep.concat(added);
-                // Nobody could be added and nobody is being withdrawn: writing would
-                // only re-sign an unchanged card on every sync. Report it instead.
-                if (!sealResult.sealed.length && !plan.remove.length && sameMirror &&
-                    env.visibility === R.visibilityFor(recipients.length)) {
-                  return thenDo(null, { objId: objId, result: 'skipped', reason: 'unsealable', failed: sealResult.failed });
-                }
-                write(recipients, sealResult.failed, sealResult.sealed.map(function (s) { return s.did; }));
               });
             });
+          });
+        });
+      },
+
+      // The objIds of the files a card carries (inline attachments and the stamps on
+      // its back are both entries in payload.attachments), read from the decrypted
+      // payload. The key to open a file travels inside the card, but the server serves
+      // a file only to people on that file's own recipient list, so sharing the card
+      // is not enough to let someone open its attachments. thenDo(ids); a payload that
+      // cannot be read gives [] (the card is still shared).
+      _fileIds: function (env, dek, thenDo) {
+        lively.identity.crypto.decryptPayload(env.record.payload, env.record.nonce, dek, function (err, payload) {
+          if (err || !payload) return thenDo([]);
+          var ids = [];
+          (payload.attachments || []).forEach(function (a) {
+            if (a && a.objId && ids.indexOf(a.objId) === -1) ids.push(a.objId);
+          });
+          thenDo(ids);
+        });
+      },
+
+      // Put each of dids on each file's recipient list (the owner-only grant-access
+      // route, by handle). Withdrawing is not done here: a person who was sealed to the
+      // card already holds the key to its files, as the dialog's help line says.
+      // thenDo([{ objId, did, error }]) lists the grants that did not go through; the
+      // card itself is already shared by then.
+      _grantFiles: function (fileIds, dids, ctx, thenDo) {
+        var failed = [];
+        var jobs = [];
+        fileIds.forEach(function (objId) {
+          dids.forEach(function (did) { jobs.push({ objId: objId, did: did }); });
+        });
+        if (!jobs.length) return thenDo(failed);
+        var remaining = jobs.length;
+        function done() { if (--remaining === 0) thenDo(failed); }
+        jobs.forEach(function (job) {
+          var handle = ctx.handleByDid[job.did];
+          if (!handle) { failed.push({ objId: job.objId, did: job.did, error: 'no handle known' }); return done(); }
+          var url = lively.identity.did.baseUrl() + '/nodejs/IdentityServer/grant-access/' + enc(job.objId);
+          request('POST', url, { recipientHandle: handle }, function (err, res) {
+            if (err) failed.push({ objId: job.objId, did: job.did, error: String(err.message || err) });
+            else if (res.status !== 200) failed.push({ objId: job.objId, did: job.did, error: 'HTTP ' + res.status });
+            done();
           });
         });
       },
