@@ -67,6 +67,9 @@ module("lively.identity.PostCardView")
           "_contentEl",
           "_stampEl",
           "_stampLayerEl",
+          "_stampArtEl",
+          "_postmarkEl",
+          "_addrEl",
           "_didEl",
           "_cidEl",
           "_dateEl",
@@ -1344,6 +1347,142 @@ module("lively.identity.PostCardView")
           var stampColor =
             envelope.visibility === "public" ? "#888" : "#5566cc";
           this._stampEl.style.color = stampColor;
+          if (this._homestarBack) this._applyHomestarBack(envelope);
+        },
+
+        // Opt-in (options.homestar): the homestar reel's back face. Ruled writing
+        // lines, a tilted postmark, two stamps (what the card holds, who can see
+        // it) and a "To:" address block, over the same From/CID/Sent/Visibility
+        // rows and verify badge. Author-placed stamps (payload.backStamps) still
+        // render and replace the two decorative stamps (_renderBackStamps).
+        _applyHomestarBack: function (envelope) {
+          var back = this._backEl;
+          if (!back) return;
+          var PINK = "#e8497e";
+          var viewer = lively.identity.did.currentUser();
+          var isOwner = !!(viewer && viewer.did && viewer.did === envelope.did);
+          var vis = envelope.visibility || "public";
+          var recipients = (envelope.record && envelope.record.recipients) || [];
+          var n = recipients.length;
+
+          var audience, who, tierIcon;
+          if (vis === "public") {
+            audience = "Public"; who = "Everyone"; tierIcon = "public";
+          } else if (isOwner) {
+            audience = n ? "Shared with " + n + (n === 1 ? " person" : " people") : "Only you";
+            who = n ? n + (n === 1 ? " person" : " people") : "Just me";
+            tierIcon = n ? "group" : "lock";
+          } else {
+            audience = "Shared with you";
+            who = viewer && viewer.handle ? "@" + viewer.handle : "You";
+            tierIcon = "group";
+          }
+          this._visibilityEl.textContent = audience;
+
+          back.style.background =
+            "repeating-linear-gradient(180deg, transparent 0 27px, rgba(70,40,110,.11) 27px 28px), #fff";
+
+          var meta = back.querySelector(".lively-postcard-view-meta");
+          if (meta) {
+            meta.style.top = "28px";
+            meta.style.right = "calc(48% + 6px)";
+            meta.style.bottom = "auto";
+            meta.style.lineHeight = "28px";
+            Array.prototype.forEach.call(meta.children, function (r) {
+              r.style.whiteSpace = "nowrap";
+              r.style.overflow = "hidden";
+              r.style.textOverflow = "ellipsis";
+            });
+          }
+
+          // Two stamps, replacing the single dashed envelope: audience on the
+          // right edge, card contents beside it (filled in by _renderBackStamps).
+          function styleStamp(el, right) {
+            el.style.cssText = [
+              "position:absolute", "top:10px", "right:" + right + "px", "width:44px", "height:52px",
+              "border:2px dashed " + PINK, "border-radius:3px", "display:flex",
+              "align-items:center", "justify-content:center", "color:" + PINK, "background:#fde6ee",
+            ].join(";");
+          }
+          function glyph(name) {
+            return '<span style="font-family:\'Material Symbols Rounded\';font-size:22px;line-height:1;">' + name + "</span>";
+          }
+          this._stampEl.className = "lively-postcard-view-stamp";
+          styleStamp(this._stampEl, 10);
+          this._stampEl.innerHTML = glyph(tierIcon);
+          if (!this._stampArtEl) {
+            this._stampArtEl = document.createElement("div");
+            this._stampArtEl.className = "lively-postcard-view-stamp-art";
+            back.appendChild(this._stampArtEl);
+          }
+          styleStamp(this._stampArtEl, 62);
+          this._stampArtEl.innerHTML = glyph("mail");
+
+          // Postmark: place, date and year in a double ring, with four wavy
+          // cancel lines running over the stamps.
+          var created = envelope.created ? new Date(envelope.created) : null;
+          var ok = created && !isNaN(created.getTime());
+          var months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+          var dm = ok ? months[created.getMonth()] + " " + created.getDate() : "";
+          var year = ok ? String(created.getFullYear()) : "";
+          var loc = envelope.state && envelope.state.location;
+          var place = loc ? String(loc).replace(/[^0-9A-Za-z]/g, "").slice(0, 8).toUpperCase() : "HOMESTAR";
+          var wave = [20, 32, 44, 56].map(function (y) {
+            return '<path d="M80 ' + y + ' q8 -6 16 0 t16 0 t16 0 t16 0"/>';
+          }).join("");
+          var ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
+          function esc(t) { return String(t).replace(/[&<>"]/g, function (c) { return ESC[c]; }); }
+          if (!this._postmarkEl) {
+            this._postmarkEl = document.createElement("div");
+            this._postmarkEl.className = "lively-postcard-view-postmark";
+            back.appendChild(this._postmarkEl);
+          }
+          this._postmarkEl.style.cssText =
+            "position:absolute;top:8px;right:40px;width:150px;height:80px;transform:rotate(-8deg);pointer-events:none;";
+          this._postmarkEl.innerHTML =
+            '<svg viewBox="0 0 150 80" width="150" height="80" aria-hidden="true">' +
+            '<g fill="none" stroke="' + PINK + '" stroke-width="2"><circle cx="40" cy="40" r="33"/>' +
+            '<circle cx="40" cy="40" r="26" stroke-width="1" stroke-dasharray="2 3"/>' + wave + "</g>" +
+            '<g fill="' + PINK + '" font-family="Helvetica, Arial, sans-serif" font-weight="700" text-anchor="middle" letter-spacing=".6">' +
+            '<text x="40" y="36" font-size="' + (place.length > 8 ? 7 : 8.5) + '">' + esc(place) + "</text>" +
+            '<text x="40" y="47" font-size="8.5">' + esc(dm) + "</text>" +
+            '<text x="40" y="58" font-size="8.5">' + esc(year) + "</text></g></svg>";
+
+          // "To:" address block, ruled like the lines behind it.
+          if (!this._addrEl) {
+            this._addrEl = document.createElement("div");
+            this._addrEl.className = "lively-postcard-view-addr";
+            back.appendChild(this._addrEl);
+          }
+          var line = "display:block;height:28px;line-height:27px;border-bottom:1px solid #b9b2c4;" +
+            "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+          this._addrEl.style.cssText = "position:absolute;left:52%;right:18px;top:112px;";
+          this._addrEl.innerHTML =
+            '<span style="' + line + 'font-size:11px;color:#999;">To:</span>' +
+            '<b style="' + line + 'font-size:18px;font-weight:600;color:#3a2d4f;">' + esc(who) + "</b>" +
+            '<span style="' + line + '"></span>';
+
+          // A narrow card has no room for the postmark beside the address.
+          var narrow = this.getExtent().x < 480;
+          this._postmarkEl.style.display = narrow ? "none" : "block";
+          if (narrow) {
+            this._addrEl.style.left = "14px";
+            this._addrEl.style.top = "168px";
+            if (meta) meta.style.right = "116px";   // clears both stamps (2 x 44px + gaps)
+          }
+        },
+
+        // The art stamp shows what the card holds, read off its rendered content.
+        _updateHomestarArtStamp: function () {
+          if (!this._stampArtEl || !this._contentEl) return;
+          var c = this._contentEl;
+          var name = "mail";
+          if (c.querySelector("video")) name = "movie";
+          else if (c.querySelector("audio, iframe[src*='spotify'], iframe[src*='soundcloud']")) name = "music_note";
+          else if (c.querySelector("img")) name = "image";
+          else if (c.querySelector("a[href]")) name = "link";
+          var g = this._stampArtEl.firstElementChild;
+          if (g) g.textContent = name;
         },
 
         // payload.backStamps: [{ objId, x, y, w, ar }] — x/y/w are fractions
@@ -1359,6 +1498,10 @@ module("lively.identity.PostCardView")
           var handle = this._handle;
           // The dashed "✉" placeholder only makes sense on a bare back.
           if (this._stampEl) this._stampEl.style.display = stamps.length ? "none" : "flex";
+          if (this._homestarBack) {
+            this._updateHomestarArtStamp();
+            if (this._stampArtEl) this._stampArtEl.style.display = stamps.length ? "none" : "flex";
+          }
           if (!stamps.length) return;
 
           // Clamp defensively: a malformed/hand-edited payload must not be
@@ -1872,6 +2015,8 @@ module("lively.identity.PostCardView")
       //   _renderContentHtml) — default false, so every existing caller
       //   keeps rendering in plain natural document order unchanged.
       //   ConstellationLounge.js's reel is the only caller that passes this.
+      // options.homestar    -> opt-in homestar back face (ruled lines, postmark,
+      //   two stamps, "To:" address block; see _applyHomestarBack). Default false.
       // options.compactMode -> opt-in "mini card" chrome (ConstellationLounge.js's
       //   Scroll view): no flip/back face/more-menu, a plain-text 2-line-
       //   clamp excerpt instead of rich content, and a comment-icon chip in
@@ -1901,6 +2046,7 @@ module("lively.identity.PostCardView")
         view._envelope = opts.envelope || null;
         view._previewMode = !!opts.previewMode;
         view._pinkHandle = !!opts.pinkHandle;
+        view._homestarBack = !!opts.homestar;
         view._compactMode = !!opts.compactMode;
         view._showCommentChip = !!opts.showCommentChip;
         view._commentCount = opts.commentCount || 0;

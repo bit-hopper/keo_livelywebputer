@@ -26,6 +26,8 @@
  *     opts.inbox       true when the viewer is the author reading their inbox
  *     opts.onBack      if set, a Back button is shown and calls this
  *     opts.onRead      called after the thread is marked read (inbox only)
+ *     opts.compact     omit the header and original-card summary (the homestar reel
+ *                      shows the thread under a card that is already on screen)
  *   lively.identity.mailboxThread.openWindow(rootHandle, rootObjId, title)
  *
  * All styling is scoped under .mbt-root so it can't leak into the host.
@@ -447,14 +449,16 @@ module('lively.identity.MailboxThread')
       var root = s.root;
       var isInbox = !!this.opts.inbox;
 
-      // header
+      // header (a compact thread sits under a card that is already on screen, so
+      // it has neither the header nor the original-card summary)
       this.headEl.innerHTML = '';
-      if (this.opts.onBack) {
+      this.headEl.hidden = !!this.opts.compact;
+      if (!this.opts.compact && this.opts.onBack) {
         var back = btn('Inbox', 'arrow_back', 'ghost');
         back.addEventListener('click', function () { self.opts.onBack(); });
         this.headEl.appendChild(back);
       }
-      this.headEl.appendChild(el('div', 't', 'Replies to “' + this.cardTitle() + '”'));
+      if (!this.opts.compact) this.headEl.appendChild(el('div', 't', 'Replies to “' + this.cardTitle() + '”'));
       if (isInbox) {
         var mute = btn(s.muted ? 'Muted' : 'Mute', s.muted ? 'notifications_off' : 'notifications', 'ghost');
         mute.title = s.muted ? 'Unmute this thread' : 'Mute this thread';
@@ -465,7 +469,7 @@ module('lively.identity.MailboxThread')
       // body
       var sc = this.scrollEl;
       sc.innerHTML = '';
-      sc.appendChild(this.renderOrig());
+      if (!this.opts.compact) sc.appendChild(this.renderOrig());
 
       var replies = s.replies;
       // "New" means sent by someone else after the last time the author
