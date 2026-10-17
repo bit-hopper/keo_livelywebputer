@@ -554,6 +554,9 @@ function buildHomestarPage(handle, data) {
     ? '<img class="hs-avatar" src="' + escapeHtml(avatarSrc) + '" alt="">'
     : '<div class="hs-avatar hs-avatar-initial">' + escapeHtml(String(name).charAt(0).toUpperCase()) + '</div>';
 
+  var bannerSrc = profile.bannerUrl ? safeHref(profile.bannerUrl) : "#";
+  var bannerHtml = bannerSrc !== "#" ? '<img src="' + escapeHtml(bannerSrc) + '" alt="">' : '';
+
   return (
     '<!DOCTYPE html><html lang="en"><head>' +
     '<meta charset="utf-8">' +
@@ -567,7 +570,10 @@ function buildHomestarPage(handle, data) {
     // the lounge's .lounge-static: a flow element that tall collapsing is a
     // large layout shift).
     '.hs-static{position:fixed;top:0;left:0;right:0;bottom:0;overflow:hidden}' +
-    '.hs-banner{height:168px;background:linear-gradient(135deg,#1a1440,#3b2a6b 55%,#e8497e)}' +
+    // Neutral until the page draws the real banner (the profile's image, else the
+    // handle's quilt pattern, which only the client can compute).
+    '.hs-banner{height:168px;background:#ece8f4;overflow:hidden}' +
+    '.hs-banner img{width:100%;height:100%;object-fit:cover;display:block}' +
     '.hs-body{position:relative;max-width:1240px;margin:0 auto;padding:0 24px}' +
     '.hs-avatar{position:absolute;top:-54px;left:24px;width:108px;height:108px;border-radius:50%;' +
     'border:4px solid #fff;box-sizing:border-box;object-fit:cover;background:#fff}' +
@@ -582,7 +588,7 @@ function buildHomestarPage(handle, data) {
     '</style>' +
     '</head><body>' +
     '<div class="hs-static" id="homestar-static">' +
-    '<div class="hs-banner"></div>' +
+    '<div class="hs-banner">' + bannerHtml + '</div>' +
     '<div class="hs-body">' + avatarHtml +
     '<div class="hs-text"><div class="hs-name">' + escapeHtml(name) + '</div>' +
     '<div class="hs-handle">@' + escapeHtml(shown) + '</div>' +

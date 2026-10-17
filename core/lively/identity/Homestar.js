@@ -29,6 +29,7 @@ module("lively.identity.Homestar")
     "lively.identity.PostCardUtils",
     "lively.identity.HomestarUI",
     "lively.identity.PostcardReel",
+    "lively.identity.QuiltPatterns",
     "lively.morphic.Complete",
   )
   .toRun(function () {
@@ -264,28 +265,24 @@ module("lively.identity.Homestar")
         hero.applyStyle({ borderRadius: 18 });
         this._add(hero);
 
+        // Same banner and avatar defaults as the profile card (ProfileCard.js): a
+        // quilt pattern seeded by the handle when there is no banner image, and
+        // the handle-seeded blockie when there is no avatar image. A banner image
+        // is cover-fitted (the card stretches it, which distorts it at this width).
         var banner = new lively.morphic.Box(lively.rect(0, 0, w, BANNER_H));
         banner.applyStyle({ fill: null, borderWidth: 0 });
         noDrag(banner);
         banner.eventsAreIgnored = true;
         hero.addMorph(banner);
         var bannerUrl = safeUrl(p.bannerUrl);
-        banner.renderContext().shapeNode.style.background = bannerUrl
-          ? "center / cover no-repeat url(" + JSON.stringify(bannerUrl) + ")"
-          : [
-              "radial-gradient(2px 2px at 8% 24%, #fff 50%, transparent 52%)",
-              "radial-gradient(1.5px 1.5px at 21% 62%, #fff 50%, transparent 52%)",
-              "radial-gradient(2px 2px at 37% 18%, #fff 50%, transparent 52%)",
-              "radial-gradient(1.5px 1.5px at 52% 48%, #fff 50%, transparent 52%)",
-              "radial-gradient(2px 2px at 66% 22%, #fff 50%, transparent 52%)",
-              "radial-gradient(1.5px 1.5px at 79% 58%, #fff 50%, transparent 52%)",
-              "radial-gradient(2px 2px at 91% 30%, #fff 50%, transparent 52%)",
-              "radial-gradient(ellipse 70% 60% at 50% 125%, rgba(232,73,126,0.65), transparent 70%)",
-              "linear-gradient(180deg, #14103a, #2b2160)",
-            ].join(", ");
+        if (bannerUrl) {
+          banner.renderContext().shapeNode.style.background = "center / cover no-repeat url(" + JSON.stringify(bannerUrl) + ")";
+        } else {
+          lively.identity.quiltPatterns.applyQuiltBackground(banner, this._handle);
+        }
 
         var avatar = new lively.morphic.Image(lively.rect(PAD, BANNER_H - AVATAR / 2, AVATAR, AVATAR));
-        avatar.setImageURL(safeUrl(p.avatarUrl) || lively.identity.postCardUtils.identiconDataUrl(this._did || this._handle, AVATAR));
+        avatar.setImageURL(safeUrl(p.avatarUrl) || lively.identity.postCardUtils.identiconDataUrl(this._handle, AVATAR));
         avatar.applyStyle({ borderRadius: AVATAR / 2, borderWidth: 4, borderColor: Color.white, clipMode: "hidden" });
         noDrag(avatar);
         avatar.eventsAreIgnored = true;
