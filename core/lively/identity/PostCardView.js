@@ -776,7 +776,11 @@ module("lively.identity.PostCardView")
             return item;
           };
 
-          if (this._isOwner) {
+          // A card that has been delivered to someone's inbox (state.sentAt) is frozen:
+          // the server refuses every later write to it, so offering Edit would only
+          // end in a 409. A shared or constellation card is never stamped, so it keeps it.
+          var delivered = !!(this._envelope && this._envelope.state && this._envelope.state.sentAt);
+          if (this._isOwner && !delivered) {
             menu.appendChild(makeItem("Edit", "edit", function () {
               lively.identity.PostCardEditor.openCard(self._handle, self._objId);
             }));
