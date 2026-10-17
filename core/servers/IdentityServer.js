@@ -77,6 +77,7 @@ var dmSignalingTokenStore = require("./support/dm-signaling-token-store");
 var cryptoVerify = require("./identity/CryptoVerify");
 var writePolicy = require("./identity/WritePolicy");
 var orbitRules = require("./identity/Orbit");
+var audienceRules = require("./identity/AudienceLists");
 var contentRealm = require("./support/content-realm-gate");
 var didHome = require("./identity/DidHome");
 var domainVerifier = require("./identity/DomainVerifier");
@@ -3564,14 +3565,26 @@ module.exports = function (route, app) {
         });
       }
 
-      // state.orbit (Orbit.js) must keep its invariants whatever the client sent:
-      // members are friends, pinned is a subset of members.
-      if (!envelope.state || envelope.state.orbit === undefined) return _put(envelope);
+      // state.orbit (Orbit.js) and state.audienceLists / state.cardAudiences
+      // (AudienceLists.js) must keep their invariants whatever the client sent:
+      // members are friends, pinned is a subset of members, lists are capped.
+      var st = envelope.state;
+      if (!st || (st.orbit === undefined && st.audienceLists === undefined && st.cardAudiences === undefined)) {
+        return _put(envelope);
+      }
       friendRegistry.listFriends(req.identity.did, function (err, friends) {
         if (err) return res.status(500).json({ error: String(err) });
-        var checked = orbitRules.normalize(envelope.state.orbit, friends.map(function (f) { return f.did; }));
-        if (checked.error) return res.status(400).json({ error: checked.error, code: "INVALID_ORBIT" });
-        _put(Object.assign({}, envelope, { state: Object.assign({}, envelope.state, { orbit: checked.orbit }) }));
+        var friendDids = friends.map(function (f) { return f.did; });
+        var fixed = {};
+        if (st.orbit !== undefined) {
+          var checked = orbitRules.normalize(st.orbit, friendDids);
+          if (checked.error) return res.status(400).json({ error: checked.error, code: "INVALID_ORBIT" });
+          fixed.orbit = checked.orbit;
+        }
+        var aud = audienceRules.normalizeState(st, friendDids);
+        if (aud.error) return res.status(400).json({ error: aud.error, code: "INVALID_AUDIENCE" });
+        Object.assign(fixed, aud);
+        _put(Object.assign({}, envelope, { state: Object.assign({}, st, fixed) }));
       });
     });
   });

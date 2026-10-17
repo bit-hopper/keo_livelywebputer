@@ -125,6 +125,71 @@ test("orbit, worlds and postcards routes by viewer", async ({ browser }) => {
     await loginAs(F);
     expect((await req("GET", "/@" + O.handle + "/orbit")).body.locked).toBe(true);          // even a member does not
 
+    // ── audience lists and per-card audiences (state.audienceLists / state.cardAudiences)
+    await loginAs(O);
+    const putState = async (patch) => {
+      const cur = (await req("GET", "/@" + O.handle + "/settings")).body;
+      return req("PUT", "/@" + O.handle + "/settings", Object.assign({}, cur, { state: Object.assign({}, cur.state, patch) }));
+    };
+    const stateNow = async () => (await req("GET", "/@" + O.handle + "/settings")).body.state;
+    expect((await putState({
+      audienceLists: [{ id: "club", name: "  Book club ", memberDids: [F.did, S.did] }],
+      cardAudiences: { card1: { tiers: ["friends", "list:club", "list:ghost", "public"], people: [F.did, S.did] } }
+    })).status).toBe(200);
+    let st = await stateNow();
+    // the non-friend is dropped from the list and from the named people, the name is trimmed,
+    // and tiers that are unknown or whose list does not exist are dropped
+    expect(st.audienceLists).toEqual([{ id: "club", name: "Book club", memberDids: [F.did] }]);
+    expect(st.cardAudiences).toEqual({ card1: { tiers: ["friends", "list:club"], people: [F.did] } });
+    expect(st.orbit).toBeTruthy();                                                   // the rest of state survives
+
+    // malformed shapes are refused with INVALID_AUDIENCE and change nothing
+    for (const patch of [
+      { audienceLists: "x" },
+      { audienceLists: [{ id: "bad id!", name: "x" }] },
+      { audienceLists: [{ id: "a", name: "x" }, { id: "a", name: "y" }] },
+      { audienceLists: [{ id: "a", name: "   " }] },
+      { audienceLists: [{ id: "a", name: "x".repeat(61) }] },
+      { cardAudiences: [] },
+      { cardAudiences: { "bad key!": {} } },
+      { cardAudiences: { card1: { tiers: "friends" } } }
+    ]) {
+      const r = await putState(patch);
+      expect(r.status, JSON.stringify(patch)).toBe(400);
+      expect(r.body.code, JSON.stringify(patch)).toBe("INVALID_AUDIENCE");
+    }
+    expect(await stateNow()).toEqual(st);
+
+    // an unrelated settings save (the block list) carries the lists along
+    expect((await putState({ blockedDids: ["did:x"] })).status).toBe(200);
+    st = await stateNow();
+    expect(st.blockedDids).toEqual(["did:x"]);
+    expect(st.audienceLists[0].memberDids).toEqual([F.did]);
+    expect((await putState({ blockedDids: [] })).status).toBe(200);
+
+    // deleting a list takes its tier off the cards that used it
+    expect((await putState({ audienceLists: [] })).status).toBe(200);
+    expect((await stateNow()).cardAudiences.card1.tiers).toEqual(["friends"]);
+
+    // an entry with nothing in it is kept ("only me")
+    expect((await putState({ cardAudiences: { card2: {} } })).status).toBe(200);
+    expect((await stateNow()).cardAudiences).toEqual({ card2: { tiers: [], people: [] } });
+
+    // only the owner can read any of it: through the settings route, by the settings object id,
+    // and signed out
+    const settingsObjId = (await req("GET", "/@" + O.handle + "/settings")).body.objId;
+    for (const who of [S, F]) {
+      await loginAs(who);
+      expect((await req("GET", "/@" + O.handle + "/settings")).status).toBe(403);
+      const byId = await req("GET", "/@" + O.handle + "/" + settingsObjId);
+      expect([403, 404], "settings by id as " + who.handle + " got " + byId.status).toContain(byId.status);
+      expect(JSON.stringify(byId.body)).not.toContain("Book club");
+    }
+    const anonById = await req("GET", "/@" + O.handle + "/" + settingsObjId, undefined, true);
+    expect([401, 403, 404], "settings by id signed out got " + anonById.status).toContain(anonById.status);
+    expect(JSON.stringify(anonById.body)).not.toContain("card2");
+    await loginAs(O);
+
     // ── an ended friendship drops the member at once, without touching the stored orbit
     await loginAs(O);
     expect((await putOrbit({ visibility: "friends", members: [F.did], pinned: [F.did] }, (await req("GET", "/@" + O.handle + "/settings")).body)).status).toBe(200);

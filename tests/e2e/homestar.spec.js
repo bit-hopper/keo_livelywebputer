@@ -48,11 +48,12 @@ test("the owner's homestar shows the new-user empty state", async () => {
   await A.page.goto("/@" + A.handle);
   await A.page.waitForFunction(() => /** @type {any} */ (window).lively && lively.identity && lively.identity.Homestar, null, { timeout: 90000 });
   const text = () => A.page.evaluate(() => { const out = []; $world.withAllSubmorphsDo((m) => { if (m.textString) out.push(m.textString); }); return out; });
-  await expect.poll(async () => (await text()).includes("Write your first postcard"), { timeout: 30000 }).toBe(true);
-  const t = await text();
-  expect(t).toContain("Edit profile");
-  expect(t).toContain("Workshop");
-  expect(t).toContain("Your orbit is empty. Close friends you add will show up here.");
+  // The panels load from separate fetches (worlds, orbit, postcards), so wait for each
+  // string rather than reading them all once after the first has appeared.
+  const expected = ["Write your first postcard", "Edit profile", "Workshop",
+    "Your orbit is empty. Close friends you add will show up here."];
+  await expect.poll(async () => { const t = await text(); return expected.filter((s) => !t.includes(s)); },
+    { timeout: 30000 }).toEqual([]);
 });
 
 test("signed-in /welcome.html redirects to the homestar", async () => {
