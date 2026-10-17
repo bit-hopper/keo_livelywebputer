@@ -2268,33 +2268,15 @@ module('lively.identity.PostCardMailbox')
       // mutate(state) edits the settings envelope's state object in place
       // (block list, RSS feed subscriptions — whatever a caller needs
       // persisted server-side and readable without decrypting a payload,
-      // per tranche 2's F18). The settings payload itself never changes
-      // here, but record.cid is still recomputed over it before every PUT —
-      // same discipline as the rest of this codebase's envelope writes,
-      // cheap and avoids ever landing a stale cid.
+      // per tranche 2's F18). The write goes through DID.js, which re-GETs the envelope first so a
+      // copy loaded earlier in this tab cannot drop the audience lists or other
+      // state saved since.
       _patchSettings: function (mutate, thenDo) {
-        var handle = lively.identity.did.currentUser().handle;
-        var base   = lively.identity.did.baseUrl();
-        var env    = this._settingsEnvelope;
-        if (!env) return thenDo(new Error('Settings not loaded yet'));
-
-        env.state = env.state || {};
-        mutate(env.state);
-
-        var payload = (env.record && env.record.payload) || {};
-        lively.identity.crypto.computeCid(payload, function (err, cid) {
+        var self = this;
+        lively.identity.did._patchRelationships(mutate, function (err, env) {
           if (err) return thenDo(err);
-          env.record.cid = cid;
-          var xhr = new XMLHttpRequest();
-          xhr.open('PUT', base + '/@' + handle + '/settings', true);
-          xhr.setRequestHeader('Content-Type', 'application/json');
-          xhr.withCredentials = true;
-          xhr.onload = function () {
-            if (xhr.status === 200) return thenDo(null);
-            thenDo(new Error('PUT failed: ' + xhr.status));
-          };
-          xhr.onerror = function () { thenDo(new Error('Network error')); };
-          xhr.send(JSON.stringify(env));
+          self._settingsEnvelope = env;
+          thenDo(null);
         });
       },
 

@@ -623,23 +623,12 @@ module("lively.identity.MediaPickerDialog")
       _saveSkinToneSetting: function (toneKey) {
         var user = lively.identity.did.currentUser ? lively.identity.did.currentUser() : null;
         if (!user || !this._settingsEnvelope) return; // signed out, or the load failed — nothing to persist to
-        var env = this._settingsEnvelope;
-        env.state = env.state || {};
-        env.state.emojiSkinTone = toneKey;
-        var payload = (env.record && env.record.payload) || {};
-        var base = lively.identity.did.baseUrl();
-        lively.identity.crypto.computeCid(payload, function (err, cid) {
-          if (err) return console.error("[MediaPickerDialog] computeCid failed:", err);
-          env.record.cid = cid;
-          var xhr = new XMLHttpRequest();
-          xhr.open("PUT", base + "/@" + encodeURIComponent(user.handle) + "/settings", true);
-          xhr.setRequestHeader("Content-Type", "application/json");
-          xhr.withCredentials = true;
-          xhr.onload = function () {
-            if (xhr.status !== 200) console.error("[MediaPickerDialog] settings PUT failed:", xhr.status);
-          };
-          xhr.onerror = function () { console.error("[MediaPickerDialog] settings PUT network error"); };
-          xhr.send(JSON.stringify(env));
+        // DID.js re-GETs the envelope before writing, so the copy loaded when the
+        // dialog opened cannot drop state saved since.
+        lively.identity.did._patchRelationships(function (state) {
+          state.emojiSkinTone = toneKey;
+        }, function (err) {
+          if (err) console.error("[MediaPickerDialog] saving the skin tone failed:", err);
         });
       },
 

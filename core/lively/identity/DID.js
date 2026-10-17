@@ -603,46 +603,53 @@ module("lively.identity.DID")
             (!!handle && r.mutedHandles.indexOf(handle) !== -1);
         },
 
-        // Shared mutate-and-PUT primitive. mutate(state) edits the settings
-        // envelope's state object in place (mirrors PostCardMailbox.js's own
-        // _patchSettings exactly, so the two stay compatible over the same
-        // envelope); lazy-loads the envelope first if it isn't cached yet.
+        // Shared mutate-and-PUT primitive for the settings envelope's state.
+        // mutate(state) edits it in place. Always re-GETs the envelope right
+        // before mutating: other writers (the audience lists and per-card
+        // audiences in PostcardAudience.js, other tabs) change state too, and
+        // writing back a copy loaded earlier would drop what they saved since.
+        // Also refreshes the cached copy and relationships. thenDo(err, env).
         _patchRelationships: function (mutate, thenDo) {
           var self = this;
           var u = this._currentUser;
           if (!u || !u.handle) return thenDo && thenDo(new Error("Not signed in"));
+          var url = this.baseUrl() + "/@" + encodeURIComponent(u.handle) + "/settings";
 
-          function apply() {
-            var env = self._relationshipsEnvelope;
-            if (!env) return thenDo && thenDo(new Error("Settings not loaded"));
-            env.state = env.state || {};
-            mutate(env.state);
+          fetch(url, { credentials: "include" })
+            .then(function (r) {
+              if (!r.ok) throw new Error("Loading settings failed: " + r.status);
+              return r.json();
+            })
+            .then(function (env) {
+              if (u !== self._currentUser) throw new Error("Session changed");
+              if (!env || !env.record) throw new Error("Settings not loaded");
+              env.state = env.state || {};
+              mutate(env.state);
 
-            var payload = (env.record && env.record.payload) || {};
-            lively.identity.crypto.computeCid(payload, function (err, cid) {
-              if (err) return thenDo && thenDo(err);
-              env.record.cid = cid;
-              fetch(self.baseUrl() + "/@" + encodeURIComponent(u.handle) + "/settings", {
-                method: "PUT",
-                credentials: "include",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(env),
-              }).then(function (r) {
-                if (!r.ok) return thenDo && thenDo(new Error("PUT failed: " + r.status));
-                self._relationships = {
-                  blockedDids:    env.state.blockedDids    || [],
-                  blockedHandles: env.state.blockedHandles || [],
-                  mutedDids:      env.state.mutedDids      || [],
-                  mutedHandles:   env.state.mutedHandles   || [],
-                };
-                lively.bindings.signal(lively.identity.did, "relationshipsChanged", self._relationships);
-                thenDo && thenDo(null);
-              }).catch(function (err) { thenDo && thenDo(err); });
-            });
-          }
-
-          if (this._relationshipsEnvelope) apply();
-          else this._loadRelationships(function () { apply(); });
+              var payload = (env.record && env.record.payload) || {};
+              lively.identity.crypto.computeCid(payload, function (err, cid) {
+                if (err) return thenDo && thenDo(err);
+                env.record.cid = cid;
+                fetch(url, {
+                  method: "PUT",
+                  credentials: "include",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(env),
+                }).then(function (r) {
+                  if (!r.ok) return thenDo && thenDo(new Error("PUT failed: " + r.status));
+                  self._relationshipsEnvelope = env;
+                  self._relationships = {
+                    blockedDids:    env.state.blockedDids    || [],
+                    blockedHandles: env.state.blockedHandles || [],
+                    mutedDids:      env.state.mutedDids      || [],
+                    mutedHandles:   env.state.mutedHandles   || [],
+                  };
+                  lively.bindings.signal(lively.identity.did, "relationshipsChanged", self._relationships);
+                  thenDo && thenDo(null, env);
+                }).catch(function (err) { thenDo && thenDo(err); });
+              });
+            })
+            .catch(function (err) { thenDo && thenDo(err); });
         },
 
         blockDid: function (did, handle, thenDo) {
