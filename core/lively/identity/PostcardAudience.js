@@ -309,7 +309,12 @@ module('lively.identity.PostcardAudience')
             c.unwrapDek(env.record.wrappedDek, kek, function (dekErr, dek) {
               if (dekErr) return thenDo(dekErr);
               self._sealFor(dek, plan.add, ctx, function (_e, sealResult) {
-                var recipients = plan.keep.concat(sealResult.sealed);
+                // A person added here is sealed into this version (the cid stays the
+                // same), which is the baseline a later "edited since" diff starts from.
+                var added = sealResult.sealed.map(function (e) {
+                  return { did: e.did, sealedDek: e.sealedDek, sinceCid: env.record.cid };
+                });
+                var recipients = plan.keep.concat(added);
                 // Nobody could be added and nobody is being withdrawn: writing would
                 // only re-sign an unchanged card on every sync. Report it instead.
                 if (!sealResult.sealed.length && !plan.remove.length && sameMirror &&

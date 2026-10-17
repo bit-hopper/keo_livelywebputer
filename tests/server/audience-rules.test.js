@@ -256,3 +256,19 @@ test('viewerChipLabel: only Friends / Orbit by name, never a list or a person', 
   assert.equal(rules.viewerChipLabel('shared', undefined), 'Just a few people');
   assert.equal(rules.viewerChipLabel('private', { tiers: [] }), null);
 });
+
+test('sinceCidFor: a person new to the card starts at the new version', () => {
+  assert.equal(rules.sinceCidFor([], 'did:a', 'V2'), 'V2');
+  assert.equal(rules.sinceCidFor(undefined, 'did:a', 'V2'), 'V2');
+  assert.equal(rules.sinceCidFor([{ did: 'did:b', sealedDek: 's', sinceCid: 'V1' }], 'did:a', 'V2'), 'V2');
+});
+
+test('sinceCidFor: a person already on the card keeps the baseline they had', () => {
+  const prev = [{ did: 'did:a', sealedDek: 's', sinceCid: 'V1' }];
+  assert.equal(rules.sinceCidFor(prev, 'did:a', 'V5'), 'V1');
+});
+
+test('sinceCidFor: an older entry with no baseline stays without one', () => {
+  const prev = [{ did: 'did:a', sealedDek: 's' }];
+  assert.equal(rules.sinceCidFor(prev, 'did:a', 'V5'), undefined);
+});

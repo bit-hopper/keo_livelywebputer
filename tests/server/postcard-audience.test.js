@@ -134,7 +134,7 @@ test('syncCard: adds a new friend in place, same cid, re-signed, with the new re
     assert.equal(put.record.wrappedDek, 'wrapped');
     assert.deepEqual(put.record.recipients, [
       { did: 'did:a', sealedDek: 'sealed-with-pubA' },
-      { did: 'did:b', sealedDek: 'sealed-with-pubB' }
+      { did: 'did:b', sealedDek: 'sealed-with-pubB', sinceCid: 'C1' }
     ]);
     assert.equal(put.visibility, 'shared');
     assert.equal(put.sig, 'new-sig', 'the old signature is replaced by a fresh one');

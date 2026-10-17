@@ -88,6 +88,7 @@ module('lively.identity.PostCardSerializer')
     'lively.identity.WebKey',
     'lively.identity.WebAuthn',
     'lively.identity.EnvelopeSigning',
+    'lively.identity.AudienceRules',
   )
   .toRun(function () {
 
@@ -554,7 +555,7 @@ module('lively.identity.PostCardSerializer')
                   c.sealForRecipient(dek, r.x25519PublicKey, function (err, sealed) {
                     if (hadError) return;
                     if (err) { hadError = true; return thenDo(err); }
-                    recipientWraps.push({ did: r.did, sealedDek: sealed });
+                    recipientWraps.push(_recipientWrap(prevEnvelope, r.did, sealed, cid));
                     if (--remaining === 0) _buildEncryptedEnvelope(objId, genesisNonce, recipientWraps);
                   });
                 });
@@ -726,7 +727,7 @@ module('lively.identity.PostCardSerializer')
                   c.sealForRecipient(dek, r.x25519PublicKey, function (err, sealed) {
                     if (hadError) return;
                     if (err) { hadError = true; return thenDo(err); }
-                    recipientWraps.push({ did: r.did, sealedDek: sealed });
+                    recipientWraps.push(_recipientWrap(prevEnvelope, r.did, sealed, cid));
                     if (--remaining === 0) _buildEncryptedEnvelope(objId, genesisNonce, recipientWraps);
                   });
                 });
@@ -888,6 +889,17 @@ module('lively.identity.PostCardSerializer')
     // signing logic instead of forking it. See that file for the full
     // rationale (deriveKek's on-demand-prompt behavior, F20 mandatory
     // signing, etc.) — kept there now, not duplicated here.
+    // One record.recipients entry for a new version. sinceCid marks the version the
+    // person was first sealed into (see AudienceRules.sinceCidFor); the whole list is
+    // covered by the envelope signature.
+    function _recipientWrap(prevEnvelope, did, sealedDek, cid) {
+      var wrap = { did: did, sealedDek: sealedDek };
+      var prevRecipients = prevEnvelope && prevEnvelope.record && prevEnvelope.record.recipients;
+      var since = lively.identity.AudienceRules.sinceCidFor(prevRecipients, did, cid);
+      if (since) wrap.sinceCid = since;
+      return wrap;
+    }
+
     function _signEnvelopeIfPossible(envelope, user, c, thenDo) {
       return lively.identity.envelopeSigning.signEnvelopeIfPossible(envelope, user, c, thenDo);
     }

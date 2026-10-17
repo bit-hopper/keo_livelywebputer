@@ -87,6 +87,18 @@ module('lively.identity.AudienceRules')
       return { keep: keep, add: add, remove: remove, changed: add.length > 0 || remove.length > 0 };
     }
 
+    // The sinceCid for a recipient entry written into a new version of a card: the
+    // version the person was first sealed into, so a reader can later be shown what
+    // changed since. A person already on the previous version keeps whatever that
+    // entry carried (nothing, for a card shared before this existed: the baseline is
+    // unknown and stays unknown rather than being reset to now); a person who is not
+    // there yet starts at the new version.
+    function sinceCidFor(prevEntries, did, newCid) {
+      var prev = (prevEntries || []).filter(function (e) { return e && e.did === did; })[0];
+      if (prev) return prev.sinceCid || undefined;
+      return newCid;
+    }
+
     // 'shared' if anyone can open the card besides its owner, else 'private'.
     function visibilityFor(recipientCount) {
       return recipientCount > 0 ? 'shared' : 'private';
@@ -250,6 +262,7 @@ module('lively.identity.AudienceRules')
       tierDids: tierDids,
       unionDids: unionDids,
       planRecipients: planRecipients,
+      sinceCidFor: sinceCidFor,
       visibilityFor: visibilityFor,
       mirrorFor: mirrorFor,
       sameMirror: sameMirror
