@@ -1477,12 +1477,20 @@ module("lively.identity.PostCardView")
           var dm = ok ? months[created.getMonth()] + " " + created.getDate() : "";
           var year = ok ? String(created.getFullYear()) : "";
           var loc = envelope.state && envelope.state.location;
-          var place = loc ? String(loc).replace(/[^0-9A-Za-z]/g, "").slice(0, 8).toUpperCase() : "KEO";
+          var place = loc ? String(loc).replace(/[^0-9A-Za-z]/g, "").slice(0, 8).toUpperCase() : "";
+          // No place: the star-cluster icon (three 5-point stars, the same path
+          // as ConstellationLounge.js's CLUSTERS_STAR_PATH, 24x24 viewBox) takes
+          // the place line's spot. Scaled to ~0.85 and centered on x=40, y=28.5
+          // so it sits in the ring above the date.
+          var STAR_CLUSTER_PATH = "M9.00 7.00L10.94 11.83L16.13 12.18L12.14 15.52L13.41 20.57L9.00 17.80L4.59 20.57L5.86 15.52L1.87 12.18L7.06 11.83ZM18.00 2.40L19.18 5.38L22.37 5.58L19.90 7.62L20.70 10.72L18.00 9.00L15.30 10.72L16.10 7.62L13.63 5.58L16.82 5.38ZM19.00 15.50L19.76 17.45L21.85 17.57L20.24 18.90L20.76 20.93L19.00 19.80L17.24 20.93L17.76 18.90L16.15 17.57L18.24 17.45Z";
           var wave = [20, 32, 44, 56].map(function (y) {
             return '<path d="M80 ' + y + ' q8 -6 16 0 t16 0 t16 0 t16 0"/>';
           }).join("");
           var ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
           function esc(t) { return String(t).replace(/[&<>"]/g, function (c) { return ESC[c]; }); }
+          var placeSvg = place
+            ? '<text x="40" y="36" font-size="' + (place.length > 8 ? 7 : 8.5) + '">' + esc(place) + "</text>"
+            : '<path transform="translate(29.7 18.6) scale(.85)" d="' + STAR_CLUSTER_PATH + '"/>';
           if (!this._postmarkEl) {
             this._postmarkEl = document.createElement("div");
             this._postmarkEl.className = "lively-postcard-view-postmark";
@@ -1495,7 +1503,7 @@ module("lively.identity.PostCardView")
             '<g fill="none" stroke="' + PINK + '" stroke-width="2"><circle cx="40" cy="40" r="33"/>' +
             '<circle cx="40" cy="40" r="26" stroke-width="1" stroke-dasharray="2 3"/>' + wave + "</g>" +
             '<g fill="' + PINK + '" font-family="Helvetica, Arial, sans-serif" font-weight="700" text-anchor="middle" letter-spacing=".6">' +
-            '<text x="40" y="36" font-size="' + (place.length > 8 ? 7 : 8.5) + '">' + esc(place) + "</text>" +
+            placeSvg +
             '<text x="40" y="47" font-size="8.5">' + esc(dm) + "</text>" +
             '<text x="40" y="58" font-size="8.5">' + esc(year) + "</text></g></svg>";
 
