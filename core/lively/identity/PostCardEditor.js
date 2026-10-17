@@ -4494,7 +4494,7 @@ module('lively.identity.PostCardEditor')
         var state = view.state;
         var linkType = state.schema.marks.link;
         var from = state.selection.from;
-        var text = '📎 ' + entry.name;
+        var text = entry.name;
         var href = entry.dek ? '' : this._publicBlobUrl(entry.blobCid);
         var tr = state.tr.insertText(text, from);
         tr = tr.addMark(from, from + text.length, linkType.create({ href: href, title: entry.name, objId: entry.objId }));

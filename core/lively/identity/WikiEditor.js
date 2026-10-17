@@ -396,15 +396,22 @@ module('lively.identity.WikiEditor')
 
         function addButtons(defs) {
           defs.forEach(function (btnDef) {
-            var w = btnDef.label.length > 1 ? 32 : 24;
+            var label = btnDef.icon || btnDef.label;
+            var w = (btnDef.icon || label.length > 1) ? 32 : 24;
             var btn = document.createElement('button');
-            btn.textContent = btnDef.label;
+            btn.textContent = label;
             btn.title = btnDef.title;
             btn.style.cssText = [
               'flex:0 0 auto', 'width:' + w + 'px', 'height:24px', 'padding:0',
               'font-size:12px', 'cursor:pointer', 'border:1px solid #ccc',
               'border-radius:3px', 'background:#fff',
             ].join(';');
+            if (btnDef.icon) {
+              // Material Symbols Rounded ligature (see CLAUDE.md's icon convention).
+              btn.style.fontFamily = '"Material Symbols Rounded"';
+              btn.style.fontSize = '17px';
+              btn.style.lineHeight = '1';
+            }
             btn.addEventListener('mousedown', function (e) {
               e.preventDefault();
               e.stopPropagation();
@@ -429,8 +436,8 @@ module('lively.identity.WikiEditor')
           { label: '🖼', title: 'Insert image',      cmd: 'attachment', accept: 'image/*' },
           { label: '🎬', title: 'Insert video',      cmd: 'attachment', accept: 'video/*' },
           { label: '🎵', title: 'Insert audio',      cmd: 'attachment', accept: 'audio/*' },
-          { label: '🔗', title: 'Insert/remove link', cmd: 'link' },
-          { label: '📎', title: 'Insert attachment', cmd: 'attachment' },
+          { icon: 'link', title: 'Insert/remove link', cmd: 'link' },
+          { icon: 'attach_file', title: 'Insert attachment', cmd: 'attachment' },
           { label: '🧩', title: 'Insert part',       cmd: 'insertPart' },
         ]);
 
@@ -977,7 +984,7 @@ module('lively.identity.WikiEditor')
         var link = document.createElement('a');
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
-        link.style.cssText = 'color:#1a7f37;text-decoration:underline;max-width:200px;overflow:hidden;' +
+        link.style.cssText = 'color:#E31361;text-decoration:underline;max-width:200px;overflow:hidden;' +
           'text-overflow:ellipsis;white-space:nowrap;';
         el.appendChild(link);
 
@@ -3008,7 +3015,7 @@ module('lively.identity.WikiEditor')
         var state = view.state;
         var linkType = state.schema.marks.link;
         var from = state.selection.from;
-        var text = '📎 ' + entry.name;
+        var text = entry.name;
         var href = entry.dek ? '' : this._publicBlobUrl(entry.blobCid);
         var tr = state.tr.insertText(text, from);
         tr = tr.addMark(from, from + text.length, linkType.create({ href: href, title: entry.name, objId: entry.objId }));

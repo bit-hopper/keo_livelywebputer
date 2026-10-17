@@ -265,13 +265,24 @@ module('lively.identity.PostCardUtils')
         '.lively-media-grid.lively-media-n1 .lively-media-cell img.lively-postcard-image{height:auto;max-height:480px;}' +
         '.lively-embedded-part{position:relative;min-height:32px;margin:4px 0;padding:4px;}' +
         '.lively-embedded-part.lively-embed-error{color:#c33;font-style:italic;padding:8px;}' +
-        // Links inside a wiki page (read-only view + editor + preview) are green,
-        // not the browser's default blue. Scoped to wiki containers only: the
-        // editor's ProseMirror container class is shared with PostCardEditor,
-        // so WikiEditor adds its own lively-wiki-editor-container marker.
-        '.lively-wiki-view-content a,.lively-wiki-editor-container a{color:#1a7f37;}' +
-        '.lively-wiki-view-content a:visited,.lively-wiki-editor-container a:visited{color:#1a7f37;}' +
-        '.lively-wiki-view-content a:hover,.lively-wiki-editor-container a:hover{color:#116329;}' +
+        // Links inside a wiki page or postcard (read-only view + editor +
+        // preview) are pink, not the browser's default blue. The editor's
+        // ProseMirror container class is shared between PostCardEditor and
+        // WikiEditor, so the selector list names each container explicitly.
+        // Link-preview cards are also <a> elements but style their own text,
+        // so they're excluded.
+        '.lively-wiki-view-content a:not([class*="lively-link-preview"]),' +
+        '.lively-wiki-editor-container a:not([class*="lively-link-preview"]),' +
+        '.lively-postcard-view-content a:not([class*="lively-link-preview"]),' +
+        '.lively-postcard-editor-container a:not([class*="lively-link-preview"]){color:#E31361;}' +
+        '.lively-wiki-view-content a:not([class*="lively-link-preview"]):visited,' +
+        '.lively-wiki-editor-container a:not([class*="lively-link-preview"]):visited,' +
+        '.lively-postcard-view-content a:not([class*="lively-link-preview"]):visited,' +
+        '.lively-postcard-editor-container a:not([class*="lively-link-preview"]):visited{color:#E31361;}' +
+        '.lively-wiki-view-content a:not([class*="lively-link-preview"]):hover,' +
+        '.lively-wiki-editor-container a:not([class*="lively-link-preview"]):hover,' +
+        '.lively-postcard-view-content a:not([class*="lively-link-preview"]):hover,' +
+        '.lively-postcard-editor-container a:not([class*="lively-link-preview"]):hover{color:#b80f4f;}' +
         '.lively-attachment-loading{opacity:0.35;}' +
         '.lively-attachment-error{opacity:0.5;filter:grayscale(1);}' +
         // code_cell (runnable Python/Scheme cells): one shared stylesheet for the
