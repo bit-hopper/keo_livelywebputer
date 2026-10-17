@@ -78,6 +78,7 @@ module("lively.identity.PostCardView")
           "_verifyBadgeEl",
           "_moreBtn",
           "_audienceChipEl",
+          "_editChipEl",
           "_moreMenuEl",
           "_moreMenuOutsideHandler",
           "_footerEl",
@@ -455,7 +456,7 @@ module("lively.identity.PostCardView")
           }
           var chip = this._audienceChip;
           if (this._handleEl) this._handleEl.style.right = "40px";
-          if (!chip || !chip.label) return;
+          if (!chip || !chip.label) { this._renderEditChip(); return; }
           var clickable = typeof chip.onClick === "function";
           var el = document.createElement(clickable ? "button" : "div");
           el.className = "lively-postcard-view-audience-chip";
@@ -498,6 +499,62 @@ module("lively.identity.PostCardView")
           // out; 140 is a generous stand-in so a long handle still ellipsizes clear of it.
           if (this._handleEl) {
             this._handleEl.style.right = (40 + (el.offsetWidth || 140) + 8) + "px";
+          }
+          this._renderEditChip();
+        },
+
+        // Opt-in (setEditChip): an "Edited 3 days ago" pill that sits just left of the
+        // audience chip (or of the menu button when there is none). chip = { label,
+        // title?, onClick }; null removes it. Clicking it opens what changed.
+        setEditChip: function (chip) {
+          this._editChip = chip || null;
+          this._renderEditChip();
+        },
+
+        _renderEditChip: function () {
+          if (!this._frontEl) return;
+          var self = this;
+          if (this._editChipEl) {
+            this._editChipEl.remove();
+            this._editChipEl = null;
+          }
+          var chip = this._editChip;
+          if (!chip || !chip.label) return;
+          // Same 40px (menu button) + the audience chip's own width + a gap, as the
+          // audience chip itself uses; 140 stands in until the card is laid out.
+          var audW = this._audienceChipEl ? (this._audienceChipEl.offsetWidth || 140) + 8 : 0;
+          var el = document.createElement("button");
+          el.className = "lively-postcard-view-edit-chip";
+          if (chip.title) el.title = chip.title;
+          el.textContent = chip.label;
+          el.style.cssText = [
+            "position:absolute",
+            "top:13px",
+            "right:" + (40 + audW) + "px",
+            "height:26px",
+            "box-sizing:border-box",
+            "display:flex",
+            "align-items:center",
+            "padding:0 10px",
+            "border-radius:13px",
+            "font-size:11px",
+            "white-space:nowrap",
+            "border:1px solid #e0c46c",
+            "background:#fff8dc",
+            "color:#7a5c00",
+            "cursor:pointer",
+          ].join(";");
+          ["mousedown", "click"].forEach(function (t) {
+            el.addEventListener(t, function (e) {
+              e.preventDefault();
+              e.stopPropagation();
+              if (t === "click" && chip.onClick) chip.onClick(self);
+            });
+          });
+          this._frontEl.appendChild(el);
+          this._editChipEl = el;
+          if (this._handleEl) {
+            this._handleEl.style.right = (40 + audW + (el.offsetWidth || 110) + 8) + "px";
           }
         },
 

@@ -2350,6 +2350,32 @@ function getReactionsForObjId(objId, thenDo) {
   });
 }
 
+// DIDs of everyone who has engaged with a card: reacted to it, or written a
+// (not deleted) reply to it. Used to decide who is told about an edit to a
+// public card. Calls thenDo(null, [did, ...]) -- distinct, unordered.
+function getEngagedDidsForCard(objId, thenDo) {
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'SELECT did FROM postcard_reactions WHERE obj_id = $1' +
+      ' UNION' +
+      ' SELECT o.did FROM objects o' +
+      ' INNER JOIN (' +
+      '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
+      '   WHERE type = \'postcard\' AND (envelope #>> \'{replyTo,objId}\') = $1' +
+      '   GROUP BY obj_id' +
+      ' ) latest ON o.id = latest.max_id' +
+      ' WHERE ((o.envelope #>> \'{state,deleted}\') IS NULL' +
+      '        OR (o.envelope #>> \'{state,deleted}\') <> \'true\')',
+      [objId],
+      function (err, result) {
+        if (err) return thenDo(err);
+        thenDo(null, result.rows.map(function (r) { return r.did; }));
+      }
+    );
+  });
+}
+
 // Batched reaction summaries for a whole page of objIds (RoomView.js's
 // message list, one query per poll tick rather than one per row -- see
 // listMessagesForRoom's own metadata-only-listing rationale for why an
@@ -3104,6 +3130,10 @@ function listInboxForHandle(handle, opts, thenDo) {
     // would stay forever for something nobody can open.
     var replyIds = [];
     records.forEach(function (r) {
+      if (r.edited) {
+        if (replyIds.indexOf(r.objId) === -1) replyIds.push(r.objId);
+        return;
+      }
       if (!(r.reply && r.rootObjId)) return;
       if (replyIds.indexOf(r.objId) === -1) replyIds.push(r.objId);
       if (replyIds.indexOf(r.rootObjId) === -1) replyIds.push(r.rootObjId);
@@ -3111,7 +3141,18 @@ function listInboxForHandle(handle, opts, thenDo) {
     _getDeletedObjIds(replyIds, function (err, deleted) {
     if (err) return thenDo(err);
     records = records.filter(function (r) {
+      if (r.edited) return !deleted[r.objId];
       return !(r.reply && r.rootObjId && (deleted[r.objId] || deleted[r.rootObjId]));
+    });
+    // Edit notices ({edited: true, objId: <the card>}, written when someone
+    // changes a card you can read) are folded to the newest one per card. A
+    // card that already has a thread row carries it on that row instead of
+    // getting a second one; otherwise it is a row of its own.
+    var editByObjId = {};
+    records = records.filter(function (r) {
+      if (!r.edited) return true;
+      if (!editByObjId[r.objId]) editByObjId[r.objId] = r; // already newest first
+      return false;
     });
     var plain = [];
     var byRoot = {};
@@ -3137,7 +3178,7 @@ function listInboxForHandle(handle, opts, thenDo) {
           if (r.senderHandle && participants.indexOf(r.senderHandle) === -1) participants.push(r.senderHandle);
         });
         var latest = replies[0];
-        return {
+        var row = {
           thread: true,
           objId: rootObjId,
           rootObjId: rootObjId,
@@ -3148,8 +3189,34 @@ function listInboxForHandle(handle, opts, thenDo) {
           latest: { objId: latest.objId, senderDid: latest.senderDid, senderHandle: latest.senderHandle || null, sentAt: latest.sentAt },
           participants: participants.slice(0, 4)
         };
+        var edit = editByObjId[rootObjId];
+        if (edit) {
+          row.edited = { senderDid: edit.senderDid, senderHandle: edit.senderHandle || null, sentAt: edit.sentAt };
+          if (edit.sentAt > row.sentAt) row.sentAt = edit.sentAt;
+          if (!st.muted && (!st.lastReadAt || edit.sentAt > st.lastReadAt)) {
+            row.unread += 1;
+            unreadReplies += 1;
+          }
+          delete editByObjId[rootObjId];
+        }
+        return row;
       });
-      var merged = plain.concat(threads).sort(function (a, b) {
+      var editRows = Object.keys(editByObjId).map(function (objId) {
+        var edit = editByObjId[objId];
+        var st = states[objId] || {};
+        var unread = !st.muted && (!st.lastReadAt || edit.sentAt > st.lastReadAt);
+        if (unread) unreadReplies += 1;
+        return {
+          edited: true,
+          objId: objId,
+          senderDid: edit.senderDid,
+          senderHandle: edit.senderHandle || null,
+          sentAt: edit.sentAt,
+          unread: unread ? 1 : 0,
+          muted: !!st.muted
+        };
+      });
+      var merged = plain.concat(threads, editRows).sort(function (a, b) {
         return a.sentAt < b.sentAt ? 1 : a.sentAt > b.sentAt ? -1 : 0;
       });
       _filterRecordsByTitle(merged, q, function (err, filtered) {
@@ -3252,6 +3319,8 @@ function markAllThreadsRead(handle, did, thenDo) {
       var r;
       try { r = JSON.parse(l); } catch (e) { return; }
       if (r && r.reply && r.rootObjId && roots.indexOf(r.rootObjId) === -1) roots.push(r.rootObjId);
+      // An edit notice is read the same way, keyed by the card it is about.
+      if (r && r.edited && r.objId && roots.indexOf(r.objId) === -1) roots.push(r.objId);
     });
     if (!roots.length) return thenDo(null);
     withDB(function (err, pool) {
@@ -3474,6 +3543,7 @@ module.exports = {
   upsertReaction:                upsertReaction,
   deleteReaction:                deleteReaction,
   getReactionsForObjId:          getReactionsForObjId,
+  getEngagedDidsForCard:         getEngagedDidsForCard,
   getReactionSummariesForObjIds: getReactionSummariesForObjIds,
   hidePostcardForDid:            hidePostcardForDid,
   getHiddenObjIdsForDid:         getHiddenObjIdsForDid,

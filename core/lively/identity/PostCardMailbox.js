@@ -28,6 +28,7 @@ module('lively.identity.PostCardMailbox')
     'lively.identity.DID',
     'lively.identity.PostCardView',
     'lively.identity.MailboxThread',
+    'lively.identity.PostcardEdits',
   )
   .toRun(function () {
 
@@ -946,7 +947,10 @@ module('lively.identity.PostCardMailbox')
         // returning-from-a-thread triggers.
         var filter = self._inboxFilter || 'all';
         var isInviteRec = function (r) { return r.kind === 'constellation-invite'; };
-        var unreadReplies = records.reduce(function (n, r) { return n + (r.thread ? (r.unread || 0) : 0); }, 0);
+        // An edit notice (r.edited === true) is its own row; a thread row can also carry
+        // one (r.edited is then an object). Both count towards the unread total.
+        var isEditRow = function (r) { return r.edited === true; };
+        var unreadReplies = records.reduce(function (n, r) { return n + ((r.thread || isEditRow(r)) ? (r.unread || 0) : 0); }, 0);
         var chips = document.createElement('div');
         chips.className = 'pcm-chips';
         [['all', 'All'], ['replies', 'Replies'], ['cards', 'Postcards'], ['invites', 'Invites']].forEach(function (f) {
@@ -971,9 +975,9 @@ module('lively.identity.PostCardMailbox')
         content.appendChild(chips);
 
         var shown = records.filter(function (r) {
-          if (filter === 'replies') return !!r.thread;
-          if (filter === 'invites') return !r.thread && isInviteRec(r);
-          if (filter === 'cards')   return !r.thread && !isInviteRec(r);
+          if (filter === 'replies') return !!r.thread || isEditRow(r);
+          if (filter === 'invites') return !r.thread && !isEditRow(r) && isInviteRec(r);
+          if (filter === 'cards')   return !r.thread && !isEditRow(r) && !isInviteRec(r);
           return true;
         });
         if (!shown.length) {
@@ -983,6 +987,7 @@ module('lively.identity.PostCardMailbox')
 
         shown.forEach(function (rec) {
           if (rec.thread) { content.appendChild(self._makeThreadRow(rec)); return; }
+          if (isEditRow(rec)) { content.appendChild(self._makeEditRow(rec)); return; }
           var card = self._makeCard();
 
           var from = self._makeIdentityRow('From: ', rec.senderHandle, rec.senderDid);
@@ -1147,6 +1152,7 @@ module('lively.identity.PostCardMailbox')
         l2.className = 'l2';
         l2.textContent = (who2 ? who2 + ' · ' : '') +
           (rec.unread ? rec.unread + ' new of ' + rec.replyCount : rec.replyCount + (rec.replyCount === 1 ? ' reply' : ' replies')) +
+          (rec.edited ? ' · edited by @' + (rec.edited.senderHandle || 'the author') : '') +
           (rec.visibility && rec.visibility !== 'public' ? ' · private' : '');
         body.appendChild(l2);
         card.appendChild(body);
@@ -1166,6 +1172,87 @@ module('lively.identity.PostCardMailbox')
           if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); self._openThread(rec); }
         });
         return card;
+      },
+
+      // Someone changed a card you can read (the server files this when an edit
+      // session starts, see EditTracking.js; it carries no content). The row opens
+      // what changed, worked out in this browser.
+      _makeEditRow: function (rec) {
+        var self = this;
+        var card = this._makeCard();
+        card.className += ' pcm-thread' + (rec.unread ? ' unread' : '');
+        card.tabIndex = 0;
+        card.setAttribute('role', 'button');
+
+        var who = rec.senderHandle || null;
+        var img = document.createElement('img');
+        img.style.cssText = 'width:40px;height:40px;border-radius:50%;flex:none;border:1px solid var(--pcm-border);box-sizing:border-box;';
+        img.src = lively.identity.postCardUtils.identiconDataUrl(who || rec.senderDid || '', 40);
+        card.appendChild(img);
+
+        var body = document.createElement('div');
+        body.className = 'body';
+        var l1 = document.createElement('div');
+        l1.className = 'l1';
+        var kind = document.createElement('span');
+        kind.className = 'pcm-kind';
+        kind.textContent = 'Edited';
+        var ttl = document.createElement('span');
+        ttl.className = 'ttl';
+        ttl.textContent = rec.title || 'Untitled postcard';
+        var when = document.createElement('span');
+        when.className = 'when';
+        when.textContent = (rec.muted ? '🔕 ' : '') + self._formatDate(rec.sentAt);
+        l1.appendChild(kind);
+        l1.appendChild(ttl);
+        l1.appendChild(when);
+        body.appendChild(l1);
+        var l2 = document.createElement('div');
+        l2.className = 'l2';
+        l2.textContent = (who ? '@' + who : 'The author') + ' changed this postcard · tap to see what changed';
+        body.appendChild(l2);
+        card.appendChild(body);
+
+        var side = null;
+        if (rec.unread) {
+          side = document.createElement('div');
+          side.className = 'side';
+          var count = document.createElement('span');
+          count.className = 'pcm-count';
+          count.textContent = rec.unread;
+          side.appendChild(count);
+          card.appendChild(side);
+        }
+
+        var open = function () { self._openEditNotice(rec, card, side); };
+        card.addEventListener('click', open);
+        card.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+        });
+        return card;
+      },
+
+      _openEditNotice: function (rec, card, side) {
+        var self = this;
+        var user = lively.identity.did.currentUser();
+        if (!user) return;
+        if (rec.unread) {
+          rec.unread = 0;
+          card.className = card.className.replace(' unread', '');
+          if (side) side.remove();
+          var xhr = new XMLHttpRequest();
+          xhr.open('POST', lively.identity.did.baseUrl() + '/@' + encodeURIComponent(user.handle) + '/inbox/threads/' + encodeURIComponent(rec.objId) + '/read');
+          xhr.withCredentials = true;
+          xhr.setRequestHeader('Content-Type', 'application/json');
+          xhr.onload = function () { self._refreshInboxBadge(); };
+          xhr.send('{}');
+        }
+        lively.identity.postcardEdits.openDialog({
+          handle: rec.senderHandle,
+          objId: rec.objId,
+          title: rec.title,
+          editedAt: rec.sentAt,
+        });
       },
 
       // Replaces the Inbox list with the conversation under one card. The

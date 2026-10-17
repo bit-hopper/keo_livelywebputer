@@ -1231,7 +1231,30 @@ module('lively.identity.PostCardEditor')
       // serializer, or this editor explicitly seeding/carrying forward
       // `state.deleted` the same way it does for every other field above.
       _composeStateMeta: function (extra) {
-        return Object.assign({}, this._locationStateMeta(), this._optionsStateMeta(), extra || {});
+        return Object.assign({}, this._locationStateMeta(), this._optionsStateMeta(), this._minorEditMeta(), extra || {});
+      },
+
+      // The document as ProseMirror holds it right now, as a string, or null for a
+      // legacy Yjs-backed card (which has no plain document to compare).
+      _currentDocJson: function () {
+        if (this._isWikiMode || !this.editorView) return null;
+        return JSON.stringify(this.editorView.state.doc.toJSON());
+      },
+
+      // Remember the document as of the version just loaded, so a save that only
+      // changes who can read the card can tell it changed nothing in the text.
+      _noteDocSaved: function () {
+        this._savedDocJson = this._currentDocJson();
+      },
+
+      // A save whose only change is the audience writes a new version (a fresh key
+      // for the new people) but the text is the same. The server counts a new version
+      // of a card others can read as an edit, so this tells it that one is not worth
+      // a notice (`state.editMinor`, read and dropped server-side). Never set when the
+      // text differs from the last saved version: that is a real edit.
+      _minorEditMeta: function () {
+        if (!this._audienceChangePending || this._savedDocJson == null) return {};
+        return this._savedDocJson === this._currentDocJson() ? { editMinor: true } : {};
       },
 
       // A small floating chip shown under the cursor when it's inside a link
@@ -1554,6 +1577,7 @@ module('lively.identity.PostCardEditor')
             self._backStamps = (payload && payload.backStamps) || [];
 
             self._attachEditor();
+            self._noteDocSaved();
             self._applyReadOnlyMode();
             self._connectSync();
           }
@@ -2608,6 +2632,7 @@ module('lively.identity.PostCardEditor')
         // the actual "is there a document to save" signal for either mode.
         if (!this.editorView) { this._setStatus('No document'); return cb(new Error('No document')); }
         this._saveInFlight = Date.now();
+        this._docJsonAtSave = this._currentDocJson();
 
         if (this._visibility === 'public') return this._saveNowPublic(user, cb);
         this._saveNowPrivate(user, cb);
@@ -2802,6 +2827,8 @@ module('lively.identity.PostCardEditor')
           }
           self._envelope = envelope;
           self._objId = envelope.objId;
+          self._savedDocJson = self._docJsonAtSave === undefined ? self._savedDocJson : self._docJsonAtSave;
+          self._audienceChangePending = false;
           // A card with a recorded audience is sealed from that, not from a handle
           // list, so what the envelope names must not turn into a sticky list.
           if (!self._audience) {
@@ -3047,6 +3074,7 @@ module('lively.identity.PostCardEditor')
           self._userHasEdited = true;
           // A card that exists is re-saved now so the change takes effect; a new
           // one saves as usual once it has content.
+          if (self._objId) self._audienceChangePending = true;
           if (self._objId) self._saveNow();
           else self._scheduleSave();
         }

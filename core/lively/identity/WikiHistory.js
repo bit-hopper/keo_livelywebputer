@@ -601,6 +601,9 @@ module('lively.identity.WikiHistory')
     });
 
     Object.extend(lively.identity.WikiHistory, {
+      // The diff-line styles (.wh-*), for other places that show a WikiDiff.
+      injectStyle: injectStyle,
+
       // Opens (or returns the already open) history panel inside a WikiView.
       open: function (view) {
         if (view._history) return view._history;

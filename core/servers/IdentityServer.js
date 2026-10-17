@@ -77,6 +77,7 @@ var dmSignalingTokenStore = require("./support/dm-signaling-token-store");
 var cryptoVerify = require("./identity/CryptoVerify");
 var writePolicy = require("./identity/WritePolicy");
 var orbitRules = require("./identity/Orbit");
+var editTracking = require("./identity/EditTracking");
 var audienceRules = require("./identity/AudienceLists");
 var contentRealm = require("./support/content-realm-gate");
 var didHome = require("./identity/DidHome");
@@ -4442,6 +4443,69 @@ module.exports = function (route, app) {
       cb();
     }
 
+    // Edit sessions (EditTracking.js): set by _applyPostcardEditTracking when
+    // this write starts one, read once the card is stored.
+    var startsEditSession = false;
+
+    // Stamps the server-owned edit fields into envelope.state for a write to a
+    // plain postcard by its owner. Reassigns the outer `envelope`; call before
+    // _handleRegistryCheckAndWrite().
+    function _applyPostcardEditTracking(existing) {
+      if (envelope.type !== "postcard") return;
+      var tracked = editTracking.apply(existing, envelope, Date.now());
+      envelope = Object.assign({}, envelope, { state: tracked.state });
+      startsEditSession = tracked.notify;
+    }
+
+    // After an edit that starts a session is stored, tell the people it
+    // matters to. A card shared with named people notifies each of them; a
+    // public card only notifies the people who engaged with it (reacted or
+    // replied), not every reader. Nobody on either side of a block is told.
+    // The notice carries no content (an encrypted card has no readable title):
+    // who, which card, when. Never fails the request.
+    function _afterEditStored(result, cb) {
+      if (!startsEditSession || result.changed !== "content") return cb();
+      var card = envelope;
+      function resolveAudience(done) {
+        if (card.visibility === "public") return objectRepo.getEngagedDidsForCard(card.objId, done);
+        var dids = ((card.record && card.record.recipients) || []).map(function (r) { return r && r.did; });
+        done(null, dids);
+      }
+      resolveAudience(function (err, dids) {
+        if (err) { console.warn("[IdentityServer] edit notice audience failed:", err.message); return cb(); }
+        dids = dids.filter(function (d, i, a) { return d && d !== card.did && a.indexOf(d) === i; });
+        if (!dids.length) return cb();
+        _resolveBaseHandlesForDids(dids, function (err, baseHandle) {
+          if (err) { console.warn("[IdentityServer] edit notice handles failed:", err.message); return cb(); }
+          objectRepo.getSettingsForDid(req.identity.did, function (err, mine) {
+            if (err) { console.warn("[IdentityServer] edit notice settings failed:", err.message); return cb(); }
+            var left = dids.length;
+            var done = function () { if (--left === 0) cb(); };
+            dids.forEach(function (did) {
+              var inboxHandle = baseHandle[did];
+              if (!inboxHandle) return done();
+              objectRepo.getSettingsForDid(did, function (e, theirs) {
+                if (e || _settingsBlock(theirs, req.identity.did, req.identity.handle) ||
+                    _settingsBlock(mine, did, inboxHandle)) {
+                  return done();
+                }
+                objectRepo.putInboxRecord(inboxHandle, {
+                  edited: true,
+                  objId: card.objId,
+                  senderDid: req.identity.did,
+                  senderHandle: req.identity.handle,
+                  sentAt: new Date().toISOString()
+                }, function (err) {
+                  if (err) console.warn("[IdentityServer] putInboxRecord (edit) failed:", err.message);
+                  done();
+                });
+              });
+            });
+          });
+        });
+      });
+    }
+
     function _handleRegistryCheckAndWrite() {
       handleRegistry.resolve(handle, function (err, registeredDid) {
         if (err) return res.status(500).json({ error: String(err) });
@@ -4541,12 +4605,14 @@ module.exports = function (route, app) {
             // Wave's WaveBus.publish(). Use lively.net.SessionTracker (L2L) as the
             // transport when implementing. Not needed until live collaboration.
             _afterReplyStored(screen, result, function () {
-              res.json({
-                ok: true,
-                objId: result.objId,
-                cid: result.cid,
-                duplicate: result.duplicate || false,
-                changed: result.changed || "content",
+              _afterEditStored(result, function () {
+                res.json({
+                  ok: true,
+                  objId: result.objId,
+                  cid: result.cid,
+                  duplicate: result.duplicate || false,
+                  changed: result.changed || "content",
+                });
               });
             });
           });
@@ -4739,6 +4805,7 @@ module.exports = function (route, app) {
       if (!existing) {
         var genesisPolicyErr = _wikiPolicyShapeError(envelope);
         if (genesisPolicyErr) return res.status(400).json({ error: genesisPolicyErr });
+        _applyPostcardEditTracking(null);
         return _handleRegistryCheckAndWrite();
       }
 
@@ -4789,7 +4856,10 @@ module.exports = function (route, app) {
               "envelope or anyone else's copy.",
           });
         }
-        if (existing.did === req.identity.did) return _handleRegistryCheckAndWrite();
+        if (existing.did === req.identity.did) {
+          _applyPostcardEditTracking(existing);
+          return _handleRegistryCheckAndWrite();
+        }
 
         // Room-message mod-delete: a room controller/creator may tombstone
         // another member's message. Deliberately narrow — every other
@@ -4966,6 +5036,51 @@ module.exports = function (route, app) {
     },
   );
 
+  // ─── where an edited card's diff starts, for this viewer ──────────────────
+  // GET /@:handle/:objId/edit-baseline -> { edited, baselineCid, currentCid, editedAt }
+  // A card that was edited after other people could read it (state.editedAt, set
+  // by EditTracking.js) is compared from the version THIS reader started at: the
+  // later of the server's baseline (state.editBaseline) and the version current
+  // when they were added as a recipient (their record.recipients entry's
+  // sinceCid, set by the owner's client and covered by the owner's signature).
+  // "Later" needs version order, which only the database has, so the server
+  // answers it. Content is not read or returned; the reader fetches and decrypts
+  // the two versions itself. `edited` is false when there is nothing to show: not
+  // edited, or this reader's baseline IS the current version.
+  app.get("/@:handle/:objId/edit-baseline", auth.optionalAuth, function (req, res) {
+    objectRepo.get(req.params.objId, function (err, latest) {
+      if (err) return res.status(500).json({ error: String(err) });
+      if (!latest) return res.status(404).json({ error: "Object not found: " + req.params.objId });
+      if (!_canReadEnvelope(latest, req.identity)) return res.status(403).json({ error: "Forbidden" });
+      var currentCid = latest.record && latest.record.cid;
+      var state = latest.state || {};
+      var none = { edited: false, baselineCid: null, currentCid: currentCid, editedAt: null };
+      if (latest.type !== "postcard" || !state.editedAt || !state.editBaseline) return res.json(none);
+
+      var candidates = [state.editBaseline];
+      var mine = req.identity && req.identity.did !== latest.did &&
+        ((latest.record && latest.record.recipients) || []).filter(function (r) {
+          return r && r.did === req.identity.did;
+        })[0];
+      if (mine && mine.sinceCid) candidates.push(mine.sinceCid);
+
+      objectRepo.listVersions(req.params.objId, function (vErr, versions) {
+        if (vErr) return res.status(500).json({ error: String(vErr) });
+        var order = {};
+        versions.forEach(function (v, i) { order[v.cid] = i; });
+        var known = candidates.filter(function (c) { return order[c] !== undefined; });
+        if (!known.length) return res.json(none);
+        var baselineCid = known.reduce(function (a, b) { return order[b] > order[a] ? b : a; });
+        res.json({
+          edited: baselineCid !== currentCid,
+          baselineCid: baselineCid,
+          currentCid: currentCid,
+          editedAt: state.editedAt
+        });
+      });
+    });
+  });
+
   // ─── view a specific version as a bootable world page ─────────────────────
   // Non-destructive: serves the stored payload at an exact CID as a live world.
   // Navigating away and back to /@handle returns to the current (latest) version.
@@ -4991,7 +5106,7 @@ module.exports = function (route, app) {
         if (err)      return res.status(500).json({ error: String(err) });
         if (!envelope) return res.status(404).json({ error: "Version not found: " + cid });
 
-        if (!req.accepts("html")) return res.json(envelope);
+        if (!req.accepts("html")) return res.json(_trimRecipientsForNonOwner(envelope, req.identity));
 
         // envelope.created is the object's FIRST-save time (every later save
         // carries it over from the previous envelope), so it can't date this

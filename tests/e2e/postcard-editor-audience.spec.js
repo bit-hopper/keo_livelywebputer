@@ -224,3 +224,30 @@ test("a card shared before audiences existed is labelled by who it is sealed to"
   });
   expect(label).toBe("2 people");
 });
+
+test("a save that only changes the audience is marked minor so readers are not notified", async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => {
+    const e = /** @type {any} */ (window).__editor;
+    Object.assign(e, { _objId: "card1", _visibility: "private", _audienceLoaded: true });
+    e._noteDocSaved();                       // the text as of the last saved version
+  });
+  await page.evaluate(() => /** @type {any} */ (window).__editor._applyAudienceResult({ pub: false, audience: { tiers: ["orbit"], people: [] } }));
+  await page.waitForFunction(() => /** @type {any} */ (window).__calls.puts.length === 1);
+  expect((await calls(page)).params[0].stateMeta.editMinor).toBe(true);
+  // Cleared once saved: the next ordinary save is not minor.
+  expect(await save(page)).toBeNull();
+  expect((await calls(page)).params[1].stateMeta.editMinor).toBeUndefined();
+});
+
+test("a save that changes the text as well as the audience is not marked minor", async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => {
+    const e = /** @type {any} */ (window).__editor;
+    Object.assign(e, { _objId: "card1", _visibility: "private", _audienceLoaded: true });
+    e._savedDocJson = JSON.stringify({ type: "doc", content: [{ type: "paragraph" }] });   // differs from the live doc
+  });
+  await page.evaluate(() => /** @type {any} */ (window).__editor._applyAudienceResult({ pub: false, audience: { tiers: ["orbit"], people: [] } }));
+  await page.waitForFunction(() => /** @type {any} */ (window).__calls.puts.length === 1);
+  expect((await calls(page)).params[0].stateMeta.editMinor).toBeUndefined();
+});

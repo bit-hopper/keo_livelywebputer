@@ -32,6 +32,7 @@ module("lively.identity.PostcardReel")
     "lively.identity.PostcardAudience",
     "lively.identity.AudienceRules",
     "lively.identity.AudienceDialog",
+    "lively.identity.PostcardEdits",
     "lively.morphic.Complete",
   )
   .toRun(function () {
@@ -465,7 +466,7 @@ module("lively.identity.PostcardReel")
           previewMode: true,
           homestar: true,
           showCommentChip: true,
-          onEnvelope: function (env, view) { self._showAudienceChip(env, view); },
+          onEnvelope: function (env, view) { self._showAudienceChip(env, view); self._showEditChip(env, view); },
           commentCount: this._counts[objId] || 0,
           onToggleComments: function () { self._toggleThread(); },
           bounds: lively.rect(0, 0, this._cardW, this._cardH),
@@ -508,6 +509,37 @@ module("lively.identity.PostcardReel")
           this._cardH = h;
           this._changed();
         }
+      },
+    },
+
+    "edits", {
+      // The "Edited 3 days ago" pill, shown to anyone who can read a card that was
+      // changed after people could first read it. The server says where this reader's
+      // diff starts (a card nobody has edited makes no request); the diff itself is
+      // worked out in this browser when the pill is clicked, and an empty one (the
+      // owner changed something and put it back) takes the pill away again.
+      _showEditChip: function (env, view) {
+        var self = this;
+        var PE = lively.identity.postcardEdits;
+        var st = env.state || {};
+        view.setEditChip(null);
+        if (env.type !== "postcard" || !st.editedAt || !st.editBaseline) return;
+        PE.baseline(this._handle, env.objId, function (err, b) {
+          if (err || !b || !b.edited || view._envelope !== env) return;
+          view.setEditChip({
+            label: "Edited " + PE.agoLabel(b.editedAt),
+            title: "See what changed",
+            onClick: function () {
+              PE.openDialog({
+                handle: self._handle,
+                objId: env.objId,
+                title: st.title,
+                editedAt: b.editedAt,
+                onNoChange: function () { if (view._envelope === env) view.setEditChip(null); },
+              });
+            },
+          });
+        });
       },
     },
 
