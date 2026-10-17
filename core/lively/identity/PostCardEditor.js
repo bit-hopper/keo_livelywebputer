@@ -1110,7 +1110,10 @@ module('lively.identity.PostCardEditor')
         if (this._audience) {
           return this._audienceCtx ? R.ownerChipLabel(this._audience, this._audienceCtx, false) : 'Shared';
         }
-        var n = (this._recipientHandles || []).length;
+        // Shared before audiences existed: count who the stored version is sealed
+        // to (a card shared that way need not carry a handle list at all).
+        var sealed = (this._envelope && this._envelope.record && this._envelope.record.recipients) || [];
+        var n = Math.max((this._recipientHandles || []).length, sealed.length);
         return n ? n + (n === 1 ? ' person' : ' people') : 'Only me';
       },
 

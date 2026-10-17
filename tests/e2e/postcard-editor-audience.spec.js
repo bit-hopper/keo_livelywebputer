@@ -213,3 +213,14 @@ test("the audience pill shows in a real editor and opens the dialog", async ({ p
   const hasFriends = /Who can see this postcard/.test(shown) && /Friends/.test(shown) && /Orbit/.test(shown);
   expect(hasFriends).toBe(true);
 });
+
+test("a card shared before audiences existed is labelled by who it is sealed to", async ({ page }) => {
+  await boot(page);
+  const label = await page.evaluate(() => {
+    const e = /** @type {any} */ (window).__editor;
+    Object.assign(e, { _visibility: "private", _audience: null, _recipientHandles: [],
+      _envelope: { record: { recipients: [{ did: "did:a", sealedDek: "s" }, { did: "did:b", sealedDek: "s" }] } } });
+    return e._audienceLabel();
+  });
+  expect(label).toBe("2 people");
+});
