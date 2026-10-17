@@ -228,7 +228,9 @@ module("lively.identity.RoomView")
     // rooms only, see RoomViewController.initialize's own note on why.
     var REPLY_STRIP_H = 26;     // extra height _inputRowM grows by while composing a reply
     var ROTATION_BANNER_H = 32; // extra height _inputRowM grows by while an e2eeEnabled room's key rotation is pending (e2eeclusters.md §9.1)
-    var E2EE_UNDECRYPTABLE_TEXT = "🔒 Message unavailable — sent before you had access to this cluster's key.";
+    // _renderMessages draws the pink lock glyph before this text (an emoji
+    // can't take the brand color) — it recognizes the message by this exact string.
+    var E2EE_UNDECRYPTABLE_TEXT = "Message unavailable — sent before you had access to this cluster's key.";
     var REPLY_PREVIEW_H = 26;   // reply-preview chip (parent avatar + handle + snippet) above a reply message — tall enough for a short connector curve below the small avatar
     var REPLY_AVATAR = 16;      // small parent-message avatar shown inside the reply-preview chip
     var REPLY_ELBOW_DX = 12;   // horizontal gap between the big avatar's center column and the small avatar's left edge, so the reply connector has a real elbow leg to turn through
@@ -3268,7 +3270,9 @@ module("lively.identity.RoomView")
             // (querySelectorAll('p, li'), checking each block's ONLY child)
             // has a block element to test — a bare top-level text node
             // isn't itself a candidate.
-            bodyNode.innerHTML = "<p style=\"margin:0;\">" + self._messageBodyHtml(flagSegments) + "</p>";
+            var lockHtml = msg.text === E2EE_UNDECRYPTABLE_TEXT
+              ? lively.identity.postCardUtils.lockGlyphHtml({ size: 17 }) + " " : "";
+            bodyNode.innerHTML = "<p style=\"margin:0;\">" + lockHtml + self._messageBodyHtml(flagSegments) + "</p>";
             lively.identity.postCardUtils.hydrateLinkPreviews(bodyNode);
             lively.identity.postCardUtils.hydrateLinkPreviewEmbeds(bodyNode);
             var msgUrls = self._findUrls(msg.text);

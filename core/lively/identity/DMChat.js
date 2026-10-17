@@ -1194,17 +1194,37 @@ module('lively.identity.DMChat')
             draggingEnabled: false, droppingEnabled: false, grabbingEnabled: false,
           }, {
             // Accurate, not decorative — this feature really is real E2EE
-            // (p2pchat.md §4). One Text morph (not an icon-font glyph next
-            // to a separate label) so it shares a single baseline — see
-            // CLAUDE.md's "two fonts don't share a baseline" gotcha.
-            _Extent: lively.pt(352, 16),
-            _Position: lively.pt(0, 38),
+            // (p2pchat.md §4). A Material Symbols lock (white — the brand pink
+            // vanishes on this blurple strip — in place of the lock emoji)
+            // beside the caption; the pair is centered in the
+            // 352px strip from the caption's measured width (~128px at
+            // 10pt sans-serif) plus the glyph (14px) and a 4px gap — measured
+            // once live and hardcoded, per CLAUDE.md (the icon font loads
+            // async, so measuring at build time isn't reliable). The glyph
+            // starts at x=103 and the caption at x=121 (glyph + gap); both
+            // were read off the live spans, which land at the morph's x.
+            _Extent: lively.pt(22, 16),
+            _Position: lively.pt(103, 38),
+            className: "lively.morphic.Text",
+            name: "EncryptedLock",
+            textString: "lock",
+            style: {
+              fixedWidth: true, fixedHeight: true, allowInput: false, selectable: false,
+              fontFamily: "'Material Symbols Rounded'",
+              fontSize: 10.5, // renders ~14px (pt, not px — see CLAUDE.md)
+              align: 'left', clipMode: 'hidden', whiteSpaceHandling: 'pre',
+              fill: null, borderWidth: 0, textColor: Color.white,
+            },
+            draggingEnabled: false, droppingEnabled: false, grabbingEnabled: false,
+          }, {
+            _Extent: lively.pt(140, 16),
+            _Position: lively.pt(121, 38),
             className: "lively.morphic.Text",
             name: "EncryptedCaption",
-            textString: "🔒 End-to-end encrypted",
+            textString: "End-to-end encrypted",
             style: {
               fixedWidth: true, fixedHeight: true, allowInput: false,
-              fontSize: 10, fontFamily: 'sans-serif', align: 'center',
+              fontSize: 10, fontFamily: 'sans-serif', align: 'left',
               fill: null, borderWidth: 0, textColor: Color.rgba(255, 255, 255, 0.82),
             },
             draggingEnabled: false, droppingEnabled: false, grabbingEnabled: false,
