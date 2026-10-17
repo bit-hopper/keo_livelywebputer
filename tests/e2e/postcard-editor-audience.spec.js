@@ -251,3 +251,47 @@ test("a save that changes the text as well as the audience is not marked minor",
   await page.waitForFunction(() => /** @type {any} */ (window).__calls.puts.length === 1);
   expect((await calls(page)).params[0].stateMeta.editMinor).toBeUndefined();
 });
+
+test("the Quiet edit pill shows only for a card that has readers, and makes saves minor", async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => { /** @type {any} */ (window).__real = lively.identity.PostCardEditor.newCard("me"); });
+  await page.waitForFunction(() => /** @type {any} */ (window).__real._quietBtn && /** @type {any} */ (window).__real.editorView, null, { timeout: 30000 });
+  const state = (extra) => page.evaluate((extra) => {
+    const e = /** @type {any} */ (window).__real;
+    if (extra) Object.assign(e, extra);
+    e._updateVisibilityBtn();
+    return { shown: e._quietBtn.style.display !== "none", text: e._quietBtn.textContent, meta: e._composeStateMeta() };
+  }, extra || null);
+
+  // A card that was never saved has no readers.
+  expect((await state()).shown).toBe(false);
+  // Only the owner in the recipient list is still nobody else.
+  expect((await state({ _envelope: { did: "did:me", visibility: "shared", record: { recipients: [{ did: "did:me" }] } } })).shown).toBe(false);
+  // Someone else can read it: the pill appears, off by default, and a save is not minor.
+  let r = await state({ _envelope: { did: "did:me", visibility: "shared", record: { recipients: [{ did: "did:a" }] } } });
+  expect(r.shown).toBe(true);
+  expect(r.text).toContain("Notifies readers");
+  expect(r.meta.editMinor).toBeUndefined();
+  // A real click turns it on, and every save in the session is then minor, whatever changed.
+  await page.evaluate(() => /** @type {any} */ (window).__real._quietBtn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true })));
+  r = await state();
+  expect(r.text).toContain("Quiet edit");
+  expect(r.meta.editMinor).toBe(true);
+  // A public card has readers too; a delivered (frozen) card hides the pill.
+  expect((await state({ _envelope: { did: "did:me", visibility: "public", record: {} } })).shown).toBe(true);
+  expect((await state({ _sentLocked: true })).shown).toBe(false);
+  // Turning it back off stops the flag.
+  await page.evaluate(() => { const e = /** @type {any} */ (window).__real; e._sentLocked = false; e._quietBtn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true })); });
+  r = await state();
+  expect(r.text).toContain("Notifies readers");
+  expect(r.meta.editMinor).toBeUndefined();
+});
+
+test("quiet edit is ignored for a card nobody else can read", async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => {
+    const e = /** @type {any} */ (window).__editor;
+    Object.assign(e, { _quietEdit: true, _envelope: null });
+  });
+  expect(await page.evaluate(() => /** @type {any} */ (window).__editor._composeStateMeta().editMinor)).toBeUndefined();
+});

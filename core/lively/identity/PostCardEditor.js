@@ -169,6 +169,8 @@ module('lively.identity.PostCardEditor')
         this._grantedAttachments = {};
         this._sentLocked = false;       // delivered to an inbox: permanent, no further edits
         this._visibilityBtn = null;
+        this._quietBtn = null;
+        this._quietEdit = false;        // this editing session's saves ask readers not to be notified (state.editMinor)
         // Attachment metadata (§6): { objId, dek, blobCid, blobNonce, name,
         // mime } entries — pass-through inside the postcard payload, hydrated
         // from the loaded envelope in _loadExistingNow.
@@ -975,6 +977,20 @@ module('lively.identity.PostCardEditor')
         this._visibilityBtn = audienceBtn;
         this._updateVisibilityBtn();
 
+        // Quiet edit: for a card other people can already read. Off (default), the first
+        // save of an editing session tells the people who can read it that it changed;
+        // on, it does not. The card is still marked "Edited" and the diff is still there.
+        var quietBtn = document.createElement('button');
+        quietBtn.className = 'pce-pill-btn pce-pill-neutral';
+        quietBtn.addEventListener('mousedown', function (e) {
+          e.preventDefault(); e.stopPropagation();
+          self._quietEdit = !self._quietEdit;
+          self._updateQuietBtn();
+        });
+        actionsDiv.appendChild(quietBtn);
+        this._quietBtn = quietBtn;
+        this._updateQuietBtn();
+
         var sendBtn = document.createElement('button');
         sendBtn.className = 'pce-pill-btn pce-pill-solid'; // solid: the more consequential, rarer "final" action
         sendBtn.title = 'Send to a handle — delivers the card to their inbox and freezes it, so it can no longer be edited';
@@ -1132,6 +1148,38 @@ module('lively.identity.PostCardEditor')
           : 'Encrypted — only the people listed can open it. Click to change who can see it. You can keep editing a shared card.';
         btn.classList.toggle('pce-pill-neutral', isPublic);
         btn.classList.toggle('pce-pill-accent-soft', !isPublic);
+        this._updateQuietBtn();
+      },
+
+      // Can anyone but the owner read the stored version? Same rule as the server's
+      // (EditTracking.visibleToOthers); a card that was never saved cannot have readers.
+      _hasReaders: function () {
+        var env = this._envelope;
+        if (!env) return false;
+        if (env.visibility === 'public') return true;
+        var rs = (env.record && env.record.recipients) || [];
+        return rs.some(function (r) { return r && r.did && r.did !== env.did; });
+      },
+
+      // The Quiet edit pill only shows for a card that has readers and can still be edited.
+      _updateQuietBtn: function () {
+        var btn = this._quietBtn;
+        if (!btn) return;
+        var show = this._hasReaders() && !this._sentLocked;
+        btn.style.display = show ? '' : 'none';
+        if (!show) return;
+        var on = !!this._quietEdit;
+        btn.innerHTML = '';
+        var icon = document.createElement('span');
+        icon.className = 'pce-pill-glyph';
+        icon.textContent = on ? 'notifications_off' : 'notifications';
+        btn.appendChild(icon);
+        btn.appendChild(document.createTextNode(on ? 'Quiet edit' : 'Notifies readers'));
+        btn.title = on
+          ? 'Quiet edit: people who can read this card will not be told about this edit. They still see it marked as edited and can see what changed. Click to turn off.'
+          : 'When you start changing this card, the people who can read it are told it was edited. Turn this on before you start typing to skip that notice (they still see it marked as edited).';
+        btn.classList.toggle('pce-pill-accent-soft', on);
+        btn.classList.toggle('pce-pill-neutral', !on);
       },
 
       _updateLocationBtn: function () {
@@ -1253,6 +1301,7 @@ module('lively.identity.PostCardEditor')
       // a notice (`state.editMinor`, read and dropped server-side). Never set when the
       // text differs from the last saved version: that is a real edit.
       _minorEditMeta: function () {
+        if (this._quietEdit && this._hasReaders()) return { editMinor: true };
         if (!this._audienceChangePending || this._savedDocJson == null) return {};
         return this._savedDocJson === this._currentDocJson() ? { editMinor: true } : {};
       },
