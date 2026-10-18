@@ -67,6 +67,15 @@ module("lively.identity.OrbitDialog")
         return true;
       };
       $world.addMorph(scrim);
+      // Escape cancels. On the document in the capture phase, ahead of the world's own
+      // key handling, so it works wherever the focus is.
+      this._onKey = function (e) {
+        if (e.key !== "Escape") return;
+        e.preventDefault();
+        e.stopPropagation();
+        self.close();
+      };
+      document.addEventListener("keydown", this._onKey, true);
       this.render();
 
       lively.identity.postcardAudience.loadContext(function (err, ctx) {
@@ -81,6 +90,7 @@ module("lively.identity.OrbitDialog")
 
     Dialog.prototype.close = function () {
       if (!this.scrim) return;
+      document.removeEventListener("keydown", this._onKey, true);
       this.scrim.remove();
       this.scrim = this.panel = null;
       if (this.opts.onClose) this.opts.onClose();

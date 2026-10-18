@@ -51,7 +51,7 @@ test("the owner's homestar shows the new-user empty state", async () => {
   // The panels load from separate fetches (worlds, orbit, postcards), so wait for each
   // string rather than reading them all once after the first has appeared.
   const expected = ["Write your first postcard", "Edit profile", "Workshop",
-    "Your orbit is empty. Close friends you add will show up here."];
+    "Your orbit is empty. Add the friends you are closest to."];
   await expect.poll(async () => { const t = await text(); return expected.filter((s) => !t.includes(s)); },
     { timeout: 30000 }).toEqual([]);
 });

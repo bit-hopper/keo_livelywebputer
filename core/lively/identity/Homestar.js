@@ -61,6 +61,29 @@ module("lively.identity.Homestar")
       return /^(https?:\/\/|\/(?!\/))/i.test(u) ? u : null;
     }
 
+    // The orbit's slow drift: each ring turns one way, its satellites turn back so
+    // faces stay upright. A CSS animation on the morph's own node, as the postcard
+    // reel's turn does. The negative delay keeps the phase across the page's
+    // frequent re-renders (they rebuild the morphs), so the rings never jump back.
+    var OUTER_SECONDS = 240, INNER_SECONDS = 160;
+
+    function ensureOrbitStyle() {
+      if (document.getElementById("homestar-orbit-style")) return;
+      var s = document.createElement("style");
+      s.id = "homestar-orbit-style";
+      s.textContent = "@keyframes homestar-orbit-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}" +
+        "@media (prefers-reduced-motion: reduce){.homestar-orbit-spin{animation:none!important}}";
+      document.head.appendChild(s);
+    }
+
+    function spinNode(morph, seconds, reverse, t0, now) {
+      var node = morph.renderContext().shapeNode;
+      var delay = -(((now - t0) / 1000) % seconds);
+      node.classList.add("homestar-orbit-spin");
+      node.style.animation = "homestar-orbit-spin " + seconds + "s linear " + delay.toFixed(2) + "s infinite " +
+        (reverse ? "reverse" : "normal");
+    }
+
     function chip(x, y, text, opts) {
       opts = opts || {};
       var px = 12;
@@ -93,6 +116,9 @@ module("lively.identity.Homestar")
         this._friendStatus = null;  // null = not loaded / not applicable
         this._orbit = null;         // null = loading
         this._worlds = null;        // null = loading
+        this._avatarUrls = {};      // orbit member did -> avatar url, or null when they have none
+        this._avatarLoading = {};
+        this._orbitT0 = null;       // when the rings started turning
         this._renderTimer = null;
       },
     },
@@ -447,13 +473,23 @@ module("lively.identity.Homestar")
         var cx = ringX + S / 2, cy = ringTop + S / 2;
         var Ro = S / 2 - 20, Ri = Math.round(Ro * 0.52);
         var RING_LINE = Color.rgb(224, 214, 240);
-        [Ro, Ri].forEach(function (r) {
+        // Each ring is a box the size of its circle that holds its satellites, so one
+        // CSS rotation on it carries them round; the satellites turn back the other
+        // way, which keeps each face upright. Positions are relative to the ring.
+        function makeRing(r) {
           var ring = new lively.morphic.Box(lively.rect(cx - r, cy - r, r * 2, r * 2));
-          ring.applyStyle({ fill: null, borderWidth: 1.5, borderColor: RING_LINE, borderRadius: r });
+          ring.applyStyle({ fill: null, borderWidth: 1.5, borderColor: RING_LINE, borderRadius: r, clipMode: "visible" });
           noDrag(ring);
           ring.eventsAreIgnored = true;
           box.addMorph(ring);
-        });
+          return ring;
+        }
+        var outerRing = makeRing(Ro), innerRing = makeRing(Ri);
+        ensureOrbitStyle();
+        if (!this._orbitT0) this._orbitT0 = Date.now();
+        var t0 = this._orbitT0, now = Date.now();   // one clock reading, so a ring and its satellites stay in step
+        spinNode(outerRing, OUTER_SECONDS, false, t0, now);
+        spinNode(innerRing, INNER_SECONDS, true, t0, now);
 
         var p = this._profile;
         var CORE = 52;
@@ -470,10 +506,10 @@ module("lively.identity.Homestar")
         var OUTER_MAX = 10;
         var outer = outerAll.slice(0, OUTER_MAX);
 
-        function satellite(m, r, D, pinnedRing, angle) {
-          var ax = Math.round(cx + r * Math.cos(angle) - D / 2), ay = Math.round(cy + r * Math.sin(angle) - D / 2);
+        function satellite(ring, seconds, reverse, m, r, D, pinnedRing, angle) {
+          var ax = Math.round(r + r * Math.cos(angle) - D / 2), ay = Math.round(r + r * Math.sin(angle) - D / 2);
           var img = new lively.morphic.Image(lively.rect(ax, ay, D, D));
-          img.setImageURL(lively.identity.postCardUtils.identiconDataUrl(m.handle || m.did, D));
+          img.setImageURL(self._avatarFor(m, D));
           img.applyStyle({
             borderRadius: D / 2, clipMode: "hidden", handStyle: "pointer",
             borderWidth: 2, borderColor: pinnedRing ? PINK : Color.white,
@@ -483,21 +519,28 @@ module("lively.identity.Homestar")
             img.toolTip = "@" + m.handle;
             img.onMouseUp = function (evt) {
               evt.stop();
+              // The satellite is moving, so anchor the popover to where it is on screen
+              // now, in page coordinates (which are world coordinates).
+              var rect = img.renderContext().shapeNode.getBoundingClientRect();
+              var at = lively.pt(rect.left + (window.pageXOffset || 0), rect.bottom + (window.pageYOffset || 0));
               lively.require("lively.identity.MiniProfileCard").toRun(function () {
-                lively.identity.MiniProfileCard.open(m.handle, m.did, img);
+                lively.identity.MiniProfileCard.open(m.handle, m.did, at);
               });
               return true;
             };
           }
-          box.addMorph(img);
+          ring.addMorph(img);
+          spinNode(img, seconds, !reverse, t0, now);
+          if (self._avatarUrls[m.did]) self._fallBackOnError(img, m, D);
         }
         inner.forEach(function (m, i) {
-          satellite(m, Ri, 40, true, -Math.PI / 2 + (i * 2 * Math.PI) / inner.length);
+          satellite(innerRing, INNER_SECONDS, true, m, Ri, 40, true, -Math.PI / 2 + (i * 2 * Math.PI) / inner.length);
         });
         outer.forEach(function (m, i) {
           // Offset so the first outer friend is not straight above the core's pins.
-          satellite(m, Ro, 36, false, -Math.PI / 2 + Math.PI / outer.length + (i * 2 * Math.PI) / outer.length);
+          satellite(outerRing, OUTER_SECONDS, false, m, Ro, 36, false, -Math.PI / 2 + Math.PI / outer.length + (i * 2 * Math.PI) / outer.length);
         });
+        this._loadOrbitAvatars(inner.concat(outer));
 
         var ty = ringTop + S - 10;
         var names = o.members.slice(0, 4).map(function (m) { return m.handle ? "@" + m.handle : "someone"; }).join(", ");
@@ -518,6 +561,42 @@ module("lively.identity.Homestar")
         var h = ty + 8;
         box.setExtent(lively.pt(w, h));
         return y + h;
+      },
+
+      // A member's picture: their profile's avatar once it has loaded, else the
+      // handle-seeded blockie the profile card shows when there is none.
+      _avatarFor: function (m, D) {
+        return this._avatarUrls[m.did] || lively.identity.postCardUtils.identiconDataUrl(m.handle || m.did, D);
+      },
+
+      // Reads each shown member's public profile once (the orbit route only gives
+      // did and handle). Redraws only when a picture actually turned up.
+      _loadOrbitAvatars: function (members) {
+        var self = this;
+        members.forEach(function (m) {
+          if (!m.handle || self._avatarUrls[m.did] !== undefined || self._avatarLoading[m.did]) return;
+          self._avatarLoading[m.did] = true;
+          getJSON("/@" + encodeURIComponent(m.handle) + "/profile", function (err, env) {
+            var p = env && env.record && env.record.payload;
+            var url = p && safeUrl(p.avatarUrl);
+            self._avatarUrls[m.did] = url || null;
+            if (url) self._scheduleRender();
+          });
+        });
+      },
+
+      // A picture that does not load (a link to another host, a removed file) falls
+      // back to the blockie instead of leaving a broken-image box on the ring.
+      _fallBackOnError: function (img, m, D) {
+        var self = this;
+        setTimeout(function () {
+          var el = img.renderContext().shapeNode.querySelector("img");
+          if (!el) return;
+          el.addEventListener("error", function () {
+            self._avatarUrls[m.did] = null;
+            img.setImageURL(lively.identity.postCardUtils.identiconDataUrl(m.handle || m.did, D));
+          });
+        }, 0);
       },
 
       _openOrbitDialog: function () {
