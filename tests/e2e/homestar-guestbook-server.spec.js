@@ -1,8 +1,9 @@
 // @ts-check
 // The guestbook's server rules, end to end against the real dev server (which must have been restarted
 // after the comments routes changed): comments on a profile object accept only a signed-in author, are
-// kept to 500 characters, refuse an author the owner has blocked or who has blocked the owner (a block
-// works both ways), and can be removed by their author or by the profile's owner, nobody else.
+// kept to 500 characters, limited to 5 per guest in 36 hours (the rolling window itself is in tests/server/guestbook-limit.test.js, which can backdate rows), refuse an author the owner has blocked or who has
+// blocked the owner (a block works both ways), and can be removed by their author or by the profile's
+// owner, nobody else. On any other object (an item, a world) only a comment's author may remove it.
 //
 // Registers three throwaway `hometest_*` accounts through a CDP virtual passkey: OWNER, SIGNER (an
 // ordinary visitor, who later blocks the owner) and BLOCKED (blocked by the owner). (A fourth
@@ -139,6 +140,35 @@ test("who may sign a guestbook and who may remove an entry", async ({ browser })
     expect((await req("DELETE", kBook + "/" + onK.body.id)).status).toBe(403);
     await loginAs(K);
     expect((await req("DELETE", kBook + "/" + onK.body.id)).status).toBe(200);       // K owns that profile
+
+    // ── at most 5 entries per guest in 36 hours in one guestbook; the owner is not a guest; the count is per book
+    await loginAs(S);
+    for (let i = 1; i <= 5; i++) expect((await req("POST", kBook, { body: "entry " + i })).status).toBe(200);
+    const sixth = await req("POST", kBook, { body: "entry 6" });
+    expect(sixth.status).toBe(429);
+    expect(sixth.body.code).toBe("GUESTBOOK_LIMIT");
+    const sEntries = (await req("GET", kBook, undefined, true)).body.comments.filter((c) => c.did === S.did);
+    expect(sEntries.length).toBe(5);                                                // nothing stored for the sixth
+    // removing one makes room again
+    expect((await req("DELETE", kBook + "/" + sEntries[0].id)).status).toBe(200);
+    expect((await req("POST", kBook, { body: "entry 6, now" })).status).toBe(200);
+    expect((await req("POST", kBook, { body: "entry 7" })).status).toBe(429);
+    // (separate guests and separate books are counted separately: tests/server/guestbook-limit.test.js)
+    // the owner may post as many as they like in their own
+    await loginAs(K);
+    for (let i = 1; i <= 7; i++) expect((await req("POST", kBook, { body: "owner note " + i })).status).toBe(200);
+
+    // ── on any object that is not a profile, only a comment's author may remove it (an owner may not)
+    await loginAs(O);
+    const worlds = (await req("GET", "/@" + O.handle + "/worlds")).body.worlds;
+    const worldId = worlds[0].objId;
+    await loginAs(S);
+    const onWorld = await req("POST", "/@" + O.handle + "/" + worldId + "/comments", { body: "a review on O's world" });
+    expect(onWorld.status).toBe(200);        // a new account's home world is public, so a visitor may comment on it
+    await loginAs(O);
+    expect((await req("DELETE", "/@" + O.handle + "/" + worldId + "/comments/" + onWorld.body.id)).status).toBe(403);   // the world's owner may not
+    await loginAs(S);
+    expect((await req("DELETE", "/@" + O.handle + "/" + worldId + "/comments/" + onWorld.body.id)).status).toBe(200);   // its author may
   } finally {
     for (const a of [O, S, K]) {
       if (!a.credentialId) continue;

@@ -2561,6 +2561,49 @@ function insertComment(objId, did, body, thenDo) {
   });
 }
 
+// Like insertComment, but stores nothing when this author already left `max` comments on
+// the object within the last `windowMs` (a rolling window; created_at is a UTC ISO string,
+// so it compares as text). A comment the author removed no longer counts. The count and the
+// insert run in one transaction holding an advisory lock on (object, author): under
+// Postgres's default isolation two posts arriving together would each see room and both
+// insert, so without the lock the limit could be exceeded. Calls thenDo(err, commentRow |
+// null), null meaning the limit was reached. `now` is for tests.
+function insertCommentWithin(objId, did, body, max, windowMs, thenDo, now) {
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    var t = now ? now.getTime() : Date.now();
+    var createdAt = new Date(t).toISOString();
+    var since = new Date(t - windowMs).toISOString();
+    pool.connect(function (err, client, release) {
+      if (err) return thenDo(err);
+      function finish(e, row, rollback) {
+        client.query(rollback ? 'ROLLBACK' : 'COMMIT', function (endErr) {
+          release();
+          thenDo(e || endErr || null, row || null);
+        });
+      }
+      client.query('BEGIN', function (err) {
+        if (err) { release(); return thenDo(err); }
+        client.query('SELECT pg_advisory_xact_lock(hashtext($1::text))', ['item_comments:' + objId + ':' + did], function (err) {
+          if (err) return finish(err, null, true);
+          client.query(
+            'INSERT INTO item_comments (obj_id, did, body, created_at)' +
+            ' SELECT $1::text, $2::text, $3::text, $4::text' +
+            ' WHERE (SELECT COUNT(*) FROM item_comments WHERE obj_id = $1::text AND did = $2::text AND created_at > $6::text) < $5::int' +
+            ' RETURNING id',
+            [objId, did, body, createdAt, max, since],
+            function (err, result) {
+              if (err) return finish(err, null, true);
+              var row = result.rows[0];
+              finish(null, row ? { id: row.id, objId: objId, did: did, body: body, createdAt: createdAt } : null);
+            }
+          );
+        });
+      });
+    });
+  });
+}
+
 // Remove one comment -- caller (the route) is responsible for checking the
 // requester owns it before calling this. Calls thenDo(err).
 function deleteComment(commentId, thenDo) {
@@ -3567,6 +3610,7 @@ module.exports = {
   getStarInfo:                   getStarInfo,
   getStarCountsForObjIds:        getStarCountsForObjIds,
   insertComment:                 insertComment,
+  insertCommentWithin:           insertCommentWithin,
   deleteComment:                 deleteComment,
   getComment:                    getComment,
   listCommentsForObjId:          listCommentsForObjId,

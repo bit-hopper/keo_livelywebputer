@@ -29,6 +29,7 @@ module("lively.identity.HomestarShelves")
     var SKY_H = 150;
     var WIKI_MAX = 3, WIKI_ROW_H = 34;
     var GUEST_SHOWN = 3, GUEST_ROW_H = 58;
+    var GUEST_PER_WINDOW = 5, GUEST_WINDOW_HOURS = 36;   // what the server allows one guest
 
     var SIGNS  = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo",
                   "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"];
@@ -488,11 +489,21 @@ module("lively.identity.HomestarShelves")
           box.addMorph(label(lively.rect(16, h - 22, w - 32, 16), "Showing the newest " + GUEST_SHOWN + ".", { px: 11, color: MUTED }));
         }
         if (!opts.isOwner) {
-          var sign = UI.pill(0, 0, opts.viewer ? "Sign the guestbook" : "Sign in to sign the guestbook", {
-            primary: true, h: 30, w: opts.viewer ? 150 : 210, onClick: function () { return opts.viewer ? opts.onSign() : opts.onSignIn(); },
-          });
-          sign.setPosition(lively.pt(16, cy + 4));
-          box.addMorph(sign);
+          // the server allows a guest GUEST_PER_WINDOW entries in GUEST_WINDOW_HOURS; once the ones on the
+          // page (the newest 20) use that up, say so instead of offering a button that would fail
+          var since = (opts.now || Date.now()) - GUEST_WINDOW_HOURS * 3600 * 1000;
+          var used = opts.viewer ? opts.entries.filter(function (e) {
+            return e.did === opts.viewer.did && Date.parse(e.createdAt) > since;
+          }).length : 0;
+          if (used >= GUEST_PER_WINDOW) {
+            box.addMorph(label(lively.rect(16, cy + 8, w - 32, 20), "You have left " + GUEST_PER_WINDOW + " entries recently. Come back later.", { px: 12, color: MUTED }));
+          } else {
+            var sign = UI.pill(0, 0, opts.viewer ? "Sign the guestbook" : "Sign in to sign the guestbook", {
+              primary: true, h: 30, w: opts.viewer ? 150 : 210, onClick: function () { return opts.viewer ? opts.onSign() : opts.onSignIn(); },
+            });
+            sign.setPosition(lively.pt(16, cy + 4));
+            box.addMorph(sign);
+          }
         }
         return box;
       },

@@ -207,3 +207,34 @@ test("at 390 px the card fits and the page does not scroll sideways", async () =
   await open(V.page, "Sign the guestbook");
   expect(await V.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
 });
+
+test("a guest who has used their five entries in 36 hours is told so instead of offered the button", async () => {
+  const mine = (/** @type {number} */ id, /** @type {number} */ days) => entry(id, V.handle, V.did, "Entry " + id, days);
+  // five within the window (35 hours is inside, 37 is outside)
+  gb.entries = [mine(1, 0.1), mine(2, 0.5), mine(3, 1), mine(4, 1.2), mine(5, 35 / 24)];
+  await V.page.setViewportSize({ width: 1400, height: 900 });
+  await open(V.page, "Entry 1");
+  await shows(V.page, "You have left 5 entries recently. Come back later.");
+  expect(await texts(V.page)).not.toContain("Sign the guestbook");
+
+  // the oldest of them falls outside the window: there is room again
+  gb.entries = [mine(1, 0.1), mine(2, 0.5), mine(3, 1), mine(4, 1.2), mine(5, 37 / 24)];
+  await open(V.page, "Entry 1");
+  await shows(V.page, "Sign the guestbook");
+  expect(await texts(V.page)).not.toContain("You have left 5 entries recently. Come back later.");
+});
+
+test("the server's refusal of a sixth entry is shown in the dialog", async () => {
+  gb.entries = [entry(1, "alice", "did:key:alice", "Hello from alice", 1)];
+  await open(V.page, "Sign the guestbook");
+  await (await tag(V.page, "Sign the guestbook", "gb-sign-limit")).click();
+  await expect(area(V.page)).toBeVisible();
+  gb.postStatus = 429;
+  await V.page.keyboard.type("one too many");
+  await (await tag(V.page, "Post", "gb-post-limit")).click();
+  // the stub's refusal text is the one the server sends for any status other than 401 and 403
+  await shows(V.page, "stub refusal");
+  await expect(area(V.page)).toHaveValue("one too many");
+  gb.postStatus = 200;
+  await V.page.keyboard.press("Escape");
+});
