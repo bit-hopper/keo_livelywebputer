@@ -28,6 +28,7 @@ module("lively.identity.HomestarShelves")
     var CARD_MIN_W = 290;
     var SKY_H = 150;
     var WIKI_MAX = 3, WIKI_ROW_H = 34;
+    var GUEST_SHOWN = 3, GUEST_ROW_H = 58;
 
     var SIGNS  = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo",
                   "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"];
@@ -416,6 +417,82 @@ module("lively.identity.HomestarShelves")
           box.addMorph(label(lively.rect(tx, ty, tw, 16), rec.spinning ? "Now spinning" : "Last spun", { px: 11, color: PINK, bold: true, align: align }));
           box.addMorph(label(lively.rect(tx, ty + 16, tw, 20), trunc(a.title || "Untitled", chars), { px: 13, bold: true, align: align }));
           if (a.artist) box.addMorph(label(lively.rect(tx, ty + 36, tw, 18), trunc(a.artist, chars + 4), { px: 12, color: MUTED, align: align }));
+        }
+        return box;
+      },
+
+      // The guestbook: the newest entries (comments on the profile object), and a way
+      // to sign it. null until the entries are known (opts.entries is null while
+      // loading or when they could not be read). opts: { handle, entries, isOwner,
+      // viewer, avatarFor(entry), onSign(), onSignIn(), onDelete(entry), onProfile(entry, rect) }
+      // entry: { id, did, handle, body, createdAt }, newest first.
+      guestbook: function (opts) {
+        if (!opts.entries) return null;
+        var n = Math.min(GUEST_SHOWN, opts.entries.length);
+        var canSign = !opts.isOwner;
+        var h = 48 + (n ? n * GUEST_ROW_H : 30) + (canSign ? 46 : 8) + (opts.entries.length > GUEST_SHOWN ? 20 : 0) + 10;
+        return { h: h, build: function (x, y, w, hh) {
+          return lively.identity.HomestarShelves._guestbookPanel(x, y, w, hh, opts);
+        } };
+      },
+
+      _guestbookPanel: function (x, y, w, h, opts) {
+        var box = panel(lively.rect(x, y, w, h));
+        header(box, w, "draw", "Guestbook");
+        var entries = opts.entries.slice(0, GUEST_SHOWN);
+        var cy = 46;
+        if (!entries.length) {
+          box.addMorph(label(lively.rect(16, cy, w - 32, 20),
+            opts.isOwner ? "Nobody has signed your guestbook yet." : "Nobody has signed it yet. Be the first.",
+            { px: 13, color: MUTED }));
+          cy += 30;
+        }
+        entries.forEach(function (e) {
+          var row = new lively.morphic.Box(lively.rect(0, cy, w, GUEST_ROW_H));
+          row.applyStyle({ fill: null, borderWidth: 0, clipMode: "hidden" });
+          noDrag(row);
+
+          var av = new lively.morphic.Image(lively.rect(16, 4, 28, 28));
+          av.setImageURL(opts.avatarFor(e));
+          av.applyStyle({ borderRadius: 14, borderWidth: 0, clipMode: "hidden", handStyle: "pointer" });
+          noDrag(av);
+          av.toolTip = e.handle ? "@" + e.handle : "";
+          av.onMouseUp = function (evt) {
+            evt.stop();
+            if (e.handle && opts.onProfile) opts.onProfile(e, av.renderContext().shapeNode.getBoundingClientRect());
+            return true;
+          };
+          row.addMorph(av);
+
+          var canDelete = opts.isOwner || (opts.viewer && opts.viewer.did === e.did);
+          var right = canDelete ? 30 : 16;
+          row.addMorph(label(lively.rect(52, 2, w - 52 - right - 84, 18), e.handle ? "@" + trunc(e.handle, 22) : "someone", { px: 12, bold: true }));
+          row.addMorph(label(lively.rect(w - right - 84, 3, 84, 16), agoLabel(e.createdAt), { px: 11, color: MUTED, align: "right" }));
+          row.addMorph(label(lively.rect(52, 20, w - 52 - 16, 34), trunc(String(e.body || "").replace(/\s+/g, " "), 110), { px: 12, color: INK, wrap: true }));
+          if (canDelete) {
+            var del = new lively.morphic.Box(lively.rect(w - 28, 2, 22, 22));
+            del.applyStyle({ fill: null, borderWidth: 0, borderRadius: 11, handStyle: "pointer" });
+            noDrag(del);
+            del.toolTip = opts.isOwner && !(opts.viewer && opts.viewer.did === e.did) ? "Remove this entry" : "Delete your entry";
+            del.addMorph(icon(lively.rect(3, 3, 16, 16), "close", 14, MUTED));
+            del.onMouseOver = function () { del.applyStyle({ fill: PINK_SOFT }); };
+            del.onMouseOut  = function () { del.applyStyle({ fill: null }); };
+            del.onMouseUp = function (evt) { evt.stop(); opts.onDelete(e); return true; };
+            row.addMorph(del);
+          }
+          box.addMorph(row);
+          cy += GUEST_ROW_H;
+        });
+        if (opts.entries.length > GUEST_SHOWN) {
+          // the entries beyond the newest few are not listed here
+          box.addMorph(label(lively.rect(16, h - 22, w - 32, 16), "Showing the newest " + GUEST_SHOWN + ".", { px: 11, color: MUTED }));
+        }
+        if (!opts.isOwner) {
+          var sign = UI.pill(0, 0, opts.viewer ? "Sign the guestbook" : "Sign in to sign the guestbook", {
+            primary: true, h: 30, w: opts.viewer ? 150 : 210, onClick: function () { return opts.viewer ? opts.onSign() : opts.onSignIn(); },
+          });
+          sign.setPosition(lively.pt(16, cy + 4));
+          box.addMorph(sign);
         }
         return box;
       },

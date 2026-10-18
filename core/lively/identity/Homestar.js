@@ -121,6 +121,8 @@ module("lively.identity.Homestar")
         this._worlds = null;        // null = loading; else the featured worlds this viewer may open, in order
         this._visibleWorlds = null; // every world this viewer may open (GET /worlds)
         this._wikiPages = null;     // null = loading; else GET /wiki rows (a failed load is an empty list)
+        this._gbObjId = null;       // the profile object's id: the guestbook is comments on it
+        this._gbEntries = null;     // null = loading or unreadable; else the comments, newest first
         this._shelfBooks = [];      // the Books world's books, reading first (HomestarShelves.loadBooks)
         this._shelfRecord = null;   // {album, spinning} from the Music world, or null
         this._shelfWorlds = {};     // { books, music }: the worlds those came from, as /worlds lists them
@@ -164,6 +166,7 @@ module("lively.identity.Homestar")
           self._scheduleRender();
           self._loadShelf(worlds);
         });
+        this._loadGuestbook();
         getJSON(base + "/wiki", function (err, body) {
           self._wikiPages = (body && body.pages) || [];
           self._scheduleRender();
@@ -174,6 +177,27 @@ module("lively.identity.Homestar")
             self._scheduleRender();
           });
         }
+      },
+
+      // The guestbook: comments on the profile object. The object id comes from the profile
+      // envelope; the entries are only read when it is known, and a failed read leaves the
+      // card out rather than showing an empty one.
+      _loadGuestbook: function () {
+        var self = this;
+        var base = "/@" + encodeURIComponent(this._handle);
+        var read = function () {
+          getJSON(base + "/" + encodeURIComponent(self._gbObjId) + "/comments?limit=20", function (err, body) {
+            self._gbEntries = body && Array.isArray(body.comments) ? body.comments : null;
+            if (self._gbEntries) self._loadOrbitAvatars(self._gbEntries.slice(0, 3).filter(function (e) { return e.handle; }));
+            self._scheduleRender();
+          });
+        };
+        if (this._gbObjId) return read();
+        getJSON(base + "/profile", function (err, env) {
+          if (!env || !env.objId) return;
+          self._gbObjId = env.objId;
+          read();
+        });
       },
 
       // The books and the record for the "On the shelf" card, read from the account's
@@ -716,9 +740,51 @@ module("lively.identity.Homestar")
             booksWorld: this._shelfWorlds.books, musicWorld: this._shelfWorlds.music,
           }),
           S.sky(this._profile),
+          S.guestbook({
+            handle: this._handle, entries: this._gbEntries, isOwner: this._isOwner, viewer: this._viewer,
+            avatarFor: function (e) { return self._avatarFor(e, 28); },
+            onSign: function () { self._openGuestbook(); },
+            onSignIn: function () { self._openLogin(); },
+            onDelete: function (e) { self._deleteGuestbookEntry(e); },
+            onProfile: function (e, rect) {
+              var at = lively.pt(rect.left + (window.pageXOffset || 0), rect.bottom + (window.pageYOffset || 0));
+              lively.require("lively.identity.MiniProfileCard").toRun(function () {
+                lively.identity.MiniProfileCard.open(e.handle, e.did, at);
+              });
+            },
+          }),
         ];
         var bottom = S.layout(cards, x, y, w, GAP, function (m) { self._add(m); });
         return bottom === y ? y - GAP : bottom;
+      },
+    },
+
+    "guestbook", {
+      _openGuestbook: function () {
+        var self = this;
+        if (!this._gbObjId) return;
+        lively.require("lively.identity.GuestbookDialog").toRun(function () {
+          lively.identity.GuestbookDialog.open({
+            handle: self._handle,
+            objId: self._gbObjId,
+            onPosted: function () { self._loadGuestbook(); },
+          });
+        });
+      },
+
+      // The owner removes any entry, an author their own (the server checks both).
+      _deleteGuestbookEntry: function (entry) {
+        var self = this;
+        $world.confirm("Remove this entry from the guestbook?", function (yes) {
+          if (!yes) return;
+          fetch("/@" + encodeURIComponent(self._handle) + "/" + encodeURIComponent(self._gbObjId) + "/comments/" + encodeURIComponent(entry.id),
+            { method: "DELETE", credentials: "include" })
+            .then(function (res) {
+              if (!res.ok) return $world.alert("Could not remove the entry.");
+              self._loadGuestbook();
+            })
+            .catch(function (err) { $world.alert("Could not remove the entry: " + err.message); });
+        });
       },
     },
 

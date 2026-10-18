@@ -3920,6 +3920,25 @@ module.exports = function (route, app) {
 
   var ITEM_COMMENT_MAX_LENGTH = 2000;
 
+  // Comments on a profile are the homestar's guestbook: shorter, and not open to someone
+  // the profile's owner has blocked or who has blocked the owner (same rule as mail and
+  // replies: a block works in both directions).
+  var GUESTBOOK_MAX_LENGTH = 500;
+
+  function _blockedEitherWay(ownerDid, otherDid, otherHandle, cb) {
+    objectRepo.getSettingsForDid(ownerDid, function (err, ownerEnv) {
+      if (err) return cb(err);
+      objectRepo.getSettingsForDid(otherDid, function (err2, otherEnv) {
+        if (err2) return cb(err2);
+        var o = (ownerEnv && ownerEnv.state) || {}, t = (otherEnv && otherEnv.state) || {};
+        var blocked = (o.blockedDids || []).indexOf(otherDid) !== -1 ||
+          !!(otherHandle && (o.blockedHandles || []).indexOf(otherHandle) !== -1) ||
+          (t.blockedDids || []).indexOf(ownerDid) !== -1;
+        cb(null, blocked);
+      });
+    });
+  }
+
   app.post("/@:handle/:objId/comments", auth.requireAuth, function (req, res) {
     var objId = req.params.objId;
     var body = req.body && req.body.body;
@@ -3936,12 +3955,24 @@ module.exports = function (route, app) {
       if (!_canReadEnvelope(envelope, req.identity)) {
         return res.status(403).json({ error: "Forbidden" });
       }
-      objectRepo.insertComment(objId, req.identity.did, body, function (err, comment) {
-        if (err) return res.status(500).json({ error: String(err) });
-        res.json({
-          id: comment.id, objId: comment.objId, did: comment.did,
-          handle: req.identity.handle, body: comment.body, createdAt: comment.createdAt
+      var isGuestbook = envelope.type === "profile";
+      if (isGuestbook && body.length > GUESTBOOK_MAX_LENGTH) {
+        return res.status(400).json({ error: "Guestbook entry is too long (max " + GUESTBOOK_MAX_LENGTH + " characters)" });
+      }
+      function insert() {
+        objectRepo.insertComment(objId, req.identity.did, body, function (err, comment) {
+          if (err) return res.status(500).json({ error: String(err) });
+          res.json({
+            id: comment.id, objId: comment.objId, did: comment.did,
+            handle: req.identity.handle, body: comment.body, createdAt: comment.createdAt
+          });
         });
+      }
+      if (!isGuestbook || envelope.did === req.identity.did) return insert();
+      _blockedEitherWay(envelope.did, req.identity.did, req.identity.handle, function (err, blocked) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (blocked) return res.status(403).json({ error: "Forbidden" });
+        insert();
       });
     });
   });
@@ -3977,12 +4008,21 @@ module.exports = function (route, app) {
     objectRepo.getComment(commentId, function (err, comment) {
       if (err) return res.status(500).json({ error: String(err) });
       if (!comment) return res.status(404).json({ error: "Comment not found" });
-      if (comment.did !== req.identity.did) {
-        return res.status(403).json({ error: "Forbidden: not your comment" });
+      // The author may always take a comment back; so may the owner of the object it is on
+      // (a guestbook entry on your profile, a review on your item).
+      function remove() {
+        objectRepo.deleteComment(commentId, function (err) {
+          if (err) return res.status(500).json({ error: String(err) });
+          res.json({ ok: true });
+        });
       }
-      objectRepo.deleteComment(commentId, function (err) {
+      if (comment.did === req.identity.did) return remove();
+      objectRepo.get(comment.objId, function (err, envelope) {
         if (err) return res.status(500).json({ error: String(err) });
-        res.json({ ok: true });
+        if (!envelope || envelope.did !== req.identity.did) {
+          return res.status(403).json({ error: "Forbidden: not your comment" });
+        }
+        remove();
       });
     });
   });
