@@ -77,6 +77,7 @@ var dmSignalingTokenStore = require("./support/dm-signaling-token-store");
 var cryptoVerify = require("./identity/CryptoVerify");
 var writePolicy = require("./identity/WritePolicy");
 var orbitRules = require("./identity/Orbit");
+var mapVisibility = require("./identity/MapVisibility");
 var editTracking = require("./identity/EditTracking");
 var audienceRules = require("./identity/AudienceLists");
 var contentRealm = require("./support/content-realm-gate");
@@ -2478,6 +2479,37 @@ module.exports = function (route, app) {
     });
   });
 
+  // Who may see this owner's homestar map (MapVisibility.js). Reads the owner's
+  // settings; friendship and orbit membership are only looked up when the choice
+  // needs them. thenDo(err, { allowed, visibility }).
+  function _mapAccess(ownerDid, viewerDid, thenDo) {
+    if (viewerDid && viewerDid === ownerDid) {
+      return objectRepo.getSettingsForDid(ownerDid, function (err, settings) {
+        if (err) return thenDo(err);
+        var vis = mapVisibility.normalize(settings && settings.state && settings.state.mapVisibility).value || mapVisibility.DEFAULT;
+        thenDo(null, { allowed: true, visibility: vis });
+      });
+    }
+    objectRepo.getSettingsForDid(ownerDid, function (err, settings) {
+      if (err) return thenDo(err);
+      var st = (settings && settings.state) || {};
+      var vis = mapVisibility.normalize(st.mapVisibility).value || mapVisibility.DEFAULT;
+      if (vis === 'anyone') return thenDo(null, { allowed: true, visibility: vis });
+      if (!viewerDid || vis === 'private') return thenDo(null, { allowed: false, visibility: vis });
+      friendRegistry.listFriends(ownerDid, function (err, friends) {
+        if (err) return thenDo(err);
+        var friendDids = friends.map(function (f) { return f.did; });
+        var isFriend = friendDids.indexOf(viewerDid) !== -1;
+        var inOrbit = false;
+        if (vis === 'orbit') {
+          var orbit = orbitRules.normalize(st.orbit, friendDids).orbit;
+          inOrbit = !!(orbit && orbit.members.indexOf(viewerDid) !== -1);
+        }
+        thenDo(null, { allowed: mapVisibility.canView(vis, ownerDid, viewerDid, isFriend, inOrbit), visibility: vis });
+      });
+    });
+  }
+
   // ─── postcards listing ─────────────────────────────────────────────────────
   // Must be registered before /@:handle/:objId — "postcards" would otherwise be
   // captured as an objId literal (same ordering rule as "did-document").
@@ -2500,13 +2532,26 @@ module.exports = function (route, app) {
       // owner's plain listing (the mailbox "My Postcards" tab) is unchanged.
       var viewerDidNow = req.identity ? req.identity.did : null;
       if (viewerDidNow !== did || hasLocation || sort) {
-        return objectRepo.listPostcardsForViewer(did, viewerDidNow,
-          { limit: limit, cursor: cursor, q: q, hasLocation: hasLocation, sort: sort },
-          function (err, result) {
-            if (err) return res.status(500).json({ error: String(err) });
-            result.postcards = result.postcards.map(function (m) { delete m.recipients; return m; });
-            res.json(result);
-          });
+        var listForViewer = function (mapVis) {
+          objectRepo.listPostcardsForViewer(did, viewerDidNow,
+            { limit: limit, cursor: cursor, q: q, hasLocation: hasLocation, sort: sort },
+            function (err, result) {
+              if (err) return res.status(500).json({ error: String(err) });
+              result.postcards = result.postcards.map(function (m) { delete m.recipients; return m; });
+              // The map's own request also learns who the owner shows it to (their own
+              // chooser starts from it); nobody else is told.
+              if (mapVis && viewerDidNow === did) result.mapVisibility = mapVis;
+              res.json(result);
+            });
+        };
+        if (!hasLocation) return listForViewer(null);
+        // The located listing is what the homestar map is drawn from, so the owner's
+        // choice of who sees the map (state.mapVisibility) is applied here.
+        return _mapAccess(did, viewerDidNow, function (err, access) {
+          if (err) return res.status(500).json({ error: String(err) });
+          if (!access.allowed) return res.json({ postcards: [], cursor: null, locked: true });
+          listForViewer(access.visibility);
+        });
       }
 
       objectRepo.listPostcardsForUser(did, { limit: limit, cursor: cursor, q: q }, function (err, result) {
@@ -3570,6 +3615,11 @@ module.exports = function (route, app) {
       // (AudienceLists.js) must keep their invariants whatever the client sent:
       // members are friends, pinned is a subset of members, lists are capped.
       var st = envelope.state;
+      // state.mapVisibility (MapVisibility.js) must be one of the known values.
+      if (st && st.mapVisibility !== undefined) {
+        var mv = mapVisibility.normalize(st.mapVisibility);
+        if (mv.error) return res.status(400).json({ error: mv.error, code: "INVALID_MAP_VISIBILITY" });
+      }
       if (!st || (st.orbit === undefined && st.audienceLists === undefined && st.cardAudiences === undefined)) {
         return _put(envelope);
       }

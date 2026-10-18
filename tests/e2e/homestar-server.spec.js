@@ -125,6 +125,63 @@ test("orbit, worlds and postcards routes by viewer", async ({ browser }) => {
     await loginAs(F);
     expect((await req("GET", "/@" + O.handle + "/orbit")).body.locked).toBe(true);          // even a member does not
 
+    // ── who sees the map (state.mapVisibility): enforced on the located listing the map is drawn from
+    await loginAs(O);
+    const freshSettings = async () => (await req("GET", "/@" + O.handle + "/settings")).body;
+    const putMapVis = async (v) => { const cur = await freshSettings(); return req("PUT", "/@" + O.handle + "/settings", Object.assign({}, cur, { state: Object.assign({}, cur.state, { mapVisibility: v }) })); };
+    const located = (anon) => req("GET", "/@" + O.handle + "/postcards?hasLocation=1&sort=new", undefined, anon);
+    // never chosen: open to everyone, and nothing extra is said to the viewer
+    let loc = await located(true);
+    expect(loc.status).toBe(200);
+    expect(loc.body.locked).toBeUndefined();
+    expect(loc.body.mapVisibility).toBeUndefined();
+    // an unknown value is refused and changes nothing
+    const badVis = await putMapVis("everyone");
+    expect(badVis.status).toBe(400);
+    expect(badVis.body.code).toBe("INVALID_MAP_VISIBILITY");
+    expect((await freshSettings()).state.mapVisibility).toBeUndefined();
+
+    // who is asking: [owner, friend in the orbit, friend not in the orbit (set below), stranger, signed out]
+    const lockedFor = async (who) => {
+      if (who === "anon") return (await located(true)).body.locked === true;
+      await loginAs(who);
+      return (await located(false)).body.locked === true;
+    };
+    // Friends: a friend yes, a stranger and a signed-out viewer no; the owner is told the setting
+    expect((await putMapVis("friends")).status).toBe(200);
+    expect((await located(false)).body.mapVisibility).toBe("friends");
+    expect(await lockedFor(F)).toBe(false);
+    expect(await lockedFor(S)).toBe(true);
+    expect(await lockedFor("anon")).toBe(true);
+    // a viewer that is let in is not told the setting, and a locked one gets no cards
+    await loginAs(F);
+    expect((await located(false)).body.mapVisibility).toBeUndefined();
+    await loginAs(S);
+    expect(await located(false)).toMatchObject({ status: 200, body: { postcards: [], cursor: null, locked: true } });
+    // Orbit: F is in the stored orbit (see above), the stranger is not
+    await loginAs(O);
+    expect((await putMapVis("orbit")).status).toBe(200);
+    expect(await lockedFor(F)).toBe(false);
+    expect(await lockedFor(S)).toBe(true);
+    // ... and taking F out of the orbit locks F out while still a friend
+    await loginAs(O);
+    expect((await putOrbit({ visibility: "private", members: [], pinned: [] }, await freshSettings())).status).toBe(200);
+    expect(await lockedFor(F)).toBe(true);
+    // Only me: nobody else; the owner still gets the listing
+    await loginAs(O);
+    expect((await putMapVis("private")).status).toBe(200);
+    expect(await lockedFor(F)).toBe(true);
+    await loginAs(O);
+    loc = await located(false);
+    expect(loc.body.locked).toBeUndefined();
+    expect(loc.body.mapVisibility).toBe("private");
+    // a plain listing (the reel's) is not the map's and is not gated by it
+    expect((await req("GET", "/@" + O.handle + "/postcards?sort=new&limit=5", undefined, true)).body.locked).toBeUndefined();
+    // back to open for everyone
+    expect((await putMapVis("anyone")).status).toBe(200);
+    expect(await lockedFor("anon")).toBe(false);
+    await loginAs(O);
+
     // ── audience lists and per-card audiences (state.audienceLists / state.cardAudiences)
     await loginAs(O);
     const putState = async (patch) => {
