@@ -115,7 +115,8 @@ module("lively.identity.Homestar")
         this._morphs = [];        // top-level page morphs, replaced wholesale by _render()
         this._friendStatus = null;  // null = not loaded / not applicable
         this._orbit = null;         // null = loading
-        this._worlds = null;        // null = loading
+        this._worlds = null;        // null = loading; else the featured worlds this viewer may open, in order
+        this._visibleWorlds = null; // every world this viewer may open (GET /worlds)
         this._avatarUrls = {};      // orbit member did -> avatar url, or null when they have none
         this._avatarLoading = {};
         this._orbitT0 = null;       // when the rings started turning
@@ -151,6 +152,7 @@ module("lively.identity.Homestar")
         });
         getJSON(base + "/worlds", function (err, body) {
           var worlds = (body && body.worlds) || [];
+          self._visibleWorlds = worlds;
           self._worlds = self._featuredWorlds(worlds);
           self._scheduleRender();
         });
@@ -182,6 +184,8 @@ module("lively.identity.Homestar")
           var p = env && env.record && env.record.payload;
           if (!p) return;
           self._profile = p;
+          // The featured list may have changed with it.
+          if (self._visibleWorlds) self._worlds = self._featuredWorlds(self._visibleWorlds);
           self._scheduleRender();
         });
       },
@@ -648,7 +652,12 @@ module("lively.identity.Homestar")
         var box = panel(lively.rect(x, y, w, 120));
         this._add(box);
         box.addMorph(icon(lively.rect(16, 14, 22, 22), "public", 18, PINK));
-        box.addMorph(label(lively.rect(44, 14, w - 60, 22), "Worlds", { px: 15, bold: true }));
+        box.addMorph(label(lively.rect(44, 14, w - 60 - 70, 22), "Worlds", { px: 15, bold: true }));
+        if (this._isOwner && worlds) {
+          var choose = pill(0, 0, "Choose", { w: 72, h: 26, onClick: function () { self._openWorldsDialog(); } });
+          choose.setPosition(lively.pt(w - 16 - 72, 11));
+          box.addMorph(choose);
+        }
 
         var cy = 46;
         if (!worlds) {
@@ -709,6 +718,18 @@ module("lively.identity.Homestar")
     },
 
     "actions", {
+      // Pick and order the featured worlds. They are stored in the profile, so the
+      // page re-reads it afterwards and recomputes what to show.
+      _openWorldsDialog: function () {
+        var self = this;
+        lively.require("lively.identity.WorldsDialog").toRun(function () {
+          lively.identity.WorldsDialog.open({
+            featured: (self._worlds || []).map(function (w) { return w.objId; }),
+            onSave: function () { self._refreshProfile(); },
+          });
+        });
+      },
+
       _openProfileCard: function () {
         var self = this;
         lively.require("lively.identity.ProfileCard").toRun(function () {
