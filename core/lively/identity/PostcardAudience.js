@@ -108,6 +108,19 @@ module('lively.identity.PostcardAudience')
         });
       },
 
+      // The owner's settings state as stored now, without writing anything.
+      // thenDo(err, state).
+      readSettingsState: function (thenDo) {
+        var user = lively.identity.did.currentUser();
+        if (!user) return thenDo(new Error('Not signed in'));
+        var url = lively.identity.did.baseUrl() + '/@' + enc(user.handle) + '/settings';
+        request('GET', url, undefined, function (err, res) {
+          if (err) return thenDo(err);
+          if (res.status !== 200 || !res.json) return thenDo(failure('Loading settings', res));
+          thenDo(null, res.json.state || {});
+        });
+      },
+
       // Replace all of the owner's named lists. lists: [{ id, name, memberDids }].
       // The server drops members who are not friends and card tiers whose list is
       // gone; thenDo(err, savedState) gives the state as stored.

@@ -143,6 +143,144 @@ test("under the Orbit in the left rail when wide, after it on a phone, never a s
   await A.page.setViewportSize({ width: 1280, height: 720 });
 });
 
+// ── Manage ──────────────────────────────────────────────────────────────────────────────────────
+const settingsState = async () => (await (await A.context.request.get("/@" + A.handle + "/settings", { headers: { Accept: "application/json" } })).json()).state || {};
+const slug = (/** @type {string} */ t) => "cs-" + t.replace(/\W+/g, "-");
+/** Tags the node of the box that owns the click around the text `text`, inside the Constellations panel or the dialog's scrim. */
+const tag = (/** @type {string} */ text, /** @type {"panel"|"dialog"} */ where) => A.page.evaluate(([t, w, tagName]) => {
+  let root = null;
+  if (w === "panel") $world.withAllSubmorphsDo((m) => { if (m.textString === "Constellations" && m.owner && m.owner.owner === $world) root = m.owner; });
+  else {
+    // the scrim: the world's child that holds the dialog's title
+    let title = null;
+    $world.withAllSubmorphsDo((m) => { if (m.textString === "Your constellations") title = m; });
+    for (let m = title; m && m.owner; m = m.owner) if (m.owner === $world) root = m;
+  }
+  if (!root) return false;
+  let hit = null;
+  root.withAllSubmorphsDo((m) => { if (!hit && m.textString === t) hit = m; });
+  if (!hit) return false;
+  hit.owner.renderContext().shapeNode.setAttribute("data-pw", tagName);
+  return true;
+}, [text, where, slug(text)]);
+const click = async (/** @type {string} */ text, /** @type {"panel"|"dialog"} */ where) => {
+  expect(await tag(text, where), text).toBe(true);
+  await A.page.locator("[data-pw=" + slug(text) + "]").click();
+};
+
+const MEMBERSHIPS = [
+  { name: "alpha", visibility: "public", memberCount: 12, role: "member" },
+  { name: "beta", visibility: "private", memberCount: 1, role: "creator" },
+  { name: "gamma", visibility: "public", memberCount: 3, role: "moderator" },
+];
+
+test("Manage: the owner has the pill, a visitor does not", async ({ browser }) => {
+  rows = [row("alpha", 12, 3)];
+  await A.page.goto("/@" + A.handle);
+  await shows("c/alpha");
+  expect(await tag("Manage", "panel")).toBe(true);
+
+  const ctx = await browser.newContext();
+  const v = await ctx.newPage();
+  try {
+    await v.route(new RegExp("/@" + A.handle + "/constellations/public$"), (route) =>
+      route.fulfill({ json: { constellations: [row("alpha", 2, 1)], isOwner: false } }));
+    await v.goto("/@" + A.handle);
+    await expect.poll(() => v.evaluate(() => {
+      if (typeof $world === "undefined" || !$world) return null;
+      let seen = false, manage = false;
+      $world.withAllSubmorphsDo((m) => {
+        if (m.textString === "Constellations" && m.owner && m.owner.owner === $world) {
+          seen = true;
+          m.owner.withAllSubmorphsDo((s) => { if (s.textString === "Manage") manage = true; });
+        }
+      });
+      return seen ? (manage ? "manage" : "none") : null;
+    }), { timeout: 30000 }).toBe("none");
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("Manage: Escape stores nothing; choosing who sees it and unticking one stores both", async () => {
+  await A.page.route(new RegExp("/@" + A.handle + "/constellations$"), (route) => route.fulfill({ json: { constellations: MEMBERSHIPS } }));
+  rows = [row("alpha", 12, 3), row("beta", 1, 0, "private"), row("gamma", 3, 0)];
+  await A.page.goto("/@" + A.handle);
+  await shows("c/alpha");
+  expect((await settingsState()).constellationsHidden).toBeUndefined();
+
+  // open it: every membership is listed, all ticked
+  await click("Manage", "panel");
+  await expect.poll(() => worldText().then((t) => t.includes("Your constellations") && t.includes("3 of 3 shown")), { timeout: 30000 }).toBe(true);
+  expect(await worldText()).toContain("Private, only you will see it  ·  1 member");
+
+  // Escape after changing something stores nothing
+  await click("c/beta", "dialog");
+  await expect.poll(() => worldText().then((t) => t.includes("2 of 3 shown")), { timeout: 10000 }).toBe(true);
+  await A.page.keyboard.press("Escape");
+  await expect.poll(() => worldText().then((t) => !t.includes("Your constellations")), { timeout: 10000 }).toBe(true);
+  expect((await settingsState()).constellationsHidden).toBeUndefined();
+  expect((await settingsState()).constellationsVisibility).toBeUndefined();
+
+  // reopen, hide the private one, choose Friends, save
+  await click("Manage", "panel");
+  await expect.poll(() => worldText().then((t) => t.includes("3 of 3 shown")), { timeout: 30000 }).toBe(true);
+  await click("c/beta", "dialog");
+  await click("Friends", "dialog");
+  await expect.poll(() => worldText().then((t) => t.includes("Only your friends can see this card.")), { timeout: 10000 }).toBe(true);
+  await click("Save", "dialog");
+  await expect.poll(() => worldText().then((t) => !t.includes("Your constellations")), { timeout: 30000 }).toBe(true);
+  const st = await settingsState();
+  expect(st.constellationsHidden).toEqual(["beta"]);
+  expect(st.constellationsVisibility).toBe("friends");
+
+  // reopening shows the saved choices: beta unticked, Friends chosen
+  await click("Manage", "panel");
+  await expect.poll(() => worldText().then((t) => t.includes("2 of 3 shown") && t.includes("Only your friends can see this card.")), { timeout: 30000 }).toBe(true);
+  await A.page.keyboard.press("Escape");
+});
+
+test("the real route and settings: bad shapes are refused; Friends, Orbit and Only me lock a stranger out", async ({ browser }) => {
+  const url = "/@" + A.handle + "/settings";
+  // read-modify-write like patchSettings does, so the cid and the rest of the state are right
+  const put = (patch) => A.page.evaluate(async ([u, p]) => {
+    const env = await (await fetch(u, { credentials: "include", headers: { Accept: "application/json" } })).json();
+    env.state = Object.assign(env.state || {}, p);
+    await new Promise((res, rej) => lively.identity.crypto.computeCid((env.record && env.record.payload) || {}, (e, c) => (e ? rej(e) : (env.record.cid = c, res()))));
+    const w = await fetch(u, { method: "PUT", credentials: "include", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(env) });
+    return { status: w.status, body: await w.json().catch(() => null) };
+  }, [url, patch]);
+
+  for (const bad of [{ constellationsVisibility: "public" }, { constellationsHidden: "alpha" }, { constellationsHidden: ["Not A Name"] }, { constellationsHidden: [5] }]) {
+    const r = await put(bad);
+    expect(r.status, JSON.stringify(bad)).toBe(400);
+    expect(r.body.code).toBe("INVALID_CONSTELLATIONS");
+  }
+
+  const anonCtx = await browser.newContext();
+  const get = async (ctx) => (await ctx.get("/@" + A.handle + "/constellations/public", { headers: { Accept: "application/json" } })).json();
+  try {
+    for (const vis of ["friends", "private", "orbit"]) {
+      expect((await put({ constellationsVisibility: vis })).status, vis).toBe(200);
+      const anon = await get(anonCtx.request);
+      expect(anon.locked, vis).toBe(true);
+      expect(anon.constellations, vis).toEqual([]);
+      const own = await get(A.context.request);
+      expect(own.locked).toBeUndefined();
+      expect(own.isOwner).toBe(true);
+      expect(own.visibility).toBe(vis);
+    }
+    expect((await put({ constellationsVisibility: "anyone", constellationsHidden: [] })).status).toBe(200);
+    const open = await get(anonCtx.request);
+    expect(open.locked).toBeUndefined();
+    expect(open.isOwner).toBe(false);
+    expect(open.visibility).toBeUndefined();     // only the owner is told what they chose
+    expect(open.hiddenCount).toBeUndefined();
+  } finally {
+    await anonCtx.close();
+  }
+});
+
 test("the real route: listed to the owner, public only to a stranger, 404 for an unknown handle", async ({ browser }) => {
   // the context's request object skips the page.route stub above and carries the owner's cookie
   const get = (h, ctx) => ctx.get("/@" + h + "/constellations/public", { headers: { Accept: "application/json" } });

@@ -78,6 +78,7 @@ var cryptoVerify = require("./identity/CryptoVerify");
 var writePolicy = require("./identity/WritePolicy");
 var orbitRules = require("./identity/Orbit");
 var mapVisibility = require("./identity/MapVisibility");
+var constellationsCard = require("./identity/ConstellationsCard");
 var editTracking = require("./identity/EditTracking");
 var audienceRules = require("./identity/AudienceLists");
 var contentRealm = require("./support/content-realm-gate");
@@ -2479,23 +2480,25 @@ module.exports = function (route, app) {
     });
   });
 
-  // Who may see this owner's homestar map (MapVisibility.js). Reads the owner's
-  // settings; friendship and orbit membership are only looked up when the choice
-  // needs them. thenDo(err, { allowed, visibility }).
-  function _mapAccess(ownerDid, viewerDid, thenDo) {
+  // Who may see one of this owner's homestar cards (MapVisibility.js: the same four
+  // choices for each), read from the owner's settings state under `key`
+  // ('mapVisibility', 'constellationsVisibility'). Friendship and orbit membership are
+  // only looked up when the choice needs them. thenDo(err, { allowed, visibility, state }).
+  function _settingAccess(key, ownerDid, viewerDid, thenDo) {
     if (viewerDid && viewerDid === ownerDid) {
       return objectRepo.getSettingsForDid(ownerDid, function (err, settings) {
         if (err) return thenDo(err);
-        var vis = mapVisibility.normalize(settings && settings.state && settings.state.mapVisibility).value || mapVisibility.DEFAULT;
-        thenDo(null, { allowed: true, visibility: vis });
+        var st = (settings && settings.state) || {};
+        var vis = mapVisibility.normalize(st[key]).value || mapVisibility.DEFAULT;
+        thenDo(null, { allowed: true, visibility: vis, state: st });
       });
     }
     objectRepo.getSettingsForDid(ownerDid, function (err, settings) {
       if (err) return thenDo(err);
       var st = (settings && settings.state) || {};
-      var vis = mapVisibility.normalize(st.mapVisibility).value || mapVisibility.DEFAULT;
-      if (vis === 'anyone') return thenDo(null, { allowed: true, visibility: vis });
-      if (!viewerDid || vis === 'private') return thenDo(null, { allowed: false, visibility: vis });
+      var vis = mapVisibility.normalize(st[key]).value || mapVisibility.DEFAULT;
+      if (vis === 'anyone') return thenDo(null, { allowed: true, visibility: vis, state: st });
+      if (!viewerDid || vis === 'private') return thenDo(null, { allowed: false, visibility: vis, state: st });
       friendRegistry.listFriends(ownerDid, function (err, friends) {
         if (err) return thenDo(err);
         var friendDids = friends.map(function (f) { return f.did; });
@@ -2505,10 +2508,11 @@ module.exports = function (route, app) {
           var orbit = orbitRules.normalize(st.orbit, friendDids).orbit;
           inOrbit = !!(orbit && orbit.members.indexOf(viewerDid) !== -1);
         }
-        thenDo(null, { allowed: mapVisibility.canView(vis, ownerDid, viewerDid, isFriend, inOrbit), visibility: vis });
+        thenDo(null, { allowed: mapVisibility.canView(vis, ownerDid, viewerDid, isFriend, inOrbit), visibility: vis, state: st });
       });
     });
   }
+  function _mapAccess(ownerDid, viewerDid, thenDo) { _settingAccess('mapVisibility', ownerDid, viewerDid, thenDo); }
 
   // ─── postcards listing ─────────────────────────────────────────────────────
   // Must be registered before /@:handle/:objId — "postcards" would otherwise be
@@ -3378,10 +3382,23 @@ module.exports = function (route, app) {
     handleRegistry.resolve(handle, function (err, ownerDid) {
       if (err)  return res.status(500).json({ error: String(err) });
       if (!ownerDid) return res.status(404).json({ error: "Handle not found: @" + handle });
-      var isOwner = !!req.identity && req.identity.did === ownerDid;
-      constellationRegistry.listPublicByMembership(ownerDid, { includePrivate: isOwner }, function (err, constellations) {
+      var viewerDid = req.identity ? req.identity.did : null;
+      var isOwner = viewerDid === ownerDid;
+      // The owner's own choices (ConstellationsCard.js) apply first: a viewer outside
+      // "who sees it" gets nothing, and hidden constellations are never listed to
+      // anyone (the owner manages them from the full list at /@:handle/constellations).
+      _settingAccess("constellationsVisibility", ownerDid, viewerDid, function (err, access) {
         if (err) return res.status(500).json({ error: String(err) });
-        res.json({ constellations: constellations, isOwner: isOwner });
+        if (!access.allowed) return res.json({ constellations: [], isOwner: false, locked: true });
+        var hidden = constellationsCard.normalizeHidden(access.state.constellationsHidden).hidden || [];
+        constellationRegistry.listPublicByMembership(ownerDid, { includePrivate: isOwner, limit: 100 }, function (err, all) {
+          if (err) return res.status(500).json({ error: String(err) });
+          var kept = constellationsCard.applyHidden(all, hidden);
+          var out = { constellations: kept.rows.slice(0, 30), isOwner: isOwner };
+          // Only the owner is told what they chose.
+          if (isOwner) { out.visibility = access.visibility; out.hiddenCount = kept.hiddenCount; }
+          res.json(out);
+        });
       });
     });
   });
@@ -3639,6 +3656,17 @@ module.exports = function (route, app) {
       if (st && st.mapVisibility !== undefined) {
         var mv = mapVisibility.normalize(st.mapVisibility);
         if (mv.error) return res.status(400).json({ error: mv.error, code: "INVALID_MAP_VISIBILITY" });
+      }
+      // state.constellationsVisibility / state.constellationsHidden (ConstellationsCard.js).
+      if (st && st.constellationsVisibility !== undefined) {
+        var cv = constellationsCard.normalizeVisibility(st.constellationsVisibility);
+        if (cv.error) return res.status(400).json({ error: cv.error, code: "INVALID_CONSTELLATIONS" });
+      }
+      if (st && st.constellationsHidden !== undefined) {
+        var ch = constellationsCard.normalizeHidden(st.constellationsHidden);
+        if (ch.error) return res.status(400).json({ error: ch.error, code: "INVALID_CONSTELLATIONS" });
+        st = Object.assign({}, st, { constellationsHidden: ch.hidden });
+        envelope = Object.assign({}, envelope, { state: st });
       }
       if (!st || (st.orbit === undefined && st.audienceLists === undefined && st.cardAudiences === undefined)) {
         return _put(envelope);

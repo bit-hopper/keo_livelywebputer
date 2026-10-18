@@ -120,7 +120,8 @@ module("lively.identity.Homestar")
         this._orbit = null;         // null = loading
         this._worlds = null;        // null = loading; else the featured worlds this viewer may open, in order
         this._visibleWorlds = null; // every world this viewer may open (GET /worlds)
-        this._constellations = null; // null = loading; else GET /constellations/public rows (a failed load is an empty list)
+        this._constellations = null; // null = loading, failed or locked; else GET /constellations/public rows
+        this._constellationsInfo = null; // the owner's own view of it: { hiddenCount, visibility }
         this._wikiPages = null;     // null = loading; else GET /wiki rows (a failed load is an empty list)
         this._gbObjId = null;       // the profile object's id: the guestbook is comments on it
         this._gbEntries = null;     // null = loading or unreadable; else the comments, newest first
@@ -168,10 +169,7 @@ module("lively.identity.Homestar")
           self._loadShelf(worlds);
         });
         this._loadGuestbook();
-        getJSON(base + "/constellations/public", function (err, body) {
-          self._constellations = (body && Array.isArray(body.constellations)) ? body.constellations : [];
-          self._scheduleRender();
-        });
+        this._loadConstellations();
         getJSON(base + "/wiki", function (err, body) {
           self._wikiPages = (body && body.pages) || [];
           self._scheduleRender();
@@ -182,6 +180,18 @@ module("lively.identity.Homestar")
             self._scheduleRender();
           });
         }
+      },
+
+      // The constellations card's rows. A failed load leaves the card out (null), and a
+      // viewer the owner has locked out gets no card either.
+      _loadConstellations: function () {
+        var self = this;
+        getJSON("/@" + encodeURIComponent(this._handle) + "/constellations/public", function (err, body) {
+          var ok = body && Array.isArray(body.constellations);
+          self._constellations = ok && !body.locked ? body.constellations : null;
+          self._constellationsInfo = ok ? { hiddenCount: body.hiddenCount || 0, visibility: body.visibility || null } : null;
+          self._scheduleRender();
+        });
       },
 
       // The guestbook: comments on the profile object. The object id comes from the profile
@@ -811,12 +821,21 @@ module("lively.identity.Homestar")
         var box = panel(lively.rect(x, y, w, 120));
         this._add(box);
         box.addMorph(icon(lively.rect(16, 14, 22, 22), "stars", 18, PINK));
-        box.addMorph(label(lively.rect(44, 14, w - 60, 22), "Constellations", { px: 15, bold: true }));
+        box.addMorph(label(lively.rect(44, 14, w - 60 - 80, 22), "Constellations", { px: 15, bold: true }));
+        if (this._isOwner) {
+          var manage = pill(0, 0, "Manage", { w: 72, h: 26, onClick: function () { self._openConstellationsDialog(); } });
+          manage.setPosition(lively.pt(w - 16 - 72, 11));
+          box.addMorph(manage);
+        }
 
         var cy = 46;
         if (!shown.length) {
-          box.addMorph(label(lively.rect(16, cy, w - 32, 20), "You haven't joined any constellations yet.", { px: 13, color: MUTED }));
-          cy += 28;
+          var info = this._constellationsInfo || {};
+          var none = info.hiddenCount > 0
+            ? "Nothing is shown. Use Manage to choose constellations."
+            : "You haven't joined any constellations yet.";
+          box.addMorph(label(lively.rect(16, cy, w - 32, 36), none, { px: 13, color: MUTED, wrap: true }));
+          cy += 44;
         } else {
           shown.forEach(function (c) {
             box.addMorph(self._constellationRow(c, 12, cy, w - 24));
@@ -940,6 +959,17 @@ module("lively.identity.Homestar")
     },
 
     "actions", {
+      // Who sees the constellations card and which constellations it lists. Both are
+      // private settings the server applies, so the card is re-read afterwards.
+      _openConstellationsDialog: function () {
+        var self = this;
+        lively.require("lively.identity.ConstellationsDialog").toRun(function () {
+          lively.identity.ConstellationsDialog.open({
+            onSave: function () { self._loadConstellations(); },
+          });
+        });
+      },
+
       // Pick and order the featured worlds. They are stored in the profile, so the
       // page re-reads it afterwards and recomputes what to show.
       _openWorldsDialog: function () {
