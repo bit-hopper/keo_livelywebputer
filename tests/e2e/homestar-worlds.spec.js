@@ -97,10 +97,30 @@ test("choose, order and save the featured worlds", async ({ browser }) => {
     // ── the page lists the one featured world, and the owner has a Choose button
     await expect.poll(async () => (await texts()).includes("Workshop")).toBe(true);
     expect(await texts()).not.toContain("Games");
+    const docHeight = () => page.evaluate(() => document.documentElement.scrollHeight);
+    const heightBefore = await docHeight();
     await (await tag("Choose")).click();
 
     // ── the dialog lists all three, the featured one first and ticked
     await expect.poll(counter).toBe("1 featured");
+
+    // ── its dim layer is fixed to the viewport (not a page-sized box that scrolls away or grows the page)
+    const scrimGeometry = () => page.evaluate(() => {
+      let scrim = null;
+      $world.submorphs.forEach((m) => { if (m.submorphs && m.submorphs.some((c) => c.getExtent && c.getExtent().x === 460)) scrim = m; });
+      if (!scrim) return null;
+      const node = scrim.renderContext().morphNode, r = scrim.renderContext().shapeNode.getBoundingClientRect();
+      return { position: getComputedStyle(node).position, top: Math.round(r.top), height: Math.round(r.height), innerHeight: window.innerHeight };
+    });
+    let g = await scrimGeometry();
+    expect(g.position).toBe("fixed");
+    expect(g.top).toBe(0);
+    expect(g.height).toBe(g.innerHeight);
+    await page.evaluate(() => window.scrollTo(0, 100000));
+    g = await scrimGeometry();
+    expect(g.top).toBe(0);                                              // still covers the viewport after a scroll
+    expect(await docHeight()).toBe(heightBefore);                       // and opening it did not change the page height
+    await page.evaluate(() => window.scrollTo(0, 0));
     const dialogTexts = await texts();
     for (const n of ["Workshop", "Games", "Notes"]) expect(dialogTexts).toContain(n);
 

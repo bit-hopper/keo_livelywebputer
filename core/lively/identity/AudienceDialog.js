@@ -63,30 +63,24 @@ module("lively.identity.AudienceDialog")
 
     Dialog.prototype.open = function () {
       var self = this;
-      var vw = viewportWidth();
-      var vh = window.innerHeight;
-      var top = window.pageYOffset || 0;
-      var scrim = this.scrim = new lively.morphic.Box(lively.rect(0, top, vw, vh));
-      scrim.applyStyle({ fill: Color.rgba(30, 24, 44, 0.45), borderWidth: 0 });
-      UI.noDrag(scrim);
+      var scrim = this.scrim = UI.viewportScrim(function () { if (self.scrim) self.render(); });
       // Mouse dispatch is capture-first: the scrim, as the outermost ancestor, sees a
       // click before any row inside the panel does, and stopping it there would keep
       // the row from ever getting it (CLAUDE.md). So it only claims clicks that land
       // outside the panel and lets the rest continue down to the rows.
       scrim.onMouseUp = function (evt) {
         if (!self.panel) return false;
-        if (self.panel.bounds().containsPoint(scrim.localize(evt.getPosition()))) return false;
+        if (UI.pointOnPanel(self.panel, evt)) return false;
         evt.stop();
         self.cancel();
         return true;
       };
-      $world.addMorph(scrim);
       this.render();
       return this;
     };
 
     Dialog.prototype.close = function () {
-      if (this.scrim) this.scrim.remove();
+      UI.closeScrim(this.scrim);
       this.scrim = this.panel = null;
     };
 

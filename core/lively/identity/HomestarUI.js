@@ -34,6 +34,59 @@ module("lively.identity.HomestarUI")
         return m;
       },
 
+      // The dim layer behind a modal dialog: a box over the whole viewport that is
+      // FIXED to it. A plain world child sized to the viewport at the moment of
+      // opening scrolls away with the page (leaving a bright band where the page has
+      // since moved), and anything sticking out past the world's bottom grows the
+      // document and brings a scrollbar in. A fixed morph is outside the document
+      // flow altogether. It follows window resizes (onResize is where the dialog
+      // re-centres its panel); pair with closeScrim. Dialog panels are children of
+      // it, positioned in viewport coordinates.
+      viewportScrim: function (onResize) {
+        var UI = lively.identity.HomestarUI;
+        var scrim = new lively.morphic.Box(lively.rect(0, 0, 10, 10));
+        scrim.applyStyle({ fill: Color.rgba(30, 24, 44, 0.45), borderWidth: 0 });
+        UI.noDrag(scrim);
+        $world.addMorph(scrim);
+        scrim.enableFixedPositioning();
+        var place = function () {
+          $world.cachedWindowBounds = null;     // the fixed morph's position reads the scroll offset from this
+          scrim.setExtent(lively.pt(document.documentElement.clientWidth - 1, window.innerHeight));
+          scrim.setPosition(lively.pt(0, window.pageYOffset || 0));   // page coordinates: this is the top of the viewport
+        };
+        place();
+        scrim._onWindowResize = function () { place(); if (onResize) onResize(); };
+        window.addEventListener("resize", scrim._onWindowResize);
+        return scrim;
+      },
+
+      closeScrim: function (scrim) {
+        if (!scrim) return;
+        window.removeEventListener("resize", scrim._onWindowResize);
+        scrim.remove();
+      },
+
+      // Is the click on the panel? Judged on the real node (page coordinates), so it
+      // stays right however far the page has scrolled since the dialog opened.
+      pointOnPanel: function (panel, evt) {
+        var r = panel.renderContext().shapeNode.getBoundingClientRect();
+        var p = evt.getPosition();
+        var x = p.x - (window.pageXOffset || 0), y = p.y - (window.pageYOffset || 0);
+        return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+      },
+
+      // A scrolling list's scrollbar: thin and in the page's colours instead of the
+      // browser's classic one with arrow buttons, and its space reserved from the start
+      // so the rows do not shift sideways when the list loads and starts to overflow.
+      // Call it once the morph exists (it styles the real node).
+      scroller: function (m) {
+        var s = m.renderContext().shapeNode.style;
+        s.scrollbarWidth = "thin";
+        s.scrollbarColor = "rgb(206, 200, 222) transparent";
+        s.scrollbarGutter = "stable";
+        return m;
+      },
+
       trunc: function (s, max) {
         s = String(s == null ? "" : s);
         return s.length > max ? s.slice(0, max - 1).replace(/\s+$/, "") + "…" : s;

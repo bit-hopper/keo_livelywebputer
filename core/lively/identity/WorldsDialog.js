@@ -46,18 +46,15 @@ module("lively.identity.WorldsDialog")
 
     Dialog.prototype.open = function () {
       var self = this;
-      var scrim = this.scrim = new lively.morphic.Box(lively.rect(0, window.pageYOffset || 0, viewportWidth(), window.innerHeight));
-      scrim.applyStyle({ fill: Color.rgba(30, 24, 44, 0.45), borderWidth: 0 });
-      UI.noDrag(scrim);
+      var scrim = this.scrim = UI.viewportScrim(function () { if (self.scrim) self.render(); });
       // Only a click outside the panel is the scrim's; the rest must reach the rows.
       scrim.onMouseUp = function (evt) {
         if (!self.panel) return false;
-        if (self.panel.bounds().containsPoint(scrim.localize(evt.getPosition()))) return false;
+        if (UI.pointOnPanel(self.panel, evt)) return false;
         evt.stop();
         self.close();
         return true;
       };
-      $world.addMorph(scrim);
       this._onKey = function (e) {
         if (e.key !== "Escape") return;
         e.preventDefault();
@@ -84,7 +81,7 @@ module("lively.identity.WorldsDialog")
     Dialog.prototype.close = function () {
       if (!this.scrim) return;
       document.removeEventListener("keydown", this._onKey, true);
-      this.scrim.remove();
+      UI.closeScrim(this.scrim);
       this.scrim = this.panel = null;
       if (this.opts.onClose) this.opts.onClose();
     };
@@ -200,6 +197,7 @@ module("lively.identity.WorldsDialog")
         box.addMorph(r);
       });
       panel.addMorph(box);
+      UI.scroller(box);
       return h;
     };
 

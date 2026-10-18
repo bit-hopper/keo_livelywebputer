@@ -546,7 +546,9 @@ module("lively.identity.Homestar")
         });
         this._loadOrbitAvatars(inner.concat(outer));
 
-        var ty = ringTop + S - 10;
+        // The lowest satellite's bottom edge is ringTop + S - 2 (its ring is S/2 - 20 from the
+        // centre and it is 36px across); start the caption just below that.
+        var ty = ringTop + S + 4;
         var names = o.members.slice(0, 4).map(function (m) { return m.handle ? "@" + m.handle : "someone"; }).join(", ");
         var more = o.members.length - 4;
         var line = names + (more > 0 ? " and " + more + " more" : "");
