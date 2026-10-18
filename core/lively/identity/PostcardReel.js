@@ -69,7 +69,7 @@ module("lively.identity.PostcardReel")
 
     Object.subclass("lively.identity.PostcardReel",
     "init", {
-      // opts: { handle, shown, viewer, isOwner, onNew(), onResize() }
+      // opts: { handle, shown, viewer, isOwner, onNew(), onResize(), onCardShown(objId) }
       initialize: function (opts) {
         this._handle = opts.handle;
         this._shown = opts.shown || opts.handle;
@@ -77,6 +77,7 @@ module("lively.identity.PostcardReel")
         this._isOwner = !!opts.isOwner;
         this._onNew = opts.onNew || null;
         this._onResize = opts.onResize || null;
+        this._onCardShown = opts.onCardShown || null;
 
         this._sort = SORTS[0];
         this._feed = [];
@@ -372,7 +373,7 @@ module("lively.identity.PostcardReel")
       },
 
       // Replaces the loaded cards with the first page of the current sort.
-      _fetchFeed: function () {
+      _fetchFeed: function (thenDo) {
         var self = this;
         var token = ++this._feedToken;
         var ranked = this._sort.param !== "new";
@@ -388,6 +389,7 @@ module("lively.identity.PostcardReel")
           self._renderEmpty();
           self._showActive();
           self._changed();
+          if (thenDo) thenDo();
         });
       },
 
@@ -407,6 +409,12 @@ module("lively.identity.PostcardReel")
         });
       },
 
+      // The objId of the card on show, or null.
+      currentObjId: function () {
+        var card = this._feed[this._index];
+        return card ? card.objId : null;
+      },
+
       // Number of cards currently loaded (a lower bound when more pages remain).
       cardCount: function () { return this._feed.length; },
 
@@ -423,8 +431,63 @@ module("lively.identity.PostcardReel")
         }
       },
 
+      // Shows a given card, e.g. when its pin on the map is clicked. A card already
+      // loaded is jumped to; otherwise pages are loaded until it turns up (bounded),
+      // which keeps "N / M" and the order of prev/next consistent with the feed. A
+      // ranked sort has no further pages, so the reel goes back to New first. If
+      // the card still never appears it is shown on its own and the position
+      // label is left alone. A newer call supersedes one still paging.
+      showCard: function (objId) {
+        var self = this;
+        var MAX_CARDS = 500;
+        var jump = this._jumpToken = (this._jumpToken || 0) + 1;
+        var triedNew = false;
+
+        function indexOfCard() {
+          for (var i = 0; i < self._feed.length; i++) if (self._feed[i].objId === objId) return i;
+          return -1;
+        }
+        function bringIntoView() {
+          var rect = self._panel.renderContext().shapeNode.getBoundingClientRect();
+          if (rect.top >= 0 && rect.top < window.innerHeight * 0.5) return;
+          try { window.scrollTo({ top: Math.max(0, (window.pageYOffset || 0) + rect.top - 80), behavior: reducedMotion() ? "auto" : "smooth" }); }
+          catch (e) { window.scrollTo(0, Math.max(0, (window.pageYOffset || 0) + rect.top - 80)); }
+        }
+        function done() { bringIntoView(); }
+        function direct() {
+          self._renderCard(objId);
+          if (self._onCardShown) self._onCardShown(objId);
+          done();
+        }
+        (function step() {
+          if (self._jumpToken !== jump) return;
+          var idx = indexOfCard();
+          if (idx >= 0) {
+            if (idx !== self._index || !self._cardBox._renderedView) {
+              self._index = idx;
+              self._showActive();
+            }
+            return done();
+          }
+          if (self._cursor && self._feed.length < MAX_CARDS) {
+            return self._loadMore(function (loaded) {
+              if (self._jumpToken !== jump) return;
+              if (loaded) step(); else direct();
+            });
+          }
+          if (!triedNew && self._sort !== SORTS[0]) {
+            triedNew = true;
+            self._sort = SORTS[0];
+            self._buildSortRow();
+            return self._fetchFeed(step);
+          }
+          direct();
+        })();
+      },
+
       _showActive: function () {
         var card = this._feed[this._index];
+        if (this._onCardShown) this._onCardShown(card ? card.objId : null);
         this._updateNav();
         this._updateCaption();
         this._unmountThread();

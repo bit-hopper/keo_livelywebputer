@@ -11,8 +11,9 @@
  * Everything is rebuilt from current state by _render(), which runs on load,
  * whenever a fetch lands, and (debounced) on window resize.
  *
- * So far: identity header, an orbit panel, the postcard reel (PostcardReel.js)
- * and a worlds panel, each with its empty state. Audience control and the
+ * So far: identity header, an orbit panel, the postcard reel (PostcardReel.js),
+ * a worlds panel and a map of the located postcards (HomestarMap.js), each with
+ * its empty state. Audience control and the
  * remaining widgets are separate steps (homestar.md §8).
  *
  * Open: lively.identity.Homestar.open(data) — buildHomestarPage's onStartWorld
@@ -29,6 +30,7 @@ module("lively.identity.Homestar")
     "lively.identity.PostCardUtils",
     "lively.identity.HomestarUI",
     "lively.identity.PostcardReel",
+    "lively.identity.HomestarMap",
     "lively.identity.PostcardAudience",
     "lively.identity.QuiltPatterns",
     "lively.morphic.Complete",
@@ -266,11 +268,13 @@ module("lively.identity.Homestar")
           var leftBottom = this._buildOrbit(x0, y, LEFT_W);
           var centerBottom = this._buildPostcards(centerX, y, centerW);
           var rightBottom = this._buildWorlds(x0 + contentW - RIGHT_W, y, RIGHT_W);
+          rightBottom = this._buildMap(x0 + contentW - RIGHT_W, rightBottom + GAP, RIGHT_W);
           bottom = Math.max(leftBottom, centerBottom, rightBottom);
         } else {
-          // One column: the postcards first, then worlds, then orbit.
+          // One column: the postcards first, then worlds, the map, then orbit.
           y = this._buildPostcards(x0, y, contentW) + GAP;
           y = this._buildWorlds(x0, y, contentW) + GAP;
+          y = this._buildMap(x0, y, contentW) + GAP;
           bottom = this._buildOrbit(x0, y, contentW);
         }
 
@@ -638,9 +642,32 @@ module("lively.identity.Homestar")
             isOwner: this._isOwner,
             onNew: function () { self._newPostcard(); },
             onResize: function () { self._scheduleRender(); },
+            onCardShown: function (objId) { if (self._mapPanel) self._mapPanel.setCurrent(objId); },
           });
         }
         return this._reel.attach(x, y, w);
+      },
+    },
+
+    "map", {
+      // Like the reel, the map panel is one long-lived object (a Leaflet map cannot
+      // be rebuilt on every render); this only positions it. It takes no room until
+      // the viewer has a located postcard to see.
+      _buildMap: function (x, y, w) {
+        if (!this._mapPanel) {
+          var self = this;
+          this._mapPanel = new lively.identity.HomestarMapPanel({
+            handle: this._handle,
+            shown: this._shown,
+            isOwner: this._isOwner,
+            onPin: function (objId) { if (self._reel) self._reel.showCard(objId); },
+            getCurrent: function () { return self._reel ? self._reel.currentObjId() : null; },
+            getHidden: function () { return (self._profile.homestar || {}).mapHidden; },
+            onManage: function () { self._openMapDialog(); },
+            onResize: function () { self._scheduleRender(); },
+          });
+        }
+        return this._mapPanel.attach(x, y, w, GAP);
       },
     },
 
@@ -728,6 +755,26 @@ module("lively.identity.Homestar")
           lively.identity.WorldsDialog.open({
             featured: (self._worlds || []).map(function (w) { return w.objId; }),
             onSave: function () { self._refreshProfile(); },
+          });
+        });
+      },
+
+      // Pick which located cards the map shows. The unticked ones are stored in the
+      // profile; the saved list is applied at once, then the profile is re-read.
+      _openMapDialog: function () {
+        var self = this;
+        if (!this._mapPanel) return;
+        lively.require("lively.identity.MapDialog").toRun(function () {
+          lively.identity.MapDialog.open({
+            cards: self._mapPanel.allCards(),
+            hidden: self._mapPanel.hiddenIds(),
+            visibility: self._mapPanel.visibility(),
+            onSave: function (ids, visibility) {
+              self._profile.homestar = Object.assign({}, self._profile.homestar, { mapHidden: ids });
+              self._mapPanel.setVisibility(visibility);
+              self._mapPanel.refresh();
+              self._refreshProfile();
+            },
           });
         });
       },
