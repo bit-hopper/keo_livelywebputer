@@ -120,6 +120,7 @@ module("lively.identity.Homestar")
         this._orbit = null;         // null = loading
         this._worlds = null;        // null = loading; else the featured worlds this viewer may open, in order
         this._visibleWorlds = null; // every world this viewer may open (GET /worlds)
+        this._constellations = null; // null = loading; else GET /constellations/public rows (a failed load is an empty list)
         this._wikiPages = null;     // null = loading; else GET /wiki rows (a failed load is an empty list)
         this._gbObjId = null;       // the profile object's id: the guestbook is comments on it
         this._gbEntries = null;     // null = loading or unreadable; else the comments, newest first
@@ -167,6 +168,10 @@ module("lively.identity.Homestar")
           self._loadShelf(worlds);
         });
         this._loadGuestbook();
+        getJSON(base + "/constellations/public", function (err, body) {
+          self._constellations = (body && Array.isArray(body.constellations)) ? body.constellations : [];
+          self._scheduleRender();
+        });
         getJSON(base + "/wiki", function (err, body) {
           self._wikiPages = (body && body.pages) || [];
           self._scheduleRender();
@@ -318,6 +323,7 @@ module("lively.identity.Homestar")
           var centerX = x0 + LEFT_W + GAP;
           var centerW = contentW - LEFT_W - RIGHT_W - GAP * 2;
           var leftBottom = this._buildOrbit(x0, y, LEFT_W);
+          leftBottom = this._buildConstellations(x0, leftBottom + GAP, LEFT_W);
           var centerBottom = this._buildPostcards(centerX, y, centerW);
           var rightBottom = this._buildWorlds(x0 + contentW - RIGHT_W, y, RIGHT_W);
           rightBottom = this._buildMap(x0 + contentW - RIGHT_W, rightBottom + GAP, RIGHT_W);
@@ -328,6 +334,7 @@ module("lively.identity.Homestar")
           y = this._buildWorlds(x0, y, contentW) + GAP;
           y = this._buildMap(x0, y, contentW) + GAP;
           bottom = this._buildOrbit(x0, y, contentW);
+          bottom = this._buildConstellations(x0, bottom + GAP, contentW);
         }
 
         bottom = this._buildShelves(x0, bottom + GAP, contentW);
@@ -785,6 +792,75 @@ module("lively.identity.Homestar")
             })
             .catch(function (err) { $world.alert("Could not remove the entry: " + err.message); });
         });
+      },
+    },
+
+    "constellations", {
+      // The constellations this handle belongs to: the public ones for a visitor, plus
+      // the private ones (marked with a lock) for the owner. Left out while loading and
+      // when there is nothing to show a visitor, rather than drawn empty. Returns the
+      // bottom y, or y - GAP when it draws nothing so the caller's bottom is unchanged.
+      _buildConstellations: function (x, y, w) {
+        var self = this;
+        var list = this._constellations;
+        if (!list || (!list.length && !this._isOwner)) return y - GAP;
+
+        var SHOWN = 6, ROW_H = 60;
+        var shown = list.slice(0, SHOWN);
+
+        var box = panel(lively.rect(x, y, w, 120));
+        this._add(box);
+        box.addMorph(icon(lively.rect(16, 14, 22, 22), "stars", 18, PINK));
+        box.addMorph(label(lively.rect(44, 14, w - 60, 22), "Constellations", { px: 15, bold: true }));
+
+        var cy = 46;
+        if (!shown.length) {
+          box.addMorph(label(lively.rect(16, cy, w - 32, 20), "You haven't joined any constellations yet.", { px: 13, color: MUTED }));
+          cy += 28;
+        } else {
+          shown.forEach(function (c) {
+            box.addMorph(self._constellationRow(c, 12, cy, w - 24));
+            cy += ROW_H;
+          });
+          if (list.length > shown.length) {
+            box.addMorph(label(lively.rect(16, cy, w - 32, 20), "and " + (list.length - shown.length) + " more", { px: 13, color: MUTED }));
+            cy += 28;
+          }
+        }
+
+        var h = cy + 12;
+        box.setExtent(lively.pt(w, h));
+        return y + h;
+      },
+
+      _constellationRow: function (c, x, y, w) {
+        var row = new lively.morphic.Box(lively.rect(x, y, w, 52));
+        row.applyStyle({ fill: Color.rgb(250, 248, 252), borderRadius: 10, borderWidth: 1, borderColor: CARD_BORDER, clipMode: "hidden", handStyle: "pointer" });
+        noDrag(row);
+
+        var tile = new lively.morphic.Box(lively.rect(8, 8, 36, 36));
+        tile.applyStyle({ fill: PINK_SOFT, borderRadius: 9, borderWidth: 0 });
+        noDrag(tile);
+        tile.eventsAreIgnored = true;
+        row.addMorph(tile);
+        tile.addMorph(icon(lively.rect(5, 5, 26, 26), "stars", 20, PINK));
+
+        function count(n, one, many) { return n + " " + (n === 1 ? one : many); }
+        var detail = count(c.memberCount || 0, "member", "members") + " · " + count(c.roomCount || 0, "cluster", "clusters");
+        var textW_ = c.visibility === "public" ? w - 64 : w - 90;
+        row.addMorph(label(lively.rect(54, 7, textW_, 20), trunc("c/" + c.name, 26), { px: 14, bold: true }));
+        row.addMorph(label(lively.rect(54, 27, textW_, 18), detail, { px: 12, color: MUTED }));
+        // Only the owner is ever sent a private one; the lock tells it apart.
+        if (c.visibility !== "public") row.addMorph(icon(lively.rect(w - 30, 16, 20, 20), "lock", 16, MUTED));
+
+        row.onMouseOver = function () { row.applyStyle({ fill: PINK_SOFT }); };
+        row.onMouseOut  = function () { row.applyStyle({ fill: Color.rgb(250, 248, 252) }); };
+        row.onMouseUp = function (evt) {
+          evt.stop();
+          window.location.href = "/c/" + encodeURIComponent(c.name);
+          return true;
+        };
+        return row;
       },
     },
 

@@ -766,6 +766,56 @@ function listByMembership(did, thenDo) {
   });
 }
 
+// The constellations `did` belongs to, as a homestar's Constellations card
+// shows them. Unlike listByMembership this is meant for other people's eyes,
+// so it returns no role and nothing about who else is in: just the name, how
+// many members it has, how many open rooms, and its avatar. `includePrivate`
+// is true only when the viewer is `did` themselves; everyone else gets the
+// public constellations alone, so a private membership is never disclosed.
+// Same LIKE-prefilter-then-parse idiom as listByMembership above.
+// Calls thenDo(null, [{ name, visibility, memberCount, roomCount, avatarUrl }, ...]),
+// largest first, at most `limit` (default 30).
+function listPublicByMembership(did, opts, thenDo) {
+  var includePrivate = !!(opts && opts.includePrivate);
+  var limit = Math.min((opts && opts.limit) || 30, 100);
+  withDB(function(err, pool) {
+    if (err) return thenDo(err);
+    pool.query(
+      'SELECT c.name, c.members, c.visibility, c.avatar_url, c.created_at,' +
+      '  (SELECT COUNT(*) FROM rooms r WHERE r.constellation = c.name AND r.archived_at IS NULL) AS room_count' +
+      ' FROM constellations c WHERE c.members LIKE $1' +
+      (includePrivate ? '' : ' AND c.visibility = \'public\''),
+      ['%' + did + '%'],
+      function(err, result) {
+        if (err) return thenDo(err);
+        try {
+          var out = [];
+          (result.rows || []).forEach(function(row) {
+            var members;
+            try { members = JSON.parse(row.members); } catch (e) { members = []; }
+            if (members.indexOf(did) === -1) return;
+            out.push({
+              name: row.name,
+              visibility: row.visibility,
+              memberCount: members.length,
+              roomCount: parseInt(row.room_count, 10) || 0,
+              avatarUrl: row.avatar_url || null,
+              _createdAt: row.created_at
+            });
+          });
+          out.sort(function(a, b) {
+            return (b.memberCount - a.memberCount) ||
+              (a._createdAt < b._createdAt ? 1 : a._createdAt > b._createdAt ? -1 : 0);
+          });
+          thenDo(null, out.slice(0, limit).map(function(c) { delete c._createdAt; return c; }));
+        } catch (e) {
+          thenDo(e);
+        }
+      }
+    );
+  });
+}
+
 // Upserts a pending invite — a re-invite after a decline resets status to
 // pending, same overwrite semantics as requestJoin(). Calls thenDo(err).
 function createInvite(name, did, invitedBy, objId, thenDo) {
@@ -1380,6 +1430,7 @@ module.exports = {
   approveJoinRequest: approveJoinRequest,
   declineJoinRequest: declineJoinRequest,
   listByMembership: listByMembership,
+  listPublicByMembership: listPublicByMembership,
   createInvite: createInvite,
   getInviteStatus: getInviteStatus,
   approveInvite: approveInvite,

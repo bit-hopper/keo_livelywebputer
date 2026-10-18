@@ -3366,6 +3366,26 @@ module.exports = function (route, app) {
     });
   });
 
+  // The constellations a handle belongs to, for the homestar's Constellations
+  // card. Anyone may read it, but only the PUBLIC constellations are listed
+  // (a public constellation's member list is already readable by anyone through
+  // its space-token, so this discloses nothing new); the owner also sees their
+  // private ones, tagged with visibility. Distinct from the owner-only
+  // /@:handle/constellations above, and registered here with it so it stays
+  // ahead of the /@:handle/* catch-all.
+  app.get("/@:handle/constellations/public", auth.optionalAuth, function (req, res) {
+    var handle = req.params.handle;
+    handleRegistry.resolve(handle, function (err, ownerDid) {
+      if (err)  return res.status(500).json({ error: String(err) });
+      if (!ownerDid) return res.status(404).json({ error: "Handle not found: @" + handle });
+      var isOwner = !!req.identity && req.identity.did === ownerDid;
+      constellationRegistry.listPublicByMembership(ownerDid, { includePrivate: isOwner }, function (err, constellations) {
+        if (err) return res.status(500).json({ error: String(err) });
+        res.json({ constellations: constellations, isOwner: isOwner });
+      });
+    });
+  });
+
   // ─── forwarding aliases (§3.2) ──────────────────────────────────────────────
   // Must be registered before /@:handle/:objId. Owner-only on every route —
   // aliases are never surfaced publicly (not on the profile, not in the DID
