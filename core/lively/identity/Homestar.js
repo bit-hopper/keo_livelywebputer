@@ -104,6 +104,35 @@ module("lively.identity.Homestar")
       return {morph: box, w: w, h: h};
     }
 
+    // The owner's location: a 📍 and whatever they chose or typed ("Oakland",
+    // "THE BAY"), white on green (5:1). One label, so the pin and the text share a
+    // baseline. Not clickable.
+    var LOC_MAX = 40;
+    var LOC_GREEN = Color.rgb(18, 128, 70);
+    function cleanLocation(s) {
+      return String(s || "").replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, LOC_MAX);
+    }
+    // Width of the bold 26px name, letter by letter (calibrated on the live name font:
+    // lowercase ~0.54em, W ~0.9em), so a long or wide-lettered name never reaches the pill.
+    function nameWidth(str) {
+      var em = 0;
+      String(str).split("").forEach(function (ch) {
+        em += /[WM]/.test(ch) ? 0.95 : /[wm@]/.test(ch) ? 0.85 : /[A-Z]/.test(ch) ? 0.72
+            : /[ijlt.,:;'!|]/.test(ch) ? 0.36 : 0.58;
+      });
+      return Math.ceil(em * 26);
+    }
+    function locationPill(x, y, text) {
+      var px = 12, h = 24;
+      var full = "📍 " + text;
+      var w = textW(full, px, false) + 28;
+      var box = new lively.morphic.Box(lively.rect(x, y, w, h));
+      box.applyStyle({ fill: LOC_GREEN, borderRadius: h / 2, borderWidth: 0, clipMode: "hidden" });
+      noDrag(box);
+      box.addMorph(label(lively.rect(0, 1, w, 20), full, { px: px, color: Color.white, align: "center" }));
+      return {morph: box, w: w, h: h};
+    }
+
     var getJSON = UI.getJSON;
 
     Object.subclass("lively.identity.HomestarController",
@@ -443,10 +472,29 @@ module("lively.identity.Homestar")
 
         var textTop = BANNER_H + 10;
         var nameW = actionsBeside ? w - TEXT_X - PAD - actionsW - 12 : w - TEXT_X - PAD;
-        hero.addMorph(label(lively.rect(TEXT_X, textTop, nameW, 34), trunc(name, 40), { px: 26, bold: true }));
+        var shownName = trunc(name, 40);
+        hero.addMorph(label(lively.rect(TEXT_X, textTop, nameW, 34), shownName, { px: 26, bold: true }));
 
         var sub = "@" + this._shown + (p.pronouns ? "  ·  " + trunc(p.pronouns, 24) : "");
         hero.addMorph(label(lively.rect(TEXT_X, textTop + 36, nameW, 22), sub, { px: 14, color: MUTED }));
+
+        // The location pill sits beside the name; when the name leaves no room it
+        // moves to the end of the handle line, and failing that it leads the chips.
+        var loc = cleanLocation(p.location), locInChips = false;
+        if (loc) {
+          var lp = locationPill(0, 0, loc);
+          var nameEnd = nameWidth(shownName) + 40;
+          var subEnd = textW(sub, 14, false) + 28;
+          if (nameEnd + lp.w <= nameW) {
+            lp.morph.setPosition(lively.pt(TEXT_X + nameEnd, textTop + 5));
+            hero.addMorph(lp.morph);
+          } else if (subEnd + lp.w <= nameW) {
+            lp.morph.setPosition(lively.pt(TEXT_X + subEnd, textTop + 35));
+            hero.addMorph(lp.morph);
+          } else {
+            locInChips = true;
+          }
+        }
 
         var cy = textTop + 66;
         var bio = String(p.bio || "").trim();
@@ -458,7 +506,7 @@ module("lively.identity.Homestar")
           cy += BIO_LINE_H * Math.min(BIO_MAX_LINES, Math.max(1, Math.ceil(Math.min(bio.length, cap) / Math.max(20, Math.floor(bioW / 7.6))))) + 12;
         }
 
-        cy = this._buildChips(hero, TEXT_X, cy, w - TEXT_X - PAD);
+        cy = this._buildChips(hero, TEXT_X, cy, w - TEXT_X - PAD, locInChips ? loc : null);
 
         // Action pills.
         if (actionsBeside) {
@@ -485,10 +533,12 @@ module("lively.identity.Homestar")
       },
 
       // Sun/moon/rising and status, then up to five links; flows onto further
-      // rows when they don't fit. Returns the y below the last row.
-      _buildChips: function (hero, x, y, maxW) {
+      // rows when they don't fit. `loc` (the location, when there was no room
+      // for it beside the name) goes first. Returns the y below the last row.
+      _buildChips: function (hero, x, y, maxW, loc) {
         var p = this._profile;
         var items = [];
+        if (loc) items.push({ loc: loc });
         var st = p.orbit && p.orbit.status;
         if (st && st.label) items.push({ text: (st.emoji ? st.emoji + " " : "") + trunc(st.label, 16) });
         [["☉", p.sunSign], ["☽", p.moonSign], ["↑", p.risingSign]].forEach(function (pair) {
@@ -507,7 +557,7 @@ module("lively.identity.Homestar")
 
         var cx = x, rowY = y;
         items.forEach(function (it) {
-          var c = chip(cx, rowY, it.text, { onClick: it.onClick });
+          var c = it.loc ? locationPill(cx, rowY, it.loc) : chip(cx, rowY, it.text, { onClick: it.onClick });
           if (cx > x && cx + c.w > x + maxW) {
             cx = x; rowY += 30;
             c.morph.setPosition(lively.pt(cx, rowY));

@@ -1659,6 +1659,13 @@ module("lively.identity.ProfileCard")
 
         addField("Display name", "pcDisplayName", payload.displayName || "");
         addField("Pronouns",     "pcPronouns",    payload.pronouns    || "");
+        // Location: pick a city from the list or type anything ("THE BAY"). It is
+        // public, shown as a pin pill on the home page.
+        addField("Location (shown on your home page)", "pcLocation", payload.location || "");
+        pane.addScript(function onLocationTyped(s) {
+          lively.identity.ProfileCard.locationPicker.typed(this, s);
+        });
+        lively.bindings.connect(pane.get("pcLocation"), 'textString', pane, 'onLocationTyped');
         // Bio is capped at 300 chars. The counter sits on the label row,
         // right-aligned, and is fed by the input's 'textString' signal
         // (fired from Text#onKeyUp); anything past the cap is trimmed
@@ -1768,6 +1775,7 @@ module("lively.identity.ProfileCard")
           var newPayload = {
             displayName: merged.displayName || win._handle,
             pronouns:    merged.pronouns    || "",
+            location:    merged.location    || "",
             bio:         merged.bio         || "",
             avatarUrl:   merged.avatarUrl   || null,
             bannerUrl:   merged.bannerUrl   || null,
@@ -1826,8 +1834,10 @@ module("lively.identity.ProfileCard")
         var moonInp     = pane.get("pcMoonSign");
         var risingInp   = pane.get("pcRisingSign");
         var ethInp      = pane.get("pcEthAddress");
+        var locInp      = pane.get("pcLocation");
         if (nameInp)     partial.displayName = nameInp.textString || "";
         if (pronounsInp) partial.pronouns    = pronounsInp.textString || "";
+        if (locInp)      partial.location    = (locInp.textString || "").replace(/\s+/g, " ").trim().slice(0, 40);
         if (bioInp)      partial.bio         = (bioInp.textString || "").slice(0, 300);
         if (avatarInp)   partial.avatarUrl   = avatarInp.textString || null;
         if (bannerInp)   partial.bannerUrl   = bannerInp.textString || null;
@@ -2447,6 +2457,78 @@ module("lively.identity.ProfileCard")
             var inp = p.get('pcOrbitLbl' + i);
             if (inp && !(inp.textString || '').trim()) { inp.setTextString(btn._orbitLabel); return; }
           }
+        },
+      },
+
+      // Location field's city suggestions (Profile tab). Uses the birth-chart
+      // calculator's offline city list; whatever is typed stays valid as-is.
+      locationPicker: {
+        MAX: 40,
+
+        clear: function (pane) {
+          var old = pane.get('pcLocationSuggest');
+          if (old) old.remove();
+        },
+
+        // The input changed: forget any earlier pick, cap the length, offer matches.
+        typed: function (pane, s) {
+          var LP = lively.identity.ProfileCard.locationPicker, N = lively.identity.NatalChart;
+          s = s || '';
+          if (pane._locPicked === s) return; // set by pick(), not typed
+          pane._locPicked = null;
+          LP.clear(pane);
+          if (s.length > LP.MAX) {
+            var inp0 = pane.get('pcLocation');
+            s = s.slice(0, LP.MAX);
+            if (inp0) {
+              inp0.textString = s;
+              inp0.setSelectionRange(s.length, s.length);
+            }
+          }
+          if (s.trim().length < 2) return;
+          N.ensureLoaded(function (err) {
+            if (err) return; // no city list: the field still works as free text
+            var inp = pane.get('pcLocation');
+            if (!pane.world() || !inp || inp.textString !== s) return; // pane rebuilt / typed on
+            LP.show(pane, N.searchCities(s, 5));
+          });
+        },
+
+        show: function (pane, cities) {
+          var PC = lively.identity.ProfileCard, LP = PC.locationPicker, N = lively.identity.NatalChart;
+          LP.clear(pane);
+          var inp = pane.get('pcLocation');
+          if (!inp || !cities.length) return;
+          var pos = inp.getPosition(), w = inp.getExtent().x, rowH = 24;
+          var box = new lively.morphic.Box(lively.rect(pos.x, pos.y + inp.getExtent().y + 2, w, cities.length * rowH + 4));
+          box.name = 'pcLocationSuggest';
+          PC.ui.noDrag(box);
+          box.applyStyle({ fill: Color.white, borderColor: Color.rgb(200, 200, 200),
+            borderWidth: 1, borderRadius: 6 });
+          cities.forEach(function (c, i) {
+            var row = new lively.morphic.Text(lively.rect(2, 2 + i * rowH, w - 4, rowH), N.cityLabel(c));
+            PC.ui.noDrag(row);
+            row.applyStyle({ allowInput: false, selectable: false, fontSize: 11,
+              textColor: Color.rgb(50, 50, 58), fill: Color.rgba(0, 0, 0, 0),
+              borderWidth: 0, borderColor: null, handStyle: 'pointer' });
+            row._city = c;
+            row.onMouseUp = function (evt) {
+              evt.stop();
+              lively.identity.ProfileCard.locationPicker.pick(this);
+              return true;
+            };
+            box.addMorph(row);
+          });
+          pane.addMorph(box);
+        },
+
+        pick: function (row) {
+          var LP = lively.identity.ProfileCard.locationPicker;
+          var pane = row.owner.owner, name = row._city.name.slice(0, LP.MAX);
+          pane._locPicked = name;
+          LP.clear(pane);
+          var inp = pane.get('pcLocation');
+          if (inp) inp.textString = name;
         },
       },
 
