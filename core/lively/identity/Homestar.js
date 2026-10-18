@@ -31,6 +31,7 @@ module("lively.identity.Homestar")
     "lively.identity.HomestarUI",
     "lively.identity.PostcardReel",
     "lively.identity.HomestarMap",
+    "lively.identity.HomestarShelves",
     "lively.identity.PostcardAudience",
     "lively.identity.QuiltPatterns",
     "lively.morphic.Complete",
@@ -119,6 +120,10 @@ module("lively.identity.Homestar")
         this._orbit = null;         // null = loading
         this._worlds = null;        // null = loading; else the featured worlds this viewer may open, in order
         this._visibleWorlds = null; // every world this viewer may open (GET /worlds)
+        this._wikiPages = null;     // null = loading; else GET /wiki rows (a failed load is an empty list)
+        this._shelfBooks = [];      // the Books world's books, reading first (HomestarShelves.loadBooks)
+        this._shelfRecord = null;   // {album, spinning} from the Music world, or null
+        this._shelfWorlds = {};     // { books, music }: the worlds those came from, as /worlds lists them
         this._avatarUrls = {};      // orbit member did -> avatar url, or null when they have none
         this._avatarLoading = {};
         this._orbitT0 = null;       // when the rings started turning
@@ -157,6 +162,11 @@ module("lively.identity.Homestar")
           self._visibleWorlds = worlds;
           self._worlds = self._featuredWorlds(worlds);
           self._scheduleRender();
+          self._loadShelf(worlds);
+        });
+        getJSON(base + "/wiki", function (err, body) {
+          self._wikiPages = (body && body.pages) || [];
+          self._scheduleRender();
         });
         if (this._viewer && !this._isOwner) {
           getJSON(base + "/friend-status", function (err, body) {
@@ -164,6 +174,24 @@ module("lively.identity.Homestar")
             self._scheduleRender();
           });
         }
+      },
+
+      // The books and the record for the "On the shelf" card, read from the account's
+      // Books and Music worlds (the first of each the viewer may open).
+      _loadShelf: function (worlds) {
+        var self = this;
+        var S = lively.identity.HomestarShelves;
+        var bw = worlds.filter(function (w) { return w.template === "books"; })[0] || null;
+        var mw = worlds.filter(function (w) { return w.template === "music"; })[0] || null;
+        this._shelfWorlds = { books: bw, music: mw };
+        S.loadBooks(this._handle, this._did, bw, function (books) {
+          self._shelfBooks = books;
+          self._scheduleRender();
+        });
+        S.loadAlbum(this._handle, this._did, mw, this._isOwner, function (rec) {
+          self._shelfRecord = rec;
+          self._scheduleRender();
+        });
       },
 
       // The worlds the page lists: the profile's featured ones, in that order,
@@ -277,6 +305,8 @@ module("lively.identity.Homestar")
           y = this._buildMap(x0, y, contentW) + GAP;
           bottom = this._buildOrbit(x0, y, contentW);
         }
+
+        bottom = this._buildShelves(x0, bottom + GAP, contentW);
 
         // Taller than the window: grow the world so the page scrolls.
         var H = Math.max(window.innerHeight, bottom + 40);
@@ -668,6 +698,27 @@ module("lively.identity.Homestar")
           });
         }
         return this._mapPanel.attach(x, y, w, GAP);
+      },
+    },
+
+    "shelves", {
+      // The row of small cards under the columns (HomestarShelves.js). A card with
+      // nothing to show is left out, and with none at all the row takes no room.
+      // Returns the y below the row, or y - GAP when it is empty so the caller's
+      // GAP is taken back.
+      _buildShelves: function (x, y, w) {
+        var S = lively.identity.HomestarShelves;
+        var self = this;
+        var cards = [
+          this._wikiPages ? S.wiki(this._handle, this._wikiPages) : null,
+          S.shelf({
+            handle: this._handle, books: this._shelfBooks, record: this._shelfRecord,
+            booksWorld: this._shelfWorlds.books, musicWorld: this._shelfWorlds.music,
+          }),
+          S.sky(this._profile),
+        ];
+        var bottom = S.layout(cards, x, y, w, GAP, function (m) { self._add(m); });
+        return bottom === y ? y - GAP : bottom;
       },
     },
 

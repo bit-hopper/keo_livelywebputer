@@ -409,7 +409,7 @@ module("lively.identity.SkyWidget")
         return controller;
       },
       // exposed for debugging/testing from a JS workspace
-      _astro: { computeSky: computeSky, moonPhase: moonPhase, colorForSunAltitude: colorForSunAltitude, factsFor: factsFor },
+      _astro: { computeSky: computeSky, moonPhase: moonPhase, daysToPhase: daysToPhase, colorForSunAltitude: colorForSunAltitude, factsFor: factsFor },
     };
 
   }); // end module('lively.identity.SkyWidget')
