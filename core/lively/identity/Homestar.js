@@ -29,6 +29,7 @@ module("lively.identity.Homestar")
     "lively.identity.PostCardUtils",
     "lively.identity.HomestarUI",
     "lively.identity.PostcardReel",
+    "lively.identity.PostcardAudience",
     "lively.identity.QuiltPatterns",
     "lively.morphic.Complete",
   )
@@ -404,42 +405,82 @@ module("lively.identity.Homestar")
         box.applyStyle({ fill: Color.rgb(249, 246, 253), borderColor: Color.rgb(232, 224, 244) });
         this._add(box);
         box.addMorph(icon(lively.rect(16, 14, 22, 22), "group", 18, PINK));
-        box.addMorph(label(lively.rect(44, 14, w - 60, 22), "Orbit", { px: 15, bold: true }));
+        box.addMorph(label(lively.rect(44, 14, w - 60 - 80, 22), "Orbit", { px: 15, bold: true }));
 
         var o = this._orbit;
-        var bodyY = 46, bodyH = 40, text, color = MUTED;
+        var canManage = this._isOwner && o && !o.failed && !o.locked;
+        if (canManage) {
+          var manage = pill(0, 0, "Manage", { w: 72, h: 26, onClick: function () { self._openOrbitDialog(); } });
+          manage.setPosition(lively.pt(w - 16 - 72, 11));
+          box.addMorph(manage);
+        }
+
+        var bodyY = 46, bodyH = 40, text;
         if (!o) {
           text = "Loading…";
+        } else if (o.failed) {
+          text = "Could not load the orbit.";
         } else if (o.locked) {
           text = "@" + this._shown + " keeps their orbit " + (o.visibility === "friends" ? "for friends." : "private.");
         } else if (!o.members.length) {
-          text = this._isOwner ? "Your orbit is empty. Close friends you add will show up here." : "Nobody in orbit yet.";
+          text = this._isOwner ? "Your orbit is empty. Add the friends you are closest to." : "Nobody in orbit yet.";
         }
 
         if (text) {
-          box.addMorph(label(lively.rect(16, bodyY, w - 32, bodyH), text, { px: 13, color: color, wrap: true }));
-          box.setExtent(lively.pt(w, bodyY + bodyH + 14));
-          return y + bodyY + bodyH + 14;
+          box.addMorph(label(lively.rect(16, bodyY, w - 32, bodyH), text, { px: 13, color: MUTED, wrap: true }));
+          var h0 = bodyY + bodyH + 14;
+          if (canManage && !o.members.length) {
+            var add = pill(0, 0, "Add close friends", { primary: true, onClick: function () { self._openOrbitDialog(); } });
+            add.setPosition(lively.pt(16, bodyY + bodyH));
+            box.addMorph(add);
+            h0 = bodyY + bodyH + 30 + 16;
+          }
+          box.setExtent(lively.pt(w, h0));
+          return y + h0;
         }
 
-        // Members: a wrapped row of avatars, pinned ones first, each opening the
-        // mini profile. (The ring layout is a later step.)
-        var D = 44, step = D + 10;
-        var perRow = Math.max(1, Math.floor((w - 32 + 10) / step));
-        var pinned = o.pinned || [];
-        var members = o.members.slice().sort(function (a, b) {
-          return (pinned.indexOf(b.did) >= 0 ? 1 : 0) - (pinned.indexOf(a.did) >= 0 ? 1 : 0);
+        // Rings: the owner at the core, pinned friends on the inner ring, the rest
+        // on the outer one. Positions are worked out here and baked into each
+        // morph's rect.
+        var S = Math.min(w - 32, 300);
+        var ringX = Math.round((w - S) / 2), ringTop = 38;
+        var cx = ringX + S / 2, cy = ringTop + S / 2;
+        var Ro = S / 2 - 20, Ri = Math.round(Ro * 0.52);
+        var RING_LINE = Color.rgb(224, 214, 240);
+        [Ro, Ri].forEach(function (r) {
+          var ring = new lively.morphic.Box(lively.rect(cx - r, cy - r, r * 2, r * 2));
+          ring.applyStyle({ fill: null, borderWidth: 1.5, borderColor: RING_LINE, borderRadius: r });
+          noDrag(ring);
+          ring.eventsAreIgnored = true;
+          box.addMorph(ring);
         });
-        members.slice(0, perRow * 3).forEach(function (m, i) {
-          var ax = 16 + (i % perRow) * step, ay = bodyY + Math.floor(i / perRow) * step;
+
+        var p = this._profile;
+        var CORE = 52;
+        var core = new lively.morphic.Image(lively.rect(cx - CORE / 2, cy - CORE / 2, CORE, CORE));
+        core.setImageURL(safeUrl(p.avatarUrl) || lively.identity.postCardUtils.identiconDataUrl(this._handle, CORE));
+        core.applyStyle({ borderRadius: CORE / 2, borderWidth: 3, borderColor: Color.white, clipMode: "hidden" });
+        noDrag(core);
+        core.eventsAreIgnored = true;
+        box.addMorph(core);
+
+        var pinned = o.pinned || [];
+        var inner = o.members.filter(function (m) { return pinned.indexOf(m.did) >= 0; });
+        var outerAll = o.members.filter(function (m) { return pinned.indexOf(m.did) < 0; });
+        var OUTER_MAX = 10;
+        var outer = outerAll.slice(0, OUTER_MAX);
+
+        function satellite(m, r, D, pinnedRing, angle) {
+          var ax = Math.round(cx + r * Math.cos(angle) - D / 2), ay = Math.round(cy + r * Math.sin(angle) - D / 2);
           var img = new lively.morphic.Image(lively.rect(ax, ay, D, D));
-          img.setImageURL(lively.identity.postCardUtils.identiconDataUrl(m.did, D));
+          img.setImageURL(lively.identity.postCardUtils.identiconDataUrl(m.handle || m.did, D));
           img.applyStyle({
             borderRadius: D / 2, clipMode: "hidden", handStyle: "pointer",
-            borderWidth: pinned.indexOf(m.did) >= 0 ? 2 : 0, borderColor: PINK,
+            borderWidth: 2, borderColor: pinnedRing ? PINK : Color.white,
           });
           noDrag(img);
           if (m.handle) {
+            img.toolTip = "@" + m.handle;
             img.onMouseUp = function (evt) {
               evt.stop();
               lively.require("lively.identity.MiniProfileCard").toRun(function () {
@@ -449,11 +490,53 @@ module("lively.identity.Homestar")
             };
           }
           box.addMorph(img);
+        }
+        inner.forEach(function (m, i) {
+          satellite(m, Ri, 40, true, -Math.PI / 2 + (i * 2 * Math.PI) / inner.length);
         });
-        var rows = Math.min(3, Math.ceil(members.length / perRow));
-        var h = bodyY + rows * step + 8;
+        outer.forEach(function (m, i) {
+          // Offset so the first outer friend is not straight above the core's pins.
+          satellite(m, Ro, 36, false, -Math.PI / 2 + Math.PI / outer.length + (i * 2 * Math.PI) / outer.length);
+        });
+
+        var ty = ringTop + S - 10;
+        var names = o.members.slice(0, 4).map(function (m) { return m.handle ? "@" + m.handle : "someone"; }).join(", ");
+        var more = o.members.length - 4;
+        var line = names + (more > 0 ? " and " + more + " more" : "");
+        var lines = Math.max(1, Math.ceil(textW(line, 12, false) / (w - 32)));
+        box.addMorph(label(lively.rect(16, ty, w - 32, 18 * lines + 4), line, { px: 12, color: INK, wrap: true }));
+        ty += 18 * lines + 8;
+        if (outerAll.length > OUTER_MAX) {
+          box.addMorph(label(lively.rect(16, ty, w - 32, 18), "Showing " + OUTER_MAX + " of " + outerAll.length + " on the outer ring.", { px: 11, color: MUTED }));
+          ty += 20;
+        }
+        if (this._isOwner) {
+          var vis = { anyone: "anyone", friends: "friends", "private": "only me" }[o.visibility] || "friends";
+          box.addMorph(label(lively.rect(16, ty, w - 32, 18), "Visible to " + vis, { px: 11, color: MUTED }));
+          ty += 22;
+        }
+        var h = ty + 8;
         box.setExtent(lively.pt(w, h));
         return y + h;
+      },
+
+      _openOrbitDialog: function () {
+        var self = this;
+        lively.require("lively.identity.OrbitDialog").toRun(function () {
+          lively.identity.OrbitDialog.open({
+            orbit: self._orbit,
+            onSave: function () {
+              getJSON("/@" + encodeURIComponent(self._handle) + "/orbit", function (err, body) {
+                if (body) { self._orbit = body; self._scheduleRender(); }
+              });
+              // The orbit is also an audience: bring the cards shared with it in line,
+              // but never start a passkey prompt for it.
+              lively.identity.postcardAudience.syncAudiences({ onlyIfKekCached: true }, function (err) {
+                if (err) console.warn("[Homestar] audience sync after an orbit change failed:", err.message || err);
+              });
+            },
+          });
+        });
       },
     },
 
