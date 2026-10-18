@@ -2,7 +2,7 @@
 // The homestar's shelves row (HomestarShelves.js) against a LIVE server, with the wiki listing, the
 // Books and Music worlds and their libraries stubbed in the browser: On the shelf (book spines, the
 // record on the turntable, who may see it), Sky tonight (the real moon for today, and the moon picture's geometry
-// checked by drawing it), the three newest wiki pages (order, ages, a click opening the page, and no
+// checked by drawing it), the six newest wiki pages (order, ages, a click opening the page, and no
 // card at all when there are none), and the grid (side by side when wide, stacked on a phone, always
 // under the columns, never a horizontal scrollbar).
 //
@@ -25,7 +25,9 @@ const page = (name, daysAgo) => ({
 test.beforeAll(async ({ browser }) => {
   test.setTimeout(200 * 1000);
   A = await newAccount(browser, "hometest_sh" + Math.random().toString(36).slice(2, 6));
-  await A.page.route(new RegExp("/@" + A.handle + "/wiki$"), (route) => route.fulfill({ json: { pages: wikiPages } }));
+  // no Transit card: the owner would otherwise get its prompt, a fifth card that narrows the row
+  await A.page.route(new RegExp("/@" + A.handle + "/transit$"), (route) => route.fulfill({ json: { station: null, isOwner: false, locked: true } }));
+  await A.page.route(new RegExp("/@" + A.handle + "/wiki-card$"), (route) => route.fulfill({ json: { pages: wikiPages, isOwner: true, hiddenCount: 0 } }));
 });
 
 test.afterAll(async () => {
@@ -94,15 +96,16 @@ test("the moon picture lights the right side when waxing, the left when waning",
   expect(px.wxg.centre).toBeGreaterThan(LIT);
 });
 
-test("no wiki card without pages; with pages, the three newest in order with their ages", async () => {
+test("no wiki card without pages; with pages, the six newest in order with their ages", async () => {
   expect(await worldText()).not.toContain("Wiki pages");
-  wikiPages = [page("Oldest", 90), page("Newest", 0), page("Third", 20), page("Second", 3)];
+  wikiPages = [page("Oldest", 400), page("Seventh", 90), page("Newest", 0), page("Third", 20), page("Second", 3), page("Fourth", 30), page("Fifth", 45), page("Sixth", 60)];
   await A.page.goto("/@" + A.handle);
   await shows("Wiki pages");
   const text = await worldText();
-  const names = ["Newest", "Second", "Third"].map((n) => text.indexOf(n));
+  const names = ["Newest", "Second", "Third", "Fourth", "Fifth", "Sixth"].map((n) => text.indexOf(n));
   expect(names.every((i) => i > 0)).toBe(true);
-  expect(names[0] < names[1] && names[1] < names[2]).toBe(true);
+  expect(names.every((v, i) => i === 0 || names[i - 1] < v)).toBe(true);
+  expect(text).not.toContain("Seventh");   // the seventh and the oldest are left off
   expect(text).not.toContain("Oldest");
   expect(text).toContain("just now");
   expect(text).toContain("3 days ago");

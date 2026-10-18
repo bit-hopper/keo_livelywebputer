@@ -15,6 +15,7 @@ module("lively.identity.HomestarShelves")
   .requires(
     "lively.identity.HomestarUI",
     "lively.identity.SkyWidget",
+    "lively.transit.BartData",
     "lively.morphic.Complete",
   )
   .toRun(function () {
@@ -27,9 +28,10 @@ module("lively.identity.HomestarShelves")
 
     var CARD_MIN_W = 290;
     var SKY_H = 150;
-    var WIKI_MAX = 3, WIKI_ROW_H = 34;
+    var WIKI_MAX = 6, WIKI_ROW_H = 34;
     var GUEST_SHOWN = 3, GUEST_ROW_H = 58;
     var GUEST_PER_WINDOW = 5, GUEST_WINDOW_HOURS = 36;   // what the server allows one guest
+    var TRANSIT_MAX = 3, TRANSIT_ROWS_Y = 68, TRANSIT_ROW_H = 28;
 
     var SIGNS  = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo",
                   "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"];
@@ -246,21 +248,34 @@ module("lively.identity.HomestarShelves")
         return box;
       },
 
-      // The newest few wiki pages, each a link to the page; null when there are none.
-      // pages: GET /@handle/wiki rows { objId, wikiName, updatedAt, createdAt }.
-      wiki: function (handle, pages) {
+      // The newest few wiki pages, each a link to the page; null when there are none (the
+      // owner who hid every page still gets the card, with a line pointing at Manage).
+      // pages: GET /@handle/wiki-card rows { objId, wikiName, updatedAt, createdAt }.
+      // opts: { isOwner, hiddenCount, onManage() }.
+      wiki: function (handle, pages, opts) {
+        opts = opts || {};
         var rows = (pages || []).filter(function (p) { return p && p.wikiName; })
           .sort(function (a, b) { return Date.parse(b.updatedAt) - Date.parse(a.updatedAt); })
           .slice(0, WIKI_MAX);
-        if (!rows.length) return null;
-        return { h: 48 + rows.length * WIKI_ROW_H + 10, build: function (x, y, w, h) {
-          return lively.identity.HomestarShelves._wikiPanel(x, y, w, h, handle, rows);
+        var allHidden = !rows.length && opts.isOwner && opts.hiddenCount > 0;
+        if (!rows.length && !allHidden) return null;
+        return { h: 48 + Math.max(1, rows.length) * WIKI_ROW_H + 10, build: function (x, y, w, h) {
+          return lively.identity.HomestarShelves._wikiPanel(x, y, w, h, handle, rows, opts);
         } };
       },
 
-      _wikiPanel: function (x, y, w, h, handle, rows) {
+      _wikiPanel: function (x, y, w, h, handle, rows, opts) {
         var box = panel(lively.rect(x, y, w, h));
-        header(box, w, "menu_book", "Wiki pages");
+        box.addMorph(icon(lively.rect(16, 14, 22, 22), "menu_book", 18, PINK));
+        box.addMorph(label(lively.rect(44, 14, w - 60 - (opts.isOwner ? 80 : 0), 22), "Wiki pages", { px: 15, bold: true }));
+        if (opts.isOwner) {
+          var manage = UI.pill(0, 0, "Manage", { w: 72, h: 26, onClick: function () { opts.onManage(); } });
+          manage.setPosition(lively.pt(w - 16 - 72, 11));
+          box.addMorph(manage);
+        }
+        if (!rows.length) {
+          box.addMorph(label(lively.rect(16, 50, w - 32, 20), "Nothing is shown. Use Manage to choose pages.", { px: 13, color: MUTED }));
+        }
         rows.forEach(function (p, i) {
           var row = new lively.morphic.Box(lively.rect(8, 46 + i * WIKI_ROW_H, w - 16, WIKI_ROW_H - 4));
           row.applyStyle({ fill: null, borderWidth: 0, borderRadius: 8, clipMode: "hidden", handStyle: "pointer" });
@@ -505,6 +520,78 @@ module("lively.identity.HomestarShelves")
             box.addMorph(sign);
           }
         }
+        return box;
+      },
+
+      // Transit: the next trains at the owner's BART station. opts: { station (code or
+      // null), times (null while loading, else the predictions from TransitClient or
+      // false when live times could not be had), isOwner, onManage() }. null when there
+      // is nothing for this viewer to see: no station chosen (the owner gets a prompt
+      // instead) or a code BartData does not know.
+      transit: function (opts) {
+        var B = lively.transit.BartData;
+        var known = !!(opts.station && B.stations[opts.station]);
+        if (!known && !opts.isOwner) return null;
+        var rows = known ? lively.identity.HomestarShelves._nextTrains(opts.times, Date.now()) : [];
+        // the station line, the rows (or one line of message), the source note
+        var h = known ? TRANSIT_ROWS_Y + Math.max(1, rows.length) * TRANSIT_ROW_H + 32 : 112;
+        return { h: h, build: function (x, y, w, hh) {
+          return lively.identity.HomestarShelves._transitPanel(x, y, w, hh, opts, known, rows);
+        } };
+      },
+
+      // The soonest arrivals, at most TRANSIT_MAX, with minutes counted from `now` (the
+      // times were fetched a while ago). Each: { lineKey, destination, minutes }.
+      _nextTrains: function (times, now) {
+        if (!Array.isArray(times)) return [];
+        return times.map(function (p) {
+          var t = Date.parse(p.expectedArrival);
+          var m = isFinite(t) ? Math.max(0, Math.round((t - now) / 60000)) : p.minutesAway;
+          return { lineKey: p.lineKey, destination: p.destination || p.line || "", minutes: m };
+        }).filter(function (p) { return typeof p.minutes === "number" && isFinite(p.minutes); })
+          .sort(function (a, b) { return a.minutes - b.minutes; })
+          .slice(0, TRANSIT_MAX);
+      },
+
+      _transitPanel: function (x, y, w, h, opts, known, rows) {
+        var B = lively.transit.BartData;
+        var box = panel(lively.rect(x, y, w, h));
+        box.addMorph(icon(lively.rect(16, 14, 22, 22), "train", 18, PINK));
+        box.addMorph(label(lively.rect(44, 14, w - 60 - (opts.isOwner ? 80 : 0), 22), "Transit", { px: 15, bold: true }));
+        if (opts.isOwner) {
+          var manage = UI.pill(0, 0, "Manage", { w: 72, h: 26, onClick: function () { opts.onManage(); } });
+          manage.setPosition(lively.pt(w - 16 - 72, 11));
+          box.addMorph(manage);
+        }
+        if (!known) {
+          box.addMorph(label(lively.rect(16, 46, w - 32, 36), "Show the trains at your BART station. Use Manage to pick one.", { px: 13, color: MUTED, wrap: true }));
+          return box;
+        }
+        box.addMorph(label(lively.rect(16, 42, w - 32, 20), trunc(B.stationName(opts.station), 38), { px: 13, color: MUTED }));
+
+        var cy = TRANSIT_ROWS_Y;
+        var note = "Live from 511.org";
+        if (!rows.length) {
+          var msg = opts.times === null ? "Loading times…"
+            : (opts.times === false ? "Unavailable right now" : "No trains listed right now.");
+          if (opts.times !== null) note = "";
+          box.addMorph(label(lively.rect(16, cy + 4, w - 32, 20), msg, { px: 13, color: MUTED }));
+          cy += TRANSIT_ROW_H;
+        }
+        var destChars = Math.max(8, Math.floor((w - 32 - 24 - 64) / 7.2));
+        rows.forEach(function (r) {
+          var line = B.lines.filter(function (l) { return l.key === r.lineKey; })[0];
+          var dot = new lively.morphic.Box(lively.rect(16, cy + 8, 10, 10));
+          dot.applyStyle({ fill: line ? Color.rgbHex(line.color) : MUTED, borderRadius: 5, borderWidth: 0 });
+          noDrag(dot);
+          dot.eventsAreIgnored = true;
+          dot.toolTip = line ? line.label : "";
+          box.addMorph(dot);
+          box.addMorph(label(lively.rect(34, cy + 3, w - 34 - 16 - 64, 20), trunc(r.destination, destChars), { px: 13, bold: true }));
+          box.addMorph(label(lively.rect(w - 16 - 64, cy + 3, 64, 20), r.minutes < 1 ? "now" : r.minutes + " min", { px: 13, color: PINK, bold: true, align: "right" }));
+          cy += TRANSIT_ROW_H;
+        });
+        if (note) box.addMorph(label(lively.rect(16, h - 26, w - 32, 16), note, { px: 11, color: MUTED }));
         return box;
       },
 

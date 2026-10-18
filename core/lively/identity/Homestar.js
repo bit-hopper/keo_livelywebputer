@@ -32,6 +32,7 @@ module("lively.identity.Homestar")
     "lively.identity.PostcardReel",
     "lively.identity.HomestarMap",
     "lively.identity.HomestarShelves",
+    "lively.transit.TransitClient",
     "lively.identity.PostcardAudience",
     "lively.identity.QuiltPatterns",
     "lively.morphic.Complete",
@@ -53,6 +54,7 @@ module("lively.identity.Homestar")
     var BANNER_H = 168, AVATAR = 108;
     var TEXT_X = PAD + AVATAR + 20;   // hero text column, right of the avatar
     var BIO_LINE_H = 21, BIO_MAX_LINES = 3;
+    var TRANSIT_REFRESH_MS = 60 * 1000;   // matches how long the transit proxy keeps an answer
 
     var SIGNS  = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo",
                   "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"];
@@ -122,7 +124,10 @@ module("lively.identity.Homestar")
         this._visibleWorlds = null; // every world this viewer may open (GET /worlds)
         this._constellations = null; // null = loading, failed or locked; else GET /constellations/public rows
         this._constellationsInfo = null; // the owner's own view of it: { hiddenCount, visibility }
-        this._wikiPages = null;     // null = loading; else GET /wiki rows (a failed load is an empty list)
+        this._wikiPages = null;     // null = loading, failed or locked; else GET /wiki-card rows
+        this._wikiInfo = null;      // the owner's own view of it: { hiddenCount, visibility }
+        this._transit = null;       // null = loading, failed or locked; else { station, visibility, times }
+        this._transitTimer = null;  // refreshes the times while the page is open
         this._gbObjId = null;       // the profile object's id: the guestbook is comments on it
         this._gbEntries = null;     // null = loading or unreadable; else the comments, newest first
         this._shelfBooks = [];      // the Books world's books, reading first (HomestarShelves.loadBooks)
@@ -170,10 +175,8 @@ module("lively.identity.Homestar")
         });
         this._loadGuestbook();
         this._loadConstellations();
-        getJSON(base + "/wiki", function (err, body) {
-          self._wikiPages = (body && body.pages) || [];
-          self._scheduleRender();
-        });
+        this._loadTransit();
+        this._loadWiki();
         if (this._viewer && !this._isOwner) {
           getJSON(base + "/friend-status", function (err, body) {
             self._friendStatus = (body && body.status) || "none";
@@ -190,6 +193,50 @@ module("lively.identity.Homestar")
           var ok = body && Array.isArray(body.constellations);
           self._constellations = ok && !body.locked ? body.constellations : null;
           self._constellationsInfo = ok ? { hiddenCount: body.hiddenCount || 0, visibility: body.visibility || null } : null;
+          self._scheduleRender();
+        });
+      },
+
+      // The wiki card's pages (the owner's choice of who sees the card and which pages it lists
+      // is applied by the server). A failed or locked read leaves the card out.
+      _loadWiki: function () {
+        var self = this;
+        getJSON("/@" + encodeURIComponent(this._handle) + "/wiki-card", function (err, body) {
+          var ok = body && Array.isArray(body.pages);
+          self._wikiPages = ok && !body.locked ? body.pages : null;
+          self._wikiInfo = ok ? { hiddenCount: body.hiddenCount || 0, visibility: body.visibility || null } : null;
+          self._scheduleRender();
+        });
+      },
+
+      // The Transit card: the owner's BART station (a private setting the server only
+      // sends to a viewer it lets in), then the next trains there. times is null while
+      // the first read is on its way, false when live times could not be had, else the
+      // predictions. A failed or locked read leaves the card out (null).
+      _loadTransit: function () {
+        var self = this;
+        clearInterval(this._transitTimer);
+        this._transitTimer = null;
+        getJSON("/@" + encodeURIComponent(this._handle) + "/transit", function (err, body) {
+          if (!body || body.locked) { self._transit = null; return self._scheduleRender(); }
+          self._transit = { station: body.station || null, visibility: body.visibility || null, times: null };
+          self._scheduleRender();
+          if (!self._transit.station) return;
+          self._refreshTransit();
+          self._transitTimer = setInterval(function () { if (!document.hidden) self._refreshTransit(); }, TRANSIT_REFRESH_MS);
+        });
+      },
+
+      _refreshTransit: function () {
+        var self = this;
+        var t = this._transit;
+        if (!t || !t.station) return;
+        lively.transit.TransitClient.stopMonitoring(t.station, function (err, res) {
+          // The station may have been changed while this was on its way.
+          if (self._transit !== t) return;
+          // Made-up times are labelled as such on the transit map, but this page is a
+          // public one: show none rather than numbers that are not real.
+          t.times = err || !res || res.simulated ? false : res.predictions;
           self._scheduleRender();
         });
       },
@@ -751,12 +798,19 @@ module("lively.identity.Homestar")
         var S = lively.identity.HomestarShelves;
         var self = this;
         var cards = [
-          this._wikiPages ? S.wiki(this._handle, this._wikiPages) : null,
+          this._wikiPages ? S.wiki(this._handle, this._wikiPages, {
+            isOwner: this._isOwner, hiddenCount: (this._wikiInfo || {}).hiddenCount || 0,
+            onManage: function () { self._openWikiCardDialog(); },
+          }) : null,
           S.shelf({
             handle: this._handle, books: this._shelfBooks, record: this._shelfRecord,
             booksWorld: this._shelfWorlds.books, musicWorld: this._shelfWorlds.music,
           }),
           S.sky(this._profile),
+          this._transit ? S.transit({
+            station: this._transit.station, times: this._transit.times, isOwner: this._isOwner,
+            onManage: function () { self._openTransitDialog(); },
+          }) : null,
           S.guestbook({
             handle: this._handle, entries: this._gbEntries, isOwner: this._isOwner, viewer: this._viewer,
             avatarFor: function (e) { return self._avatarFor(e, 28); },
@@ -959,6 +1013,28 @@ module("lively.identity.Homestar")
     },
 
     "actions", {
+      // Who sees the Wiki pages card and which pages it lists (private settings the server
+      // applies), so the card is re-read afterwards.
+      _openWikiCardDialog: function () {
+        var self = this;
+        lively.require("lively.identity.WikiCardDialog").toRun(function () {
+          lively.identity.WikiCardDialog.open({
+            onSave: function () { self._loadWiki(); },
+          });
+        });
+      },
+
+      // Which BART station the Transit card shows and who sees it. Both are private
+      // settings the server applies, so the card is re-read afterwards.
+      _openTransitDialog: function () {
+        var self = this;
+        lively.require("lively.identity.TransitDialog").toRun(function () {
+          lively.identity.TransitDialog.open({
+            onSave: function () { self._loadTransit(); },
+          });
+        });
+      },
+
       // Who sees the constellations card and which constellations it lists. Both are
       // private settings the server applies, so the card is re-read afterwards.
       _openConstellationsDialog: function () {

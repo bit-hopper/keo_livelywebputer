@@ -179,13 +179,46 @@ function sendNotConfigured(res) {
   });
 }
 
+// Arrival predictions are shared between everyone who asks about the same stop: the
+// homestar's Transit card is on a public page, so every view would otherwise spend one
+// of the API key's requests. One 511.org call per stop per STOP_CACHE_MS, with
+// concurrent requests for the same stop riding on the call in flight. If 511.org fails
+// the last good answer is served for up to STOP_STALE_MS (the times it holds are
+// stale by then, but minutesAway is recomputed from the arrival time on each read).
+var STOP_CACHE_MS = 60 * 1000;
+var STOP_STALE_MS = 5 * 60 * 1000;
+var STOP_CACHE_MAX = 200;
+var stopCache = {};     // 'agency|stopcode' -> { at, raw }
+var stopWaiting = {};   // 'agency|stopcode' -> [callback, ...] while a call is in flight
+
+function stopMonitoringCached(agency, stopcode, thenDo) {
+  var key = agency + '|' + stopcode;
+  var hit = stopCache[key];
+  if (hit && Date.now() - hit.at < STOP_CACHE_MS) return thenDo(null, hit.raw);
+  if (stopWaiting[key]) return stopWaiting[key].push(thenDo);
+  stopWaiting[key] = [thenDo];
+  transitRequest('StopMonitoring', { agency: agency, stopcode: stopcode }, function (err, data) {
+    var waiting = stopWaiting[key];
+    delete stopWaiting[key];
+    if (err) {
+      var old = stopCache[key];
+      var usable = old && Date.now() - old.at < STOP_STALE_MS && err.message !== 'not-configured';
+      waiting.forEach(function (cb) { usable ? cb(null, old.raw) : cb(err); });
+      return;
+    }
+    if (Object.keys(stopCache).length >= STOP_CACHE_MAX) stopCache = {};
+    stopCache[key] = { at: Date.now(), raw: data };
+    waiting.forEach(function (cb) { cb(null, data); });
+  });
+}
+
 module.exports = function (route, app) {
 
   app.get(route + 'stop-monitoring', function (req, res) {
     var agency = (req.query.agency || '').toString().slice(0, 20);
     var stopcode = (req.query.stopcode || '').toString().slice(0, 20);
     if (!agency || !stopcode) return res.status(400).json({ error: 'agency and stopcode are required' });
-    transitRequest('StopMonitoring', { agency: agency, stopcode: stopcode }, function (err, data) {
+    stopMonitoringCached(agency, stopcode, function (err, data) {
       if (err) return err.message === 'not-configured' ? sendNotConfigured(res) : res.status(502).json({ error: String(err.message || err) });
       res.json({ predictions: normalizeStopMonitoring(data) });
     });

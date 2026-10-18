@@ -79,6 +79,8 @@ var writePolicy = require("./identity/WritePolicy");
 var orbitRules = require("./identity/Orbit");
 var mapVisibility = require("./identity/MapVisibility");
 var constellationsCard = require("./identity/ConstellationsCard");
+var transitCard = require("./identity/TransitCard");
+var wikiCard = require("./identity/WikiCard");
 var editTracking = require("./identity/EditTracking");
 var audienceRules = require("./identity/AudienceLists");
 var contentRealm = require("./support/content-realm-gate");
@@ -3403,6 +3405,58 @@ module.exports = function (route, app) {
     });
   });
 
+  // The BART station on a handle's homestar Transit card (TransitCard.js). The station is
+  // a private setting, so it is only sent to a viewer the owner's choice lets in; the
+  // live times are fetched by the page from the transit proxy. Registered here, ahead of
+  // the /@:handle/* catch-all, like the constellations route above.
+  app.get("/@:handle/transit", auth.optionalAuth, function (req, res) {
+    var handle = req.params.handle;
+    handleRegistry.resolve(handle, function (err, ownerDid) {
+      if (err)  return res.status(500).json({ error: String(err) });
+      if (!ownerDid) return res.status(404).json({ error: "Handle not found: @" + handle });
+      var viewerDid = req.identity ? req.identity.did : null;
+      var isOwner = viewerDid === ownerDid;
+      _settingAccess("transitVisibility", ownerDid, viewerDid, function (err, access) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!access.allowed) return res.json({ station: null, isOwner: false, locked: true });
+        var station = transitCard.normalizeStation(access.state.transitStation).value || null;
+        var out = { station: station, isOwner: isOwner };
+        // Only the owner is told what they chose.
+        if (isOwner) out.visibility = access.visibility;
+        res.json(out);
+      });
+    });
+  });
+
+  // The personal wiki pages the homestar's Wiki pages card may list (WikiCard.js): the
+  // owner's choice of who sees the card applies first, then the pages they hid are dropped
+  // (for everyone, the owner included; the owner's Manage dialog reads the full public
+  // index at /@:handle/wiki instead). Only the CARD is gated: every page stays in that
+  // public index and readable at its own address. One segment, so it is registered here,
+  // ahead of /@:handle/:objId, like /transit above ("wiki/card" would be taken as a page name).
+  app.get("/@:handle/wiki-card", auth.optionalAuth, function (req, res) {
+    var handle = req.params.handle;
+    handleRegistry.resolve(handle, function (err, ownerDid) {
+      if (err)  return res.status(500).json({ error: String(err) });
+      if (!ownerDid) return res.status(404).json({ error: "Handle not found: @" + handle });
+      var viewerDid = req.identity ? req.identity.did : null;
+      var isOwner = viewerDid === ownerDid;
+      _settingAccess("wikiCardVisibility", ownerDid, viewerDid, function (err, access) {
+        if (err) return res.status(500).json({ error: String(err) });
+        if (!access.allowed) return res.json({ pages: [], isOwner: false, locked: true });
+        var hidden = wikiCard.normalizeHidden(access.state.wikiCardHidden).hidden || [];
+        objectRepo.listWikiPagesForUser(ownerDid, function (err, pages) {
+          if (err) return res.status(500).json({ error: String(err) });
+          var kept = wikiCard.applyHidden(pages, hidden);
+          var out = { pages: kept.rows, isOwner: isOwner };
+          // Only the owner is told what they chose.
+          if (isOwner) { out.visibility = access.visibility; out.hiddenCount = kept.hiddenCount; }
+          res.json(out);
+        });
+      });
+    });
+  });
+
   // ─── forwarding aliases (§3.2) ──────────────────────────────────────────────
   // Must be registered before /@:handle/:objId. Owner-only on every route —
   // aliases are never surfaced publicly (not on the profile, not in the DID
@@ -3667,6 +3721,26 @@ module.exports = function (route, app) {
         if (ch.error) return res.status(400).json({ error: ch.error, code: "INVALID_CONSTELLATIONS" });
         st = Object.assign({}, st, { constellationsHidden: ch.hidden });
         envelope = Object.assign({}, envelope, { state: st });
+      }
+      // state.wikiCardVisibility / state.wikiCardHidden (WikiCard.js).
+      if (st && st.wikiCardVisibility !== undefined) {
+        var wv = wikiCard.normalizeVisibility(st.wikiCardVisibility);
+        if (wv.error) return res.status(400).json({ error: wv.error, code: "INVALID_WIKI_CARD" });
+      }
+      if (st && st.wikiCardHidden !== undefined) {
+        var wh = wikiCard.normalizeHidden(st.wikiCardHidden);
+        if (wh.error) return res.status(400).json({ error: wh.error, code: "INVALID_WIKI_CARD" });
+        st = Object.assign({}, st, { wikiCardHidden: wh.hidden });
+        envelope = Object.assign({}, envelope, { state: st });
+      }
+      // state.transitVisibility / state.transitStation (TransitCard.js).
+      if (st && st.transitVisibility !== undefined) {
+        var tv = transitCard.normalizeVisibility(st.transitVisibility);
+        if (tv.error) return res.status(400).json({ error: tv.error, code: "INVALID_TRANSIT" });
+      }
+      if (st && st.transitStation !== undefined) {
+        var ts = transitCard.normalizeStation(st.transitStation);
+        if (ts.error) return res.status(400).json({ error: ts.error, code: "INVALID_TRANSIT" });
       }
       if (!st || (st.orbit === undefined && st.audienceLists === undefined && st.cardAudiences === undefined)) {
         return _put(envelope);
