@@ -126,7 +126,10 @@ test("the comment chip opens the thread under the card", async () => {
     chip.click();
   });
   await expect(A.page.locator(".mbt-root")).toHaveCount(1);
-  await expect(A.page.locator(".mbt-root .mbt-empty")).toContainText("No replies yet");
+  await expect(A.page.locator(".mbt-root .mbt-sect")).toHaveText("Comments");
+  await expect(A.page.locator(".mbt-root .mbt-empty")).toContainText("No comments yet");
   // The owner can answer; the composer is there.
   await expect(A.page.locator(".mbt-composer textarea")).toBeVisible();
+  // Send takes the homestar's pink (the mailbox's own thread stays green).
+  await expect(A.page.locator(".mbt-composer .mbt-btn.accent")).toHaveCSS("background-color", "rgb(204, 0, 87)");
 });

@@ -1,7 +1,7 @@
 /**
  * lively.identity.MailboxThread
  *
- * The conversation under a postcard: the original card, every reply to it
+ * The comments under a postcard: the original card, every reply to it
  * (nested), and a composer for answering. Used in two places:
  *
  *   - Inside the Mailbox's Inbox tab, when the author opens a thread row
@@ -484,10 +484,10 @@ module('lively.identity.MailboxThread')
         }
       });
 
-      sc.appendChild(el('div', 'mbt-sect', 'Conversation' + (nFresh ? ' · ' + nFresh + ' new' : '')));
+      sc.appendChild(el('div', 'mbt-sect', 'Comments' + (nFresh ? ' · ' + nFresh + ' new' : '')));
 
       if (!replies.length) {
-        sc.appendChild(el('div', 'mbt-empty', 'No replies yet.'));
+        sc.appendChild(el('div', 'mbt-empty', 'No comments yet.'));
       } else {
         var byParent = {};
         var known = {};
@@ -693,7 +693,7 @@ module('lively.identity.MailboxThread')
       if (!r) { this.clearReplyTarget(); t.hidden = true; return; }
       t.hidden = false;
       t.appendChild(document.createTextNode('Replying to @' + (this.handleOf(r.did) || 'unknown') +
-        (this.replyShown ? ' (conversations nest ' + MAX_REPLY_DEPTH + ' deep, so this is shown just beside it)' : '')));
+        (this.replyShown ? ' (comments nest ' + MAX_REPLY_DEPTH + ' deep, so this is shown just beside it)' : '')));
       var x = el('button');
       x.type = 'button';
       x.setAttribute('aria-label', 'Cancel replying to this reply');
@@ -918,7 +918,7 @@ module('lively.identity.MailboxThread')
     }
 
     // A small standalone window, so someone who isn't the card's author can
-    // read and answer the conversation from the card's menu.
+    // read and answer the comments from the card's menu.
     var ThreadWindowClass = lively.morphic.Box.subclass('lively.identity.MailboxThreadWindow',
 
       'serialization', {

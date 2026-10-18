@@ -16,7 +16,7 @@
  * re-positioned with attach(x, y, w); it asks for a re-render (opts.onResize)
  * when its height changes.
  *
- * The comment chip on a card opens the conversation under it: MailboxThread
+ * The comment chip on a card opens the comments under it: MailboxThread
  * (the same component the mailbox uses) mounted compact in a box below the
  * card, so a signed-in viewer can answer too.
  *
@@ -179,6 +179,7 @@ module("lively.identity.PostcardReel")
         panel.addMorph(this._threadBox);
         var tnode = this._threadBox.renderContext().shapeNode;
         tnode.classList.add("selectable");
+        tnode.classList.add("homestar-reel-thread");
         tnode.style.userSelect = "text";
         this._threadHost = document.createElement("div");
         this._threadHost.style.cssText = "position:absolute;inset:0;";
@@ -198,7 +199,11 @@ module("lively.identity.PostcardReel")
           ".homestar-reel-card .lively-postcard-view-content::-webkit-scrollbar{width:10px;}" +
           ".homestar-reel-card .lively-postcard-view-content::-webkit-scrollbar-track{background:#f7f2f4;}" +
           ".homestar-reel-card .lively-postcard-view-content::-webkit-scrollbar-thumb{background:#f4a7c6;border-radius:999px;border:2px solid #f7f2f4;}" +
-          ".homestar-reel-card .lively-postcard-view-content::-webkit-scrollbar-thumb:hover{background:#e8497e;}";
+          ".homestar-reel-card .lively-postcard-view-content::-webkit-scrollbar-thumb:hover{background:#e8497e;}" +
+          // The comment thread takes the homestar's pink for its accent (Send, the focus ring,
+          // the "new" pill and highlight); the mailbox's own copy keeps its green.
+          ".homestar-reel-thread .mbt-root{--mbt-accent:#CC0057;--mbt-accent-soft:#fdebf3;--mbt-accent-soft-border:#f4a7c6;}" +
+          ".homestar-reel-thread .mbt-btn.accent:hover:not(:disabled){background:#a80048;border-color:#a80048;}";
         document.head.appendChild(st);
       },
 

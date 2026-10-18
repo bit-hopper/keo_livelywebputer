@@ -4379,7 +4379,7 @@ module.exports = function (route, app) {
         // The thread view (listReplyTree) only reaches this many levels down;
         // a reply below that would be stored, notified, and never shown.
         if (ctx.parentDepth + 1 > objectRepo.REPLY_TREE_MAX_DEPTH) {
-          return cb({ status: 400, message: "This conversation is as deep as it goes (" +
+          return cb({ status: 400, message: "This comment thread is as deep as it goes (" +
             objectRepo.REPLY_TREE_MAX_DEPTH + " levels). Reply to the reply above it instead." });
         }
         if (root.visibility !== "public" && envelope.visibility === "public") {

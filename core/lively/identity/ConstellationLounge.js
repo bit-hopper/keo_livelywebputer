@@ -285,7 +285,7 @@ module("lively.identity.ConstellationLounge")
     // functions below instead.
     var COMMENT_PAD_X = 10;
     var COMPOSER_MAX_EXTRA = 160;  // most a comment box grows with its text (~10 lines past the base 3); past that the field scrolls
-    var COMMENT_TOP_MARGIN = 12;   // small gap above the top ("Start conversation") composer, which otherwise sits flush against the container's top edge
+    var COMMENT_TOP_MARGIN = 12;   // small gap above the top ("Add a comment") composer, which otherwise sits flush against the container's top edge
     var THREAD_LINE_COLOR = Color.rgb(224, 227, 230);
     var COMMENT_META_COLOR = Color.rgb(120, 120, 120);
     var COMMENT_ACCENT = "#e8497e";  // same pink accent as lively.commerce.Shop's --color-accent
@@ -4208,7 +4208,7 @@ module("lively.identity.ConstellationLounge")
         var w = (container.getExtent().x || THREAD_W) - COMMENT_PAD_X * 2;
 
         var y = this._renderMiniComposerIfSignedIn(
-          row, container, "ROOT", row.objId, COMMENT_PAD_X, COMMENT_TOP_MARGIN, w, "Start conversation");
+          row, container, "ROOT", row.objId, COMMENT_PAD_X, COMMENT_TOP_MARGIN, w, "Add a comment");
         y += 10;
 
         if (!mt.replies.length) {
@@ -4659,8 +4659,8 @@ module("lively.identity.ConstellationLounge")
       // Rebuilds the whole visible tree from this._threadReplies +
       // this._threadExpanded + this._threadChildrenCache — simplest correct
       // way to keep an expand/collapse-anywhere tree in the right visual
-      // order without hand-patching morph insertion points. A "join the
-      // conversation" composer always sits first, same as a typical
+      // order without hand-patching morph insertion points. An "Add a
+      // comment" composer always sits first, same as a typical
       // nested-comment thread's top-level comment box.
       _renderThreadTree: function () {
         var container = this._threadContainer;
@@ -4681,7 +4681,7 @@ module("lively.identity.ConstellationLounge")
         var w = (container.getExtent().x || THREAD_W) - COMMENT_PAD_X * 2;
 
         var y = this._renderComposerIfSignedIn(
-          container, "ROOT", this._threadRootObjId, COMMENT_PAD_X, COMMENT_TOP_MARGIN, w, "Start conversation");
+          container, "ROOT", this._threadRootObjId, COMMENT_PAD_X, COMMENT_TOP_MARGIN, w, "Add a comment");
         y += 10;
 
         if (!this._threadReplies.length) {
@@ -5105,7 +5105,7 @@ module("lively.identity.ConstellationLounge")
         this._renderThreadTree();
       },
 
-      // Renders a "join the conversation" (key "ROOT") or per-comment reply
+      // Renders an "Add a comment" (key "ROOT") or per-comment reply
       // composer — a bordered, generously-rounded box with a multi-line
       // Lively Text input (the same allowInput technique the search field
       // above uses, not a raw <textarea>), a toolbar row (image/video are
