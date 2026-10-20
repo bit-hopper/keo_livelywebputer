@@ -48,6 +48,8 @@ module("lively.ide.tools.SearchPalette")
       { id: "files", label: "Files" },
     ];
 
+    var PREVIEW_W = 330;           // right pane (search.md section 3.1)
+    var PREVIEW_MIN_PANEL = 760;   // hidden when the panel is narrower than this
     var ROW_H = 52;
     var ROW_GAP = 2;
     var MAX_ROWS = 60;           // rendered at once; the rest is "refine your search"
@@ -241,10 +243,19 @@ module("lively.ide.tools.SearchPalette")
         panel.addMorph(s.divFooter);
 
         // The results list scrolls (clipMode auto); rows are rebuilt by renderRows.
-        s.list = box(lively.rect(0, FIELD_H + PILLS_H + 1, g.w, g.h - FIELD_H - PILLS_H - 1 - FOOTER_H));
+        var wide0 = g.w >= PREVIEW_MIN_PANEL;
+        s.wide = wide0;
+        s.list = box(lively.rect(0, FIELD_H + PILLS_H + 1, wide0 ? g.w - PREVIEW_W : g.w, g.h - FIELD_H - PILLS_H - 1 - FOOTER_H));
         s.list.applyStyle({ clipMode: "auto" });
         panel.addMorph(s.list);
         UI.scroller(s.list);
+
+        // Preview pane for the highlighted row, with a hairline at its left edge.
+        // Contents are rebuilt by renderPreview on every selection change.
+        s.previewDiv = box(lively.rect(0, 0, 1, 10), HAIRLINE);
+        s.preview = box(lively.rect(0, 0, PREVIEW_W - 1, 10));
+        panel.addMorph(s.previewDiv);
+        panel.addMorph(s.preview);
 
         // Empty states (no query / no match): icon, title, hint, centred. Texts that
         // layout() moves are built at (0,0): a Text built at rect(x,y) and later moved
@@ -297,7 +308,13 @@ module("lively.ide.tools.SearchPalette")
           s.divFooter.setPosition(lively.pt(0, g.h - FOOTER_H));
           s.footer.setPosition(lively.pt(SIDE, g.h - FOOTER_H + 9));
           var top = FIELD_H + PILLS_H + 1;
-          s.list.setExtent(lively.pt(g.w, g.h - top - FOOTER_H));
+          s.wide = g.w >= PREVIEW_MIN_PANEL;
+          var bodyH = g.h - top - FOOTER_H;
+          s.list.setExtent(lively.pt(s.wide ? g.w - PREVIEW_W : g.w, bodyH));
+          s.previewDiv.setPosition(lively.pt(g.w - PREVIEW_W, top));
+          s.previewDiv.setExtent(lively.pt(1, bodyH));
+          s.preview.setPosition(lively.pt(g.w - PREVIEW_W + 1, top));
+          s.preview.setExtent(lively.pt(PREVIEW_W - 1, bodyH));
           s.emptyIcon.setExtent(lively.pt(g.w, 40));
           s.bodyTitle.setExtent(lively.pt(g.w, 22));
           s.bodyHint.setExtent(lively.pt(g.w, 20));
@@ -417,6 +434,7 @@ module("lively.ide.tools.SearchPalette")
         s.selIndex = 0;
 
         var empty = !shown.length;
+        s.emptyShown = empty;
         s.emptyIcon.setVisible(empty);
         s.bodyTitle.setVisible(empty);
         s.bodyHint.setVisible(empty);
@@ -429,6 +447,7 @@ module("lively.ide.tools.SearchPalette")
             ? "Try a morph name, text inside a morph, or a saved world."
             : "Nothing yet. Type a morph name, text inside a morph, or a saved world.";
           P.updateFooter();
+          P.renderPreview();
           return;
         }
 
@@ -566,6 +585,7 @@ module("lively.ide.tools.SearchPalette")
         s.selIndex = i;
         paint(s.rows[i], true);
         P.updateFooter();
+        P.renderPreview();
         if (scrollIntoView) {
           var node = s.list.renderContext().shapeNode, r = s.rows[i],
             top = r.y - 30, bottom = r.y + ROW_H + 10;
@@ -590,6 +610,121 @@ module("lively.ide.tools.SearchPalette")
         P.close();
         r.item.run();
       },
+
+      // key/value lines shown under the preview art for an item
+      previewFields: function (item) {
+        var fields = [];
+        if (item.type === "world") {
+          var info = item.info || {};
+          if (info.morphs != null) fields.push(["Morphs", String(info.morphs)]);
+          fields.push(["Visibility", info.visibility && info.visibility !== "public" ? "Private" : "Public"]);
+          var d = new Date(info.created);
+          if (!isNaN(d.getTime())) fields.push(["Created", d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })]);
+          fields.push(["Opens", "In a new tab"]);
+          return fields;
+        }
+        fields.push(["Class", item.cls]);
+        fields.push(["Where", item.world ? item.world : "This world"]);
+        if (item.morph && item.morph.getExtent) {
+          var ext = item.morph.getExtent();
+          fields.push(["Size", Math.round(ext.x) + " × " + Math.round(ext.y)]);
+        }
+        if (item.text) fields.push(["Text", "“" + item.text + "”"]);
+        if (item.url) fields.push(["Opens", "In a new tab"]);
+        return fields;
+      },
+
+      // The right pane: stylised art for the type, name, type, key/value lines and
+      // two buttons. Rebuilt on every selection change (about 15 small morphs).
+      renderPreview: function () {
+        var P = lively.ide.tools.SearchPalette, s = P.current;
+        if (!s || !s.preview) return;
+        var r = s.rows && s.rows[s.selIndex],
+          on = !!(s.wide && r && !s.emptyShown);
+        s.preview.setVisible(on);
+        s.previewDiv.setVisible(on);
+        s.preview.removeAllMorphs();
+        if (!on) return;
+
+        var item = r.item, type = TYPES[item.type] || TYPES.box,
+          W = PREVIEW_W - 1, pad = 20, innerW = W - pad * 2,
+          tint = type.tint,
+          rgba = function (a) { return "rgba(" + Math.round(tint.r * 255) + "," + Math.round(tint.g * 255) + "," + Math.round(tint.b * 255) + "," + a + ")"; };
+
+        // art: a soft gradient tile with two washed circles and the type's icon
+        var art = box(lively.rect(pad, 18, innerW, 150));
+        art.applyStyle({ borderRadius: 16, clipMode: "hidden" });
+        s.preview.addMorph(art);
+        art.renderContext().shapeNode.style.background = "linear-gradient(135deg, " + rgba(0.22) + ", " + rgba(0.06) + ")";
+        var c1 = box(lively.rect(innerW - 80, -30, 120, 120), Color.rgba(tint.r * 255, tint.g * 255, tint.b * 255, 0.10));
+        c1.applyStyle({ borderRadius: 60 });
+        var c2 = box(lively.rect(-30, 96, 90, 90), Color.rgba(tint.r * 255, tint.g * 255, tint.b * 255, 0.08));
+        c2.applyStyle({ borderRadius: 45 });
+        art.addMorph(c1);
+        art.addMorph(c2);
+        art.addMorph(icon(lively.rect(0, 44, innerW, 64), type.icon, 56, tint));
+
+        s.preview.addMorph(label(lively.rect(pad - 4, 184, innerW + 8, 24), item.name || "(unnamed)", {
+          px: 17, bold: true, color: item.name ? INK : MUTED,
+        }));
+        s.preview.addMorph(label(lively.rect(pad - 4, 210, innerW + 8, 18), type.label, { px: 12, color: MUTED }));
+
+        var y = 244;
+        P.previewFields(item).forEach(function (f) {
+          s.preview.addMorph(label(lively.rect(pad - 4, y, 80, 18), f[0], { px: 12, color: MUTED }));
+          s.preview.addMorph(label(lively.rect(pad + 72, y, innerW - 72 + 4, 20), f[1], { px: 13, color: INK }));
+          y += 26;
+        });
+
+        // buttons, pinned to the bottom of the pane
+        var bodyH = s.preview.getExtent().y, BH = 36, by = bodyH - 18 - BH,
+          primaryText = (item.url ? "Open world" : "Show halo") + "  ↵",
+          w1 = Math.ceil(textWidth(primaryText, 13, true)) + 36,
+          w2 = Math.ceil(textWidth("Copy name", 13, true)) + 32;
+
+        var primary = box(lively.rect(pad, by, w1, BH), ACCENT);
+        primary.applyStyle({ borderRadius: 18 });
+        primary.addMorph(label(lively.rect(0, 9, w1, 18), primaryText, { px: 13, bold: true, color: Color.white, align: "center" }));
+        primary.eventsAreIgnored = false;
+        primary.handStyle = "pointer";
+        primary.onMouseDown = function (evt) { evt.stop(); return true; };   // keep focus in the field
+        primary.onMouseUp = function (evt) { P.activate(s.selIndex); evt.stop(); return true; };
+        s.preview.addMorph(primary);
+        var pnode = primary.renderContext().shapeNode;
+        pnode.style.background = ACCENT.toString();
+        pnode.setAttribute("role", "button");
+        pnode.setAttribute("aria-label", "Preview action");
+
+        var copyLabel = label(lively.rect(0, 9, w2, 18), "Copy name", { px: 13, bold: true, color: INK, align: "center" });
+        var copy = box(lively.rect(pad + w1 + 10, by, w2, BH));
+        copy.applyStyle({ borderRadius: 18 });
+        copy.addMorph(copyLabel);
+        copy.eventsAreIgnored = false;
+        copy.handStyle = "pointer";
+        copy.onMouseDown = function (evt) { evt.stop(); return true; };
+        copy.onMouseUp = function (evt) {
+          P.copyName(item.name || "", function (ok) {
+            copyLabel.textString = ok ? "Copied" : "Copy failed";
+            setTimeout(function () { if (copyLabel.owner) copyLabel.textString = "Copy name"; }, 1200);
+          });
+          evt.stop();
+          return true;
+        };
+        s.preview.addMorph(copy);
+        var cnode = copy.renderContext().shapeNode;
+        cnode.style.boxShadow = "inset 0 0 0 1px rgba(30,24,44,0.14)";
+        cnode.setAttribute("role", "button");
+        cnode.setAttribute("aria-label", "Copy name");
+      },
+
+      copyName: function (text, done) {
+        try {
+          navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+        } catch (e) {
+          done(false);
+        }
+      },
+
 
       updateFooter: function () {
         var s = lively.ide.tools.SearchPalette.current;

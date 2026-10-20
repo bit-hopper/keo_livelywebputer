@@ -232,3 +232,73 @@ test("Worlds scope lists saved worlds by name, private ones too, with morph coun
   await page.getByRole("button", { name: "Result: Neon Diary" }).click();
   await expect.poll(() => page.evaluate(() => window.__opened)).toEqual([["/@testuser/w2", "_blank"]]);
 });
+
+// ---- preview pane
+
+const previewTexts = (page) =>
+  page.evaluate(() => {
+    var s = lively.ide.tools.SearchPalette.current;
+    return { visible: s.preview.isVisible ? s.preview.isVisible() : true, wide: s.wide,
+      texts: s.preview.withAllSubmorphsSelect((m) => !!m.textString).map((m) => m.textString) };
+  });
+
+test("preview follows the highlighted row and its buttons work", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await openWithMorphs(page, 3);
+  await page.keyboard.type("rowtest");
+  await expect.poll(() => previewTexts(page)).toMatchObject({ wide: true });
+  let p = await previewTexts(page);
+  expect(p.texts).toEqual(expect.arrayContaining(["rowtest0", "Text", "Class", "Where", "This world", "Size", "300 \u00d7 30", "Show halo  \u21b5", "Copy name"]));
+
+  await page.keyboard.press("ArrowDown");
+  await expect.poll(async () => (await previewTexts(page)).texts).toContain("rowtest1");
+
+  // Copy name: a real click; the clipboard gets the name
+  await page.getByRole("button", { name: "Copy name" }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("rowtest1");
+  await expect.poll(async () => (await previewTexts(page)).texts).toContain("Copied");
+
+  // the primary button runs the row's action and closes
+  await page.getByRole("button", { name: "Preview action" }).click();
+  await page.waitForFunction(() => {
+    var m = $world.submorphs.find((ea) => ea.name === "rowtest1");
+    return !lively.ide.tools.SearchPalette.isOpen() && m && m.showsHalos && m.halos && m.halos.length > 0;
+  });
+});
+
+test("the preview pane is hidden when the panel is narrower than 760px", async ({ page }) => {
+  await page.setViewportSize({ width: 700, height: 800 });
+  await openWithMorphs(page, 2);
+  await page.keyboard.type("rowtest");
+  await expect.poll(() => rows(page)).toMatchObject({ sel: 0 });
+  const r = await page.evaluate(() => {
+    var s = lively.ide.tools.SearchPalette.current;
+    return { wide: s.wide, previewVisible: s.preview.renderContext().shapeNode.style.display !== "none" && s.preview.submorphs.length > 0,
+      listW: s.list.getExtent().x, panelW: s.panel.getExtent().x };
+  });
+  expect(r.wide).toBe(false);
+  expect(r.previewVisible).toBe(false);
+  expect(r.listW).toBe(r.panelW);
+});
+
+test("a world's preview lists its morph count, visibility and creation date", async ({ page }) => {
+  await page.route("**/@testuser", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ objects: [] }) }));
+  await page.route("**/@testuser/worlds", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ worlds: [{ objId: "w2", name: "Neon Diary", template: null, visibility: "private", created: "2026-03-04T12:00:00.000Z" }] }),
+    }),
+  );
+  await openWithMorphs(page, 0);
+  await page.evaluate(() => {
+    lively.identity.did = { isLoggedIn: () => true, currentUser: () => ({ handle: "testuser" }) };
+    lively.ide.tools.SearchPalette.close();
+    lively.ide.tools.SearchPalette.open();
+  });
+  await page.waitForFunction(() => lively.ide.tools.SearchPalette.current.input.renderContext().shapeNode.contains(document.activeElement));
+  await page.keyboard.type("neon diary");
+  await expect.poll(() => rows(page)).toMatchObject({ names: ["Neon Diary"] });
+  const p = await previewTexts(page);
+  expect(p.texts).toEqual(expect.arrayContaining(["Neon Diary", "World", "Visibility", "Private", "Created", "Opens", "In a new tab", "Open world  \u21b5"]));
+  expect(p.texts.some((t) => /2026/.test(t))).toBe(true);
+});

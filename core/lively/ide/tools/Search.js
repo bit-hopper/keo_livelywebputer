@@ -128,6 +128,7 @@ Object.extend(lively.ide.tools.Search, {
         return {
           type: "world", group: "worlds", name: name, cls: "World", text: "", world: null,
           path: null, meta: bits.join("  ·  "), morph: null, url: url,
+          info: { morphs: n != null ? n : null, visibility: w.visibility || "public", created: w.created || null },
           run: function () { window.open(url, "_blank"); },
         };
       });
