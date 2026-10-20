@@ -134,6 +134,15 @@ module("lively.ide.tools.SearchPalette")
 
       isOpen: function () { return !!lively.ide.tools.SearchPalette.current; },
 
+      // The menu bar's search entry shows a pink "open" state while the palette is
+      // open. Found by name so the palette also updates it when opened by the command.
+      syncMenuEntry: function (open) {
+        try {
+          var entry = $world.get("livelySearchMenuBarEntry");
+          if (entry && entry.setPaletteActive) entry.setPaletteActive(open);
+        } catch (e) { /* no menu bar in this world */ }
+      },
+
       toggle: function () {
         var P = lively.ide.tools.SearchPalette;
         if (P.isOpen()) P.close(); else P.open();
@@ -145,6 +154,7 @@ module("lively.ide.tools.SearchPalette")
         P.current = null;
         s.closed = true;
         clearTimeout(s.codeTimer);
+        P.syncMenuEntry(false);
         lively.identity.HomestarUI.closeScrim(s.scrim);
       },
 
@@ -338,6 +348,7 @@ module("lively.ide.tools.SearchPalette")
         // Early keystrokes must not be lost: take focus right away.
         input.focus();
         P.refresh();
+        P.syncMenuEntry(true);
 
         // Saved-world rows join when the listing returns.
         Search.fetchSaved(function (saved) {

@@ -37,14 +37,36 @@ lively.BuildSpec('lively.ide.tools.LivelySearchMenuBarEntry', lively.BuildSpec("
     align: "center",
     extent: lively.pt(60,20),
     textColor: Color.gray.darker(),
-    toolTip: "Search the Lively runtime and wiki",
+    toolTip: "Search morphs, worlds, files and code (shift-click for the older tools)",
   }),
+
+  // A click opens (or closes) the search palette; shift-click opens the dropdown of
+  // the older tools, which the palette does not replace (they use the server).
+  // The palette keeps this entry's pink "open" look in step (setPaletteActive).
+  onMouseUp: function onMouseUp(evt) {
+    evt.stop();
+    if (evt.isShiftDown && evt.isShiftDown()) {
+      this.update();
+      if (this.menu) this.removeMenu(); else this.showMenu();
+      return true;
+    }
+    if (this._openingPalette) return true;   // the module is still loading: a second click must not toggle it shut
+    this._openingPalette = true;
+    var self = this;
+    lively.require("lively.ide.tools.SearchPalette").toRun(function () {
+      self._openingPalette = false;
+      lively.ide.tools.SearchPalette.toggle();
+    });
+    return true;
+  },
+
+  setPaletteActive: function setPaletteActive(on) {
+    this.applyStyle(on ? {fill: Color.rgb(240, 26, 105), textColor: Color.white} : {fill: null, textColor: Color.gray.darker()});
+  },
 
   morphMenuItems: function morphMenuItems() {
     function cmd(name) { return function() { lively.ide.commands.exec(name); }; }
     return [
-      ['Search palette (preview)', cmd('lively.ide.searchPalette')],
-      ['Search morphs in this world', cmd('lively.ide.morphSearch')],
       ['Code search', cmd('lively.ide.codeSearch')],
       ['Search for worlds, modules, parts', cmd('lively.ide.resourceSearch')],
       ['Search for files', cmd('lively.ide.browseFiles')],

@@ -431,3 +431,76 @@ test("the home listing is fetched once for quick reopens, and a failed fetch is 
   await expect.poll(() => page.evaluate(() => lively.ide.tools.SearchPalette.current.items.filter((i) => i.group === "files").length)).toBe(3);
   expect(calls).toBe(2);
 });
+
+// ---- the menu bar's search entry
+
+async function bootWorld(page) {
+  await page.goto("/blank.html");
+  await page.waitForFunction(() => window.$world && $world.get && $world.get("livelySearchMenuBarEntry") && lively.ide && lively.ide.commands, { timeout: 30000 });
+  await page.waitForTimeout(500);   // let the bar finish laying out before clicking in it
+}
+const entryCenter = (page) =>
+  page.evaluate(() => {
+    var r = $world.get("livelySearchMenuBarEntry").renderContext().shapeNode.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  });
+// (typeof check: the namespace object exists before the module has finished loading)
+const entryState = (page) =>
+  page.evaluate(() => {
+    var e = $world.get("livelySearchMenuBarEntry"), P = lively.ide.tools && lively.ide.tools.SearchPalette;
+    return { open: !!(P && typeof P.isOpen === "function" && P.isOpen()), pink: getComputedStyle(e.renderContext().shapeNode).backgroundColor === "rgb(240, 26, 105)" };
+  });
+
+test("a click on the menu bar's search entry opens the palette (entry turns pink), Esc and a second click close it", async ({ page }) => {
+  await bootWorld(page);
+  let c = await entryCenter(page);
+  await page.mouse.click(c.x, c.y);
+  await expect.poll(() => entryState(page)).toEqual({ open: true, pink: true });
+
+  // typing goes straight into the field (the click must not have taken focus away)
+  await page.keyboard.type("zz");
+  await expect.poll(() => state(page)).toMatchObject({ query: "zz" });
+
+  await page.keyboard.press("Escape");
+  await expect.poll(() => entryState(page)).toEqual({ open: false, pink: false });
+
+  // a second click on the entry while open lands on the scrim and closes it
+  c = await entryCenter(page);
+  await page.mouse.click(c.x, c.y);
+  await expect.poll(() => entryState(page)).toEqual({ open: true, pink: true });
+  await page.mouse.click(c.x, c.y);
+  await expect.poll(() => entryState(page)).toEqual({ open: false, pink: false });
+});
+
+test("rapid clicks on the entry never leave the entry and the palette out of step", async ({ page }) => {
+  await bootWorld(page);
+  const c = await entryCenter(page);
+  for (let round = 0; round < 3; round++) {
+    await page.mouse.click(c.x, c.y);
+    await page.mouse.click(c.x, c.y);   // before the module has necessarily loaded
+    await page.waitForTimeout(800);
+    const st = await entryState(page);
+    expect(st.pink).toBe(st.open);
+    if (st.open) { await page.keyboard.press("Escape"); await expect.poll(() => entryState(page)).toEqual({ open: false, pink: false }); }
+  }
+});
+
+test("opening by the command also turns the entry pink; shift-click keeps the older dropdown", async ({ page }) => {
+  await bootWorld(page);
+  await page.evaluate(() => lively.ide.commands.exec("lively.ide.searchPalette"));
+  await expect.poll(() => entryState(page)).toEqual({ open: true, pink: true });
+  await page.keyboard.press("Escape");
+  await expect.poll(() => entryState(page)).toEqual({ open: false, pink: false });
+
+  const c = await entryCenter(page);
+  await page.keyboard.down("Shift");
+  await page.mouse.click(c.x, c.y);
+  await page.keyboard.up("Shift");
+  await expect
+    .poll(() => page.evaluate(() => (lively.morphic.Menu && $world.submorphs.filter((m) => m.constructor.type === "lively.morphic.Menu").map((m) => m.items.map((i) => i.string).join("|"))) || []))
+    .toEqual([expect.stringContaining("Code search")]);
+  const menu = await page.evaluate(() => $world.submorphs.filter((m) => m.constructor.type === "lively.morphic.Menu").map((m) => m.items.map((i) => i.string)));
+  expect(menu[0]).not.toContain("Search morphs in this world");
+  expect(menu[0]).toContain("Search for files");
+  expect(await entryState(page)).toMatchObject({ open: false });
+});
