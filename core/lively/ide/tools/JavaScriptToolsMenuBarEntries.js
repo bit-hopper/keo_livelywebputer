@@ -43,6 +43,7 @@ lively.BuildSpec('lively.ide.tools.LivelySearchMenuBarEntry', lively.BuildSpec("
   morphMenuItems: function morphMenuItems() {
     function cmd(name) { return function() { lively.ide.commands.exec(name); }; }
     return [
+      ['Search palette (preview)', cmd('lively.ide.searchPalette')],
       ['Search morphs in this world', cmd('lively.ide.morphSearch')],
       ['Code search', cmd('lively.ide.codeSearch')],
       ['Search for worlds, modules, parts', cmd('lively.ide.resourceSearch')],

@@ -1,5 +1,5 @@
 module("lively.ide.commands.default")
-  .requires()
+  .requires("lively.ide.tools.Search")
   .toRun(function () {
     Object.extend(lively.ide.commands, {
       byName: {},
@@ -1534,38 +1534,48 @@ module("lively.ide.commands.default")
       "lively.ide.morphSearch": {
         description: "search morphs in this world by name",
         exec: function () {
-          lively.require("lively.ide.tools.Search").toRun(function () {
-            var Search = lively.ide.tools.Search;
-            function asCandidate(item) {
-              return { isListItem: true, value: item, string: Search.listString(item) };
-            }
-            var candidates = Search.worldItems().map(asCandidate);
-            if (candidates.length === 0) candidates = ["no named morphs"];
+          // Stays synchronous (Search.js is a dependency of this module): opening
+          // from inside an async module-load callback lost early keystrokes.
+          var Search = lively.ide.tools.Search;
+          function asCandidate(item) {
+            return { isListItem: true, value: item, string: Search.listString(item) };
+          }
+          var candidates = Search.worldItems().map(asCandidate);
+          if (candidates.length === 0) candidates = ["no named morphs"];
 
-            // Open right away so early keystrokes aren't lost; the saved-world
-            // results are added to the open list once the request returns.
-            var spec = {
-              prompt: "morph name or text: ",
-              candidates: candidates,
-              maxItems: 15,
-              actions: [
-                function showMorph(item) {
-                  if (item && item.run) item.run();
-                },
-              ],
-            };
-            var narrower = lively.ide.tools.SelectionNarrowing.getNarrower({
-              name: "lively.ide.morphSearch",
-              input: "",
-              spec: spec,
-            });
+          // Open right away so early keystrokes aren't lost; the saved-world
+          // results are added to the open list once the request returns.
+          var spec = {
+            prompt: "morph name or text: ",
+            candidates: candidates,
+            maxItems: 15,
+            actions: [
+              function showMorph(item) {
+                if (item && item.run) item.run();
+              },
+            ],
+          };
+          var narrower = lively.ide.tools.SelectionNarrowing.getNarrower({
+            name: "lively.ide.morphSearch",
+            input: "",
+            spec: spec,
+          });
 
-            Search.savedWorldItems(function (saved) {
-              var state = narrower.state;
-              if (!saved.length || !state || state.spec !== spec || !narrower.owner) return;
-              state.allCandidates = state.allCandidates.concat(saved.map(asCandidate));
-              narrower.filter(narrower.getInput());
-            });
+          Search.savedWorldItems(function (saved) {
+            var state = narrower.state;
+            if (!saved.length || !state || state.spec !== spec || !narrower.owner) return;
+            state.allCandidates = state.allCandidates.concat(saved.map(asCandidate));
+            narrower.filter(narrower.getInput());
+          });
+          return true;
+        },
+      },
+
+      "lively.ide.searchPalette": {
+        description: "open or close the search palette",
+        exec: function () {
+          lively.require("lively.ide.tools.SearchPalette").toRun(function () {
+            lively.ide.tools.SearchPalette.toggle();
           });
           return true;
         },
