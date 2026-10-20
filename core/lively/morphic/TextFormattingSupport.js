@@ -155,6 +155,11 @@ module("lively.morphic.TextFormattingSupport")
       // height back and correct the box. The busy flag (on the DOM node, so
       // it isn't serialized) keeps fit, the setExtent hook above and this
       // correction from re-triggering each other.
+      // The correction only runs once the text node is attached to the page.
+      // While a saved world is being rendered, setExtent runs from initHTML
+      // with the morph already in the world but its node not yet in the DOM,
+      // where offsetHeight reads 0: the box would be set to border + padding
+      // alone (12px) and the text would hang out below it.
       fit: function fit() {
         if (!this.richTextToolbarEnabled || !this.fixedWidth) return ORIGINAL.fit.call(this);
         var node = this.renderContext() && this.renderContext().textNode;
@@ -163,7 +168,7 @@ module("lively.morphic.TextFormattingSupport")
         try {
           var result = ORIGINAL.fit.call(this);
           this.setTextNodeToFitMorphExtent();
-          if (node && this.world() && !this.fixedHeight) {
+          if (node && node.isConnected && this.world() && !this.fixedHeight) {
             var padding = this.getPadding(),
                 want = node.offsetHeight + this.getBorderWidth() * 2 + padding.top() + padding.bottom(),
                 extent = this.getExtent();
