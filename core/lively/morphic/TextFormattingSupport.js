@@ -95,13 +95,92 @@ module("lively.morphic.TextFormattingSupport")
       document.head.appendChild(styleEl);
     }
 
+    // A text whose height should hug its content (fixedHeight false) only
+    // re-fits on key-up and when added to the world. Pasting, cutting, undo,
+    // and every toolbar format change (font size, family, ...) rewrite the
+    // content without either, leaving the box taller or shorter than its
+    // text. Watch the content and re-fit, debounced. Mutations of the text
+    // node's own attributes are ignored: those are fit()'s own writes
+    // (setTextNodeToFitMorphExtent), and reacting to them would loop. The
+    // observer lives on the DOM node, not the morph, so it is never
+    // serialized and a re-rendered node simply gets a fresh one.
+    function watchContentSize(text) {
+      var node = text.renderContext() && text.renderContext().textNode;
+      if (!node || node._richTextFitObserver || typeof MutationObserver === "undefined") return;
+      var pending = null;
+      var observer = new MutationObserver(function (records) {
+        if (!records.some(function (r) { return r.target !== node; })) return;
+        if (pending) return;
+        pending = setTimeout(function () {
+          pending = null;
+          if (text.world()) text.fit();
+        }, 40);
+      });
+      observer.observe(node, {
+        childList: true, characterData: true, subtree: true,
+        attributes: true, attributeFilter: ["style", "class"]
+      });
+      node._richTextFitObserver = observer;
+    }
+
+    // setExtent and fit are overridden below, but they are Text's own
+    // methods: inside addMethods, $super means the SUPERCLASS's method
+    // (Morph's), which has no fit() at all and would skip Text's own
+    // setExtent. So call the originals directly. Kept on the prototype so a
+    // module reload doesn't capture (and then recurse into) its own override.
+    var TextProto = lively.morphic.Text.prototype;
+    if (!TextProto._richTextOriginals) {
+      Object.defineProperty(TextProto, "_richTextOriginals", {
+        value: { setExtent: TextProto.setExtent, fit: TextProto.fit },
+        enumerable: false
+      });
+    }
+    var ORIGINAL = TextProto._richTextOriginals;
+
     lively.morphic.Text.addMethods("rich text formatting toolbar", {
+      // Resizing (e.g. dragging a halo handle) reflows the text but never
+      // re-fit the height, so widening a box left it as tall as it was when
+      // the text was still wrapped into more lines.
+      setExtent: function setExtent(value) {
+        var result = ORIGINAL.setExtent.call(this, value);
+        if (this.richTextToolbarEnabled && this.fixedWidth && !this.fixedHeight) this.fit();
+        return result;
+      },
+      // fit() measures through getTextExtent(), which clears the text node's
+      // max-width and only puts it back for white-space "pre" (HTML.js). A
+      // fixed-width text is left uncapped, so its lines run out to the box's
+      // right edge, past the right padding. Put the cap back after measuring.
+      // The measurement was taken WITHOUT the cap, so it can count fewer
+      // lines than the capped text really wraps into: read the real rendered
+      // height back and correct the box. The busy flag (on the DOM node, so
+      // it isn't serialized) keeps fit, the setExtent hook above and this
+      // correction from re-triggering each other.
+      fit: function fit() {
+        if (!this.richTextToolbarEnabled || !this.fixedWidth) return ORIGINAL.fit.call(this);
+        var node = this.renderContext() && this.renderContext().textNode;
+        if (node && node._richTextFitBusy) return;
+        if (node) node._richTextFitBusy = true;
+        try {
+          var result = ORIGINAL.fit.call(this);
+          this.setTextNodeToFitMorphExtent();
+          if (node && this.world() && !this.fixedHeight) {
+            var padding = this.getPadding(),
+                want = node.offsetHeight + this.getBorderWidth() * 2 + padding.top() + padding.bottom(),
+                extent = this.getExtent();
+            if (Math.abs(extent.y - want) > 1) ORIGINAL.setExtent.call(this, lively.pt(extent.x, want));
+          }
+          return result;
+        } finally {
+          if (node) node._richTextFitBusy = false;
+        }
+      },
       onFocusAction: function onFocusAction() {
         if (!this.richTextToolbarEnabled) return;
         // also here, not just in enableFormattingToolbar: a morph restored
         // from a saved world has the flag but never had that method called
         ensureGlowCss();
         this.addStyleClassName(GLOW_CLASS);
+        watchContentSize(this);
         lively.morphic.TextFormattingToolbar.showFor(this);
       },
       onBlurAction: function onBlurAction() {
@@ -112,6 +191,7 @@ module("lively.morphic.TextFormattingSupport")
         this.richTextToolbarEnabled = true;
         ensureGlowCss();
         this.addStyleClassName(GLOW_CLASS);
+        watchContentSize(this);
         return this;
       },
       disableFormattingToolbar: function disableFormattingToolbar() {
