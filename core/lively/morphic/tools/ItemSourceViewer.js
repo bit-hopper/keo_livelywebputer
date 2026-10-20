@@ -53,11 +53,42 @@ module('lively.morphic.tools.ItemSourceViewer')
       return typeof json === 'string' ? lively.persistence.Serializer.parseJSON(json) : json;
     }
 
-    function concatenateScripts(scripts) {
-      return scripts.map(function (s) {
+    // Joins every extracted script under a "// --- owner.script ---" banner,
+    // preceded by an index of those banners with the line number each one
+    // starts on (the viewer shows a line-number gutter, so the numbers can
+    // be looked up directly).
+    function concatenateScripts(itemName, scripts) {
+      var sections = scripts.map(function (s) {
         var owner = s.ownerName || s.ownerClass || ('#' + s.ownerId);
-        return '// --- ' + owner + '.' + s.scriptName + ' ---\n' + s.source;
-      }).join('\n\n');
+        return {label: owner + '.' + s.scriptName,
+                text: '// --- ' + owner + '.' + s.scriptName + ' ---\n' + s.source};
+      });
+
+      var headerLineCount = 4 + sections.length + 1; // title, count, blank, column row, one per section, trailing blank
+      var line = headerLineCount + 1;
+      sections.forEach(function (sec) {
+        sec.line = line;
+        line += sec.text.split('\n').length + 1; // +1 for the blank separator line
+      });
+
+      var width = Math.max(4, String(line).length);
+      function pad(n) {
+        var s = String(n);
+        while (s.length < width) s = ' ' + s;
+        return s;
+      }
+
+      var header = [
+        '// Item: ' + itemName,
+        '// ' + sections.length + ' embedded method' + (sections.length === 1 ? '' : 's') +
+          ' (read-only; nothing here was evaluated)',
+        '//',
+        '// ' + pad('line') + '  method'
+      ].concat(sections.map(function (sec) {
+        return '// ' + pad(sec.line) + '  ' + sec.label;
+      }), ['']);
+
+      return header.concat([sections.map(function (sec) { return sec.text; }).join('\n\n')]).join('\n');
     }
 
     // The root item's own __LivelyClassName__/__SourceModuleName__, straight
@@ -157,18 +188,37 @@ module('lively.morphic.tools.ItemSourceViewer')
             scripts = lively.persistence.Serializer.scriptSourcesIn(jso);
 
         function openWith(content) {
-          return $world.addCodeEditor({
-            title: 'Source: ' + itemName,
+          var editor = $world.addCodeEditor({
+            title: 'Source: ' + itemName + ' (' + content.split('\n').length + ' lines)',
             content: content,
             textMode: 'javascript',
-            theme: 'twilight',
+            theme: 'tomorrow_night_bright', // pure black background, high-contrast syntax colors
+            fontSize: 14,
             allowInput: false,
-            gutter: false,
-            extent: lively.pt(700, 500)
+            gutter: true,
+            showIndents: true,
+            showActiveLine: true,
+            printMargin: false,
+            lineWrapping: false,
+            extent: lively.pt(800, 560)
           });
+          // Not styling options on CodeEditor, so set them on the ace editor:
+          // fold widgets in the gutter let a long method be collapsed, and the
+          // font stack uses whichever legible coding font the OS already has
+          // (nothing vendored) with a little extra line spacing. Cascadia
+          // Mono, not Cascadia Code: the latter draws === and !== as
+          // ligatures, which misleads when reading unfamiliar source.
+          editor.withAceDo(function (ed) {
+            ed.setOption('showFoldWidgets', true);
+            ed.setOption('foldStyle', 'markbegin');
+            ed.setOption('fontFamily', "'Cascadia Mono',Consolas,'SF Mono',Menlo,'DejaVu Sans Mono',monospace");
+            ed.container.style.lineHeight = '1.55';
+            ed.renderer.updateFontSize();
+          });
+          return editor;
         }
 
-        if (scripts.length) { return openWith(concatenateScripts(scripts)); }
+        if (scripts.length) { return openWith(concatenateScripts(itemName, scripts)); }
         describeClassBackedItem(jso, openWith);
       }
     };
