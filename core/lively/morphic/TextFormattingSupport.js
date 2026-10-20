@@ -75,9 +75,33 @@ module("lively.morphic.TextFormattingSupport")
     // every instance and the activeInstance bug above never triggers.
     // Persistence safety is unaffected: a boolean instance property
     // serializes fine (unlike a closure), same as any other Text style flag.
+    // Replaces the browser's native focus ring (a black `outline: auto` that
+    // Main.js puts on every `.visibleSelection:focus`) with a pink glow, for
+    // rich text morphs only. Done as a scoped CSS class rather than a JS style
+    // write on the inner editable node, which is rebuilt on re-render.
+    var GLOW_CLASS = "rich-text-glow";
+    function ensureGlowCss() {
+      var STYLE_ID = "rich-text-glow-style";
+      if (document.getElementById(STYLE_ID)) return;
+      var styleEl = document.createElement("style");
+      styleEl.id = STYLE_ID;
+      styleEl.textContent = [
+        ".Text." + GLOW_CLASS + " .visibleSelection:focus {",
+        "  outline: none;",
+        "  border-radius: 7px;",
+        "  box-shadow: 0 0 0 1px rgba(255,64,160,0.9), 0 0 10px 3px rgba(255,64,160,0.55);",
+        "}"
+      ].join("\n");
+      document.head.appendChild(styleEl);
+    }
+
     lively.morphic.Text.addMethods("rich text formatting toolbar", {
       onFocusAction: function onFocusAction() {
         if (!this.richTextToolbarEnabled) return;
+        // also here, not just in enableFormattingToolbar: a morph restored
+        // from a saved world has the flag but never had that method called
+        ensureGlowCss();
+        this.addStyleClassName(GLOW_CLASS);
         lively.morphic.TextFormattingToolbar.showFor(this);
       },
       onBlurAction: function onBlurAction() {
@@ -86,6 +110,8 @@ module("lively.morphic.TextFormattingSupport")
       },
       enableFormattingToolbar: function enableFormattingToolbar() {
         this.richTextToolbarEnabled = true;
+        ensureGlowCss();
+        this.addStyleClassName(GLOW_CLASS);
         return this;
       },
       disableFormattingToolbar: function disableFormattingToolbar() {

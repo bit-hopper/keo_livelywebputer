@@ -231,6 +231,9 @@ module("lively.morphic.TextFormattingToolbar")
           var inst = NS.sharedInstance;
           if (inst && inst._target === targetMorph && !inst._interacting && !inst._colorPickerOpen) {
             inst.setVisible(false);
+            // Focus has really left the text: drop its text selection too
+            // (see Text>>clearStaleSelection in Events.js).
+            targetMorph.clearStaleSelection();
           }
         }, 200);
       },

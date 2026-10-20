@@ -1748,14 +1748,39 @@ lively.morphic.Text.addMethods(
         this.logChangeForUndo();
         $super(evt);
         delete this.constructor.prototype.activeInstance;
+        // The formatting toolbar (TextFormattingSupport.js) decides itself
+        // when focus has really left its text -- it must keep the selection
+        // while a toolbar button or the color picker is in use -- and clears
+        // it from there.
+        if (!this.richTextToolbarEnabled) this.clearStaleSelection();
         // force that some morph has a focus
         var world = this.world();
         if (!world) return;
         (function() {
             if (!world.focusedMorph()) world.focus();
         }).delay(0);
-        
 
+
+    },
+
+    // The browser keeps a blurred contenteditable's selection range, and
+    // keeps painting it as a blue highlight, until something else replaces
+    // it -- a click on empty world space never does. Drops that range, but
+    // only when it lies inside this text (never someone else's selection)
+    // and only when focus moved within the page: the window itself losing
+    // focus (tab switch) also blurs the text, and the selection should
+    // still be there when the user comes back. Doesn't touch
+    // priorSelectionRange, which is what getSelectionRange() reports for an
+    // unfocused text.
+    clearStaleSelection: function() {
+        try {
+            if (!document.hasFocus()) return;
+            var sel = window.getSelection(),
+                node = this.renderContext().textNode;
+            if (sel && sel.rangeCount && sel.anchorNode && node && node.contains(sel.anchorNode)) {
+                sel.removeAllRanges();
+            }
+        } catch (e) { /* no render context / selection API: nothing to clear */ }
     },
 
     onFocus: function($super, evt) {

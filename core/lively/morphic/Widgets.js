@@ -2098,9 +2098,29 @@ lively.morphic.World.addMethods(
 
         items.pushAll(partNames.collect(function(ea) { return [ea, function() {
             var partSpaceName = 'PartsBin/Basic',
-                part = lively.PartsBin.getPart(ea, partSpaceName);
+                hand = lively.morphic.World.current().firstHand();
+            // "Text" is a fresh rich text morph with the live formatting
+            // toolbar switched on (see TextFormattingSupport.js) rather than
+            // the classic PartsBin Text part -- that one is a pasted document
+            // fragment, and loading it also trips the unsigned-part trust gate.
+            if (ea === 'Text') {
+                lively.require('lively.morphic.TextFormattingSupport').toRun(function() {
+                    var text = new lively.morphic.Text(lively.rect(0, 0, 240, 60), 'Type here');
+                    text.applyStyle({
+                        fontFamily: 'Arial, sans-serif', fontSize: 11,
+                        textColor: Color.black, fill: null,
+                        borderWidth: 1, borderColor: Color.rgb(255, 120, 190), borderRadius: 10,
+                        padding: lively.rect(5, 5, 0, 0),
+                        fixedWidth: true, fixedHeight: false, allowInput: true
+                    });
+                    text.enableFormattingToolbar();
+                    hand.grabMorph(text);
+                });
+                return;
+            }
+            var part = lively.PartsBin.getPart(ea, partSpaceName);
             if (!part) return;
-            lively.morphic.World.current().firstHand().grabMorph(part);
+            hand.grabMorph(part);
         }]}))
 
         var drawing = ["Drawing Canvas", this.openDrawingCanvas];
