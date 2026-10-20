@@ -155,3 +155,24 @@ test("a saved-world text match shows the text", async ({ page }) => {
     .poll(() => shown(page))
     .toEqual(['(unnamed)  <Text>  "quokka notes"  — in world "Notes"']);
 });
+
+test("world items come back in the shared shape", async ({ page }) => {
+  await openWorld(page);
+  await addText(page, "Shaped", "some   spaced\ntext");
+  const item = await page.evaluate(() =>
+    new Promise((resolve) =>
+      lively.require("lively.ide.tools.Search").toRun(function () {
+        var it = lively.ide.tools.Search.worldItems().find(function (i) { return i.name === "Shaped"; });
+        resolve({
+          type: it.type, group: it.group, cls: it.cls, text: it.text, world: it.world,
+          hasMorph: !!it.morph, hasRun: typeof it.run === "function",
+          line: lively.ide.tools.Search.listString(it),
+        });
+      }),
+    ),
+  );
+  expect(item).toEqual({
+    type: "text", group: "world", cls: "Text", text: "some spaced text", world: null,
+    hasMorph: true, hasRun: true, line: 'Shaped  <Text>  "some spaced text"',
+  });
+});

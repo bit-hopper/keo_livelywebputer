@@ -1534,110 +1534,38 @@ module("lively.ide.commands.default")
       "lively.ide.morphSearch": {
         description: "search morphs in this world by name",
         exec: function () {
-          function textOf(ea) {
-            var s = ea.isText && Object.isString(ea.textString) ? ea.textString : "";
-            return s.replace(/\s+/g, " ").trim();
-          }
-          var morphs = $world
-            .withAllSubmorphsSelect(function (ea) {
-              return (
-                ea !== $world &&
-                ((Object.isString(ea.name) && ea.name !== "") || textOf(ea) !== "") &&
-                !ea.isHalo &&
-                !ea.isEpiMorph &&
-                !/^NarrowList/.test(ea.name) &&
-                !(ea.ownerChain && ea.ownerChain().some(function (o) { return o.isHalo || /^NarrowList/.test(o.name); }))
-              );
-            });
-          var candidates = morphs.map(function (ea) {
-            var className = (ea.constructor.type || "morph").replace(/^lively\.morphic\./, ""),
-              text = textOf(ea);
-            if (text.length > 60) text = text.slice(0, 60) + "…";
-            return {
-              isListItem: true,
-              value: ea,
-              string:
-                (ea.name || "(unnamed)") + "  <" + className + ">" + (text ? "  \"" + text + "\"" : ""),
+          lively.require("lively.ide.tools.Search").toRun(function () {
+            var Search = lively.ide.tools.Search;
+            function asCandidate(item) {
+              return { isListItem: true, value: item, string: Search.listString(item) };
+            }
+            var candidates = Search.worldItems().map(asCandidate);
+            if (candidates.length === 0) candidates = ["no named morphs"];
+
+            // Open right away so early keystrokes aren't lost; the saved-world
+            // results are added to the open list once the request returns.
+            var spec = {
+              prompt: "morph name or text: ",
+              candidates: candidates,
+              maxItems: 15,
+              actions: [
+                function showMorph(item) {
+                  if (item && item.run) item.run();
+                },
+              ],
             };
-          });
+            var narrower = lively.ide.tools.SelectionNarrowing.getNarrower({
+              name: "lively.ide.morphSearch",
+              input: "",
+              spec: spec,
+            });
 
-          // Morphs inside the signed-in user's saved worlds. The /@handle
-          // listing already carries each public object's payload, so one
-          // request covers every world; private (encrypted) ones have no
-          // readable registry and are skipped.
-          function savedWorldCandidates(thenDo) {
-            var did = lively.identity && lively.identity.did;
-            if (!did || !did.isLoggedIn() || !window.fetch) return thenDo([]);
-            var handle = did.currentUser().handle;
-            fetch("/@" + encodeURIComponent(handle), {
-              credentials: "include",
-              headers: { Accept: "application/json" },
-            })
-              .then(function (r) { return r.json(); })
-              .then(function (body) {
-                var out = [];
-                (body.objects || []).forEach(function (obj) {
-                  var registry = obj.type === "world" && obj.record && obj.record.payload && obj.record.payload.registry;
-                  if (!registry) return;
-                  var worldName = (obj.state && obj.state.name) || obj.objId,
-                    seen = {};
-                  Object.keys(registry).forEach(function (k) {
-                    var e = registry[k],
-                      cls = e && e.__LivelyClassName__;
-                    if (!cls || !/^lively\.(morphic|identity)\./.test(cls) || /Shape|Layout|StyleSheet|Hand|Trait|Connection/.test(cls)) return;
-                    var name = Object.isString(e.name) ? e.name : "",
-                      text = Object.isString(e.textString) ? e.textString : Object.isString(e.storedTextString) ? e.storedTextString : "";
-                    text = text.replace(/\s+/g, " ").trim();
-                    if (!name && !text) return;
-                    if (text.length > 60) text = text.slice(0, 60) + "…";
-                    var string =
-                      (name || "(unnamed)") + "  <" + cls.replace(/^lively\.(morphic|identity)\./, "") + ">" +
-                      (text ? "  \"" + text + "\"" : "") + "  — in world \"" + worldName + "\"";
-                    if (seen[string]) return;
-                    seen[string] = true;
-                    out.push({
-                      isListItem: true,
-                      value: { savedWorldUrl: "/@" + handle + "/" + obj.objId },
-                      string: string,
-                    });
-                  });
-                });
-                thenDo(out);
-              })
-              .catch(function () { thenDo([]); });
-          }
-
-          if (candidates.length === 0) candidates = ["no named morphs"];
-
-          // Open right away so early keystrokes aren't lost; the saved-world
-          // results are added to the open list once the request returns.
-          var spec = {
-            prompt: "morph name or text: ",
-            candidates: candidates,
-            maxItems: 15,
-            actions: [
-              function showMorph(item) {
-                if (!item || Object.isString(item)) return;
-                if (item.savedWorldUrl) return window.open(item.savedWorldUrl, "_blank");
-                if (!item.world()) return;
-                var win = item.getWindow && item.getWindow();
-                if (win) win.comeForward();
-                else item.bringToFront();
-                item.showHalos();
-              },
-            ],
-          };
-          var narrower = lively.ide.tools.SelectionNarrowing.getNarrower({
-            name: "lively.ide.morphSearch",
-            input: "",
-            spec: spec,
-          });
-
-          savedWorldCandidates(function (saved) {
-            var state = narrower.state;
-            if (!saved.length || !state || state.spec !== spec || !narrower.owner) return;
-            state.allCandidates = state.allCandidates.concat(saved);
-            narrower.filter(narrower.getInput());
+            Search.savedWorldItems(function (saved) {
+              var state = narrower.state;
+              if (!saved.length || !state || state.spec !== spec || !narrower.owner) return;
+              state.allCandidates = state.allCandidates.concat(saved.map(asCandidate));
+              narrower.filter(narrower.getInput());
+            });
           });
           return true;
         },
