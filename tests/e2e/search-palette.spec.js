@@ -255,8 +255,8 @@ test("preview follows the highlighted row and its buttons work", async ({ page, 
 
   // Copy name: a real click; the clipboard gets the name
   await page.getByRole("button", { name: "Copy name" }).click();
+  await expect.poll(async () => (await previewTexts(page)).texts).toContain("Copied");   // shown for 1.2 s only: check it first
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("rowtest1");
-  await expect.poll(async () => (await previewTexts(page)).texts).toContain("Copied");
 
   // the primary button runs the row's action and closes
   await page.getByRole("button", { name: "Preview action" }).click();
@@ -301,4 +301,51 @@ test("a world's preview lists its morph count, visibility and creation date", as
   const p = await previewTexts(page);
   expect(p.texts).toEqual(expect.arrayContaining(["Neon Diary", "World", "Visibility", "Private", "Created", "Opens", "In a new tab", "Open world  \u21b5"]));
   expect(p.texts.some((t) => /2026/.test(t))).toBe(true);
+});
+
+// ---- code scope (runtime code search; nothing goes to the server)
+
+test("Code scope finds runtime code, needs two characters, and Enter opens the code browser", async ({ page }) => {
+  const requests = [];
+  // The page itself GETs CommandLineServer at boot; what must never happen is a command run (POST) or an eval.
+  page.on("request", (r) => { if (r.method() !== "GET" && /nodejs\/(CommandLineServer|NodeJSEvalServer|PtyServer)/.test(r.url())) requests.push(r.method() + " " + r.url()); });
+  await openWithMorphs(page, 0);
+  await page.evaluate(() => {
+    window.__browsed = [];
+    lively.ide.browse = function () { window.__browsed.push(Array.prototype.slice.call(arguments)); };
+  });
+
+  // one character: no code search at all
+  await page.keyboard.type("w");
+  await page.waitForTimeout(500);
+  expect(await page.evaluate(() => lively.ide.tools.SearchPalette.current.codeItems.length)).toBe(0);
+
+  await page.keyboard.type("orldItems");
+  await expect
+    .poll(() => page.evaluate(() => lively.ide.tools.SearchPalette.current.codeItems.map((i) => i.name)))
+    .toContain("lively.ide.tools.Search>>worldItems");
+  await expect.poll(() => state(page)).toMatchObject({ pills: expect.arrayContaining([expect.stringMatching(/^Code  [1-9]/)]) });
+
+  // the preview describes it
+  const texts = (await previewTexts(page)).texts;
+  expect(texts).toEqual(expect.arrayContaining(["Kind", "Object", "Member", "Opens", "In the code browser", "Open in browser  \u21b5"]));
+
+  // Enter opens the code browser on that method (stubbed here: it opens a whole window)
+  await page.getByRole("button", { name: /^Result: lively\.ide\.tools\.Search>>worldItems$/ }).click();
+  await expect.poll(() => page.evaluate(() => window.__browsed)).toContainEqual(["lively.ide.tools.Search", "worldItems", "Global.lively.ide.tools.Search"]);
+  expect(requests).toEqual([]);   // no shell command / eval was sent
+});
+
+test("a late code answer for an older query is dropped, and the palette's own morphs are not hits", async ({ page }) => {
+  await openWithMorphs(page, 0);
+  await page.keyboard.type("worldIt");
+  await page.keyboard.type("ems");
+  await expect
+    .poll(() => page.evaluate(() => lively.ide.tools.SearchPalette.current.codeItems.every((i) => /worlditems/i.test(i.name + (i.text || "")))))
+    .toBe(true);
+  const own = await page.evaluate(() => {
+    var s = lively.ide.tools.SearchPalette.current;
+    return s.codeItems.filter((i) => i.cls === "script").length;
+  });
+  expect(own).toBe(0);
 });

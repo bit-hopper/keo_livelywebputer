@@ -178,6 +178,46 @@ Object.extend(lively.ide.tools.Search, {
     lively.ide.tools.Search.fetchSaved(function (saved) { thenDo(saved.morphs); }, { worlds: false });
   },
 
+  CODE_CAP: 200,
+
+  // Runtime code (classes, methods, namespaces, scripts, buildspecs) whose name
+  // or source contains the query. Reuses the code search window's own scan
+  // (searchInRuntime / browseCode); neither needs the window, only a host that
+  // has world() and withAllMethodsDo, so they are called on a stand-in. Nothing
+  // here touches the server: the file/grep half of that tool runs a shell on the
+  // server, which is admin-only and not used.
+  // opts.exclude(found) drops a hit (the palette's own morphs). Calls
+  // thenDo(items), items capped at CODE_CAP, [] on any failure.
+  codeItems: function (query, thenDo, opts) {
+    var Search = lively.ide.tools.Search;
+    lively.require("lively.ide.tools.CodeSearch").toRun(function () {
+      var store = lively.BuildSpec("lively.ide.tools.CodeSearch").attributeStore,
+        host = { world: function () { return $world; }, withAllMethodsDo: store.withAllMethodsDo };
+      try {
+        store.searchInRuntime.call(host, query, function (err, list) {
+          if (err || !list) return thenDo([]);
+          var items = [];
+          list.forEach(function (entry) {
+            var found = entry.value;
+            if (!found || items.length >= Search.CODE_CAP) return;
+            if (opts && opts.exclude && opts.exclude(found)) return;
+            var name = found.objectName + (found.selector ? ">>" + found.selector : "");
+            items.push({
+              type: "code", group: "code", name: name, cls: found.type,
+              text: found.matchedAs === "sourceMatch" ? Search.snippet(found.match) : "",
+              world: null, path: null, meta: null, morph: null, url: null,
+              info: { object: found.objectName, member: found.selector || "" },
+              run: function () { store.browseCode.call({}, found); },
+            });
+          });
+          thenDo(items);
+        });
+      } catch (e) {
+        thenDo([]);
+      }
+    });
+  },
+
   // `name  <Class>  "text"  — in world "X"`: the line the plain list shows.
   listString: function (item) {
     if (item.type === "world") return item.name + "  <World>" + (item.meta ? "  " + item.meta : "");

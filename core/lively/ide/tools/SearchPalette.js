@@ -73,7 +73,10 @@ module("lively.ide.tools.SearchPalette")
       { id: "world", title: "IN THIS WORLD", scope: "morphs" },
       { id: "worlds", title: "SAVED WORLDS", scope: "worlds" },
       { id: "saved", title: "IN SAVED WORLDS", scope: "morphs" },
+      { id: "code", title: "CODE", scope: "code" },
     ];
+    var CODE_MIN_QUERY = 2;        // a one-letter code search is all noise
+    var CODE_DELAY = 200;          // ms after the last keystroke
 
     // Width of a string in the palette's font, via canvas: synchronous, so it cannot
     // race font loading or DOM layout the way reading a rendered span can.
@@ -139,6 +142,7 @@ module("lively.ide.tools.SearchPalette")
         if (!s) return;
         P.current = null;
         s.closed = true;
+        clearTimeout(s.codeTimer);
         lively.identity.HomestarUI.closeScrim(s.scrim);
       },
 
@@ -152,6 +156,8 @@ module("lively.ide.tools.SearchPalette")
           scopeIndex: 0,
           query: "",
           items: Search.worldItems(),   // live morphs; saved-world items join later
+          codeItems: [],                // runtime code hits for the current query
+          codeSeq: 0,
           closed: false,
         });
 
@@ -321,6 +327,7 @@ module("lively.ide.tools.SearchPalette")
           s.emptyIcon.setPosition(lively.pt(0, top + 90));
           s.bodyTitle.setPosition(lively.pt(0, top + 138));
           s.bodyHint.setPosition(lively.pt(0, top + 166));
+          s.previewItem = null;   // the pane's size may have changed: rebuild it
           if (s.matches) P.renderRows(true);
         }
         s.layout = layout;
@@ -351,7 +358,34 @@ module("lively.ide.tools.SearchPalette")
         var s = lively.ide.tools.SearchPalette.current;
         if (!s || s.query === q) return;
         s.query = q;
+        s.codeItems = [];   // hits for the old query would be wrong now
+        lively.ide.tools.SearchPalette.fetchCode();
         lively.ide.tools.SearchPalette.refresh();
+      },
+
+      // Runtime code hits for the current query, after a short pause in typing.
+      // A late answer for an older query is dropped.
+      fetchCode: function () {
+        var P = lively.ide.tools.SearchPalette, s = P.current;
+        if (!s) return;
+        clearTimeout(s.codeTimer);
+        var q = s.query.trim();
+        s.codeSeq++;
+        if (q.length < CODE_MIN_QUERY) return;
+        var seq = s.codeSeq;
+        s.codeTimer = setTimeout(function () {
+          lively.ide.tools.Search.codeItems(q, function (items) {
+            if (s.closed || seq !== s.codeSeq) return;
+            s.codeItems = items;
+            P.refresh(true);
+          }, {
+            // not the palette's own morphs, which are in the world while it is open
+            exclude: function (found) {
+              return !!(found.object && found.object.isMorph && found.object.ownerChain &&
+                found.object.ownerChain().indexOf(s.scrim) >= 0) || found.object === s.scrim;
+            },
+          });
+        }, CODE_DELAY);
       },
 
       // Items matching a query, ranked: name prefix > name contains > text
@@ -376,14 +410,15 @@ module("lively.ide.tools.SearchPalette")
       countsFor: function (matches) {
         var morphs = matches.filter(function (i) { return i.group === "world" || i.group === "saved"; }).length;
         var worlds = matches.filter(function (i) { return i.group === "worlds"; }).length;
-        return { all: matches.length, morphs: morphs, worlds: worlds, code: 0, files: 0 };
+        var code = matches.filter(function (i) { return i.group === "code"; }).length;
+        return { all: matches.length, morphs: morphs, worlds: worlds, code: code, files: 0 };
       },
 
       // Re-render everything that depends on scope/query/items.
       refresh: function (keepSelection) {
         var P = lively.ide.tools.SearchPalette, s = P.current;
         if (!s || s.closed) return;
-        var matches = P.match(s.items, s.query);
+        var matches = P.match(s.items, s.query).concat(s.codeItems || []);
         s.matches = matches;
         var counts = P.countsFor(matches);
 
@@ -393,7 +428,8 @@ module("lively.ide.tools.SearchPalette")
         var x = SIDE;
         s.pills.forEach(function (pill, i) {
           var scope = SCOPES[i], selected = i === s.scopeIndex,
-            text = scope.label + (s.query ? "  " + counts[scope.id] : ""),
+            n = counts[scope.id],
+            text = scope.label + (s.query ? "  " + (scope.id === "code" && n >= lively.ide.tools.Search.CODE_CAP ? n + "+" : n) : ""),
             w = lively.identity.HomestarUI.textW(text, 12, true) + 28;
           pill.setExtent(lively.pt(w, PILL_H));
           pill.setPosition(lively.pt(x, FIELD_H + (PILLS_H - PILL_H) / 2));
@@ -416,6 +452,7 @@ module("lively.ide.tools.SearchPalette")
         if (scopeId === "all") return matches;
         if (scopeId === "morphs") return matches.filter(function (i) { return i.group === "world" || i.group === "saved"; });
         if (scopeId === "worlds") return matches.filter(function (i) { return i.group === "worlds"; });
+        if (scopeId === "code") return matches.filter(function (i) { return i.group === "code"; });
         return [];
       },
 
@@ -611,6 +648,13 @@ module("lively.ide.tools.SearchPalette")
         r.item.run();
       },
 
+      // What Enter does for an item: the button's label and the footer's hint.
+      actionOf: function (item) {
+        if (item.type === "code") return { label: "Open in browser", hint: "open in code browser" };
+        if (item.url) return { label: "Open world", hint: "open world in new tab" };
+        return { label: "Show halo", hint: "show halo" };
+      },
+
       // key/value lines shown under the preview art for an item
       previewFields: function (item) {
         var fields = [];
@@ -621,6 +665,15 @@ module("lively.ide.tools.SearchPalette")
           var d = new Date(info.created);
           if (!isNaN(d.getTime())) fields.push(["Created", d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })]);
           fields.push(["Opens", "In a new tab"]);
+          return fields;
+        }
+        if (item.type === "code") {
+          var ci = item.info || {};
+          fields.push(["Kind", item.cls]);
+          fields.push(["Object", ci.object || ""]);
+          if (ci.member) fields.push(["Member", ci.member]);
+          if (item.text) fields.push(["Match", "\u201c" + item.text + "\u201d"]);
+          fields.push(["Opens", "In the code browser"]);
           return fields;
         }
         fields.push(["Class", item.cls]);
@@ -643,7 +696,12 @@ module("lively.ide.tools.SearchPalette")
           on = !!(s.wide && r && !s.emptyShown);
         s.preview.setVisible(on);
         s.previewDiv.setVisible(on);
+        // Late results (saved worlds, code) re-render the list; leave the preview
+        // alone when it is already showing this item, or a click in progress on one
+        // of its buttons would land on a morph that has just been replaced.
+        if (on && s.previewItem === r.item && s.preview.submorphs.length) return;
         s.preview.removeAllMorphs();
+        s.previewItem = on ? r.item : null;
         if (!on) return;
 
         var item = r.item, type = TYPES[item.type] || TYPES.box,
@@ -678,7 +736,7 @@ module("lively.ide.tools.SearchPalette")
 
         // buttons, pinned to the bottom of the pane
         var bodyH = s.preview.getExtent().y, BH = 36, by = bodyH - 18 - BH,
-          primaryText = (item.url ? "Open world" : "Show halo") + "  ↵",
+          primaryText = P.actionOf(item).label + "  ↵",
           w1 = Math.ceil(textWidth(primaryText, 13, true)) + 36,
           w2 = Math.ceil(textWidth("Copy name", 13, true)) + 32;
 
@@ -730,7 +788,7 @@ module("lively.ide.tools.SearchPalette")
         var s = lively.ide.tools.SearchPalette.current;
         if (!s) return;
         var r = s.rows && s.rows[s.selIndex],
-          action = !r ? "" : r.item.url ? "open world in new tab" : "show halo";
+          action = !r ? "" : lively.ide.tools.SearchPalette.actionOf(r.item).hint;
         s.footer.textString = "↑↓ navigate      " + (action ? "↵ " + action + "      " : "") + "tab scope      esc close";
       },
     };
