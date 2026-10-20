@@ -131,7 +131,10 @@ Object.extend(lively.ide.tools.Search, {
       type: folder ? "folder" : "file", group: "files", name: name,
       cls: folder ? "Folder" : ext ? ext.toUpperCase() : "File", text: "", world: null, path: null,
       meta: bits.join("  \u00b7  "), morph: null, url: null,
-      info: { folder: folder, ext: ext, size: size, visibility: vis, created: obj.created || null, fileCount: st.fileCount || 0 },
+      info: { folder: folder, ext: ext, size: size, visibility: vis, created: obj.created || null, fileCount: st.fileCount || 0,
+              // a public image can be shown as it is; a private one would need a passkey decrypt
+              fileThumb: !folder && vis === "public" && size != null && size <= 3 * 1024 * 1024 &&
+                /^image\//.test(String(payload.mime || "")) ? { objId: obj.objId } : null },
       run: function () { Search.openFile(obj); },
     };
   },
@@ -170,7 +173,7 @@ Object.extend(lively.ide.tools.Search, {
     if (!did || !did.isLoggedIn() || !window.fetch) return thenDo({ morphs: [], worlds: [], files: [] });
     var handle = did.currentUser().handle,
       base = "/@" + encodeURIComponent(handle),
-      counts = {}, morphs = [], files = [], worldList = [],
+      counts = {}, registries = {}, morphs = [], files = [], worldList = [],
       wantWorlds = !opts || opts.worlds !== false,
       pending = wantWorlds ? 2 : 1;
 
@@ -193,7 +196,8 @@ Object.extend(lively.ide.tools.Search, {
         return {
           type: "world", group: "worlds", name: name, cls: "World", text: "", world: null,
           path: null, meta: bits.join("  ·  "), morph: null, url: url,
-          info: { morphs: n != null ? n : null, visibility: w.visibility || "public", created: w.created || null },
+          info: { morphs: n != null ? n : null, visibility: w.visibility || "public", created: w.created || null,
+                  thumb: registries[w.objId] || null },
           run: function () { window.open(url, "_blank"); },
         };
       });
@@ -228,10 +232,13 @@ Object.extend(lively.ide.tools.Search, {
           morphs.push({
             type: Search.typeOf(cls), group: "saved", name: name, cls: shortCls, text: text,
             world: worldName, path: null, meta: null, morph: null, url: url,
+            info: { thumb: { registry: registry, rootId: k } },
             run: function () { window.open(url, "_blank"); },
           });
         });
         counts[obj.objId] = count;
+        var rootId = obj.record.payload.id;
+        if (rootId != null && registry[rootId]) registries[obj.objId] = { registry: registry, rootId: rootId };
       });
       done();
     });
@@ -275,7 +282,9 @@ Object.extend(lively.ide.tools.Search, {
               type: "code", group: "code", name: name, cls: found.type,
               text: found.matchedAs === "sourceMatch" ? Search.snippet(found.match) : "",
               world: null, path: null, meta: null, morph: null, url: null,
-              info: { object: found.objectName, member: found.selector || "" },
+              info: { object: found.objectName, member: found.selector || "",
+                      // a class's "source" is just its name; a method's is real code
+                      source: found.methodSource && found.methodSource !== found.objectName ? String(found.methodSource).slice(0, 1500) : "" },
               run: function () { store.browseCode.call({}, found); },
             });
           });

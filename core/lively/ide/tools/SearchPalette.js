@@ -10,7 +10,7 @@
  */
 
 module("lively.ide.tools.SearchPalette")
-  .requires("lively.morphic.Complete", "lively.identity.HomestarUI", "lively.ide.tools.Search")
+  .requires("lively.morphic.Complete", "lively.identity.HomestarUI", "lively.ide.tools.Search", "lively.ide.tools.SearchThumbnail")
   .toRun(function () {
 
     var ACCENT = Color.rgb(240, 26, 105);
@@ -79,6 +79,7 @@ module("lively.ide.tools.SearchPalette")
     ];
     var CODE_MIN_QUERY = 2;        // a one-letter code search is all noise
     var CODE_DELAY = 200;          // ms after the last keystroke
+    var THUMB_DELAY = 120;         // ms a row stays highlighted before its thumbnail is loaded
 
     // Width of a string in the palette's font, via canvas: synchronous, so it cannot
     // race font loading or DOM layout the way reading a rendered span can.
@@ -154,6 +155,11 @@ module("lively.ide.tools.SearchPalette")
         P.current = null;
         s.closed = true;
         clearTimeout(s.codeTimer);
+        clearTimeout(s.thumbTimer);
+        document.removeEventListener("keydown", s.onDocKeydown, true);
+        document.removeEventListener("selectionchange", s.onSelectionChange);
+        // free the blob URLs of image thumbnails
+        Object.keys(s.thumbs).forEach(function (k) { if (s.thumbs[k].revoke) URL.revokeObjectURL(s.thumbs[k].src); });
         P.syncMenuEntry(false);
         lively.identity.HomestarUI.closeScrim(s.scrim);
       },
@@ -170,6 +176,8 @@ module("lively.ide.tools.SearchPalette")
           items: Search.worldItems(),   // live morphs; saved-world items join later
           codeItems: [],                // runtime code hits for the current query
           codeSeq: 0,
+          thumbs: {},                   // thumbnail per item key, kept while the palette is open
+          thumbPending: {},             // keys being loaded right now
           closed: false,
         });
 
@@ -297,7 +305,59 @@ module("lively.ide.tools.SearchPalette")
         // event fires whenever the field's text changes, however it changed.
         var inputNode = input.renderContext().shapeNode;
         inputNode.addEventListener("input", function () { P.setQuery(inputNode.textContent); });
-        panel.renderContext().shapeNode.addEventListener("keydown", function (evt) {
+
+        // Focus must never leave the field while the palette is open. A click anywhere
+        // else in the panel used to land focus on a Lively wrapper node (tabindex -1),
+        // after which typing, Esc and the arrows no longer reached the palette; a click
+        // inside the field could do the same. So: a mousedown outside the field does not
+        // move focus at all, one inside it is followed by a refocus if Lively took it
+        // away, and the palette's keys are handled on the document, refocusing the field
+        // first if something else somehow has focus (the palette is modal).
+        function refocus() {
+          if (s.closed || inputNode.contains(document.activeElement)) return;
+          input.focus();
+          caretToEnd();   // typing continues at the end of the text
+        }
+        function caretToEnd() {
+          try {
+            var editable = inputNode.querySelector("[contenteditable]") || inputNode, range = document.createRange(), sel = window.getSelection();
+            range.selectNodeContents(editable);
+            range.collapse(false);
+            sel.removeAllRanges();
+            sel.addRange(range);
+          } catch (e) { /* no selection API */ }
+        }
+        var downAt = null;
+        panel.renderContext().shapeNode.addEventListener("mousedown", function (evt) {
+          if (inputNode.contains(evt.target)) { downAt = { x: evt.clientX, y: evt.clientY }; setTimeout(refocus, 0); return; }
+          evt.preventDefault();
+        }, true);
+        // Lively selects the whole text when the field is clicked, and the next key
+        // would replace the query. A plain click (not a drag) puts the caret at the end
+        // instead, and a select-all that shows up in the 250 ms after it is undone
+        // (watched through selectionchange, so it does not matter which of the two
+        // handlers runs first). A real drag-selection is left alone.
+        var clickUntil = 0;
+        inputNode.addEventListener("mouseup", function (evt) {
+          var click = downAt && Math.abs(evt.clientX - downAt.x) < 4 && Math.abs(evt.clientY - downAt.y) < 4;
+          downAt = null;
+          if (!click) return;
+          clickUntil = Date.now() + 250;
+          // Done at once, and again before the first key that follows: input events
+          // run ahead of timers, so a fast keystroke can arrive before any timeout.
+          s.caretFixPending = true;
+          caretToEnd();
+        });
+        s.onSelectionChange = function () {
+          if (s.closed || Date.now() > clickUntil) return;
+          var sel = window.getSelection();
+          if (!sel.isCollapsed && inputNode.contains(sel.anchorNode) && sel.toString() === inputNode.textContent) caretToEnd();
+        };
+        document.addEventListener("selectionchange", s.onSelectionChange);
+        s.onDocKeydown = function (evt) {
+          if (s.closed) return;
+          refocus();
+          if (s.caretFixPending) { s.caretFixPending = false; caretToEnd(); }
           if (evt.key === "Escape") {
             evt.preventDefault(); evt.stopPropagation();
             P.close();
@@ -311,7 +371,8 @@ module("lively.ide.tools.SearchPalette")
             evt.preventDefault(); evt.stopPropagation();
             P.setScope((s.scopeIndex + (evt.shiftKey ? SCOPES.length - 1 : 1)) % SCOPES.length);
           }
-        }, true);
+        };
+        document.addEventListener("keydown", s.onDocKeydown, true);
 
         function layout() {
           if (s.closed) return;
@@ -755,7 +816,10 @@ module("lively.ide.tools.SearchPalette")
         c2.applyStyle({ borderRadius: 45 });
         art.addMorph(c1);
         art.addMorph(c2);
-        art.addMorph(icon(lively.rect(0, Math.round(artH / 2 - 31), innerW, 64), type.icon, 56, tint));
+        var artIcon = icon(lively.rect(0, Math.round(artH / 2 - 31), innerW, 64), type.icon, 56, tint);
+        art.addMorph(artIcon);
+        s.currentArt = art;                 // a thumbnail replaces these once it is ready
+        s.artParts = [c1, c2, artIcon];
 
         var nameY = 18 + artH + 16;
         s.preview.addMorph(label(lively.rect(pad - 4, nameY, innerW + 8, 24), item.name || "(unnamed)", {
@@ -809,6 +873,64 @@ module("lively.ide.tools.SearchPalette")
         cnode.style.boxShadow = "inset 0 0 0 1px rgba(30,24,44,0.14)";
         cnode.setAttribute("role", "button");
         cnode.setAttribute("aria-label", "Copy name");
+
+        P.loadThumb(item);
+      },
+
+      // Replaces the drawn art with a real thumbnail of the highlighted item, when
+      // it has one: a source excerpt at once, anything else after THUMB_DELAY (so
+      // holding an arrow key does not start a render per row). A result is only
+      // shown if its item is still the highlighted one; the palette closing, the
+      // highlight moving and the same item being asked for twice are all handled.
+      loadThumb: function (item) {
+        var P = lively.ide.tools.SearchPalette, s = P.current, T = lively.ide.tools.SearchThumbnail;
+        if (!s) return;
+        clearTimeout(s.thumbTimer);
+        var code = T.forCode(item);
+        if (code) return P.showThumb(item, code);
+        var key = T.keyFor(item);
+        if (!key) return;
+        if (s.thumbs[key]) return P.showThumb(item, s.thumbs[key]);
+        if (s.thumbPending[key]) return;   // on its way: shown when it arrives, if still highlighted
+        s.thumbTimer = setTimeout(function () {
+          if (s.closed || s.previewItem !== item) return;
+          s.thumbPending[key] = true;
+          T.load(item, function (err, t) {
+            delete s.thumbPending[key];
+            if (err || !t) return;           // keeps the drawn art
+            if (s.closed) { if (t.revoke) URL.revokeObjectURL(t.src); return; }
+            s.thumbs[key] = t;
+            if (s.previewItem === item) P.showThumb(item, t);
+          }, function wanted() { return !s.closed && s.previewItem === item; });
+        }, THUMB_DELAY);
+      },
+
+      showThumb: function (item, t) {
+        var P = lively.ide.tools.SearchPalette, s = P.current;
+        if (!s || s.closed || s.previewItem !== item || !s.currentArt || !s.currentArt.owner) return;
+        var node = s.currentArt.renderContext().shapeNode,
+          old = node.querySelector("[data-thumb]"),
+          el;
+        if (old) old.parentNode.removeChild(old);
+        if (t.kind === "img") {
+          el = document.createElement("img");
+          el.alt = item.name || "";
+          el.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;object-fit:contain;opacity:0;" +
+            "transition:opacity .15s;pointer-events:none;user-select:none;border-radius:inherit";
+          el.onload = function () { el.style.opacity = "1"; };
+          el.src = t.src;
+          node.style.background = "#fff";
+          node.style.boxShadow = "inset 0 0 0 1px rgba(30,24,44,0.08)";
+        } else {
+          el = document.createElement("pre");
+          el.textContent = t.text;
+          el.style.cssText = "margin:0;position:absolute;left:0;top:0;right:0;bottom:0;padding:10px 12px;overflow:hidden;" +
+            "font:11px/1.45 ui-monospace,Menlo,Consolas,monospace;color:#1f2a37;white-space:pre;pointer-events:none;user-select:none";
+        }
+        el.setAttribute("data-thumb", "1");
+        el.setAttribute("data-key", lively.ide.tools.SearchThumbnail.keyFor(item) || "code");   // which item it belongs to
+        node.appendChild(el);
+        (s.artParts || []).forEach(function (m) { m.setVisible(false); });
       },
 
       copyName: function (text, done) {

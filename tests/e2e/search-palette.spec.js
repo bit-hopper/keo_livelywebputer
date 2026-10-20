@@ -504,3 +504,200 @@ test("opening by the command also turns the entry pink; shift-click keeps the ol
   expect(menu[0]).toContain("Search for files");
   expect(await entryState(page)).toMatchObject({ open: false });
 });
+
+// ---- focus stays in the field
+
+for (const spot of ["list", "footer", "field", "pills", "preview"]) {
+  test("clicking the " + spot + " area keeps typing, arrows and Esc working", async ({ page }) => {
+    await openWithMorphs(page, 3);
+    await page.keyboard.type("rowtest");
+    await expect.poll(() => rows(page)).toMatchObject({ sel: 0 });
+    const [x, y] = await page.evaluate((spot) => {
+      var s = lively.ide.tools.SearchPalette.current,
+        b = s.panel.renderContext().shapeNode.getBoundingClientRect(),
+        l = s.list.renderContext().shapeNode.getBoundingClientRect(),
+        p = s.preview.renderContext().shapeNode.getBoundingClientRect();
+      return { list: [l.left + 200, l.top + 300], footer: [b.left + 600, b.bottom - 12], field: [b.left + 300, b.top + 28], pills: [b.left + 700, b.top + 78], preview: [p.left + 150, p.top + 300] }[spot];
+    }, spot);
+    await page.mouse.click(x, y);
+    await page.keyboard.press("ArrowDown");
+    await expect.poll(() => rows(page)).toMatchObject({ sel: 1 });
+    await page.keyboard.type("1");   // still matches rowtest1, so the list stays
+    await expect.poll(() => state(page)).toMatchObject({ query: "rowtest1" });
+    await page.keyboard.press("Escape");
+    await expect.poll(() => page.evaluate(() => lively.ide.tools.SearchPalette.isOpen())).toBe(false);
+  });
+}
+
+// ---- real thumbnails in the preview
+
+const thumbOf = (page) =>
+  page.evaluate(() => {
+    var s = lively.ide.tools.SearchPalette.current, T = lively.ide.tools.SearchThumbnail,
+      node = s.currentArt && s.currentArt.renderContext().shapeNode,
+      el = node && node.querySelector("[data-thumb]"),
+      item = s.previewItem;
+    return {
+      tag: el && el.tagName, key: el && el.getAttribute("data-key"), wantKey: item && (T.keyFor(item) || "code"),
+      w: el && el.naturalWidth, text: el && el.tagName === "PRE" ? el.textContent : null,
+    };
+  });
+
+// RGBA of one pixel of the shown thumbnail (plus its size in front)
+const thumbPixel = (page, x, y) =>
+  page.evaluate(([x, y]) => new Promise((resolve) => {
+    var img = lively.ide.tools.SearchPalette.current.currentArt.renderContext().shapeNode.querySelector("img[data-thumb]"),
+      c = document.createElement("canvas");
+    c.width = img.naturalWidth; c.height = img.naturalHeight;
+    c.getContext("2d").drawImage(img, 0, 0);
+    resolve([img.naturalWidth, img.naturalHeight].concat(Array.from(c.getContext("2d").getImageData(x, y, 1, 1).data)));
+  }), [x, y]);
+
+const selectedName = (page) =>
+  page.evaluate(() => { var s = lively.ide.tools.SearchPalette.current; return s.rows[s.selIndex].item.name; });
+
+test("a live morph is previewed by a real render of it", async ({ page }) => {
+  await openWithMorphs(page, 0);
+  await page.evaluate(() => {
+    var b = new lively.morphic.Box(lively.rect(700, 380, 220, 120)); b.name = "thumbcard";
+    b.applyStyle({ fill: Color.rgb(200, 230, 255) });
+    var kid = new lively.morphic.Box(lively.rect(120, 60, 80, 40)); kid.applyStyle({ fill: Color.rgb(240, 26, 105) });
+    b.addMorph(kid); $world.addMorph(b);
+    lively.ide.tools.SearchPalette.close(); lively.ide.tools.SearchPalette.open();
+  });
+  await page.waitForFunction(() => lively.ide.tools.SearchPalette.current.input.renderContext().shapeNode.contains(document.activeElement));
+  await page.keyboard.type("thumbcard");
+  await expect.poll(() => thumbOf(page)).toMatchObject({ tag: "IMG", w: 220 });
+  const t = await thumbOf(page);
+  expect(t.key).toBe(t.wantKey);
+  // it really shows the morph: the child's pink is in the picture
+  expect((await thumbPixel(page, 160, 80)).slice(2, 5)).toEqual([240, 26, 105]);
+});
+
+const worldRegistry = {
+  0: { __LivelyClassName__: "lively.morphic.World", _Position: "lively.pt(0.0,0.0)", shape: { id: "1", __isSmartRef__: true }, submorphs: [{ id: "2", __isSmartRef__: true }] },
+  1: { __LivelyClassName__: "lively.morphic.Shapes.Rectangle", _Extent: "lively.pt(400.0,200.0)", _Fill: "Color.rgb(240,240,240)" },
+  2: { __LivelyClassName__: "lively.morphic.Box", name: "PinkBox", _Position: "lively.pt(40.0,20.0)", shape: { id: "3", __isSmartRef__: true }, submorphs: [] },
+  3: { __LivelyClassName__: "lively.morphic.Shapes.Rectangle", _Extent: "lively.pt(120.0,80.0)", _Fill: "Color.rgb(240,26,105)" },
+};
+
+test("a saved world and a morph in it are drawn from their serialized data", async ({ page }) => {
+  await page.route("**/@testuser", (route) =>
+    route.fulfill({ contentType: "application/json", body: JSON.stringify({ objects: [
+      { type: "world", objId: "w1", visibility: "public", created: new Date().toISOString(), state: { name: "Pinkworld" }, record: { payload: { id: "0", registry: worldRegistry } } },
+    ] }) }));
+  await page.route("**/@testuser/worlds", (route) =>
+    route.fulfill({ contentType: "application/json", body: JSON.stringify({ worlds: [{ objId: "w1", name: "Pinkworld", visibility: "public", created: new Date().toISOString() }] }) }));
+  await openSignedIn(page);
+
+  await page.keyboard.type("pinkworld");
+  await expect.poll(() => thumbOf(page)).toMatchObject({ tag: "IMG" });
+  // the 400x200 world is drawn at 1.6x: grey page, pink box at (64,32)-(256,160)
+  expect(await thumbPixel(page, 100, 80)).toEqual([640, 320, 240, 26, 105, 255]);
+  expect((await thumbPixel(page, 10, 10)).slice(2, 5)).toEqual([240, 240, 240]);
+
+  // the box inside the world is drawn on its own, filling the picture
+  await page.keyboard.press("Control+A");
+  await page.keyboard.type("pinkbox");
+  await expect.poll(async () => (await thumbOf(page)).key).toBe("r:/@testuser/w1:2");
+  expect((await thumbPixel(page, 100, 60)).slice(2, 5)).toEqual([240, 26, 105]);
+});
+
+test("a method is previewed by its source", async ({ page }) => {
+  await openWithMorphs(page, 0);
+  await page.keyboard.type("worldItems");
+  await page.keyboard.press("Tab"); await page.keyboard.press("Tab"); await page.keyboard.press("Tab");   // Code scope
+  await expect.poll(() => rows(page)).toMatchObject({ names: expect.arrayContaining(["lively.ide.tools.Search>>worldItems"]) });
+  while ((await selectedName(page)) !== "lively.ide.tools.Search>>worldItems") await page.keyboard.press("ArrowDown");
+  await expect.poll(async () => (await thumbOf(page)).text).toContain("withAllSubmorphsSelect");
+});
+
+test("a public image is previewed by its bytes; a private or huge file keeps the drawn art and is never fetched", async ({ page }) => {
+  const tinyPng = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const file = (objId, name, visibility, payload) =>
+    ({ type: "file", objId: objId, visibility: visibility, created: new Date().toISOString(), state: { name: name }, record: { payload: payload } });
+  await page.route("**/@testuser", (route) =>
+    route.fulfill({ contentType: "application/json", body: JSON.stringify({ objects: [
+      file("pub1", "sunset.png", "public", { mime: "image/png", name: "sunset.png", size: 2048, blobCid: "c" }),
+      file("prv1", "sunset-private.png", "private", "ciphertext"),
+      file("big1", "sunset-huge.png", "public", { mime: "image/png", size: 50 * 1024 * 1024, blobCid: "d" }),
+    ] }) }));
+  await page.route("**/@testuser/worlds", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ worlds: [] }) }));
+  await openSignedIn(page);
+  await page.evaluate((png) => {
+    window.__fetched = [];
+    lively.identity.fileCrypto = lively.identity.fileCrypto || {};
+    lively.identity.fileCrypto.objectUrlFor = function (handle, objId, cb) { window.__fetched.push(objId); setTimeout(function () { cb(null, png); }, 30); };
+  }, tinyPng);
+
+  await page.keyboard.type("sunset");
+  await page.keyboard.press("Tab"); await page.keyboard.press("Tab"); await page.keyboard.press("Tab"); await page.keyboard.press("Tab");   // Files scope
+  await expect.poll(() => rows(page)).toMatchObject({ names: expect.arrayContaining(["sunset.png", "sunset-private.png", "sunset-huge.png"]) });
+
+  const goTo = async (name) => { while ((await selectedName(page)) !== name) await page.keyboard.press("ArrowDown"); };
+  await goTo("sunset.png");
+  await expect.poll(() => thumbOf(page)).toMatchObject({ tag: "IMG", key: "f:pub1" });
+  await goTo("sunset-private.png");
+  await goTo("sunset-huge.png");
+  await page.waitForTimeout(600);
+  expect((await thumbOf(page)).tag).toBeNull();                          // drawn art only
+  expect(await page.evaluate(() => window.__fetched)).toEqual(["pub1"]);  // neither the private nor the 50 MB file was fetched
+});
+
+// races
+
+test("holding an arrow key over many morphs ends on the thumbnail of the highlighted one, rendering only what it must", async ({ page }) => {
+  await openWithMorphs(page, 0);
+  await page.evaluate(() => {
+    for (var k = 0; k < 6; k++) {
+      var b = new lively.morphic.Box(lively.rect(700 + k * 6, 300 + k * 60, 80, 40)); b.name = "swatch" + k;
+      b.applyStyle({ fill: Color.rgb(40 * k, 100, 255 - 40 * k) }); $world.addMorph(b);
+    }
+    window.__renders = [];
+    var T = lively.ide.tools.SearchThumbnail, orig = T.forMorph;
+    T.forMorph = function (m, cb) { window.__renders.push(m.name); return orig.call(this, m, cb); };
+    lively.ide.tools.SearchPalette.close(); lively.ide.tools.SearchPalette.open();
+  });
+  await page.waitForFunction(() => lively.ide.tools.SearchPalette.current.input.renderContext().shapeNode.contains(document.activeElement));
+  await page.keyboard.type("swatch");
+  await page.keyboard.press("Tab");   // Morphs scope: under All a group shows only 4 rows
+  await expect.poll(() => rows(page)).toMatchObject({ names: expect.arrayContaining(["swatch5"]) });
+  for (let i = 0; i < 5; i++) await page.keyboard.press("ArrowDown");   // fast: a row stays highlighted far less than the render delay
+  await expect.poll(async () => { const t = await thumbOf(page); return t.tag === "IMG" && t.key === t.wantKey; }).toBe(true);
+  const renders = await page.evaluate(() => window.__renders);
+  expect(renders.length).toBeLessThan(5);   // not one per row passed
+  expect(renders).toContain(await page.evaluate(() => lively.ide.tools.SearchPalette.current.previewItem.morph.name));
+});
+
+test("closing the palette while a thumbnail is being made leaves nothing behind", async ({ page }) => {
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await openWithMorphs(page, 1);
+  await page.keyboard.type("rowtest");
+  await page.keyboard.press("Escape");   // before the thumbnail delay has even passed
+  await page.waitForTimeout(1500);
+  expect(await page.evaluate(() => lively.ide.tools.SearchPalette.isOpen())).toBe(false);
+  expect(await page.evaluate(() => document.querySelectorAll("img[data-thumb], pre[data-thumb]").length)).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+test("the blob URL of an image thumbnail is freed when the palette closes", async ({ page }) => {
+  await page.route("**/@testuser", (route) =>
+    route.fulfill({ contentType: "application/json", body: JSON.stringify({ objects: [
+      { type: "file", objId: "pub1", visibility: "public", created: new Date().toISOString(), state: { name: "sunset.png" }, record: { payload: { mime: "image/png", size: 10, blobCid: "c" } } },
+    ] }) }));
+  await page.route("**/@testuser/worlds", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ worlds: [] }) }));
+  await openSignedIn(page);
+  await page.evaluate(() => {
+    window.__revoked = [];
+    var orig = URL.revokeObjectURL;
+    URL.revokeObjectURL = function (u) { window.__revoked.push(u); return orig.call(URL, u); };
+    window.__blob = URL.createObjectURL(new Blob(["x"], { type: "image/png" }));
+    lively.identity.fileCrypto = lively.identity.fileCrypto || {};
+    lively.identity.fileCrypto.objectUrlFor = function (h, id, cb) { setTimeout(function () { cb(null, window.__blob); }, 30); };
+  });
+  await page.keyboard.type("sunset");
+  await expect.poll(() => page.evaluate(() => Object.keys(lively.ide.tools.SearchPalette.current.thumbs))).toEqual(["f:pub1"]);
+  await page.keyboard.press("Escape");
+  await expect.poll(() => page.evaluate(() => window.__revoked)).toEqual([await page.evaluate(() => window.__blob)]);
+});
