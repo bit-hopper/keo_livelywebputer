@@ -349,3 +349,85 @@ test("a late code answer for an older query is dropped, and the palette's own mo
   });
   expect(own).toBe(0);
 });
+
+// ---- files scope and the shared home listing
+
+const homeListing = {
+  objects: [
+    { type: "file", objId: "f1", visibility: "public", created: new Date(Date.now() - 3 * 86400000).toISOString(),
+      state: { name: "heat.gif" }, record: { payload: { mime: "image/gif", name: "heat.gif", size: 106496, blobCid: "x" } } },
+    { type: "file", objId: "f2", visibility: "private", created: new Date(Date.now() - 5 * 86400000).toISOString(),
+      state: { name: "heat-notes.txt" }, record: { payload: "ciphertext-string" } },
+    { type: "folder", objId: "d1", visibility: "private", created: new Date(Date.now() - 40 * 86400000).toISOString(),
+      state: { name: "Heatwave", fileCount: 2 }, record: { payload: "ciphertext-string" } },
+  ],
+};
+
+async function openSignedIn(page) {
+  await openWithMorphs(page, 0);
+  await page.evaluate(() => {
+    lively.identity.did = { isLoggedIn: () => true, currentUser: () => ({ handle: "testuser" }) };
+    lively.ide.tools.SearchPalette.close();
+    lively.ide.tools.SearchPalette.open();
+  });
+  await page.waitForFunction(() => lively.ide.tools.SearchPalette.current.input.renderContext().shapeNode.contains(document.activeElement));
+}
+
+test("Files scope lists files and folders by name (private ones too), with meta, preview and open actions", async ({ page }) => {
+  await page.route("**/@testuser", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify(homeListing) }));
+  await page.route("**/@testuser/worlds", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ worlds: [] }) }));
+  await openSignedIn(page);
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        lively.require("lively.identity.FilesBrowser").toRun(function () {
+          window.__opened = [];
+          lively.identity.FilesBrowser.openFileEnvelope = (env, cb) => { window.__opened.push(["file", env.objId]); cb && cb(null); };
+          lively.identity.FilesBrowser.openFolderEnvelope = (env) => { window.__opened.push(["folder", env.objId]); };
+          resolve();
+        }),
+      ),
+  );
+
+  await page.keyboard.type("heat");
+  await expect.poll(() => state(page)).toMatchObject({ pills: expect.arrayContaining([expect.stringMatching(/^Files  3$/)]) });
+  await page.keyboard.press("Tab"); await page.keyboard.press("Tab"); await page.keyboard.press("Tab"); await page.keyboard.press("Tab");
+  const metas = () => page.evaluate(() => lively.ide.tools.SearchPalette.current.rows.map((r) => r.item.name + " | " + r.item.meta));
+  await expect.poll(metas).toEqual([
+    "heat.gif | GIF  ·  104.0 KB  ·  Public  ·  added 3 days ago".replace(/\u00b7/g, "·"),
+    "heat-notes.txt | TXT  ·  Private  ·  added 5 days ago".replace(/\u00b7/g, "·"),
+    "Heatwave | 2 files  ·  Private  ·  created 1 month ago".replace(/\u00b7/g, "·"),
+  ]);
+
+  // preview of the highlighted file, then Enter opens it the Files window's way
+  let texts = (await previewTexts(page)).texts;
+  expect(texts).toEqual(expect.arrayContaining(["Kind", "GIF", "Size", "104.0 KB", "Visibility", "Public", "Opens", "In a preview or a new tab", "Open file  ↵"]));
+  await page.keyboard.press("Enter");
+  await expect.poll(() => page.evaluate(() => window.__opened)).toEqual([["file", "f1"]]);
+
+  // a folder opens the Files window inside it (a real click on its row)
+  await page.evaluate(() => { lively.ide.tools.SearchPalette.open(); });
+  await page.waitForFunction(() => lively.ide.tools.SearchPalette.current && lively.ide.tools.SearchPalette.current.input.renderContext().shapeNode.contains(document.activeElement));
+  await page.keyboard.type("heatwave");
+  await page.getByRole("button", { name: "Result: Heatwave" }).click();
+  await expect.poll(() => page.evaluate(() => window.__opened)).toEqual([["file", "f1"], ["folder", "d1"]]);
+});
+
+test("the home listing is fetched once for quick reopens, and a failed fetch is not kept", async ({ page }) => {
+  let calls = 0;
+  await page.route("**/@testuser", (route) => {
+    calls++;
+    if (calls === 1) return route.fulfill({ status: 500, contentType: "application/json", body: "{}" });
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify(homeListing) });
+  });
+  await page.route("**/@testuser/worlds", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ worlds: [] }) }));
+  await openSignedIn(page);                                   // request 1: fails, nothing cached
+  await expect.poll(() => calls).toBe(1);
+  await page.evaluate(() => { lively.ide.tools.SearchPalette.close(); lively.ide.tools.SearchPalette.open(); });   // request 2: retried, succeeds
+  await expect.poll(() => page.evaluate(() => lively.ide.tools.SearchPalette.current.items.filter((i) => i.group === "files").length)).toBe(3);
+  expect(calls).toBe(2);
+  // reopen twice more within the TTL, even while the palette is closing/opening: no new request
+  await page.evaluate(() => { for (var i = 0; i < 2; i++) { lively.ide.tools.SearchPalette.close(); lively.ide.tools.SearchPalette.open(); } });
+  await expect.poll(() => page.evaluate(() => lively.ide.tools.SearchPalette.current.items.filter((i) => i.group === "files").length)).toBe(3);
+  expect(calls).toBe(2);
+});

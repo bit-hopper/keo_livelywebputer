@@ -1248,6 +1248,29 @@ module('lively.identity.FilesBrowser')
     // ── class-side entry point ───────────────────────────────────────────────
 
     Object.extend(FilesBrowserClass, {
+      // Opens a file envelope from the home listing the way the Files window's own
+      // Open does: an in-world preview for previewable types, a new tab otherwise.
+      // Used by the search palette. thenDo(err) is optional.
+      openFileEnvelope: function (envelope, thenDo) {
+        var handle = lively.identity.did.currentUser().handle,
+          name = (envelope.state && envelope.state.name) || envelope.objId,
+          m = /\.([a-z0-9]+)$/i.exec(name),
+          ext = m ? m[1].toLowerCase() : '';
+        lively.identity.fileCrypto.objectUrlFor(handle, envelope.objId, function (err, url) {
+          if (err) { if (thenDo) thenDo(err); return; }
+          if (PREVIEWABLE_EXTS.indexOf(ext) !== -1) lively.identity.FilePreview.open({ path: name, url: url });
+          else window.open(url, '_blank');
+          if (thenDo) thenDo(null);
+        });
+      },
+
+      // Opens the Files window already inside the given folder envelope.
+      openFolderEnvelope: function (envelope) {
+        var browser = FilesBrowserClass.open();
+        browser._openFolder(envelope);
+        return browser;
+      },
+
       open: function () {
         // 520px wide — the toolbar's pill buttons + "Public" toggle need a
         // bit more room than the old plain-text buttons did.

@@ -90,22 +90,87 @@ Object.extend(lively.ide.tools.Search, {
     return years + (years === 1 ? " year ago" : " years ago");
   },
 
+  // `GET /@handle` is the whole home listing (every object with its payload: about
+  // 5 MB for a busy account), and each palette open used to download it again.
+  // One in-flight or recent copy is shared for HOME_TTL ms; a failed request is
+  // not kept, so the next open retries.
+  HOME_TTL: 30000,
+  homeBody: function (base) {
+    var Search = lively.ide.tools.Search, c = Search._home;
+    if (c && c.base === base && Date.now() - c.at < Search.HOME_TTL) return c.promise;
+    var entry = { base: base, at: Date.now() },
+      drop = function () { if (Search._home === entry) Search._home = null; return {}; };
+    entry.promise = fetch(base, { credentials: "include", headers: { Accept: "application/json" } })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (body) { return body || drop(); }, drop);
+    Search._home = entry;
+    return entry.promise;
+  },
+
+  // A file or folder envelope from the home listing as a result item. Names are
+  // plaintext state (also for private and shared ones; only the payload is
+  // encrypted), so a private file can be found by name. A file's size is only
+  // known when its payload is readable (public).
+  fileItem: function (obj) {
+    var Search = lively.ide.tools.Search,
+      st = obj.state || {}, payload = obj.record && obj.record.payload,
+      folder = obj.type === "folder",
+      name = st.name || obj.objId,
+      m = /\.([a-z0-9]+)$/i.exec(name),
+      ext = folder || !m ? "" : m[1].toLowerCase(),
+      size = !folder && payload && typeof payload === "object" && typeof payload.size === "number" ? payload.size : null,
+      vis = obj.visibility || "private",
+      bits = [];
+    if (folder) bits.push((st.fileCount || 0) + ((st.fileCount || 0) === 1 ? " file" : " files"));
+    else bits.push(ext ? ext.toUpperCase() : "File");
+    if (size != null) bits.push(Search.formatSize(size));
+    bits.push(vis.charAt(0).toUpperCase() + vis.slice(1));
+    var when = Search.ago(obj.created);
+    if (when) bits.push((folder ? "created " : "added ") + when);
+    return {
+      type: folder ? "folder" : "file", group: "files", name: name,
+      cls: folder ? "Folder" : ext ? ext.toUpperCase() : "File", text: "", world: null, path: null,
+      meta: bits.join("  \u00b7  "), morph: null, url: null,
+      info: { folder: folder, ext: ext, size: size, visibility: vis, created: obj.created || null, fileCount: st.fileCount || 0 },
+      run: function () { Search.openFile(obj); },
+    };
+  },
+
+  formatSize: function (bytes) {
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  },
+
+  // A file opens in the Files window's own way; a folder opens the Files window
+  // inside it. Opening a private file can need the passkey, and can fail.
+  openFile: function (obj) {
+    lively.require("lively.identity.FilesBrowser").toRun(function () {
+      var FB = lively.identity.FilesBrowser;
+      if (obj.type === "folder") return FB.openFolderEnvelope(obj);
+      FB.openFileEnvelope(obj, function (err) {
+        if (err) $world.alert("Could not open file: " + (err.message || err));
+      });
+    });
+  },
+
   // The signed-in user's saved worlds, from two requests made together:
   //  - GET /@handle: whole envelopes. Each public world's payload carries a
   //    registry, which gives the morphs inside it (and a morph count). Private
   //    (encrypted) worlds have no readable registry, so contribute no morphs.
   //  - GET /@handle/worlds: metadata only, every world the user may open,
   //    private ones included, with its plaintext name.
-  // Calls thenDo({ morphs: [...], worlds: [...] }); both are [] when signed out,
-  // and either half is [] if its request fails. opts.worlds === false skips the
+  // The first request's listing also holds the user's files and folders.
+  // Calls thenDo({ morphs: [...], worlds: [...], files: [...] }); all are [] when
+  // signed out, and a half is [] if its request fails. opts.worlds === false skips the
   // /worlds request.
   fetchSaved: function (thenDo, opts) {
     var Search = lively.ide.tools.Search,
       did = lively.identity && lively.identity.did;
-    if (!did || !did.isLoggedIn() || !window.fetch) return thenDo({ morphs: [], worlds: [] });
+    if (!did || !did.isLoggedIn() || !window.fetch) return thenDo({ morphs: [], worlds: [], files: [] });
     var handle = did.currentUser().handle,
       base = "/@" + encodeURIComponent(handle),
-      counts = {}, morphs = [], worldList = [],
+      counts = {}, morphs = [], files = [], worldList = [],
       wantWorlds = !opts || opts.worlds !== false,
       pending = wantWorlds ? 2 : 1;
 
@@ -132,11 +197,15 @@ Object.extend(lively.ide.tools.Search, {
           run: function () { window.open(url, "_blank"); },
         };
       });
-      thenDo({ morphs: morphs, worlds: worlds });
+      thenDo({ morphs: morphs, worlds: worlds, files: files });
     }
 
-    getJSON(base).then(function (body) {
+    Search.homeBody(base).then(function (body) {
       (body.objects || []).forEach(function (obj) {
+        if (obj.type === "file" || obj.type === "folder") {
+          files.push(Search.fileItem(obj));
+          return;
+        }
         var registry = obj.type === "world" && obj.record && obj.record.payload && obj.record.payload.registry;
         if (!registry) return;
         var worldName = (obj.state && obj.state.name) || obj.objId,

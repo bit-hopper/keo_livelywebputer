@@ -66,6 +66,7 @@ module("lively.ide.tools.SearchPalette")
       world:  { icon: "public",       tint: Color.rgb(249, 115, 22),  label: "World" },
       code:   { icon: "code",         tint: Color.rgb(34, 197, 94),   label: "Code" },
       file:   { icon: "draft",        tint: Color.rgb(96, 125, 160),  label: "File" },
+      folder: { icon: "folder",       tint: Color.rgb(202, 138, 4),   label: "Folder" },
     };
 
     // Result groups in display order; `scope` is the tab "Show N more" switches to.
@@ -73,6 +74,7 @@ module("lively.ide.tools.SearchPalette")
       { id: "world", title: "IN THIS WORLD", scope: "morphs" },
       { id: "worlds", title: "SAVED WORLDS", scope: "worlds" },
       { id: "saved", title: "IN SAVED WORLDS", scope: "morphs" },
+      { id: "files", title: "FILES", scope: "files" },
       { id: "code", title: "CODE", scope: "code" },
     ];
     var CODE_MIN_QUERY = 2;        // a one-letter code search is all noise
@@ -339,7 +341,7 @@ module("lively.ide.tools.SearchPalette")
 
         // Saved-world rows join when the listing returns.
         Search.fetchSaved(function (saved) {
-          var found = saved.worlds.concat(saved.morphs);
+          var found = saved.worlds.concat(saved.files, saved.morphs);
           if (s.closed || !found.length) return;
           s.items = s.items.concat(found);
           P.refresh(true);
@@ -411,7 +413,8 @@ module("lively.ide.tools.SearchPalette")
         var morphs = matches.filter(function (i) { return i.group === "world" || i.group === "saved"; }).length;
         var worlds = matches.filter(function (i) { return i.group === "worlds"; }).length;
         var code = matches.filter(function (i) { return i.group === "code"; }).length;
-        return { all: matches.length, morphs: morphs, worlds: worlds, code: code, files: 0 };
+        var files = matches.filter(function (i) { return i.group === "files"; }).length;
+        return { all: matches.length, morphs: morphs, worlds: worlds, code: code, files: files };
       },
 
       // Re-render everything that depends on scope/query/items.
@@ -453,6 +456,7 @@ module("lively.ide.tools.SearchPalette")
         if (scopeId === "morphs") return matches.filter(function (i) { return i.group === "world" || i.group === "saved"; });
         if (scopeId === "worlds") return matches.filter(function (i) { return i.group === "worlds"; });
         if (scopeId === "code") return matches.filter(function (i) { return i.group === "code"; });
+        if (scopeId === "files") return matches.filter(function (i) { return i.group === "files"; });
         return [];
       },
 
@@ -586,7 +590,7 @@ module("lively.ide.tools.SearchPalette")
           cx += w;
         });
 
-        var meta = item.type === "world" ? item.meta : item.cls + (item.text ? "  ·  “" + item.text + "”" : "") + (item.world ? "  ·  in " + item.world : "");
+        var meta = item.meta ? item.meta : item.cls + (item.text ? "  ·  “" + item.text + "”" : "") + (item.world ? "  ·  in " + item.world : "");
         row.addMorph(label(lively.rect(NAME_X - 4, 29, maxW + 8, 18), meta, { px: 12, color: MUTED }));
 
         row.onMouseDown = function (evt) { evt.stop(); return true; };   // keep focus in the field
@@ -651,6 +655,8 @@ module("lively.ide.tools.SearchPalette")
       // What Enter does for an item: the button's label and the footer's hint.
       actionOf: function (item) {
         if (item.type === "code") return { label: "Open in browser", hint: "open in code browser" };
+        if (item.type === "folder") return { label: "Open folder", hint: "open folder in Files" };
+        if (item.type === "file") return { label: "Open file", hint: "open file" };
         if (item.url) return { label: "Open world", hint: "open world in new tab" };
         return { label: "Show halo", hint: "show halo" };
       },
@@ -665,6 +671,17 @@ module("lively.ide.tools.SearchPalette")
           var d = new Date(info.created);
           if (!isNaN(d.getTime())) fields.push(["Created", d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })]);
           fields.push(["Opens", "In a new tab"]);
+          return fields;
+        }
+        if (item.type === "file" || item.type === "folder") {
+          var fi = item.info || {};
+          fields.push(["Kind", item.cls]);
+          if (fi.folder) fields.push(["Files", String(fi.fileCount)]);
+          if (fi.size != null) fields.push(["Size", lively.ide.tools.Search.formatSize(fi.size)]);
+          fields.push(["Visibility", fi.visibility.charAt(0).toUpperCase() + fi.visibility.slice(1)]);
+          var fd = new Date(fi.created);
+          if (!isNaN(fd.getTime())) fields.push([fi.folder ? "Created" : "Added", fd.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })]);
+          fields.push(["Opens", fi.folder ? "In the Files window" : "In a preview or a new tab"]);
           return fields;
         }
         if (item.type === "code") {
@@ -709,8 +726,15 @@ module("lively.ide.tools.SearchPalette")
           tint = type.tint,
           rgba = function (a) { return "rgba(" + Math.round(tint.r * 255) + "," + Math.round(tint.g * 255) + "," + Math.round(tint.b * 255) + "," + a + ")"; };
 
+        // The art tile shrinks (to at least 80px) when there are many key/value lines,
+        // so the last line never runs into the buttons pinned to the bottom.
+        var fields = P.previewFields(item),
+          paneH = s.preview.getExtent().y,
+          buttonsY = paneH - 18 - 36,
+          artH = Math.max(80, Math.min(150, buttonsY - 10 - 26 * fields.length - 34 - 26 - 16 - 18));
+
         // art: a soft gradient tile with two washed circles and the type's icon
-        var art = box(lively.rect(pad, 18, innerW, 150));
+        var art = box(lively.rect(pad, 18, innerW, artH));
         art.applyStyle({ borderRadius: 16, clipMode: "hidden" });
         s.preview.addMorph(art);
         art.renderContext().shapeNode.style.background = "linear-gradient(135deg, " + rgba(0.22) + ", " + rgba(0.06) + ")";
@@ -720,22 +744,23 @@ module("lively.ide.tools.SearchPalette")
         c2.applyStyle({ borderRadius: 45 });
         art.addMorph(c1);
         art.addMorph(c2);
-        art.addMorph(icon(lively.rect(0, 44, innerW, 64), type.icon, 56, tint));
+        art.addMorph(icon(lively.rect(0, Math.round(artH / 2 - 31), innerW, 64), type.icon, 56, tint));
 
-        s.preview.addMorph(label(lively.rect(pad - 4, 184, innerW + 8, 24), item.name || "(unnamed)", {
+        var nameY = 18 + artH + 16;
+        s.preview.addMorph(label(lively.rect(pad - 4, nameY, innerW + 8, 24), item.name || "(unnamed)", {
           px: 17, bold: true, color: item.name ? INK : MUTED,
         }));
-        s.preview.addMorph(label(lively.rect(pad - 4, 210, innerW + 8, 18), type.label, { px: 12, color: MUTED }));
+        s.preview.addMorph(label(lively.rect(pad - 4, nameY + 26, innerW + 8, 18), type.label, { px: 12, color: MUTED }));
 
-        var y = 244;
-        P.previewFields(item).forEach(function (f) {
+        var y = nameY + 26 + 34;
+        fields.forEach(function (f) {
           s.preview.addMorph(label(lively.rect(pad - 4, y, 80, 18), f[0], { px: 12, color: MUTED }));
           s.preview.addMorph(label(lively.rect(pad + 72, y, innerW - 72 + 4, 20), f[1], { px: 13, color: INK }));
           y += 26;
         });
 
         // buttons, pinned to the bottom of the pane
-        var bodyH = s.preview.getExtent().y, BH = 36, by = bodyH - 18 - BH,
+        var BH = 36, by = buttonsY,
           primaryText = P.actionOf(item).label + "  ↵",
           w1 = Math.ceil(textWidth(primaryText, 13, true)) + 36,
           w2 = Math.ceil(textWidth("Copy name", 13, true)) + 32;
