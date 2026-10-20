@@ -66,9 +66,11 @@ module("lively.ide.tools.SearchPalette")
       file:   { icon: "draft",        tint: Color.rgb(96, 125, 160),  label: "File" },
     };
 
+    // Result groups in display order; `scope` is the tab "Show N more" switches to.
     var GROUPS = [
-      { id: "world", title: "IN THIS WORLD" },
-      { id: "saved", title: "SAVED WORLDS" },
+      { id: "world", title: "IN THIS WORLD", scope: "morphs" },
+      { id: "worlds", title: "SAVED WORLDS", scope: "worlds" },
+      { id: "saved", title: "IN SAVED WORLDS", scope: "morphs" },
     ];
 
     // Width of a string in the palette's font, via canvas: synchronous, so it cannot
@@ -312,9 +314,10 @@ module("lively.ide.tools.SearchPalette")
         P.refresh();
 
         // Saved-world rows join when the listing returns.
-        Search.savedWorldItems(function (saved) {
-          if (s.closed || !saved.length) return;
-          s.items = s.items.concat(saved);
+        Search.fetchSaved(function (saved) {
+          var found = saved.worlds.concat(saved.morphs);
+          if (s.closed || !found.length) return;
+          s.items = s.items.concat(found);
           P.refresh(true);
         });
         return s;
@@ -355,7 +358,8 @@ module("lively.ide.tools.SearchPalette")
       // Items per scope tab, for the current query.
       countsFor: function (matches) {
         var morphs = matches.filter(function (i) { return i.group === "world" || i.group === "saved"; }).length;
-        return { all: matches.length, morphs: morphs, worlds: 0, code: 0, files: 0 };
+        var worlds = matches.filter(function (i) { return i.group === "worlds"; }).length;
+        return { all: matches.length, morphs: morphs, worlds: worlds, code: 0, files: 0 };
       },
 
       // Re-render everything that depends on scope/query/items.
@@ -390,10 +394,11 @@ module("lively.ide.tools.SearchPalette")
         P.renderRows(keepSelection);
       },
 
-      // Items visible under a scope tab. Worlds/Code/Files have no sources yet.
+      // Items visible under a scope tab. Code/Files have no sources yet.
       visibleFor: function (matches, scopeId) {
         if (scopeId === "all") return matches;
         if (scopeId === "morphs") return matches.filter(function (i) { return i.group === "world" || i.group === "saved"; });
+        if (scopeId === "worlds") return matches.filter(function (i) { return i.group === "worlds"; });
         return [];
       },
 
@@ -446,7 +451,11 @@ module("lively.ide.tools.SearchPalette")
             more.eventsAreIgnored = false;
             more.handStyle = "pointer";
             more.onMouseDown = function (evt) { evt.stop(); return true; };
-            more.onMouseUp = function (evt) { P.setScope(1); evt.stop(); return true; };
+            more.onMouseUp = function (evt) {
+              P.setScope(SCOPES.map(function (sc) { return sc.id; }).indexOf(grp.scope));
+              evt.stop();
+              return true;
+            };
             s.list.addMorph(more);
           }
           y += 24;
@@ -521,7 +530,7 @@ module("lively.ide.tools.SearchPalette")
           cx += w;
         });
 
-        var meta = item.cls + (item.text ? "  ·  “" + item.text + "”" : "") + (item.world ? "  ·  in " + item.world : "");
+        var meta = item.type === "world" ? item.meta : item.cls + (item.text ? "  ·  “" + item.text + "”" : "") + (item.world ? "  ·  in " + item.world : "");
         row.addMorph(label(lively.rect(NAME_X - 4, 29, maxW + 8, 18), meta, { px: 12, color: MUTED }));
 
         row.onMouseDown = function (evt) { evt.stop(); return true; };   // keep focus in the field

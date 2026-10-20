@@ -176,3 +176,59 @@ test("no palette morph can be dragged or grabbed", async ({ page }) => {
   });
   expect(bad).toEqual([]);
 });
+
+test("Worlds scope lists saved worlds by name, private ones too, with morph counts", async ({ page }) => {
+  const day = 86400000;
+  await page.route("**/@testuser", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        objects: [{
+          type: "world", objId: "w1", state: { name: "Neon Garden" },
+          record: { payload: { registry: {
+            0: { __LivelyClassName__: "lively.morphic.World" },
+            1: { __LivelyClassName__: "lively.morphic.Box", name: "Gate" },
+            2: { __LivelyClassName__: "lively.morphic.Box" },
+            3: { __LivelyClassName__: "lively.morphic.Shapes.Rectangle" },
+          } } },
+        }],
+      }),
+    }),
+  );
+  await page.route("**/@testuser/worlds", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        worlds: [
+          { objId: "w1", name: "Neon Garden", template: null, visibility: "public", created: new Date(Date.now() - 2 * day).toISOString() },
+          { objId: "w2", name: "Neon Diary", template: null, visibility: "private", created: new Date(Date.now() - 40 * day).toISOString() },
+        ],
+      }),
+    }),
+  );
+  await openWithMorphs(page, 0);
+  await page.evaluate(() => {
+    window.__opened = [];
+    window.open = (u, t) => window.__opened.push([u, t]);
+    lively.identity.did = { isLoggedIn: () => true, currentUser: () => ({ handle: "testuser" }) };
+    lively.ide.tools.SearchPalette.close();
+    lively.ide.tools.SearchPalette.open();
+  });
+  await page.waitForFunction(() => lively.ide.tools.SearchPalette.current.input.renderContext().shapeNode.contains(document.activeElement));
+  await page.keyboard.type("neon");
+
+  // counts on the pills: the two worlds, plus the morph Gate (it matches through its world's name)
+  await expect.poll(() => state(page)).toMatchObject({ pills: ["All  3", "Morphs  1", "Worlds  2", "Code  0", "Files  0"] });
+
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Tab");
+  const metas = () =>
+    page.evaluate(() => lively.ide.tools.SearchPalette.current.rows.map((r) => r.item.name + " | " + r.item.meta));
+  await expect.poll(metas).toEqual([
+    "Neon Garden | 2 morphs  \u00b7  created 2 days ago",   // Gate + the unnamed Box; the World and the Shape do not count
+    "Neon Diary | private  \u00b7  created 1 month ago",
+  ]);
+
+  await page.getByRole("button", { name: "Result: Neon Diary" }).click();
+  await expect.poll(() => page.evaluate(() => window.__opened)).toEqual([["/@testuser/w2", "_blank"]]);
+});
