@@ -740,6 +740,7 @@ module("lively.identity.WorldsBrowser")
           { icon: "menu_book",      title: "Books",                  subtitle: "Organize your book collection.",           enabled: true,  key: "books" },
           { icon: "sports_esports", title: "Game",                   subtitle: "Organize your video games.",               enabled: false, key: "game" },
           { icon: "library_music",  title: "Music",                  subtitle: "Organize your music collection.",          enabled: true,  key: "music" },
+          { icon: "edit_note",      title: "Diary",                  subtitle: "Keep a private diary.",                    enabled: true,  key: "diary" },
         ];
 
         var rowH = 58;
@@ -789,6 +790,7 @@ module("lively.identity.WorldsBrowser")
 
         var titleStr = template === "shop" ? "New Shop world"
           : template === "inventory" ? "New world with Inventory"
+          : template === "diary" ? "New Diary world"
           : "New blank world";
         var header = new lively.morphic.Text(lively.rect(pad, y, w, 18), titleStr);
         header.applyStyle({ allowInput: false, fontSize: 13, fontWeight: "bold", textColor: Color.rgb(40, 40, 40), fill: null, borderWidth: 0, borderColor: null });
