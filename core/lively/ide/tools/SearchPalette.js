@@ -48,6 +48,44 @@ module("lively.ide.tools.SearchPalette")
       { id: "files", label: "Files" },
     ];
 
+    var ROW_H = 52;
+    var ROW_GAP = 2;
+    var MAX_ROWS = 60;           // rendered at once; the rest is "refine your search"
+    var ALL_CAP = 4;             // per group under scope All (search.md section 3.1)
+    var SELECTED_WASH = Color.rgba(240, 26, 105, 0.09);
+
+    // Type -> chip icon, tint (semantic colours, never pink) and tag text (search.md section 3.2).
+    var TYPES = {
+      text:   { icon: "title",        tint: Color.rgb(59, 130, 246),  label: "Text" },
+      window: { icon: "web_asset",    tint: Color.rgb(139, 92, 246),  label: "Window" },
+      image:  { icon: "image",        tint: Color.rgb(20, 184, 166),  label: "Image" },
+      button: { icon: "smart_button", tint: Color.rgb(245, 158, 11),  label: "Button" },
+      box:    { icon: "crop_square",  tint: Color.rgb(100, 116, 139), label: "Box" },
+      world:  { icon: "public",       tint: Color.rgb(249, 115, 22),  label: "World" },
+      code:   { icon: "code",         tint: Color.rgb(34, 197, 94),   label: "Code" },
+      file:   { icon: "draft",        tint: Color.rgb(96, 125, 160),  label: "File" },
+    };
+
+    var GROUPS = [
+      { id: "world", title: "IN THIS WORLD" },
+      { id: "saved", title: "SAVED WORLDS" },
+    ];
+
+    // Width of a string in the palette's font, via canvas: synchronous, so it cannot
+    // race font loading or DOM layout the way reading a rendered span can.
+    var measureCtx = null;
+    function textWidth(str, px, bold) {
+      if (!measureCtx) measureCtx = document.createElement("canvas").getContext("2d");
+      measureCtx.font = (bold ? "bold " : "") + px + "px " + FONT;
+      return measureCtx.measureText(str).width;
+    }
+
+    function setBg(m, color) {
+      // applyStyle({fill}) on a rendered morph can miss the DOM; write it too.
+      m.applyStyle({ fill: color });
+      m.renderContext().shapeNode.style.background = color ? color.toString() : "transparent";
+    }
+
     function noDrag(m) { return lively.identity.HomestarUI.noDrag(m); }
 
     function box(rect, fill) {
@@ -200,10 +238,19 @@ module("lively.ide.tools.SearchPalette")
         panel.addMorph(s.divPills);
         panel.addMorph(s.divFooter);
 
-        // Texts that layout() moves are built at (0,0): a Text built at rect(x,y) and
-        // later moved with setPosition ends up offset twice (shape node + wrapper).
-        s.bodyTitle = label(lively.rect(0, 0, 400, 18), "", { px: 11, bold: true, color: MUTED });
-        s.bodyHint = label(lively.rect(0, 0, 400, 18), "", { px: 13, color: MUTED });
+        // The results list scrolls (clipMode auto); rows are rebuilt by renderRows.
+        s.list = box(lively.rect(0, FIELD_H + PILLS_H + 1, g.w, g.h - FIELD_H - PILLS_H - 1 - FOOTER_H));
+        s.list.applyStyle({ clipMode: "auto" });
+        panel.addMorph(s.list);
+        UI.scroller(s.list);
+
+        // Empty states (no query / no match): icon, title, hint, centred. Texts that
+        // layout() moves are built at (0,0): a Text built at rect(x,y) and later moved
+        // with setPosition ends up offset twice (shape node + wrapper).
+        s.emptyIcon = icon(lively.rect(0, 0, g.w, 40), "search_off", 34, Color.rgba(122, 115, 144, 0.55));
+        s.bodyTitle = label(lively.rect(0, 0, g.w, 22), "", { px: 15, bold: true, color: INK, align: "center" });
+        s.bodyHint = label(lively.rect(0, 0, g.w, 20), "", { px: 13, color: MUTED, align: "center" });
+        panel.addMorph(s.emptyIcon);
         panel.addMorph(s.bodyTitle);
         panel.addMorph(s.bodyHint);
 
@@ -223,6 +270,12 @@ module("lively.ide.tools.SearchPalette")
           if (evt.key === "Escape") {
             evt.preventDefault(); evt.stopPropagation();
             P.close();
+          } else if (evt.key === "ArrowDown" || evt.key === "ArrowUp") {
+            evt.preventDefault(); evt.stopPropagation();
+            P.move(evt.key === "ArrowDown" ? 1 : -1);
+          } else if (evt.key === "Enter") {
+            evt.preventDefault(); evt.stopPropagation();
+            P.activate(s.selIndex);
           } else if (evt.key === "Tab") {
             evt.preventDefault(); evt.stopPropagation();
             P.setScope((s.scopeIndex + (evt.shiftKey ? SCOPES.length - 1 : 1)) % SCOPES.length);
@@ -241,8 +294,15 @@ module("lively.ide.tools.SearchPalette")
           s.divFooter.setExtent(lively.pt(g.w, 1));
           s.divFooter.setPosition(lively.pt(0, g.h - FOOTER_H));
           s.footer.setPosition(lively.pt(SIDE, g.h - FOOTER_H + 9));
-          s.bodyTitle.setPosition(lively.pt(SIDE, FIELD_H + PILLS_H + 14));
-          s.bodyHint.setPosition(lively.pt(SIDE, FIELD_H + PILLS_H + 40));
+          var top = FIELD_H + PILLS_H + 1;
+          s.list.setExtent(lively.pt(g.w, g.h - top - FOOTER_H));
+          s.emptyIcon.setExtent(lively.pt(g.w, 40));
+          s.bodyTitle.setExtent(lively.pt(g.w, 22));
+          s.bodyHint.setExtent(lively.pt(g.w, 20));
+          s.emptyIcon.setPosition(lively.pt(0, top + 90));
+          s.bodyTitle.setPosition(lively.pt(0, top + 138));
+          s.bodyHint.setPosition(lively.pt(0, top + 166));
+          if (s.matches) P.renderRows(true);
         }
         s.layout = layout;
         layout();
@@ -255,7 +315,7 @@ module("lively.ide.tools.SearchPalette")
         Search.savedWorldItems(function (saved) {
           if (s.closed || !saved.length) return;
           s.items = s.items.concat(saved);
-          P.refresh();
+          P.refresh(true);
         });
         return s;
       },
@@ -299,7 +359,7 @@ module("lively.ide.tools.SearchPalette")
       },
 
       // Re-render everything that depends on scope/query/items.
-      refresh: function () {
+      refresh: function (keepSelection) {
         var P = lively.ide.tools.SearchPalette, s = P.current;
         if (!s || s.closed) return;
         var matches = P.match(s.items, s.query);
@@ -327,20 +387,207 @@ module("lively.ide.tools.SearchPalette")
           x += w + 8;
         });
 
-        // Body. Rows come with the next step; the shell shows the state.
-        var shown = s.scopeIndex === 0 ? matches : matches.filter(function (i) {
-          return SCOPES[s.scopeIndex].id === "morphs" && (i.group === "world" || i.group === "saved");
-        });
-        if (!s.query) {
-          s.bodyTitle.textString = "RECENT";
-          s.bodyHint.textString = "Nothing yet. Type a morph name, text inside a morph, or a saved world.";
-        } else if (!shown.length) {
-          s.bodyTitle.textString = "";
-          s.bodyHint.textString = "No matches for \"" + s.query + "\"";
-        } else {
-          s.bodyTitle.textString = shown.length + (shown.length === 1 ? " MATCH" : " MATCHES");
-          s.bodyHint.textString = shown.slice(0, 4).map(function (i) { return i.name || "(unnamed)"; }).join(", ");
+        P.renderRows(keepSelection);
+      },
+
+      // Items visible under a scope tab. Worlds/Code/Files have no sources yet.
+      visibleFor: function (matches, scopeId) {
+        if (scopeId === "all") return matches;
+        if (scopeId === "morphs") return matches.filter(function (i) { return i.group === "world" || i.group === "saved"; });
+        return [];
+      },
+
+      // Rebuild the list (or the empty state) for the current scope/query. The
+      // selection goes back to the first row unless keepSelection and the
+      // previously selected item is still shown.
+      renderRows: function (keepSelection) {
+        var P = lively.ide.tools.SearchPalette, s = P.current;
+        if (!s || s.closed) return;
+        var scopeId = SCOPES[s.scopeIndex].id,
+          shown = s.query ? P.visibleFor(s.matches, scopeId) : [],
+          prevItem = keepSelection && s.rows && s.rows[s.selIndex] && s.rows[s.selIndex].item;
+
+        s.list.removeAllMorphs();
+        s.rows = [];
+        s.selIndex = 0;
+
+        var empty = !shown.length;
+        s.emptyIcon.setVisible(empty);
+        s.bodyTitle.setVisible(empty);
+        s.bodyHint.setVisible(empty);
+        s.list.setVisible(!empty);
+        if (empty) {
+          var none = !!s.query;
+          s.emptyIcon.textString = none ? "search_off" : "history";
+          s.bodyTitle.textString = none ? "No matches for “" + s.query.trim() + "”" : "Recent";
+          s.bodyHint.textString = none
+            ? "Try a morph name, text inside a morph, or a saved world."
+            : "Nothing yet. Type a morph name, text inside a morph, or a saved world.";
+          P.updateFooter();
+          return;
         }
+
+        var listW = s.list.getExtent().x, rowW = listW - 20 - 14,
+          y = 8, rendered = 0, truncated = false;
+        GROUPS.forEach(function (grp) {
+          var its = shown.filter(function (i) { return i.group === grp.id; });
+          if (!its.length) return;
+          var cap = scopeId === "all" ? ALL_CAP : Infinity,
+            vis = its.slice(0, Math.min(cap, MAX_ROWS - rendered));
+          if (!vis.length) { truncated = true; return; }
+          if (vis.length < its.length && scopeId !== "all") truncated = true;
+
+          // group header: "IN THIS WORLD  3" and, when capped, "Show N more"
+          s.list.addMorph(label(lively.rect(SIDE - 4, y, 300, 18), grp.title + "  " + its.length, { px: 11, bold: true, color: MUTED }));
+          if (its.length > vis.length && scopeId === "all") {
+            var more = label(lively.rect(listW - SIDE - 14 - 160 + 4, y, 160, 18), "Show " + (its.length - vis.length) + " more", {
+              px: 12, bold: true, color: ACCENT_TEXT, align: "right",
+            });
+            more.eventsAreIgnored = false;
+            more.handStyle = "pointer";
+            more.onMouseDown = function (evt) { evt.stop(); return true; };
+            more.onMouseUp = function (evt) { P.setScope(1); evt.stop(); return true; };
+            s.list.addMorph(more);
+          }
+          y += 24;
+          vis.forEach(function (item) {
+            s.rows.push(P.buildRow(item, y, rowW, s.rows.length));
+            y += ROW_H + ROW_GAP;
+            rendered++;
+          });
+          y += 10;
+        });
+        if (truncated) {
+          s.list.addMorph(label(lively.rect(SIDE - 4, y, 500, 18), "Showing the first " + MAX_ROWS + ". Refine your search to see the rest.", { px: 12, color: MUTED }));
+          y += 26;
+        }
+        s.list.addMorph(box(lively.rect(0, y, 1, 4)));   // bottom breathing room in the scroll extent
+
+        var keep = prevItem ? s.rows.map(function (r) { return r.item; }).indexOf(prevItem) : -1;
+        P.select(keep >= 0 ? keep : 0, true);
+        if (keep < 0) s.list.renderContext().shapeNode.scrollTop = 0;
+      },
+
+      // One result row: chip, name with the matched part highlighted, meta line, type tag.
+      buildRow: function (item, y, rowW, index) {
+        var P = lively.ide.tools.SearchPalette, s = P.current,
+          type = TYPES[item.type] || TYPES.box,
+          row = box(lively.rect(10, y, rowW, ROW_H));
+        row.applyStyle({ borderRadius: 12 });
+        row.eventsAreIgnored = false;
+        row.handStyle = "pointer";
+
+        var chip = box(lively.rect(10, 9, 34, 34), Color.rgba(type.tint.r * 255, type.tint.g * 255, type.tint.b * 255, 0.14));
+        chip.applyStyle({ borderRadius: 10 });
+        chip.eventsAreIgnored = true;
+        chip.addMorph(icon(lively.rect(0, 6, 34, 24), type.icon, 18, type.tint));
+        row.addMorph(chip);
+
+        // Tag, right aligned. A saved-world row also gets an open-in-new glyph:
+        // picking it leaves the page.
+        var tagW = Math.ceil(textWidth(type.label, 11, true)) + 18,
+          tagX = rowW - 12 - tagW,
+          tag = box(lively.rect(tagX, 15, tagW, 22), Color.rgba(30, 24, 44, 0.06));
+        tag.applyStyle({ borderRadius: 8 });
+        tag.eventsAreIgnored = true;
+        var tagLabel = label(lively.rect(0, 2, tagW, 18), type.label, { px: 11, bold: true, color: MUTED, align: "center" });
+        tag.addMorph(tagLabel);
+        row.addMorph(tag);
+        var rightEdge = tagX;
+        if (item.url) {
+          row.addMorph(icon(lively.rect(tagX - 28, 14, 24, 24), "open_in_new", 16, Color.rgb(249, 115, 22)));
+          rightEdge = tagX - 30;
+        }
+
+        // Name: before / match / after as adjacent Text morphs, placed by measured
+        // width (a Text cannot mix colours). Each box is the measure plus the 4px
+        // side padding the Text shape node carries.
+        var NAME_X = 54, NAME_PX = 14, maxW = rightEdge - NAME_X - 8,
+          name = item.name || "(unnamed)", q = (s.query || "").trim().toLowerCase(),
+          idx = item.name && q ? name.toLowerCase().indexOf(q) : -1,
+          parts = idx < 0 ? [{ t: name }] : [
+            { t: name.slice(0, idx) },
+            { t: name.slice(idx, idx + q.length), hl: true },
+            { t: name.slice(idx + q.length) },
+          ],
+          cx = 0;
+        parts.forEach(function (part) {
+          if (!part.t || cx >= maxW) return;
+          var w = Math.ceil(textWidth(part.t, NAME_PX, part.hl)),
+            boxW = Math.min(w, maxW - cx) + 8;
+          row.addMorph(label(lively.rect(NAME_X + cx - 4, 8, boxW, 22), part.t, {
+            px: NAME_PX, bold: part.hl, color: part.hl ? ACCENT_TEXT : item.name ? INK : MUTED,
+          }));
+          cx += w;
+        });
+
+        var meta = item.cls + (item.text ? "  ·  “" + item.text + "”" : "") + (item.world ? "  ·  in " + item.world : "");
+        row.addMorph(label(lively.rect(NAME_X - 4, 29, maxW + 8, 18), meta, { px: 12, color: MUTED }));
+
+        row.onMouseDown = function (evt) { evt.stop(); return true; };   // keep focus in the field
+        row.onMouseOver = function () {
+          if (Date.now() - (s.kbAt || 0) > 250) P.select(index, false);   // not while the keyboard is scrolling under the cursor
+        };
+        row.onMouseUp = function (evt) { P.activate(index); evt.stop(); return true; };
+        s.list.addMorph(row);
+
+        var rnode = row.renderContext().shapeNode;
+        rnode.setAttribute("role", "button");
+        rnode.setAttribute("aria-label", "Result: " + name);
+        return { item: item, row: row, tag: tag, tagLabel: tagLabel, y: y };
+      },
+
+      // Highlight one row (the pink wash, and the tag becomes the pink enter key).
+      select: function (i, scrollIntoView) {
+        var P = lively.ide.tools.SearchPalette, s = P.current;
+        if (!s || !s.rows) return;
+        if (!s.rows.length) { s.selIndex = 0; P.updateFooter(); return; }
+        i = Math.max(0, Math.min(s.rows.length - 1, i));
+        var prev = s.rows[s.selIndex];
+        function paint(r, on) {
+          if (!r) return;
+          var type = TYPES[r.item.type] || TYPES.box;
+          setBg(r.row, on ? SELECTED_WASH : null);
+          setBg(r.tag, on ? ACCENT : Color.rgba(30, 24, 44, 0.06));
+          r.tagLabel.textString = on ? "↵" : type.label;
+          r.tagLabel.applyStyle({ textColor: on ? Color.white : MUTED, fontSize: (on ? 15 : 11) * 0.75 });
+          r.tagLabel.renderContext().shapeNode.style.color = on ? "#fff" : MUTED.toString();
+        }
+        if (prev && prev !== s.rows[i]) paint(prev, false);
+        s.selIndex = i;
+        paint(s.rows[i], true);
+        P.updateFooter();
+        if (scrollIntoView) {
+          var node = s.list.renderContext().shapeNode, r = s.rows[i],
+            top = r.y - 30, bottom = r.y + ROW_H + 10;
+          if (top < node.scrollTop) node.scrollTop = top < 40 ? 0 : top;
+          else if (bottom > node.scrollTop + node.clientHeight) node.scrollTop = bottom - node.clientHeight;
+        }
+      },
+
+      // Arrow keys: wrap around, and keep the highlighted row in view.
+      move: function (delta) {
+        var P = lively.ide.tools.SearchPalette, s = P.current;
+        if (!s || !s.rows || !s.rows.length) return;
+        s.kbAt = Date.now();
+        P.select((s.selIndex + delta + s.rows.length) % s.rows.length, true);
+      },
+
+      // Run the row's primary action. The palette closes first, so a halo is
+      // not shown under the scrim.
+      activate: function (i) {
+        var P = lively.ide.tools.SearchPalette, s = P.current, r = s && s.rows && s.rows[i];
+        if (!r) return;
+        P.close();
+        r.item.run();
+      },
+
+      updateFooter: function () {
+        var s = lively.ide.tools.SearchPalette.current;
+        if (!s) return;
+        var r = s.rows && s.rows[s.selIndex],
+          action = !r ? "" : r.item.url ? "open world in new tab" : "show halo";
+        s.footer.textString = "↑↓ navigate      " + (action ? "↵ " + action + "      " : "") + "tab scope      esc close";
       },
     };
 

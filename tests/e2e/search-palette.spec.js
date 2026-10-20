@@ -71,3 +71,108 @@ test("a click outside the panel closes it, a click inside does not", async ({ pa
   });
   expect(r).toEqual({ afterInside: true, afterOutside: false });
 });
+
+// ---- results list
+
+const rows = (page) =>
+  page.evaluate(() => {
+    var s = lively.ide.tools.SearchPalette.current;
+    return s && { names: s.rows.map((r) => r.item.name || "(unnamed)"), sel: s.selIndex };
+  });
+
+async function openWithMorphs(page, n) {
+  await page.goto("/blank.html");
+  await page.waitForFunction(
+    () => window.$world && window.lively && lively.ide && lively.ide.commands && lively.ide.commands.byName["lively.ide.searchPalette"],
+    { timeout: 30000 },
+  );
+  await page.evaluate((n) => {
+    for (var k = 0; k < n; k++) {
+      var t = new lively.morphic.Text(lively.rect(700, 300 + k * 5, 300, 30), "text " + k);
+      t.name = "rowtest" + k;
+      $world.addMorph(t);
+    }
+    lively.ide.commands.exec("lively.ide.searchPalette");
+  }, n);
+  await page.waitForFunction(() => {
+    var P = lively.ide.tools && lively.ide.tools.SearchPalette;
+    return P && P.current && P.current.input.renderContext().shapeNode.contains(document.activeElement);
+  });
+}
+
+test("rows: capped to 4 under All with a Show more link, uncapped under Morphs, arrows wrap, Enter shows the halo", async ({ page }) => {
+  await openWithMorphs(page, 6);
+  await page.keyboard.type("rowtest");
+  await expect.poll(() => rows(page)).toMatchObject({ names: ["rowtest0", "rowtest1", "rowtest2", "rowtest3"], sel: 0 });
+
+  await page.getByText("Show 2 more").click();   // real click; goes to the Morphs scope
+  await expect.poll(() => rows(page)).toMatchObject({ names: ["rowtest0", "rowtest1", "rowtest2", "rowtest3", "rowtest4", "rowtest5"] });
+
+  await page.keyboard.press("ArrowUp");           // wraps from the first row to the last
+  await expect.poll(() => rows(page)).toMatchObject({ sel: 5 });
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await expect.poll(() => rows(page)).toMatchObject({ sel: 1 });
+
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => {
+    var m = $world.submorphs.find((ea) => ea.name === "rowtest1");
+    return !lively.ide.tools.SearchPalette.isOpen() && m && m.showsHalos && m.halos && m.halos.length > 0;
+  });
+});
+
+test("a real click on a row runs it and closes the palette", async ({ page }) => {
+  await openWithMorphs(page, 3);
+  await page.keyboard.type("rowtest2");
+  await page.getByRole("button", { name: "Result: rowtest2" }).click();
+  await page.waitForFunction(() => {
+    var m = $world.submorphs.find((ea) => ea.name === "rowtest2");
+    return !lively.ide.tools.SearchPalette.isOpen() && m && m.showsHalos && m.halos && m.halos.length > 0;
+  });
+});
+
+test("no match shows the empty state; saved-world rows open the world", async ({ page }) => {
+  await page.route("**/@testuser", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        objects: [{
+          type: "world", objId: "w1", state: { name: "Neon Garden" },
+          record: { payload: { registry: { 1: { __LivelyClassName__: "lively.morphic.Box", name: "ZebraFlower" } } } },
+        }],
+      }),
+    }),
+  );
+  await openWithMorphs(page, 0);
+  await page.evaluate(() => {
+    window.__opened = [];
+    window.open = (u, t) => window.__opened.push([u, t]);
+  });
+  await page.keyboard.type("qqqqq");
+  await expect.poll(() => page.evaluate(() => lively.ide.tools.SearchPalette.current.bodyTitle.textString)).toBe("No matches for \u201cqqqqq\u201d");
+
+  // the listing is read when the palette opens, so fake the signed-in state and reopen
+  await page.evaluate(() => {
+    lively.identity.did = { isLoggedIn: () => true, currentUser: () => ({ handle: "testuser" }) };
+    lively.ide.tools.SearchPalette.close();
+    lively.ide.tools.SearchPalette.open();
+  });
+  await page.waitForFunction(() => lively.ide.tools.SearchPalette.current.input.renderContext().shapeNode.contains(document.activeElement));
+  await page.keyboard.type("zebra");
+  await page.getByRole("button", { name: "Result: ZebraFlower" }).click();
+  await expect.poll(() => page.evaluate(() => window.__opened)).toEqual([["/@testuser/w1", "_blank"]]);
+});
+
+test("no palette morph can be dragged or grabbed", async ({ page }) => {
+  await openWithMorphs(page, 3);
+  await page.keyboard.type("rowtest");
+  await expect.poll(() => rows(page)).toMatchObject({ sel: 0 });
+  const bad = await page.evaluate(() => {
+    var s = lively.ide.tools.SearchPalette.current;
+    return s.scrim
+      .withAllSubmorphsSelect(function () { return true; })
+      .filter((m) => !!(m.draggingEnabled || m.isGrabbable()))
+      .map((m) => m.constructor.type + ":" + (m.textString || m.name || ""));
+  });
+  expect(bad).toEqual([]);
+});
