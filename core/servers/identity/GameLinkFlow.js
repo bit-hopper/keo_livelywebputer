@@ -8,10 +8,20 @@
  *
  * What is decided here, and why each exists:
  *   - flow state     beginFlow() / consumeFlow(): a random `state` per link attempt,
- *                    kept in the SESSION (never in a cookie the browser can edit),
- *                    bound to the signed-in DID and the platform, valid for ten
- *                    minutes, and single use. This is what stops a stranger's callback
- *                    URL from attaching THEIR account to YOUR profile (login CSRF).
+ *                    kept in the SESSION, bound to the signed-in DID and the platform,
+ *                    valid for ten minutes, and removed when used. This is what stops a
+ *                    stranger's callback URL from attaching THEIR account to YOUR
+ *                    profile (login CSRF): their state is not in your session.
+ *                    LIMIT: this server's session is a signed client-side cookie
+ *                    (express.cookieSession in life_star), not a server-side record.
+ *                    The cookie is tamper-proof and HttpOnly but readable by its owner,
+ *                    and "removed when used" only changes the NEXT cookie the browser
+ *                    gets: someone replaying an OLDER copy of their own cookie could
+ *                    present a consumed state again. That does not open the stranger
+ *                    case (they would need the victim's cookie, which is the session
+ *                    itself); the replay is further limited by the provider rejecting a
+ *                    reused assertion or authorization code, and by nonceSeen() below.
+ *                    Do not describe the state as server-enforced single use.
  *   - returnTo       safeReturnTo(): where the browser lands afterwards. Only a path on
  *                    this site is accepted, so the start route cannot be turned into an
  *                    open redirect.
