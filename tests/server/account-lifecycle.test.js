@@ -34,6 +34,7 @@ const AD = require(root + '/core/servers/identity/AccountData.js');
 const AccountDeletion = require(root + '/core/servers/identity/AccountDeletion.js');
 const AccountExport = require(root + '/core/servers/identity/AccountExport.js');
 const HandleRegistry = require(root + '/core/servers/identity/HandleRegistry.js');
+const LinkedAccounts = require(root + '/core/servers/identity/LinkedAccounts.js');
 const blobStore = require(root + '/core/servers/identity/BlobStore.js');
 const constellationRegistry = require(root + '/core/servers/identity/ConstellationRegistry.js');
 
@@ -137,6 +138,12 @@ before(async () => {
   await ins('friend_requests', { requester_did: B.did, target_did: A.did, requested_at: now });
   await ins('dm_mailbox', { msg_id: 'm1' + R, thread_id: 't' + R, sender_did: A.did, recipient_did: B.did, sender_device_pub: 'p', ciphertext: 'c', sig: 's', sent_at: now });
   await ins('dm_mailbox', { msg_id: 'm2' + R, thread_id: 't' + R, sender_did: B.did, recipient_did: A.did, sender_device_pub: 'p', ciphertext: 'c', sig: 's', sent_at: now });
+  // linked accounts: one tokenless link and one with a sealed credential (a real bytea,
+  // which ins() would mangle into JSON, so it goes in with its own statement)
+  await p(LinkedAccounts.withDB);
+  await ins('linked_accounts', { did: A.did, platform: 'steam', external_id: '7656' + R, display_name: 'a-steam', status: 'active', linked_at: now });
+  await q('INSERT INTO linked_accounts (did, platform, external_id, display_name, credential_ct, credential_nonce, key_version, scopes, status, linked_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
+    [A.did, 'itch', 'itch' + R, 'a-itch', Buffer.from('sealed-secret-' + R), Buffer.alloc(12, 7), 1, 'profile:me', 'active', now]);
   await ins('instances', { base_url: 'https://inst' + R + '.example', display_name: 'x', added_by: A.did, added_at: now });
   await ins('domains', { domain: 'a' + R + '.example', did: A.did, verified_at: now });
   await ins('handles', { handle: 'alias' + R, did: A.did, created_at: now, updated_at: now, is_alias: true, primary_handle: A.handle });
@@ -208,6 +215,10 @@ test('export: a plain tar that verifies against its own manifest, with every ver
   const ents = m.entries.map((e) => e.path);
   assert.ok(ents.some((e) => Buffer.byteLength(e) > 255), 'the over-255-byte non-ASCII path went through a PAX header');
   assert.ok(ents.includes('data/friendships.json') && ents.includes('data/dm_mailbox.json') && ents.includes('data/constellations.json'));
+  assert.ok(ents.includes('data/linked_accounts.json'), 'linked accounts are exported');
+  const linkedJson = fs.readFileSync(path.join(dir, 'data', 'linked_accounts.json'), 'utf8');
+  assert.equal(JSON.parse(linkedJson).length, 2);
+  assert.ok(!/credential_ct|credential_nonce|key_version|sealed-secret/.test(linkedJson), 'no credential column or value in the export');
   const first = m.entries.find((e) => e.path === 'objects/A1' + R + '/000001.json');
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, first.path), 'utf8')),
     (await q('SELECT envelope FROM objects WHERE obj_id=$1 ORDER BY id LIMIT 1', ['A1' + R]))[0].envelope, 'exported envelope equals the stored one');

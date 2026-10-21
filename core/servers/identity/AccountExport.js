@@ -34,6 +34,7 @@ var fs = require('fs');
 var path = require('path');
 var crypto = require('crypto');
 var handleRegistry = require('./HandleRegistry');
+var linkedAccounts = require('./LinkedAccounts');
 var AccountData = require('./AccountData');
 var TarWriter = require('./TarWriter').TarWriter;
 
@@ -302,10 +303,16 @@ function writeExport(opts, out, thenDo) {
       // The account's rows in every other table: DID-keyed rows plus the rows
       // hanging off its objects, deduplicated.
       function tables(next) {
+        // linked_accounts is created by its own module's bootstrap; make sure it exists
+        // before the generic per-table SELECT below touches it.
+        linkedAccounts.withDB(function (err) {
+        if (err) return next(err);
         AccountData.objectIds(pool, did, function (err, objIds) {
           if (err) return next(err);
           var byTable = {};
+          var omit = {};
           AccountData.DID_REFS.forEach(function (ref) {
+            if (ref.omitColumns) omit[ref.table] = ref.omitColumns;
             // objects has its own step (every version); constellations its own
             // (data/constellations.json is the account's relationship to them,
             // not whole rows with other people's member lists).
@@ -326,6 +333,8 @@ function writeExport(opts, out, thenDo) {
               pool.query(sql, [ref.scalar ? did : ref.ids], function (err, r) {
                 if (err) return cb2(err);
                 r.rows.forEach(function (row) {
+                  // columns a table's DID_REFS entry marks as not exportable (credentials)
+                  (omit[table] || []).forEach(function (col) { delete row[col]; });
                   var k = JSON.stringify(row);
                   if (!seen[k]) { seen[k] = true; rows.push(row); }
                 });
@@ -338,6 +347,7 @@ function writeExport(opts, out, thenDo) {
               add('data/' + table + '.json', _jsonPretty(rows), cb);
             });
           }, next);
+        });
         });
       },
 

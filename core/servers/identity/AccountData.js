@@ -61,7 +61,11 @@ var DID_REFS = [
   { table: 'friend_requests',         column: 'target_did',     mode: 'delete' },
   { table: 'dm_mailbox',              column: 'sender_did',     mode: 'delete' },
   { table: 'dm_mailbox',              column: 'recipient_did',  mode: 'delete' },
-  { table: 'instances',               column: 'added_by',       mode: 'nullify' },
+  // omitColumns: left out of the .keo export. The sealed provider credential is not the
+  // user's to carry away (it only opens with the server's key) and must not travel.
+  { table: 'linked_accounts',         column: 'did',            mode: 'delete',
+    omitColumns: ['credential_ct', 'credential_nonce', 'key_version'] },
+  { table: 'instances',              column: 'added_by',       mode: 'nullify' },
   { table: 'rooms',                   column: 'created_by',     mode: 'sentinel' },
   { table: 'constellation_events',    column: 'created_by',     mode: 'sentinel' },
   { table: 'constellations',          column: 'created_by',     mode: 'blocker' },

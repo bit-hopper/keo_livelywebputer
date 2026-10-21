@@ -10,6 +10,10 @@
  *              sign out
  *   Privacy  — block list
  *   Feeds    — subscribed RSS feeds
+ *   Connected — game-store accounts linked to this profile:
+ *              connect (a full-page redirect through GameLinkServer, which
+ *              brings the browser back with ?linked= / ?link_error=, handled
+ *              by WorldTemplateLauncher.runIfLinkReturned) and disconnect
  *   Delete   — permanent account deletion: review → download + verify a .keo
  *              copy of your data → type your handle and use your passkey
  *              (settings.md §5, §5a). The Account tab also offers the download
@@ -23,8 +27,10 @@
  * this dialog re-reads the envelope each time one of its tabs is opened, so
  * the two never act on a stale copy.
  *
- * Open: lively.identity.SettingsDialog.open(tab)
- *   tab: "account" (default), "privacy", "feeds", "security" or "delete"
+ * Open: lively.identity.SettingsDialog.open(tab, notice)
+ *   tab: "account" (default), "privacy", "feeds", "security", "connected" or "delete"
+ *   notice: optional { ok: bool, text } shown at the top of the Connected tab
+ *           (the result of a connect attempt that just returned)
  *
  * See settings.md for the spec (export / delete-account tabs are added there).
  */
@@ -94,7 +100,7 @@ module("lively.identity.SettingsDialog")
       },
 
       load: function load(tab) {
-        this._tab = (tab === "privacy" || tab === "feeds" || tab === "security" || tab === "delete") ? tab : "account";
+        this._tab = (tab === "privacy" || tab === "feeds" || tab === "security" || tab === "connected" || tab === "delete") ? tab : "account";
         this._enterTab();
       },
 
@@ -112,6 +118,9 @@ module("lively.identity.SettingsDialog")
           this._loadSummary();
         } else if (tab === "security") {
           this._render();
+        } else if (tab === "connected") {
+          this._render();
+          this._loadLinked();
         } else {
           this._relLoaded = false;
           this._render();
@@ -335,11 +344,13 @@ module("lively.identity.SettingsDialog")
           lively.bindings.connect(tb, "fire", tb, "doAction");
           content.addMorph(tb);
         }
-        addTabButton("Account", "account", MARGIN, 92);
-        addTabButton("Privacy", "privacy", MARGIN + 101, 92);
-        addTabButton("Feeds", "feeds", MARGIN + 202, 92);
-        addTabButton("Security", "security", MARGIN + 303, 92);
-        addTabButton("Delete", "delete", MARGIN + 404, 92);
+        // Six tabs across the 498px content width: 78px each, 6px apart.
+        addTabButton("Account", "account", MARGIN, 78);
+        addTabButton("Privacy", "privacy", MARGIN + 84, 78);
+        addTabButton("Feeds", "feeds", MARGIN + 168, 78);
+        addTabButton("Security", "security", MARGIN + 252, 78);
+        addTabButton("Connected", "connected", MARGIN + 336, 78);
+        addTabButton("Delete", "delete", MARGIN + 420, 78);
         y += 28 + 22;
 
         if (!user || !user.handle) {
@@ -501,6 +512,64 @@ module("lively.identity.SettingsDialog")
             y += 36;
           }
 
+        } else if (tab === "connected") {
+
+          // ── Connected tab ─────────────────────────────────────────────────
+          // One card per store. What the copy says must stay true to what
+          // GameLinkServer.js actually does: it links and unlinks, and holds
+          // nothing else yet (importing a library is not built).
+          var GREEN = Color.rgb(20, 120, 60);
+          var REDC = Color.rgb(180, 40, 60);
+          if (this._notice) {
+            paragraph(this._notice.text, this._notice.ok ? GREEN : REDC, 11);
+          }
+          var lk = this._linked;
+          var STORES = [
+            { key: "steam", name: "Steam",
+              keeps: "We keep: your public Steam ID, nothing else. No password and no token, because Steam sign-in only proves " +
+                "who you are. We don't read your game list yet; when importing arrives it will only run when you press Sync.",
+              before: "Steam's own page asks you to sign in; we never see your password. Not affiliated with or endorsed by Valve or Steam." },
+            { key: "itch", name: "itch.io",
+              keeps: "We keep: an encrypted access token on our server until you disconnect. We don't read anything with it yet; " +
+                "when importing arrives it will list the games you own (itch.io does not provide playtime).",
+              before: "itch.io will ask you to let us read your profile and the games you own. You can revoke this on itch.io " +
+                "at any time, and Disconnect here revokes it too." },
+          ];
+          if (!lk) {
+            noteText(this._linkedError ? "Could not load your linked accounts (" + this._linkedError + ")." : "Loading…");
+          } else {
+            STORES.forEach(function (st, i) {
+              if (i) divider();
+              sectionLabel(st.name);
+              var acct = null;
+              (lk.accounts || []).forEach(function (a) { if (a.platform === st.key) acct = a; });
+              var avail = (lk.providers && lk.providers[st.key]) || { available: false, reason: null };
+              if (acct) {
+                var who = acct.display_name || (st.key === "steam" ? "Steam ID " + acct.external_id : "Account " + acct.external_id);
+                infoRow("Connected as", who, { label: "Disconnect", action: "_disconnect", arg: st.key });
+                infoRow("Linked", acct.linked_at ? new Date(acct.linked_at).toLocaleDateString() : "");
+                infoRow("Last synced", acct.last_synced_at ? new Date(acct.last_synced_at).toLocaleString() : "Never");
+                if (acct.status && acct.status !== "active") {
+                  paragraph("This link needs attention (" + acct.status.replace(/_/g, " ") + "). Disconnect and connect again.", REDC, 10);
+                }
+                paragraph(st.keeps);
+              } else {
+                paragraph(st.before);
+                if (avail.available) {
+                  actionButton(MARGIN, y, 150, "Connect " + st.name, "accent", "_connect", st.key);
+                  y += 36;
+                } else {
+                  noteText("Unavailable on this server" + (avail.reason ? ": " + avail.reason : "") + ".", 28);
+                }
+              }
+            });
+            divider();
+            sectionLabel("Xbox");
+            noteText("Coming soon.");
+            sectionLabel("PlayStation");
+            paragraph("Not available: PlayStation has no public way for other apps to read your library. Add those games by hand.");
+          }
+
         } else if (!this._relLoaded) {
           noteText("Loading…");
 
@@ -567,10 +636,75 @@ module("lively.identity.SettingsDialog")
         }
       },
 
+      // ─── connected accounts ──────────────────────────────────────────────────
+
+      // GET /nodejs/GameLinkServer/status: which stores this server offers and which
+      // accounts are linked. Never carries a credential.
+      _loadLinked: function _loadLinked() {
+        var self = this;
+        fetch("/nodejs/GameLinkServer/status", { credentials: "include", headers: { "Accept": "application/json" } })
+          .then(function (res) {
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            return res.json();
+          })
+          .then(function (data) {
+            self._linked = data;
+            self._linkedError = null;
+            if (self._tab === "connected") self._render();
+          })
+          .catch(function (err) {
+            self._linkedError = String(err.message || err);
+            if (self._tab === "connected") self._render();
+          });
+      },
+
+      // A full-page redirect through the server (not a popup): it works on a phone and
+      // survives the reload. The server brings the browser back to this page with
+      // ?linked= or ?link_error=. Anything unsaved in the world is lost to the reload,
+      // so ask first.
+      _connect: function _connect(platform, btn) {
+        var self = this;
+        $world.confirm("Connecting leaves this page and comes back. Save your world first if it has unsaved changes. Continue?", function (ok) {
+          if (!ok) return self._restore(btn);
+          var back = window.location.pathname + window.location.search;
+          window.location.href = "/nodejs/GameLinkServer/start/" + encodeURIComponent(platform) + "?return=" + encodeURIComponent(back);
+        });
+      },
+
+      _disconnect: function _disconnect(platform, btn) {
+        var self = this;
+        var names = { steam: "Steam", itch: "itch.io" };
+        $world.confirm("Disconnect " + (names[platform] || platform) + "? The saved link" +
+          (platform === "itch" ? " and its access token are deleted and the token is revoked at itch.io" : " is deleted") +
+          ". Games already in your library stay.", function (ok) {
+          if (!ok) return self._restore(btn);
+          fetch("/nodejs/GameLinkServer/" + encodeURIComponent(platform), {
+            method: "DELETE", credentials: "include", headers: { "Accept": "application/json" },
+          })
+            .then(function (res) {
+              if (!res.ok) throw new Error("HTTP " + res.status);
+              return res.json();
+            })
+            .then(function (body) {
+              self._notice = {
+                ok: true,
+                text: (names[platform] || platform) + " disconnected." +
+                  (platform === "itch" && body && body.wasLinked && !body.revoked ? " The token could not be revoked at itch.io right now; you can revoke it in your itch.io settings." : ""),
+              };
+              self._loadLinked();
+            })
+            .catch(function (err) {
+              self._restore(btn);
+              $world.alert("Could not disconnect: " + String(err.message || err));
+            });
+        });
+      },
+
       // ─── actions ────────────────────────────────────────────────────────────
 
       _switchTab: function _switchTab(tab) {
         if (tab === this._tab) return;
+        this._notice = null;
         this._tab = tab;
         this._enterTab();
       },
@@ -864,11 +998,12 @@ module("lively.identity.SettingsDialog")
           .catch(function (err) { thenDo(err); });
       },
 
-      open: function (tab) {
+      open: function (tab, notice) {
         this.ensureAccentChromeCss();
         var win = lively.BuildSpec("lively.identity.SettingsDialog").createMorph();
         win.addStyleClassName("settings-accent-chrome");
         win.openInWorldCenter();
+        win._notice = notice || null;
         win.load(tab);
         return win;
       },

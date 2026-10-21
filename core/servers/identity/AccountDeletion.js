@@ -33,6 +33,7 @@
 
 var fs = require('fs');
 var handleRegistry = require('./HandleRegistry');
+var linkedAccounts = require('./LinkedAccounts');
 var AccountData = require('./AccountData');
 
 function _fail(code, message, extra) {
@@ -58,7 +59,11 @@ function deleteAccount(opts, thenDo) {
 
   // Make sure reserved_handles (created by HandleRegistry's own bootstrap) exists
   // before the transaction starts using it.
+  // Same for linked_accounts, which AccountData.DID_REFS lists and which is created by
+  // its own module's bootstrap.
   handleRegistry.withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    linkedAccounts.withDB(function (err) {
     if (err) return thenDo(err);
     pool.connect(function (err, client, release) {
       if (err) return thenDo(err);
@@ -266,6 +271,7 @@ function deleteAccount(opts, thenDo) {
           });
         });
       }
+    });
     });
   });
 }

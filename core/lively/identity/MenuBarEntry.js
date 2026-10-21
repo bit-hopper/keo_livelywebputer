@@ -141,6 +141,8 @@ module("lively.identity.MenuBarEntry")
     // world -- see WorldTemplateLauncher.js's own header for the full flow.
     lively.require("lively.identity.WorldTemplateLauncher").toRun(function () {
       lively.identity.WorldTemplateLauncher.runIfRequested();
+      // Also here: returning from a game-store sign-in opens Settings > Connected.
+      lively.identity.WorldTemplateLauncher.runIfLinkReturned();
     });
 
     lively.BuildSpec(

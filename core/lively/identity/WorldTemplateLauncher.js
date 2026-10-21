@@ -46,6 +46,64 @@ module("lively.identity.WorldTemplateLauncher")
         lively.identity.WorldTemplateLauncher._launchTemplate(template);
       },
 
+      // Runs once per world-page load, next to runIfRequested. When the browser comes back
+      // from a game-store sign-in (GameLinkServer redirects to the page it left, adding
+      // ?linked=<store> or ?link_error=<code>), strips those parameters and opens
+      // Settings on its Connected tab with the outcome. Waits for the identity restore
+      // if the user is not signed in yet at this point in the boot. Does nothing when
+      // neither parameter is present.
+      runIfLinkReturned: function runIfLinkReturned() {
+        if (this._linkReturnHandled) return;
+        var params = new URLSearchParams(location.search);
+        var linked = params.get("linked");
+        var failed = params.get("link_error");
+        if (!linked && !failed) return;
+        this._linkReturnHandled = true;
+
+        params.delete("linked");
+        params.delete("link_error");
+        var qs = params.toString();
+        window.history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "") + location.hash);
+
+        var notice = lively.identity.WorldTemplateLauncher.linkNotice(linked, failed);
+        var did = lively.identity.did;
+        function openSettings() {
+          lively.require("lively.identity.SettingsDialog").toRun(function () {
+            lively.identity.SettingsDialog.open("connected", notice);
+          });
+        }
+        if (did.isLoggedIn()) return openSettings();
+        var waiter = {
+          onIdentityChanged: function (user) {
+            if (!user) return;
+            lively.bindings.disconnect(did, "identityChanged", waiter, "onIdentityChanged");
+            openSettings();
+          },
+        };
+        lively.bindings.connect(did, "identityChanged", waiter, "onIdentityChanged");
+      },
+
+      // The words shown for a returned link attempt. `failed` is one of the fixed codes
+      // GameLinkServer sends; an unknown code gets the generic line, never the raw value.
+      linkNotice: function linkNotice(linked, failed) {
+        var names = { steam: "Steam", itch: "itch.io" };
+        if (linked) return { ok: true, text: (names[linked] || "The account") + " connected." };
+        var texts = {
+          not_signed_in: "You were signed out before the connection finished. Sign in and try again.",
+          state_invalid: "That connection attempt expired or was not started from this browser. Start it again from here.",
+          unavailable: "That store isn't set up on this server yet.",
+          rate_limited: "Too many attempts. Wait a minute and try again.",
+          cancelled: "The connection was cancelled.",
+          assertion_rejected: "The store's sign-in could not be verified, so nothing was connected.",
+          provider_unreachable: "Couldn't reach the store. Try again in a moment.",
+          provider_error: "The store answered with an error, so nothing was connected.",
+          scope_denied: "The permissions needed to read your games were not granted, so nothing was connected.",
+          already_linked: "That account is already connected to another profile.",
+          server_error: "Something went wrong on our side. Try again.",
+        };
+        return { ok: false, text: texts[failed] || "The connection did not complete." };
+      },
+
       _launchTemplate: function _launchTemplate(template) {
         if (template === "shop") {
           lively.require("lively.commerce.Shop").toRun(function () {
