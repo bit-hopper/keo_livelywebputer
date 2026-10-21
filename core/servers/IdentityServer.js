@@ -2609,6 +2609,29 @@ module.exports = function (route, app) {
     });
   });
 
+  // ─── game library listing ───────────────────────────────────────────────────
+  // The Gaming template's entries (type 'gamelog'), as the caller may read them:
+  // the owner gets every live entry, anyone else only public ones and ones they
+  // are a recipient of (the rule runs in SQL, ahead of LIMIT, so pages stay full).
+  // Whole envelopes come back, ciphertext included: the browser decrypts them.
+  // Query: limit (default 100, max 200), cursor (the previous page's `cursor`).
+  // Must be registered before /@:handle/:objId and this file's /@:handle/* catch-all.
+
+  app.get("/@:handle/games", auth.optionalAuth, function (req, res) {
+    var handle = req.params.handle;
+    var limit = parseInt(req.query.limit, 10) || 100;
+    var cursor = typeof req.query.cursor === "string" ? req.query.cursor : null;
+    handleRegistry.resolve(handle, function (err, did) {
+      if (err)  return res.status(500).json({ error: String(err) });
+      if (!did) return res.status(404).json({ error: "Handle not found: @" + handle });
+      objectRepo.listGamesForViewer(did, req.identity ? req.identity.did : null, { limit: limit, cursor: cursor }, function (err, result) {
+        if (err) return res.status(500).json({ error: String(err) });
+        result.games = result.games.map(function (e) { return _trimRecipientsForNonOwner(e, req.identity); });
+        res.json(result);
+      });
+    });
+  });
+
   // ─── orbit (close friends), filtered per viewer ─────────────────────────────
   // The owner's orbit is stored in state.orbit on their private settings
   // envelope (Orbit.js has the rules). Members are intersected with the owner's

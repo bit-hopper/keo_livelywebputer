@@ -1537,6 +1537,76 @@ function listPostcardsForViewer(ownerDid, viewerDid, opts, thenDo) {
   });
 }
 
+// A user's game-library entries (type 'gamelog') as one viewer may read them.
+//
+// Unlike the postcard listings this returns the WHOLE envelope, payload included:
+// an entry's payload is sealed to its owner (or to its recipients), so the server
+// cannot summarise it and the browser has to decrypt it itself. The visibility rule
+// is the same SQL clause the postcard listing uses and runs before LIMIT, so a page
+// is never short because rows were dropped afterwards. A row is visible when it is
+// public, or the viewer owns it, or the viewer is in record.recipients; deleted
+// entries (state.deleted) are never listed.
+//
+// Paging: newest version first, `cursor` is the obj_id of the last row of the
+// previous page. A page holds at most 200 entries (the caller asks for fewer by
+// default): a signed envelope is about 4 KB, so the cap bounds a response at
+// roughly 800 KB.
+//
+// opts: { limit, cursor }.
+// _buildViewerGamesQuery is the pure half (no DB), exported so the rule and the
+// parameter wiring can be unit-tested on their own. pivotId is the id of the cursor
+// row, or null for the first page.
+// Calls thenDo(null, { games: [envelope...], cursor }).
+function _buildViewerGamesQuery(ownerDid, viewerDid, opts, pivotId) {
+  var limit = Math.min(Math.max(parseInt(opts && opts.limit, 10) || 100, 1), 200);
+  var params = [];
+  function bind(v) { params.push(v); return '$' + params.length; }
+
+  var ownerPh = bind(ownerDid);
+  var sql =
+    'SELECT o.envelope, o.obj_id, o.id FROM objects o' +
+    ' INNER JOIN (' +
+    '   SELECT obj_id, MAX(id) AS max_id FROM objects' +
+    '   WHERE did = ' + ownerPh + ' AND type = \'gamelog\'' +
+    '   GROUP BY obj_id' +
+    ' ) latest ON o.id = latest.max_id' +
+    ' WHERE ((o.envelope #>> \'{state,deleted}\') IS NULL' +
+    '        OR (o.envelope #>> \'{state,deleted}\') <> \'true\')' +
+    _viewerVisibleClause(ownerDid, viewerDid, bind);
+  if (pivotId) sql += ' AND o.id < ' + bind(pivotId);
+  sql += ' ORDER BY o.id DESC LIMIT ' + bind(limit + 1);
+  return { sql: sql, params: params, limit: limit };
+}
+
+function listGamesForViewer(ownerDid, viewerDid, opts, thenDo) {
+  var cursor = (opts && opts.cursor) || null;
+  withDB(function (err, pool) {
+    if (err) return thenDo(err);
+    function run(pivotId) {
+      var built = _buildViewerGamesQuery(ownerDid, viewerDid, opts, pivotId);
+      pool.query(built.sql, built.params, function (err, result) {
+        if (err) return thenDo(err);
+        var rows = result.rows;
+        var hasMore = rows.length > built.limit;
+        if (hasMore) rows = rows.slice(0, built.limit);
+        thenDo(null, {
+          games: rows.map(function (r) { return r.envelope; }),
+          cursor: hasMore ? rows[rows.length - 1].obj_id : null
+        });
+      });
+    }
+    if (!cursor) return run(null);
+    pool.query(
+      'SELECT MAX(id) AS pivot FROM objects WHERE obj_id = $1 AND did = $2',
+      [cursor, ownerDid],
+      function (err, result) {
+        if (err) return thenDo(err);
+        run(result.rows[0] ? result.rows[0].pivot : null);
+      }
+    );
+  });
+}
+
 // Metadata-only list of a user's worlds that viewerDid may open (latest version
 // of each, oldest first): [{ objId, name, template, visibility, created }]. No
 // payloads — GET /@:handle returns full envelopes, which is far too heavy for the
@@ -3571,6 +3641,8 @@ module.exports = {
   listPostcardsForConstellation: listPostcardsForConstellation,
   listPostcardsForViewer:        listPostcardsForViewer,
   listWorldsForViewer:           listWorldsForViewer,
+  listGamesForViewer:            listGamesForViewer,
+  _buildViewerGamesQuery:        _buildViewerGamesQuery,
   _buildViewerPostcardQuery:     _buildViewerPostcardQuery,
   listMessagesForRoom:           listMessagesForRoom,
   searchRoomMessages:            searchRoomMessages,

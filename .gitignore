@@ -91,6 +91,9 @@ core/apis/511-api.json
 # Google Books API (Books world template cover/metadata search) — see core/servers/GoogleBooksProxyServer.js
 core/apis/google-books-api.json
 
+# Game search credentials (Gaming world template) — see core/servers/GameDbProxyServer.js
+core/apis/igdb-api.json
+
 # HTTP / server #
 htpasswd
 .htpasswd
