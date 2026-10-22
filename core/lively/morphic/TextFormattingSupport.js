@@ -136,6 +136,57 @@ module("lively.morphic.TextFormattingSupport")
       });
     }
     var ORIGINAL = TextProto._richTextOriginals;
+    // a module reload keeps the object above, so add later originals separately
+    if (!ORIGINAL.onEnterPressed) {
+      ORIGINAL.onEnterPressed = TextProto.onEnterPressed;
+      ORIGINAL.onMouseUp = TextProto.onMouseUp;
+      ORIGINAL.onKeyUp = TextProto.onKeyUp;
+    }
+
+    // -- lists ----------------------------------------------------------
+    // A rich text morph is a flat run of styled chunks with no block
+    // structure, so a list is made of ordinary text: each list line starts
+    // with a marker ("• ", "3. ", "☐ "/"☑ "). That keeps lists
+    // inside the existing text/markup model (they save, copy and serialize
+    // like any other characters). Enter continues a list, Enter on an empty
+    // item ends it, and clicking a to-do box ticks it.
+    //
+    // The space after a marker is a NON-BREAKING space (SP), and ONLY that
+    // form counts as a marker. Two reasons: in a text with white-space
+    // "normal" (the calendar memo field) the browser drops a collapsible
+    // space at the end of a line as soon as you type after it, and a marker
+    // that a user typed by hand ("- ", "1. ", a pasted bullet) uses a plain
+    // space, so requiring the nbsp is what tells a list item the toolbar
+    // made from ordinary text that merely starts the same way.
+    var SP = "\u00a0";
+    var LIST_KINDS = {
+      bullet: /^\u2022\u00a0/,
+      number: /^\d+\.\u00a0/,
+      check: /^[\u2610\u2611]\u00a0/
+    };
+    var CHECK_OFF = "\u2610", CHECK_ON = "\u2611";
+
+    // the list marker at the start of `line`: {kind, text} or null
+    function markerOf(line) {
+      for (var kind in LIST_KINDS) {
+        var m = LIST_KINDS[kind].exec(line);
+        if (m) return { kind: kind, text: m[0] };
+      }
+      return null;
+    }
+    function lineStartOf(text, idx) {
+      return idx <= 0 ? 0 : text.lastIndexOf("\n", idx - 1) + 1;
+    }
+    function lineEndOf(text, idx) {
+      var nl = text.indexOf("\n", idx);
+      return nl < 0 ? text.length : nl;
+    }
+    // marker to put on the line after a line carrying `marker`
+    function nextMarkerText(marker) {
+      if (marker.kind === "bullet") return "\u2022" + SP;
+      if (marker.kind === "check") return CHECK_OFF + SP;
+      return (parseInt(marker.text, 10) + 1) + "." + SP;
+    }
 
     lively.morphic.Text.addMethods("rich text formatting toolbar", {
       // Resizing (e.g. dragging a halo handle) reflows the text but never
@@ -179,6 +230,222 @@ module("lively.morphic.TextFormattingSupport")
           if (node) node._richTextFitBusy = false;
         }
       },
+      // -- formatting with only a caret ("pending" emphasis) ----------------
+      // Bold, size, color, font... applied while nothing is selected style
+      // the characters typed next, as in Google Docs, instead of doing
+      // nothing. The pending style is {spec, start, caret, length}: the caret
+      // it was set at, where typing began, and the text length then, so a
+      // key-up can tell "typed N characters at the caret" from "the caret
+      // moved / something else changed" (which drops it). Kept non-enumerable
+      // so it is never serialized with the morph.
+      _setPendingEmphasis: function _setPendingEmphasis(p) {
+        Object.defineProperty(this, "_pendingEmphasis", { value: p, writable: true, enumerable: false, configurable: true });
+      },
+
+      // The pending spec if it still applies at the current caret, else null.
+      // Read-only on purpose: the toolbar polls this between a character
+      // landing and its key-up, and must not discard the style in that gap.
+      getPendingEmphasis: function getPendingEmphasis() {
+        var p = this._pendingEmphasis;
+        if (!p) return null;
+        var range = this.getSelectionRange();
+        if (!range || range[0] !== range[1]) return null;
+        if (range[0] === p.caret && this.textString.length === p.length) return p.spec;
+        return null;
+      },
+
+      // Emphasis of the text a collapsed caret would type into: the
+      // character before it (or the first one at the very start).
+      getEmphasisForCaret: function getEmphasisForCaret(caret) {
+        return this.getEmphasisAt(caret > 0 ? caret - 1 : 0);
+      },
+
+      // Apply `spec` to `range` ([from, to], defaults to the selection): a
+      // real range is emphasized now, a bare caret makes it pending.
+      emphasizeRangeOrPending: function emphasizeRangeOrPending(spec, range) {
+        if (!range) return;
+        var a = Math.min(range[0], range[1]), b = Math.max(range[0], range[1]);
+        if (a !== b) {
+          this._setPendingEmphasis(null);
+          if (this.isFocused()) this.emphasizeSelection(spec);
+          else this.emphasize(spec, a, b);
+          return;
+        }
+        var p = this._pendingEmphasis;
+        if (p && p.caret === a && p.length === this.textString.length) {
+          if (p.start === a) {
+            Object.extend(p.spec, spec); // nothing typed yet: just add to it
+          } else {
+            // characters were already typed under the old style; the new
+            // choice must only affect what comes after them, so start a new
+            // segment here that carries the old style forward
+            this._setPendingEmphasis({ spec: Object.extend(Object.extend({}, p.spec), spec), start: a, caret: a, length: p.length });
+          }
+        } else {
+          this._setPendingEmphasis({ spec: Object.extend({}, spec), start: a, caret: a, length: this.textString.length });
+        }
+      },
+      emphasizeOrPending: function emphasizeOrPending(spec) {
+        this.emphasizeRangeOrPending(spec, this.getSelectionRange());
+      },
+
+      // Bold / italic / underline / link. With a selection this is the plain
+      // toggle; with a caret it flips the pending (or current) state; Link
+      // needs text to attach to, so a caret first selects the word under it.
+      toggleEmphasisOrPending: function toggleEmphasisOrPending(type) {
+        var range = this.getSelectionRange();
+        if (!range) return;
+        if (range[0] !== range[1]) {
+          this._setPendingEmphasis(null);
+          this.toggleEmphasisForSelection(type);
+          return;
+        }
+        var spec = {
+          Boldness: { key: "fontWeight", on: "bold", read: function (e) { return e.getFontWeight(); } },
+          Italics: { key: "italics", on: "italic", read: function (e) { return e.getItalics(); } },
+          Underline: { key: "textDecoration", on: "underline", read: function (e) { return e.getTextDecoration(); } }
+        }[type];
+        if (!spec) { // Link
+          var w = this.selectWord(this.textString, range[0]);
+          if (!w || !this.textString.slice(w[0], w[1] + 1).trim()) return;
+          this.setSelectionRange(w[0], w[1] + 1);
+          this.toggleEmphasisForSelection(type);
+          return;
+        }
+        var pending = this.getPendingEmphasis();
+        var emph = this.getEmphasisForCaret(range[0]);
+        var isOn = pending && pending[spec.key] !== undefined ? pending[spec.key] === spec.on : !!emph && spec.read(emph) === spec.on;
+        var change = {};
+        change[spec.key] = isOn ? "normal" : spec.on;
+        this.emphasizeRangeOrPending(change, range);
+      },
+
+      // Key-up after typing: give the characters just typed the pending
+      // style (the whole run since it was set, so a held key is covered),
+      // or drop it if the caret moved or the text changed some other way.
+      _settlePendingEmphasis: function _settlePendingEmphasis() {
+        var p = this._pendingEmphasis;
+        if (!p) return;
+        var range = this.getSelectionRange();
+        if (!range || range[0] !== range[1]) { this._setPendingEmphasis(null); return; }
+        var caret = range[0], len = this.textString.length, grew = len - p.length;
+        if (grew > 0 && caret === p.caret + grew) {
+          this.emphasize(p.spec, p.start, caret);
+          this.setSelectionRange(caret, caret);
+          p.caret = caret;
+          p.length = len;
+        } else if (caret !== p.caret || len !== p.length) {
+          this._setPendingEmphasis(null);
+        }
+      },
+      onKeyUp: function onKeyUp(evt) {
+        var result = ORIGINAL.onKeyUp.call(this, evt);
+        if (this.richTextToolbarEnabled) this._settlePendingEmphasis();
+        return result;
+      },
+
+      // Replace [from, to) with `str` through the DOM selection, so the new
+      // characters pick up the style of the text around them (setting
+      // textString would drop every emphasis).
+      replaceRangeKeepingStyle: function replaceRangeKeepingStyle(from, to, str) {
+        if (from === to && !str) return;
+        this.setSelectionRange(from, to);
+        this.insertAtCursor(str, false, true);
+      },
+
+      // Toggle a list of `kind` ("bullet" | "number" | "check", or "none" to
+      // strip any list marker) on every line the selection touches. If all
+      // of them already have that kind, it is removed instead; lines with a
+      // different kind are converted. Numbers continue from a numbered line
+      // directly above the selection.
+      toggleListForSelection: function toggleListForSelection(kind) {
+        var text = this.textString;
+        var range = this.getSelectionRange() || [0, 0];
+        var a = Math.min(range[0], range[1]), b = Math.max(range[0], range[1]);
+        var limit = b > a ? b - 1 : a; // a line that starts exactly at the selection end isn't touched
+        var lines = [], i = lineStartOf(text, a);
+        while (i <= limit) {
+          var end = lineEndOf(text, i);
+          lines.push({ start: i, marker: markerOf(text.slice(i, end)) });
+          if (end >= text.length) break;
+          i = end + 1;
+        }
+        if (!lines.length) return;
+        var removing = kind === "none" || lines.every(function (l) { return l.marker && l.marker.kind === kind; });
+
+        var n = 1;
+        if (kind === "number" && lines[0].start > 0) {
+          var prevStart = lineStartOf(text, lines[0].start - 1);
+          var prev = markerOf(text.slice(prevStart, lines[0].start - 1));
+          if (prev && prev.kind === "number") n = parseInt(prev.text, 10) + 1;
+        }
+        lines.forEach(function (l) {
+          var m;
+          if (removing) m = "";
+          else if (kind === "bullet") m = "\u2022" + SP;
+          else if (kind === "check") m = (l.marker && l.marker.kind === "check" ? l.marker.text.charAt(0) : CHECK_OFF) + SP;
+          else m = (n++) + "." + SP;
+          l.newText = m;
+          l.delta = m.length - (l.marker ? l.marker.text.length : 0);
+        });
+
+        if (this.logChangeForUndo) this.logChangeForUndo();
+        // last line first, so the earlier offsets stay valid
+        for (var k = lines.length - 1; k >= 0; k--) {
+          var l = lines[k];
+          if (l.newText === (l.marker ? l.marker.text : "")) continue;
+          this.replaceRangeKeepingStyle(l.start, l.start + (l.marker ? l.marker.text.length : 0), l.newText);
+        }
+        var total = lines.reduce(function (s, l) { return s + l.delta; }, 0);
+        var newA = Math.max(lines[0].start, a + lines[0].delta);
+        this.setSelectionRange(newA, Math.max(newA, b + total));
+        this.cachedTextString = null;
+        this.fit();
+      },
+
+      // Enter in a list line: start the next item, or, on an item with no
+      // text, end the list (the marker is removed instead of continuing it).
+      onEnterPressed: function onEnterPressed(evt) {
+        if (!this.richTextToolbarEnabled || this.isInputLine || evt.isCommandKey()) {
+          return ORIGINAL.onEnterPressed.call(this, evt);
+        }
+        var range = this.getSelectionRange(), text = this.textString;
+        if (!range || range[0] !== range[1]) return ORIGINAL.onEnterPressed.call(this, evt);
+        var caret = range[0], ls = lineStartOf(text, caret), le = lineEndOf(text, caret);
+        var marker = markerOf(text.slice(ls, le));
+        if (!marker || caret < ls + marker.text.length) return ORIGINAL.onEnterPressed.call(this, evt);
+        if (le === ls + marker.text.length) { // nothing after the marker: end the list
+          this.replaceRangeKeepingStyle(ls, le, "");
+          this.setSelectionRange(ls, ls);
+          this.cachedTextString = null;
+          evt.stop();
+          return true;
+        }
+        var result = ORIGINAL.onEnterPressed.call(this, evt);
+        this.insertAtCursor(nextMarkerText(marker), false, false);
+        return result;
+      },
+
+      // Clicking on (or just before/after) a to-do box ticks / unticks it.
+      onMouseUp: function onMouseUp(evt) {
+        if (this.richTextToolbarEnabled) this._setPendingEmphasis(null);
+        if (this.richTextToolbarEnabled && this.toggleCheckboxAtCaret()) return false;
+        return ORIGINAL.onMouseUp.call(this, evt);
+      },
+      toggleCheckboxAtCaret: function toggleCheckboxAtCaret() {
+        var range = this.getSelectionRange();
+        if (!range || range[0] !== range[1]) return false;
+        var text = this.textString, caret = range[0], ls = lineStartOf(text, caret);
+        var marker = markerOf(text.slice(ls, lineEndOf(text, caret)));
+        if (!marker || marker.kind !== "check" || caret > ls + 1) return false;
+        var ticked = marker.text.charAt(0) === CHECK_ON;
+        this.replaceRangeKeepingStyle(ls, ls + 1, ticked ? CHECK_OFF : CHECK_ON);
+        this.setSelectionRange(caret, caret);
+        this.priorSelectionRange = [caret, caret];
+        this.cachedTextString = null;
+        return true;
+      },
+
       onFocusAction: function onFocusAction() {
         if (!this.richTextToolbarEnabled) return;
         // also here, not just in enableFormattingToolbar: a morph restored
