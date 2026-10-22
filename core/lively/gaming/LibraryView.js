@@ -510,7 +510,10 @@ module("lively.gaming.LibraryView")
       _fillTile: function (tile, entry, idx) {
         var UI = lively.gaming.GamingUI, th = this.th, c = tile.__c, p = entry.payload, g = this._geom();
         tile.__entry = entry; tile.__idx = idx;
-        c.title.setTextString(UI.trunc(p.title, this.filter.mode === "list" ? 70 : 46));
+        // Cut by measured width, with an ellipsis: a grid title gets two lines, a list title one.
+        var list = this.filter.mode === "list";
+        var titleW = (list ? Math.max(120, g.tw - 60 - 470) : g.tw - 20) - 10;
+        c.title.setTextString(list ? UI.fit(p.title, 13, 700, titleW) : UI.fitLines(p.title, 13, 700, titleW, 2));
         // status chip: text, fill, colour and width all change with the status
         var s = th.status[p.status] || th.status.backlog;
         c.status.setTextString(UI.STATUS_LABEL[p.status] || p.status);
@@ -518,7 +521,10 @@ module("lively.gaming.LibraryView")
         c.status.applyStyle({ fill: s.bg, textColor: s.fg });
         c.stars.setTextString(UI.starsText(p.rating));
         c.meta.setTextString(metaText(entry));
-        c.sub.setTextString(UI.trunc([p.genre, p.year].filter(Boolean).join(" · "), 50));
+        var subText = [p.genre, p.year].filter(Boolean).join(" · ");
+        c.sub.setTextString(UI.fit(subText, 12, 400, Math.max(120, g.tw - 60 - 470) - 10));
+        // List mode: a title with nothing under it sits in the middle of the row, not at the top.
+        if (list) c.title.setPosition(lively.pt(60, subText ? 8 : 20));
         // cover: the real art when there is a url, else a stable gradient with the initial
         var colors = UI.coverColors(p.title);
         c.cover.applyStyle({ fill: UI.gradient(colors.a, colors.b) });

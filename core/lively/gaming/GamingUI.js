@@ -12,8 +12,11 @@
  *                            a morph; never recolour a built morph (see "Themes" below).
  *   getThemePref / setThemePref / onThemeChange   the Auto / Light / Dark preference
  *   ensureFonts()            the Caprasimo / Figtree <link>, once per page
- *   textW(text, px, weight)  a text's real width, measured on a canvas (use for hug-fit boxes
+ *   textW(text, px, weight, font)  a text's real width, measured on a canvas (use for hug-fit boxes
  *                            instead of reading a span, which races the layout)
+ *   fit / fitLines           cut a text to a width with an ellipsis, so it is never clipped mid-glyph
+ *                            (use these, not UI.trunc, whenever the box has a real width)
+ *   onFontsReady             run once when the web fonts have loaded (widths measured before are off)
  *   label / icon             a Text for words / a Material Symbols glyph
  *   box / panel              a plain Box with the drag flags already cleared
  *   button                   a themed pill button that owns its click
@@ -162,16 +165,84 @@ module("lively.gaming.GamingUI")
           st.textContent = ".gaming-input, .gaming-input * { outline: none !important; }";
           document.head.appendChild(st);
         }
+        lively.gaming.GamingUI._watchFonts();
+      },
+
+      // True once the faces the template measures with have loaded.
+      fontsReady: function () {
+        try { return document.fonts.check("400 12px Figtree") && document.fonts.check("700 12px Figtree") && document.fonts.check("400 20px Caprasimo"); }
+        catch (e) { return true; }
+      },
+
+      // Calls fn once, when the fonts are loaded (at once, if they already are). WHY: every hug-fit
+      // width (buttons, pills, truncation) is measured with textW, and measured before the web fonts
+      // arrive it uses the fallback font, so the first paint has buttons a few px too narrow or wide
+      // and labels cut short. The template rebuilds once when this fires (Gaming#_setup).
+      onFontsReady: function (fn) {
+        var UI = lively.gaming.GamingUI;
+        if (UI.fontsReady()) return fn();
+        (UI._fontWaiters = UI._fontWaiters || []).push(fn);
+        UI._watchFonts();
+      },
+
+      // Starts loading the faces and runs the waiting callbacks when they are in. Idempotent.
+      _watchFonts: function () {
+        var UI = lively.gaming.GamingUI;
+        if (UI._fontsWatching || !document.fonts || !document.fonts.load) return;
+        UI._fontsWatching = true;
+        Promise.all(["400 13px Figtree", "600 13px Figtree", "700 13px Figtree", "400 20px Caprasimo"].map(function (f) { return document.fonts.load(f); }))
+          .catch(function () { /* offline: the fallback font stays, nothing to wait for */ })
+          .then(function () {
+            UI._fontsWatching = false;
+            var w = UI._fontWaiters || []; UI._fontWaiters = [];
+            w.forEach(function (fn) { try { fn(); } catch (e) { console.warn("[GamingUI] font waiter failed:", e); } });
+          });
       },
 
       // The real rendered width of `text` in the body font, measured on a canvas, so it
       // does not depend on a morph being laid out yet (reading a span's offsetWidth right
       // after addMorph can return 0; CLAUDE.md). If the font has not loaded yet the
       // fallback font is measured instead, so callers add a few px of slack.
-      textW: function (text, px, weight) {
+      // `font` is "display" for the heading face, anything else (or nothing) for the body face.
+      textW: function (text, px, weight, font) {
         var c = lively.gaming.GamingUI._cv || (lively.gaming.GamingUI._cv = document.createElement("canvas").getContext("2d"));
-        c.font = (weight || 400) + " " + px + "px " + FONT_BODY;
+        c.font = (weight || 400) + " " + px + "px " + (font === "display" ? FONT_DISPLAY : FONT_BODY);
         return Math.ceil(c.measureText(String(text)).width);
+      },
+
+      // `text` cut to fit on ONE line `maxW` px wide, ending in an ellipsis when it had to be cut.
+      // Exists because a label box clips whatever does not fit, mid-glyph and with no sign that
+      // anything is missing; cutting by measured width (not by character count, as trunc does)
+      // makes the cut deliberate. Same arguments as textW, plus the width. A box also carries
+      // about 8 px of its own padding: pass its width minus that.
+      fit: function (text, px, weight, maxW, font) {
+        var UI = lively.gaming.GamingUI, s = String(text == null ? "" : text);
+        if (UI.textW(s, px, weight, font) <= maxW) return s;
+        var lo = 0, hi = s.length;                       // longest prefix that fits with the ellipsis
+        while (lo < hi) {
+          var mid = Math.ceil((lo + hi) / 2);
+          if (UI.textW(s.slice(0, mid).replace(/\s+$/, "") + "\u2026", px, weight, font) <= maxW) lo = mid; else hi = mid - 1;
+        }
+        return s.slice(0, lo).replace(/\s+$/, "") + "\u2026";
+      },
+
+      // `text` cut to fit in `lines` lines of `maxW` px, as a string the label will wrap the same
+      // way: whole words fill the earlier lines, the last line is cut with an ellipsis. For a
+      // wrapping label whose box holds a fixed number of lines (a tile's title).
+      fitLines: function (text, px, weight, maxW, lines, font) {
+        var UI = lively.gaming.GamingUI, words = String(text == null ? "" : text).split(/\s+/).filter(Boolean);
+        var out = [], line = "";
+        for (var i = 0; i < words.length && out.length < lines - 1; i++) {
+          var tryLine = line ? line + " " + words[i] : words[i];
+          if (UI.textW(tryLine, px, weight, font) <= maxW) line = tryLine;
+          else if (!line) { out.push(UI.fit(words[i], px, weight, maxW, font)); line = ""; }   // one word wider than the line
+          else { out.push(line); line = words[i]; }
+        }
+        // the last line takes everything that is left, cut to fit
+        var rest = (line ? [line] : []).concat(words.slice(i)).join(" ");
+        if (out.length >= lines) return out.join(" ");
+        out.push(UI.fit(rest, px, weight, maxW, font));
+        return out.join(" ");
       },
 
       trunc: function (s, max) { return lively.identity.HomestarUI.trunc(s, max); },
@@ -206,9 +277,18 @@ module("lively.gaming.GamingUI")
       // opts: { px, bold, weight (400..700), color, align, wrap, font: "display"|"body" }
       // Labels ignore events (Lively level) AND let native clicks through (pointer-events),
       // so one laid over a field or a button never swallows the click.
+      // A single-line label is never given a box shorter than its line plus the Text's own padding
+      // (about 1.3 x the pixel size + 3): a Text clips at its box, so a box sized to "the font size"
+      // cuts the bottom off descenders (g, j, p, q, y) and the tails of heavier glyphs. Callers can
+      // keep passing the height they had; a too-short one is raised, and being a plain label (no
+      // fill, events ignored) nothing else about it changes.
       label: function (rect, text, opts) {
         opts = opts || {};
         var UI = lively.gaming.GamingUI;
+        if (!opts.wrap) {
+          var need = Math.ceil((opts.px || 13) * 1.3) + 3;
+          if (rect.height < need) rect = lively.rect(rect.x, rect.y, rect.width, need);
+        }
         var t = new lively.morphic.Text(rect);
         t.textString = text == null ? "" : String(text);
         t.applyStyle({

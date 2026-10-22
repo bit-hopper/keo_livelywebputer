@@ -173,10 +173,10 @@ module("lively.gaming.GameDialogs")
         p.addMorph(closeButton(m, W - 52, 18));
 
         p.addMorph(coverBox(lively.rect(24, 66, 64, 86), pl0, 8));
-        var name = ui.label(lively.rect(0, 0, W - 124 - 24, 24), ui.trunc(pl0.title, 40), { px: 16, bold: true });
+        var name = ui.label(lively.rect(0, 0, W - 124 - 24, 24), ui.fit(pl0.title, 16, 700, W - 124 - 24 - 10), { px: 16, bold: true });
         p.addMorph(name); name.setPosition(lively.pt(104, 70));
         p.addMorph(ui.statusPill(104, 102, pl0.status));
-        var sub = ui.label(lively.rect(0, 0, W - 124 - 24, 18), [pl0.year, pl0.genre].filter(Boolean).join(" · "), { px: 12, color: th.muted });
+        var sub = ui.label(lively.rect(0, 0, W - 124 - 24, 18), ui.fit([pl0.year, pl0.genre].filter(Boolean).join(" · "), 12, 400, W - 124 - 24 - 10), { px: 12, color: th.muted });
         p.addMorph(sub); sub.setPosition(lively.pt(104, 130));
 
         var lab = ui.label(lively.rect(0, 0, W - 48, 16), "WHAT THE POSTCARD SHOWS", { px: 11, bold: true, color: th.muted });
@@ -269,9 +269,9 @@ module("lively.gaming.GameDialogs")
         var pl = P();
         p.addMorph(closeButton(m, W - 52, 14));
         p.addMorph(coverBox(lively.rect(24, 24, 190, 254), pl, 12));
-        var title = ui.label(lively.rect(0, 0, W - 238 - 60, 30), ui.trunc(pl.title, 46), { px: 22, font: "display" });
+        var title = ui.label(lively.rect(0, 0, W - 238 - 60, 30), ui.fit(pl.title, 22, 400, W - 238 - 60 - 10, "display"), { px: 22, font: "display" });
         p.addMorph(title); title.setPosition(lively.pt(238, 22));
-        var sub = ui.label(lively.rect(0, 0, W - 238 - 24, 18), [pl.year, pl.genre, pl.studio].filter(Boolean).join(" · ") || "No details recorded", { px: 13, color: th.muted });
+        var sub = ui.label(lively.rect(0, 0, W - 238 - 24, 18), ui.fit([pl.year, pl.genre, pl.studio].filter(Boolean).join(" · ") || "No details recorded", 13, 400, W - 238 - 24 - 10), { px: 13, color: th.muted });
         p.addMorph(sub); sub.setPosition(lively.pt(238, 58));
 
         // ── imported panel: neutral, dashed, source named, read-only
@@ -505,9 +505,10 @@ module("lively.gaming.GameDialogs")
             var row = ui.box(lively.rect(0, y, W - 48 - 12, 64), null, { radius: 10, border: th.line });
             row.eventsAreIgnored = false;
             var cov = coverBox(lively.rect(8, 5, 40, 54), { title: g.title, cover_url: g.cover_url }, 6); row.addMorph(cov);
-            var t = ui.label(lively.rect(0, 0, W - 48 - 12 - 60 - 110, 20), ui.trunc(g.title, 52), { px: 14, bold: true }); row.addMorph(t); t.setPosition(lively.pt(60, 10));
+            var rowW = W - 48 - 12 - 60 - 110 - 10;
+            var t = ui.label(lively.rect(0, 0, W - 48 - 12 - 60 - 110, 20), ui.fit(g.title, 14, 700, rowW), { px: 14, bold: true }); row.addMorph(t); t.setPosition(lively.pt(60, 10));
             var sub = [g.year, g.genre, g.studio].filter(Boolean).join(" · ");
-            var s = ui.label(lively.rect(0, 0, W - 48 - 12 - 60 - 110, 18), ui.trunc(sub, 64), { px: 12, color: th.muted }); row.addMorph(s); s.setPosition(lively.pt(60, 34));
+            var s = ui.label(lively.rect(0, 0, W - 48 - 12 - 60 - 110, 18), ui.fit(sub, 12, 400, rowW), { px: 12, color: th.muted }); row.addMorph(s); s.setPosition(lively.pt(60, 34));
             var b = ui.button(W - 48 - 12 - 12 - 84, 16, have ? "In library" : "Add", {
               variant: have ? "secondary" : "primary", w: 84, h: 32, disabled: have, ariaLabel: (have ? "Already in your library: " : "Add ") + g.title,
               onClick: function () {

@@ -74,6 +74,8 @@ module("lively.gaming.Gaming")
           this._teardown();
           var UI = lively.gaming.GamingUI, self = this;
           UI.ensureFonts();
+          // Widths are measured with the web fonts; if they are not in yet, redraw once when they are.
+          if (!UI.fontsReady()) UI.onFontsReady(function () { if (self._view && !UI._modal) self.rebuild(); });
           this.state = { entries: [], hidden: 0, loaded: false, loading: false, error: null, ownerHandle: null };
           this._saveQueues = {};
           this._loadSeq = 0;
