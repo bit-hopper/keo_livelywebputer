@@ -207,9 +207,12 @@ module("lively.calendar.CalendarApp")
 
     function iconButton(rect, glyph, onClick, opts) {
       opts = opts || {};
-      var b = iconGlyph(rect, glyph, { px: opts.px || 20, color: opts.color, clickable: true });
+      // Built at the origin and moved with setPosition: a Text built at
+      // rect(x, y) AND then moved is offset twice (its constructor position
+      // lands on the shape node, setPosition on the wrapper), which put the
+      // dialog's close button ~300px outside it and made the dialog scroll.
+      var b = iconGlyph(lively.rect(0, 0, rect.width, rect.height), glyph, { px: opts.px || 20, color: opts.color, clickable: true });
       b.setPosition(lively.pt(rect.x, rect.y));
-      b.setExtent(lively.pt(rect.width, rect.height));
       b.applyStyle({ fill: null, borderRadius: rect.width / 2, padding: lively.rect(0, Math.round((rect.height - (opts.px || 20)) / 2), 0, 0) });
       b.onMouseOver = function () { b.applyStyle({ fill: HOVER_BG }); };
       b.onMouseOut = function () { b.applyStyle({ fill: null }); };
@@ -1317,7 +1320,9 @@ module("lively.calendar.CalendarApp")
           bodyPreview.applyStyle({
             fontSize: 10.5 * 0.75, borderWidth: 0, fill: null,
             allowInput: false, selectable: false, clipMode: "auto",
-            whiteSpaceHandling: "normal", textColor: TEXT_PRIMARY,
+            // pre-wrap, not normal: "normal" collapses the \n between lines
+            // (list items, paragraphs) of a memo into one run-on line
+            whiteSpaceHandling: "pre-wrap", textColor: TEXT_PRIMARY,
           });
           noDrag(bodyPreview);
           bodyPreview.eventsAreIgnored = true;
@@ -1623,7 +1628,9 @@ module("lively.calendar.CalendarApp")
             borderWidth: 1, borderColor: BORDER, borderRadius: 4,
             padding: lively.rect(8, 6, 0, 0),
             textColor: TEXT_PRIMARY,
-            whiteSpaceHandling: "normal",
+            // pre-wrap, not normal: Enter inserts a "\n" character, which
+            // "normal" renders as a space, so lines ran together
+            whiteSpaceHandling: "pre-wrap",
             clipMode: "auto",
           });
           noDrag(bodyField);
