@@ -229,6 +229,12 @@ test('sealedCount: the de-duplicated union, and nobody for Public', () => {
   assert.equal(rules.sealedCount(rules.stateFromAudience(null, true), dctx), 0);
 });
 
+test('footerText: names what is shared when the caller says so', () => {
+  assert.equal(rules.footerText(rules.stateFromAudience(null, true), dctx, 'game'), 'Anyone can read this game. It is not encrypted.');
+  assert.equal(rules.footerText(rules.emptyState(), dctx, 'game'), 'Only you can open this game.');
+  assert.equal(rules.footerText(rules.stateFromAudience({ tiers: ['friends'] }, false), dctx, 'game'), 'Sealed to 4 people. Only they can open it.');
+});
+
 test('footerText: says what is true of each state', () => {
   assert.equal(rules.footerText(rules.stateFromAudience(null, true), dctx), 'Anyone can read this card. It is not encrypted.');
   assert.equal(rules.footerText(rules.emptyState(), dctx), 'Only you can open this card.');

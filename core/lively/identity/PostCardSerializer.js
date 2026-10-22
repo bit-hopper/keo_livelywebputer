@@ -343,6 +343,9 @@ module('lively.identity.PostCardSerializer')
         // Back-of-card stamps (see PostCardEditor._backStamps) — omitted
         // when empty so a stamp-less card's payload (and CID) is unchanged.
         if (params.backStamps && params.backStamps.length) payload.backStamps = params.backStamps;
+        // A game block (the Gaming template's "share as postcard"): { title, cover_url, ... }
+        // Omitted when there is none, so an ordinary card's payload (and CID) is unchanged.
+        if (params.game) payload.game = params.game;
 
         var title = params.title;
         if (!title && doc.content && doc.content.length) {
@@ -659,6 +662,9 @@ module('lively.identity.PostCardSerializer')
           attachments: params.attachments || []
         };
         if (params.backStamps && params.backStamps.length) payload.backStamps = params.backStamps;
+        // Game block, as in serializePlainToEnvelope. Inside the encrypted payload, so only
+        // the people the card is sealed to can read which game it is about.
+        if (params.game) payload.game = params.game;
 
         c.wrapDek(kek, function (err, dekResult) {
           if (err) return thenDo(err);
@@ -945,6 +951,20 @@ module('lively.identity.PostCardSerializer')
         });
       }
     }
+
+    // Opens the content key (DEK) of any encrypted envelope for the signed-in person:
+    // the owner through their KEK, a recipient through their own sealed copy and their
+    // account X25519 key. Not specific to postcards, which is why it is public: other
+    // kinds of record that are sealed the same way (the Gaming template's game
+    // entries) use it instead of keeping a second copy of the recipient branch.
+    // Use it rather than calling crypto.unwrapDek / openSealedBox directly, so a
+    // change to how recipients open an envelope is made in one place.
+    // thenDo(err, dek). Errors when the person is a recipient with no sealed copy.
+    lively.identity.PostCardSerializer.unwrapEnvelopeDek = function (envelope, thenDo) {
+      var user = lively.identity.did.currentUser();
+      if (!user) return thenDo(new Error('unwrapEnvelopeDek: no identity session'));
+      _unwrapDekForEnvelope(envelope, user, lively.identity.webAuthn, lively.identity.crypto, thenDo);
+    };
 
     // Singleton
     lively.identity.postCardSerializer = new lively.identity.PostCardSerializer();

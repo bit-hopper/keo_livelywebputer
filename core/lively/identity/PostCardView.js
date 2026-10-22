@@ -1355,6 +1355,7 @@ module("lively.identity.PostCardView")
             // legacy bare-URL post (saved before link_preview_card existed)
             // still gets a real card there.
             lively.identity.postCardUtils.hydrateLinkPreviews(this._contentEl);
+            this._renderGameBlock(payload);
             return;
           }
 
@@ -1443,6 +1444,7 @@ module("lively.identity.PostCardView")
             lively.identity.postCardUtils.hydrateLinkPreviewEmbeds(self._contentEl);
             lively.identity.postCardUtils.hydrateLinkPreviews(self._contentEl);
             if (!self._compactMode) self._renderBackStamps(payload);
+            if (!self._compactMode) self._renderGameBlock(payload);
           });
         },
 
@@ -1461,6 +1463,69 @@ module("lively.identity.PostCardView")
             lockEl.appendChild(msgEl);
           }
           msgEl.textContent = (err && err.message) || "Failed to decrypt";
+        },
+
+        // The game a card is about, drawn under its text: a small cover, the title, and one line
+        // of facts (status, and the rating and playtime only if the author chose to include
+        // them, each already decided when the block was written; nothing here adds to it).
+        // payload.game comes from the card's author, so every string goes in as text and the
+        // cover only loads from an https address. Does nothing for a card without a block, or
+        // in the compact mini card. Called after the content is drawn, because drawing the
+        // content replaces the whole content element.
+        //   payload.game = { title, cover_url?, status?, rating? (1-5), playtime_minutes?,
+        //                    playtime_source? ('steam' | 'itch' | 'manual') }
+        _renderGameBlock: function (payload) {
+          if (!this._contentEl || this._compactMode) return;
+          var old = this._contentEl.querySelector(".lively-postcard-game");
+          if (old) old.parentNode.removeChild(old);
+          var g = payload && payload.game;
+          if (!g || typeof g !== "object" || typeof g.title !== "string" || !g.title) return;
+
+          var STATUS = { playing: "Playing", backlog: "Backlog", completed: "Completed", dropped: "Dropped", wishlist: "Wishlist" };
+          var SOURCE = { steam: "Steam", itch: "itch.io", manual: "self-reported" };
+          var facts = [];
+          if (STATUS[g.status]) facts.push(STATUS[g.status]);
+          var rating = Math.round(+g.rating || 0);
+          if (rating >= 1 && rating <= 5) facts.push("★".repeat(rating) + "☆".repeat(5 - rating));
+          var mins = +g.playtime_minutes;
+          if (isFinite(mins) && mins >= 0 && g.playtime_minutes != null) {
+            var hrs = mins / 60;
+            facts.push((hrs >= 10 ? Math.round(hrs) : Math.round(hrs * 10) / 10) + " h" + (SOURCE[g.playtime_source] ? " · " + SOURCE[g.playtime_source] : ""));
+          }
+
+          var box = document.createElement("div");
+          box.className = "lively-postcard-game";
+          box.setAttribute("data-game-title", g.title);
+          box.style.cssText = "display:flex;gap:10px;align-items:center;margin-top:10px;padding:8px;" +
+            "border:1px solid rgba(0,0,0,0.12);border-radius:10px;background:rgba(0,0,0,0.035);";
+          var cover = document.createElement("div");
+          cover.style.cssText = "flex:none;width:44px;height:58px;border-radius:6px;overflow:hidden;" +
+            "background:linear-gradient(135deg,#d6246e,#7a3fd1);color:rgba(255,255,255,0.9);" +
+            "display:flex;align-items:center;justify-content:center;font:700 20px sans-serif;";
+          cover.textContent = (g.title.trim().charAt(0) || "?").toUpperCase();
+          if (typeof g.cover_url === "string" && /^https:\/\//i.test(g.cover_url)) {
+            var img = document.createElement("img");
+            img.alt = "";
+            img.draggable = false;
+            img.style.cssText = "width:100%;height:100%;object-fit:cover;display:block;";
+            img.addEventListener("load", function () { if (img.naturalWidth) cover.textContent = ""; if (img.naturalWidth) cover.appendChild(img); });
+            img.src = g.cover_url;
+          }
+          var text = document.createElement("div");
+          text.style.cssText = "min-width:0;";
+          var title = document.createElement("div");
+          title.textContent = g.title.slice(0, 120);
+          title.style.cssText = "font-weight:700;font-size:13px;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+          text.appendChild(title);
+          if (facts.length) {
+            var line = document.createElement("div");
+            line.textContent = facts.join("  ·  ");
+            line.style.cssText = "font-size:11px;opacity:0.7;margin-top:3px;";
+            text.appendChild(line);
+          }
+          box.appendChild(cover);
+          box.appendChild(text);
+          this._contentEl.appendChild(box);
         },
 
         _renderBackMeta: function (envelope) {

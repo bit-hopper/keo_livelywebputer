@@ -92,6 +92,7 @@ module("lively.gaming.Gaming")
           if (this._view) { this._view.dispose(); this._view = null; }
           clearTimeout(this._resizeTimer);
           lively.gaming.GamingUI.closeModal();
+          lively.gaming.GamingUI.dismissSharePrompt();
         },
 
         remove: function ($super) {
@@ -230,6 +231,23 @@ module("lively.gaming.Gaming")
             if (err) { st.error = err.message || String(err); st.loaded = true; }
             else { st.entries = result.entries; st.hidden = result.hidden; st.loaded = true; }
             if (self._view) self._view.refresh();
+            if (!err) self._syncSharing();
+          });
+        },
+
+        // Brings the people each shared game is sealed to in line with the owner's friends,
+        // orbit and lists as they are now (someone added to a list gets the games shared with
+        // that list; someone who stopped being a friend loses them). Runs once per opened
+        // library, only for the owner, and QUIETLY: if the account key is not already unlocked
+        // it does nothing rather than raise a passkey prompt nobody asked for; the next
+        // explicit save or the homestar's own sync does it instead. Failures are logged, not shown.
+        _syncSharing: function () {
+          var st = this.state;
+          if (!st || st.sharingSynced || !this.isOwner()) return;
+          if (!st.entries.some(function (e) { return e.visibility === "shared"; })) return;
+          st.sharingSynced = true;
+          lively.identity.postcardAudience.syncAudiences({ onlyIfKekCached: true }, function (err) {
+            if (err) console.warn("[Gaming] audience sync failed:", err.message || err);
           });
         },
 
@@ -256,10 +274,17 @@ module("lively.gaming.Gaming")
         // thenDo(err, entry) when this call's changes have been stored.
         saveEntry: function (entry, changes, thenDo) {
           var self = this, q = this._saveQueues[entry.objId] || (this._saveQueues[entry.objId] = { running: false, pending: null, waiters: [] });
+          // The status as it is on screen BEFORE this change, to tell a real change from a repeat.
+          var shown = this.entryById(entry.objId), wasStatus = shown && shown.payload.status;
           q.pending = Object.assign(q.pending || {}, changes);
           q.waiters.push(thenDo || function () {});
           // The screen shows the change at once; the stored entry catches up when the save lands.
           this._applyLocal(entry.objId, changes);
+          // Moving a game to Playing or Completed offers to tell friends (never on any other
+          // status, never when the status did not actually change, never for an import).
+          if (changes.status && changes.status !== wasStatus && (changes.status === "playing" || changes.status === "completed")) {
+            this.offerShare(entry.objId, changes.status);
+          }
           if (q.running) return;
           (function run(current) {
             var batch = q.pending, waiters = q.waiters;
@@ -301,6 +326,7 @@ module("lively.gaming.Gaming")
           if (!e) return;
           var c = Object.assign({}, changes);
           if (c.visibility) { e.visibility = c.visibility; delete c.visibility; }
+          if (c.audience) { e.audience = c.audience; delete c.audience; }
           e.payload = Object.assign({}, e.payload, c);
           if (this._view) this._view.entryChanged(e);
         },
@@ -313,7 +339,9 @@ module("lively.gaming.Gaming")
             if (list[i].objId === saved.objId) {
               var q = this._saveQueues[saved.objId];
               var local = list[i];
-              list[i] = (q && q.pending) ? { objId: saved.objId, did: saved.did, visibility: local.visibility, envelope: saved.envelope, payload: local.payload } : saved;
+              list[i] = (q && q.pending)
+                ? { objId: saved.objId, did: saved.did, visibility: local.visibility, audience: local.audience, envelope: saved.envelope, payload: local.payload }
+                : saved;
               break;
             }
           }
@@ -321,6 +349,83 @@ module("lively.gaming.Gaming")
         },
 
         toast: function (text) { lively.gaming.GamingUI.toast(text, null, this); },
+      },
+
+      "sharing",
+      {
+        // Offers, in a small card that fades away by itself, to share a game whose status just
+        // became Playing or Completed as a postcard. Pressing "Share as postcard" opens the
+        // share dialog for that game; "Not now" and the timeout do nothing at all.
+        offerShare: function (objId, status) {
+          var self = this, UI = lively.gaming.GamingUI, e = this.entryById(objId);
+          if (!e || !this.isOwner()) return;
+          var verb = status === "completed" ? "finished" : "started";
+          UI.sharePrompt(this, {
+            text: "You " + verb + " " + UI.trunc(e.payload.title, 30) + ". Tell your friends?",
+            onShare: function () { var cur = self.entryById(objId); if (cur) self.openShare(cur); },
+          });
+        },
+
+        // The "Share as postcard" dialog (lives in GameDialogs): what goes on the card, then the
+        // postcard editor opens with it filled in.
+        openShare: function (entry) {
+          var self = this;
+          lively.gaming.GamingUI.dismissSharePrompt();     // the dialog answers the offer
+          this._dialogs(function (D) { D.openShare(self, entry); });
+        },
+
+        // Asks the owner who can see one game, in the same audience dialog the postcards use
+        // (Public, Friends, Orbit, each list, specific people), then saves the answer. Used by
+        // both the detail dialog and the visibility dialog, so the choice looks and behaves the
+        // same wherever it is made. `thenDo()` runs right after the choice is applied on screen
+        // (the save itself finishes a moment later), or when the dialog is cancelled, so a
+        // caller can redraw its own controls. Owner only.
+        chooseAudience: function (entry, thenDo) {
+          var self = this, UI = lively.gaming.GamingUI;
+          function end() { if (thenDo) thenDo(); }
+          if (!this.isOwner()) return end();
+          lively.require("lively.identity.AudienceDialog").toRun(function () {
+            // Read fresh: the friends and lists may have changed since the library was opened.
+            GameLog().loadContext(function (err, ctx) {
+              if (err) { self.toast("Couldn't load your friends: " + (err.message || err)); return end(); }
+              var cur = self.entryById(entry.objId) || entry;
+              // While this dialog is up, Esc belongs to it: the template's own dialogs must not also close.
+              UI._overlay = true;
+              lively.identity.AudienceDialog.open({
+                ctx: ctx,
+                audience: ctx.cardAudiences[cur.objId] || cur.audience || null,
+                isPublic: cur.visibility === "public",
+                allowPublic: true,
+                subtitle: cur.payload.title,
+                noun: "game",
+                helpPlace: "this library",
+                onCancel: function () { UI._overlay = false; end(); },
+                onSave: function (result) { UI._overlay = false; self.applyAudience(cur, result, ctx); end(); },
+              });
+            });
+          });
+        },
+
+        // Saves the audience dialog's answer: { pub, audience: { tiers, people } }. Public
+        // publishes the game in the clear; an audience naming nobody makes it private; anything
+        // else seals it to exactly those people. Says what happened, including when some people
+        // could not be sealed to.
+        applyAudience: function (entry, result, ctx) {
+          var self = this, R = lively.identity.AudienceRules, title = lively.gaming.GamingUI.trunc(entry.payload.title, 30);
+          var aud = result.audience, changes, note;
+          if (result.pub) { changes = { visibility: "public" }; note = title + " is now public"; }
+          else if (!aud.tiers.length && !aud.people.length) { changes = { visibility: "private" }; note = title + " is now private"; }
+          else {
+            changes = { visibility: "shared", audience: aud };
+            var n = R.unionDids(aud, ctx).length;
+            note = n ? title + " is shared with " + n + (n === 1 ? " person" : " people") : title + " is shared, but nobody can open it yet";
+          }
+          this.saveEntry(entry, changes, function (err, saved) {
+            if (err) return;
+            var failed = saved && saved.shareFailed && saved.shareFailed.length;
+            self.toast(failed ? note + ", but " + failed + (failed === 1 ? " person" : " people") + " could not be added yet" : note);
+          });
+        },
       },
 
       "import",

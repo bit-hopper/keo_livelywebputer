@@ -101,7 +101,7 @@ test("the library: empty state, add, edit, share, theme, visitor, save and reloa
     await storedWhere(page, (l) => l[0].review === "First line\nSecond line", "review autosaved after typing stops");
     await page.getByRole("radio", { name: "Visibility: Public" }).click();
     await storedWhere(page, (l) => l[0].vis === "public", "made public");
-    await expect(page.getByRole("radio", { name: /Visibility: Friends/ })).toHaveAttribute("aria-disabled", "true");
+    await expect(page.getByRole("radio", { name: /Visibility: Friends/ })).not.toHaveAttribute("aria-disabled", "true");
     await page.getByRole("button", { name: "Done" }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
 

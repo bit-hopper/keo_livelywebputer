@@ -5,7 +5,10 @@
  * shared with (Friends, Orbit, named lists, specific people), and keeping every
  * card's actual recipient list in step with that as friends, the orbit and the
  * lists change. The rules (set union, recipient diff) are in AudienceRules.js;
- * this file does the fetching, sealing, signing and writing.
+ * this file does the fetching, sealing, signing and writing. It also serves the
+ * Gaming template's game entries (type 'gamelog', see SYNCABLE_TYPES): they are
+ * sealed the same way and recorded in the same state.cardAudiences, so a friend
+ * added to a list reaches an already shared game exactly as it reaches a card.
  *
  * Where the data lives (the owner's private settings envelope, state.*; the server
  * checks its shape in core/servers/identity/AudienceLists.js):
@@ -42,6 +45,13 @@ module('lively.identity.PostcardAudience')
     // not fetch the same profile again for each; short enough that a rotated key is
     // picked up in a later session.
     var PUB_KEY_CACHE_TTL_MS = 5 * 60 * 1000;
+
+    // The kinds of record whose recipients this keeps in step with state.cardAudiences.
+    // Postcards, and the Gaming template's game entries ('gamelog'), which are sealed
+    // the same way: a content key wrapped for the owner and sealed again per person.
+    // A kind not listed here is skipped as 'not-owner', so adding one is a deliberate
+    // act: it must keep the key outside the signed payload and have no frozen state.
+    var SYNCABLE_TYPES = ['postcard', 'gamelog'];
 
     function rules() { return lively.identity.AudienceRules; }
 
@@ -280,7 +290,7 @@ module('lively.identity.PostcardAudience')
           if (res.status === 404) return skip('missing');
           if (res.status !== 200 || !res.json) return thenDo(failure('Loading ' + objId, res));
           var env = res.json;
-          if (env.type !== 'postcard' || env.did !== ctx.ownerDid) return skip('not-owner');
+          if (SYNCABLE_TYPES.indexOf(env.type) === -1 || env.did !== ctx.ownerDid) return skip('not-owner');
           if (env.state && env.state.deleted) return skip('deleted');
           if (env.state && env.state.sentAt) return skip('sent');
           if (env.visibility === 'public' || !env.record || !env.record.wrappedDek) return skip('not-encrypted');

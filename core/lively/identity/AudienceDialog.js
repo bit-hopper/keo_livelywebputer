@@ -14,6 +14,8 @@
  *     allowPublic,          // false: Public is shown but cannot be chosen (see publicNote)
  *     publicNote,           // shown under Public when it cannot be chosen
  *     subtitle,             // e.g. the card's title
+ *     noun,                 // what is shared, "card" by default ("game" for the Gaming template)
+ *     helpPlace,            // for a noun other than card: where new friends catch up ("this library")
  *     warning,              // optional line shown above the buttons
  *     onSave(result),       // result = { pub, audience: { tiers, people } }
  *     onCancel()
@@ -38,6 +40,12 @@ module("lively.identity.AudienceDialog")
     var PICKER_MAX_H = 170;
     var HELP = "New friends added to a list or your orbit get access the next time you open your homestar. " +
       "If you withdraw someone, they lose access to future opens; anyone who has already opened the card keeps what they saw.";
+    // Same text for something that is not a postcard (opts.noun), with the place where the catch-up happens.
+    function helpFor(o) {
+      if (!o.noun || o.noun === "card") return HELP;
+      return "New friends added to a list or your orbit get access the next time you open " + (o.helpPlace || "your homestar") + ". " +
+        "If you withdraw someone, they lose access to future opens; anyone who has already opened the " + o.noun + " keeps what they saw.";
+    }
 
     function atHandle(handle) { return "@" + handle; }
 
@@ -202,7 +210,7 @@ module("lively.identity.AudienceDialog")
       UI.noDrag(panel);
 
       var y = 20;
-      panel.addMorph(UI.label(lively.rect(PAD, y, W - 2 * PAD, 24), "Who can see this postcard", { px: 16, bold: true }));
+      panel.addMorph(UI.label(lively.rect(PAD, y, W - 2 * PAD, 24), "Who can see this " + (o.noun === "game" ? "game" : "postcard"), { px: 16, bold: true }));
       y += 28;
       if (o.subtitle) {
         panel.addMorph(UI.label(lively.rect(PAD, y, W - 2 * PAD, 18), UI.trunc(o.subtitle, 56), { px: 12, color: UI.MUTED }));
@@ -259,11 +267,11 @@ module("lively.identity.AudienceDialog")
 
       y += 8;
       var textW = W - 2 * PAD;
-      var footer = R.footerText(st, ctx);
+      var footer = R.footerText(st, ctx, o.noun);
       panel.addMorph(UI.label(lively.rect(PAD, y, textW, 22), footer, { px: 13, bold: true, wrap: true }));
       y += 18 * linesFor(footer, 13, textW) + 8;
 
-      var help = HELP;
+      var help = helpFor(o);
       panel.addMorph(UI.label(lively.rect(PAD, y, textW, 18 * linesFor(help, 11, textW) + 4), help, { px: 11, color: UI.MUTED, wrap: true }));
       y += 18 * linesFor(help, 11, textW) + 10;
 

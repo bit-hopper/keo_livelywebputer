@@ -118,7 +118,7 @@ module('lively.identity.PostCardEditor')
 
     'serialization', {
       doNotSerialize: ['editorView', 'yDoc', 'wsProvider', '_saveTimer', '_pmContainer', '_previewEl', '_contentLoadStarted', '_backBar', '_backDiv', '_backFace', '_stampLayer', '_stampEls',
-        '_saveInFlight', '_saveRerun', '_saveWaiters'],
+        '_saveInFlight', '_saveRerun', '_saveWaiters', '_pendingPrefill'],
     },
 
     // ─── initialization ──────────────────────────────────────────────────────────
@@ -185,6 +185,13 @@ module('lively.identity.PostCardEditor')
         // images), x/y/w are fractions of the back face (see PostCardView's
         // _renderBackStamps), ar is natural width/height. Plain mode only.
         this._backStamps = [];
+        // Game block ({ title, cover_url, igdb_id, status, rating?, playtime_minutes?,
+        // playtime_source? }) when this card shares a game from the Gaming template, else
+        // null. Carried inside the payload as payload.game, and flagged in the readable
+        // state as hasGame (the flag says THAT a game is attached, never which). Seeded
+        // from the loaded payload in _loadExistingNow's _onDeserialized, like _backStamps,
+        // because the save params are rebuilt from editor fields each time.
+        this._game = null;
         this._backViewActive = false;
         this._selectedStampIdx = -1;
         // Plain-mode-only (§1.1/§2.3): { embedId: {...plain JSON...} },
@@ -1402,7 +1409,14 @@ module('lively.identity.PostCardEditor')
       // serializer, or this editor explicitly seeding/carrying forward
       // `state.deleted` the same way it does for every other field above.
       _composeStateMeta: function (extra) {
-        return Object.assign({}, this._locationStateMeta(), this._optionsStateMeta(), this._minorEditMeta(), extra || {});
+        return Object.assign({}, this._locationStateMeta(), this._optionsStateMeta(), this._minorEditMeta(), this._gameStateMeta(), extra || {});
+      },
+
+      // The readable marker for a card that carries a game block: { hasGame: true }, so a
+      // feed can pick such cards out without the server learning which game. Re-derived from
+      // _game on every save (the state is rebuilt each time, see the note above).
+      _gameStateMeta: function () {
+        return this._game ? { hasGame: true } : {};
       },
 
       // The document as ProseMirror holds it right now, as a string, or null for a
@@ -1669,6 +1683,7 @@ module('lively.identity.PostCardEditor')
           self._partState = {};
           self._attachEditor();
           self._connectSync();
+          self._applyPrefill();
         });
       },
 
@@ -1752,6 +1767,7 @@ module('lively.identity.PostCardEditor')
             // rebuilt from editor fields each time, so a loaded card's
             // stamps would otherwise vanish on its next autosave.
             self._backStamps = (payload && payload.backStamps) || [];
+            self._game = (payload && payload.game) || null;
 
             self._attachEditor();
             self._noteDocSaved();
@@ -1939,7 +1955,10 @@ module('lively.identity.PostCardEditor')
             if (tr.docChanged) {
               console.log('[PostCardEditor] docChanged steps:', tr.steps.length,
                 'content:', JSON.stringify(newState.doc.toJSON()).slice(0, 120));
-              self._markEdited();
+              // The prefilled text of a card opened from another feature is not an edit by
+              // the author: it must not start an autosave (and so create and share the card)
+              // before they have looked at it. See _applyPrefill.
+              if (!tr.getMeta('prefill')) self._markEdited();
             }
             self._updateToolbarState();
             self._updateLinkPreview();
@@ -2837,6 +2856,7 @@ module('lively.identity.PostCardEditor')
           params.doc = this.editorView.state.doc.toJSON();
           params.partState = this._partState || {};
           params.backStamps = this._backStamps || [];
+          if (this._game) params.game = this._game;
           serialize = lively.identity.postCardSerializer.serializePlainToEnvelope;
         }
         this._setStatus('Saving…');
@@ -2910,6 +2930,7 @@ module('lively.identity.PostCardEditor')
                   params.doc = self.editorView.state.doc.toJSON();
                   params.partState = self._partState || {};
                   params.backStamps = self._backStamps || [];
+                  if (self._game) params.game = self._game;
                   serialize = lively.identity.postCardSerializer.serializePlainEncrypted;
                 }
                 serialize.call(lively.identity.postCardSerializer, params, function (serErr, envelope) {
@@ -3178,6 +3199,38 @@ module('lively.identity.PostCardEditor')
           self._updateVisibilityBtn();
           thenDo(null);
         });
+      },
+
+      // Applies what newCard was given to start from (opts.game, opts.text, opts.audience),
+      // once the editor view exists. Runs once. It changes the editor's state but SAVES
+      // NOTHING and does not count as an edit:
+      //  - the audience is set exactly as the audience dialog does for a card with no objId
+      //    yet (private, recorded after the first save), so the card is created sealed to it;
+      //  - the text goes in as a transaction marked 'prefill', which dispatchTransaction does
+      //    not treat as an edit, so no autosave starts;
+      //  - the game block is held in _game and goes out with the first save.
+      // The card therefore comes into existence only when its author edits it or saves it,
+      // never because another feature opened the editor.
+      _applyPrefill: function () {
+        var p = this._pendingPrefill;
+        if (!p) return;
+        this._pendingPrefill = null;
+        if (p.game) this._game = p.game;
+        if (p.audience) {
+          this._visibility = 'private';
+          this._audience = p.audience;
+          this._audienceLoaded = true;
+          this._audienceDirty = true;
+          this._updateVisibilityBtn();
+        }
+        // p.text: one paragraph as a string, or several as an array of strings.
+        var paras = (Array.isArray(p.text) ? p.text : [p.text]).filter(function (t) { return t; });
+        if (paras.length && this.editorView) {
+          var view = this.editorView;
+          var schema = view.state.schema;
+          var nodes = paras.map(function (t) { return schema.nodes.paragraph.create(null, schema.text(String(t))); });
+          view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, nodes).setMeta('prefill', true));
+        }
       },
 
       // The handles of everyone besides the owner the card is to be sealed to: the
@@ -5096,6 +5149,12 @@ module('lively.identity.PostCardEditor')
       // the profile card's postcard button): applied *after* _setup(), since _setup() itself
       // resets _visibility/_recipientHandles to their new-card defaults —
       // setting them beforehand would just get overwritten.
+      //
+      // opts.game / opts.text / opts.audience: a card started from another feature (the
+      // Gaming template's "Share as postcard"). game is the block to attach, text the
+      // opening words (a string, or an array of strings for several paragraphs), audience { tiers, people } who may read it. None of these saves
+      // anything: the author reviews the card and it is created by their first edit or
+      // Save. Applied once the editor exists, see _applyPrefill.
       newCard: function (handle, options) {
         var opts = options || {};
         var editor = new lively.identity.PostCardEditor(lively.rect(0, 0, 785, 520));
@@ -5103,6 +5162,9 @@ module('lively.identity.PostCardEditor')
         editor._objId = null;
         editor._isNew = true;
         editor._constellation = opts.constellation || null;
+        if (opts.game || opts.text || opts.audience) {
+          editor._pendingPrefill = { game: opts.game || null, text: opts.text || '', audience: opts.audience || null };
+        }
         if (opts.target) {
           opts.target.addMorph(editor);
           editor._setup();

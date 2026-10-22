@@ -210,10 +210,12 @@ module('lively.identity.AudienceRules')
 
     function plural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
 
-    function footerText(state, ctx) {
-      if (state.pub) return 'Anyone can read this card. It is not encrypted.';
+    // noun: what is being shared, 'card' unless the caller says otherwise ('game').
+    function footerText(state, ctx, noun) {
+      noun = noun || 'card';
+      if (state.pub) return 'Anyone can read this ' + noun + '. It is not encrypted.';
       var n = sealedCount(state, ctx);
-      if (!n) return 'Only you can open this card.';
+      if (!n) return 'Only you can open this ' + noun + '.';
       return 'Sealed to ' + plural(n, 'person', 'people') + '. Only they can open it.';
     }
 

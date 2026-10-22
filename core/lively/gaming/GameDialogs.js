@@ -97,8 +97,8 @@ module("lively.gaming.GameDialogs")
     var VIS_OPTIONS = [
       { key: "private", icon: "lock", label: "Private", enabled: true,
         text: "Only you. The game is encrypted: nobody else, and not even this server, can read it." },
-      { key: "shared", icon: "group", label: "Friends", enabled: false,
-        text: "Coming soon. Sharing with friends needs the friends list and per-person encryption, which are not built yet." },
+      { key: "shared", icon: "group", label: "Friends", enabled: true,
+        text: "People you choose: your friends, your orbit, a list, or specific people. Encrypted so that only they can open it." },
       { key: "public", icon: "public", label: "Public", enabled: true,
         text: "Anyone can read it. NOT encrypted: everything in this entry, including your review and playtime, is public." },
     ];
@@ -130,6 +130,9 @@ module("lively.gaming.GameDialogs")
             label: o.label + ". " + o.text, disabled: !o.enabled,
             onClick: function () {
               m.close();
+              // Sharing needs to know WITH WHOM, so it goes through the audience dialog (also
+              // when it is already selected: that is how the audience is edited).
+              if (o.key === "shared") return host.chooseAudience(entry);
               if (!on) host.saveEntry(entry, { visibility: o.key }, function (err) { if (!err) host.toast(ui.trunc(entry.payload.title, 30) + " is now " + o.label.toLowerCase()); });
             },
           }, function (box) {
@@ -141,6 +144,90 @@ module("lively.gaming.GameDialogs")
           });
           p.addMorph(row);
         });
+        return m;
+      },
+
+      // ─── share as a postcard ───────────────────────────────────────────────
+
+      // Chooses what a postcard about one game carries, then opens the postcard editor with it
+      // filled in: the game block, an opening line (and the review, if any) as text, and the
+      // owner's Friends as the audience. Nothing is created here and nothing is sent: the card
+      // exists only once its author edits or saves it in the editor, where the words and the
+      // audience can still be changed.
+      //   Show my rating    on by default when the game is rated; unavailable when it is not
+      //   Show my playtime  off by default (playtime a store supplied counts as imported
+      //                     data and stays out unless the owner opts in); unavailable when
+      //                     there is none
+      // The review is not an option here: it goes into the card's text, where it is visible
+      // and editable, rather than being attached invisibly.
+      openShare: function (host, entry0) {
+        var ui = UI(), th = ui.theme(), GL = lively.gaming.GameLog;
+        var W = 480, H = 424;
+        var cur = function () { return host.entryById(entry0.objId) || entry0; };
+        var pl0 = cur().payload;
+        var pt = GL.playtimeOf(pl0);
+        var s = { rating: (pl0.rating || 0) > 0, playtime: false };
+        var m = ui.openModal({ host: host, w: W, h: H, label: "Share " + pl0.title + " as a postcard" });
+        var p = m.panel;
+        p.addMorph(ui.label(lively.rect(24, 22, W - 90, 28), "Share as a postcard", { px: 20, font: "display" }));
+        p.addMorph(closeButton(m, W - 52, 18));
+
+        p.addMorph(coverBox(lively.rect(24, 66, 64, 86), pl0, 8));
+        var name = ui.label(lively.rect(0, 0, W - 124 - 24, 24), ui.trunc(pl0.title, 40), { px: 16, bold: true });
+        p.addMorph(name); name.setPosition(lively.pt(104, 70));
+        p.addMorph(ui.statusPill(104, 102, pl0.status));
+        var sub = ui.label(lively.rect(0, 0, W - 124 - 24, 18), [pl0.year, pl0.genre].filter(Boolean).join(" · "), { px: 12, color: th.muted });
+        p.addMorph(sub); sub.setPosition(lively.pt(104, 130));
+
+        var lab = ui.label(lively.rect(0, 0, W - 48, 16), "WHAT THE POSTCARD SHOWS", { px: 11, bold: true, color: th.muted });
+        p.addMorph(lab); lab.setPosition(lively.pt(24, 170));
+        var rowsBox = ui.box(lively.rect(0, 192, W, 100), null, { clip: false });
+        rowsBox.eventsAreIgnored = false;
+        p.addMorph(rowsBox);
+
+        // One checkbox row. key: "rating" | "playtime"; note: why it is unavailable (or null).
+        function checkRow(y, key, text, note) {
+          var on = !note && s[key], off = !!note;
+          var row = clickBox(lively.rect(20, y, W - 40, 44), {
+            radius: 10, border: on ? th.accent : th.line, fill: on ? th.accentSoft : null, role: "checkbox", pressed: on, disabled: off,
+            label: text + (note ? " (" + note + ")" : ""),
+            onClick: function () { s[key] = !s[key]; setTimeout(renderRows, 0); },
+          }, function (box) {
+            var sq = ui.box(lively.rect(12, 12, 20, 20), on ? th.accent : null, { radius: 6, border: on ? th.accent : th.muted, borderWidth: 2 });
+            sq.eventsAreIgnored = true;
+            if (on) sq.addMorph(ui.icon(lively.rect(0, 0, 16, 16), "check", 14, th.onAccent));
+            box.addMorph(sq);
+            var t = ui.label(lively.rect(0, 0, W - 40 - 56, 20), text, { px: 14, weight: 600, color: off ? th.muted : th.text });
+            box.addMorph(t); t.setPosition(lively.pt(44, 6));
+            var n = ui.label(lively.rect(0, 0, W - 40 - 56, 16), note || (key === "rating" ? ui.starsText(pl0.rating) : (pt.minutes != null ? GL_hours(pt.minutes) + " · " + (pt.source === "manual" ? "typed by you" : "from the store") : "")), { px: 11, color: th.muted });
+            box.addMorph(n); n.setPosition(lively.pt(44, 24));
+          });
+          return row;
+        }
+        function GL_hours(minutes) { return hoursText(minutes) + " h"; }
+        function renderRows() {
+          rowsBox.submorphs.slice().forEach(function (c) { c.remove(); });
+          rowsBox.addMorph(checkRow(0, "rating", "Show my rating", (pl0.rating || 0) > 0 ? null : "you have not rated it"));
+          rowsBox.addMorph(checkRow(52, "playtime", "Show my playtime", pt.minutes != null ? null : "no playtime recorded"));
+        }
+        renderRows();
+
+        var note = ui.label(lively.rect(0, 0, W - 48, 54), "Your friends will be able to read this postcard. You can reword it, change who can see it, or close the editor without sending anything.", { px: 12, color: th.muted, wrap: true });
+        p.addMorph(note); note.setPosition(lively.pt(24, 302));
+
+        var cancel = ui.button(0, H - 56, "Cancel", { variant: "secondary", onClick: function () { m.close(); } });
+        var go = ui.button(0, H - 56, "Open postcard", { variant: "primary", icon: "mail", onClick: function () {
+          var e = cur(), user = lively.identity.did.currentUser();
+          if (!user) return;
+          var game = GL.shareBlock(e.payload, s), text = GL.shareText(e.payload);
+          m.close();
+          lively.require("lively.identity.PostCardEditor").toRun(function () {
+            lively.identity.PostCardEditor.newCard(user.handle, { game: game, text: text, audience: { tiers: ["friends"], people: [] } });
+          });
+        } });
+        go.setPosition(lively.pt(W - 24 - go.getExtent().x, H - 56));
+        cancel.setPosition(lively.pt(W - 24 - go.getExtent().x - 8 - cancel.getExtent().x, H - 56));
+        p.addMorph(cancel); p.addMorph(go);
         return m;
       },
 
@@ -273,8 +360,11 @@ module("lively.gaming.GameDialogs")
             var on = e.visibility === o.key, w = ui.textW(o.label, 12, 700) + 46;
             var b = clickBox(lively.rect(vx, 262, w, 28), {
               fill: on ? th.accentSoft : null, radius: 14, border: on ? th.accent : th.line, role: "radio", pressed: on, disabled: !o.enabled,
-              label: "Visibility: " + o.label + (o.enabled ? "" : " (coming soon)"),
+              label: "Visibility: " + o.label + (o.enabled ? "" : " (not available)"),
               onClick: function () {
+                // Friends: ask who, in the audience dialog (also when already selected, to edit the
+                // audience). The controls redraw once the choice has been applied on screen.
+                if (o.key === "shared") { setTimeout(function () { host.chooseAudience(cur(), renderTake); }, 0); return; }
                 if (on) return;
                 setTimeout(function () {
                   host.saveEntry(d.entry, { visibility: o.key }, function (err) { if (!err) host.toast(ui.trunc(P().title, 30) + " is now " + o.label.toLowerCase()); });
@@ -327,6 +417,11 @@ module("lively.gaming.GameDialogs")
               var done = ui.button(0, 12, "Done", { variant: "primary", onClick: function () { m.close(); } });
               done.setPosition(lively.pt(W - 24 - done.getExtent().x, 12));
               foot.addMorph(done);
+              // Opens the share dialog in place of this one (opening a dialog closes the current one;
+              // typed fields are saved on close).
+              var share = ui.button(0, 12, "Share as postcard", { variant: "secondary", icon: "mail", onClick: function () { setTimeout(function () { host.openShare(cur()); }, 0); } });
+              share.setPosition(lively.pt(W - 24 - done.getExtent().x - 8 - share.getExtent().x, 12));
+              foot.addMorph(share);
             }
           };
           renderFoot();

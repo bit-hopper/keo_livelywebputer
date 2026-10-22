@@ -548,7 +548,9 @@ module("lively.gaming.GamingUI")
       //   opts: { w, h, label (accessible name), onClose, dismissOnScrim (default true),
       //           host (the Gaming root: pass it, so the dialog is never saved with the world) }
       // Returns { scrim, panel, close, relayout }. Esc closes the TOPMOST modal. Only one
-      // is open at a time: opening another closes the first.
+      // is open at a time: opening another closes the first. While `UI._overlay` is true (a
+      // dialog that is not one of ours, such as the audience dialog, is on top) Esc is left
+      // alone so it reaches that dialog instead of closing this one underneath it.
       openModal: function (opts) {
         var UI = lively.gaming.GamingUI, th = UI.theme();
         if (UI._modal) UI._modal.close();
@@ -590,7 +592,7 @@ module("lively.gaming.GamingUI")
           if (opts.dismissOnScrim !== false) m.close();
           return true;
         };
-        m.onKey = function (e) { if (e.key === "Escape" && !m.closed) { e.preventDefault(); e.stopPropagation(); m.close(); } };
+        m.onKey = function (e) { if (e.key === "Escape" && !m.closed && !UI._overlay) { e.preventDefault(); e.stopPropagation(); m.close(); } };
         document.addEventListener("keydown", m.onKey, true);
         m.scrim = scrim; m.panel = panel; m.relayout = place;
         m.close = function () {
@@ -637,6 +639,57 @@ module("lively.gaming.GamingUI")
         UI._toast = t;
         setTimeout(function () { if (UI._toast === t) UI._toast = null; try { t.remove(); } catch (e) { /* already gone */ } }, ms || 2400);
         return t;
+      },
+
+      // The offer that follows a game's status becoming Playing or Completed: a small card at
+      // the bottom centre with a line of text, "Share as postcard" and "Not now". Goes away by
+      // itself after `opts.ms` (12 s by default), when either button is pressed, or when
+      // another prompt replaces it. Only one exists at a time.
+      //   host            the Gaming root (the prompt lives under it, so it is never saved
+      //                   with the world; same reason and same positioning as toast)
+      //   opts.text       the question
+      //   opts.onShare()  "Share as postcard" was pressed
+      //   opts.onDismiss() optional: "Not now" was pressed (NOT called on the timeout)
+      // Why not a modal: it must never take focus or block the work that triggered it (the
+      // owner is usually in the middle of editing the game), and it must not steal Esc.
+      // Returns the prompt Box. Call dismissSharePrompt() to remove it early.
+      sharePrompt: function (host, opts) {
+        var UI = lively.gaming.GamingUI, th = UI.theme();
+        UI.dismissSharePrompt();
+        var vw = document.documentElement.clientWidth - 1;
+        var w = Math.min(460, vw - 40), h = 104;
+        var box = UI.box(lively.rect(0, 0, w, h), th.surface, { radius: 16, border: th.line });
+        $world.addMorph(box);
+        box.enableFixedPositioning();
+        var line = UI.label(lively.rect(0, 0, w - 36, 22), opts.text, { px: 14, weight: 600 });
+        box.addMorph(line); line.setPosition(lively.pt(18, 16));
+        var timer = null;
+        function end() { clearTimeout(timer); if (UI._sharePrompt && UI._sharePrompt.box === box) UI._sharePrompt = null; try { box.remove(); } catch (e) { /* already gone */ } }
+        var share = UI.button(18, 54, "Share as postcard", { variant: "primary", icon: "mail", onClick: function () { end(); if (opts.onShare) opts.onShare(); } });
+        var later = UI.button(0, 54, "Not now", { variant: "ghost", onClick: function () { end(); if (opts.onDismiss) opts.onDismiss(); } });
+        later.setPosition(lively.pt(18 + share.getExtent().x + 8, 54));
+        box.addMorph(share); box.addMorph(later);
+        $world.cachedWindowBounds = null;
+        box.setPosition(lively.pt(Math.round((vw - w) / 2), window.innerHeight - h - 24 + (window.pageYOffset || 0)));
+        // Under the host AFTER positioning, and shifted by the host's own position (a fixed
+        // morph's position is relative to its owner), exactly as toast does.
+        if (host) {
+          var hp = host.getPosition(), cp = box.getPosition();
+          host.addMorph(box);
+          box.setPosition(lively.pt(cp.x - hp.x, cp.y - hp.y));
+        }
+        var n = box.renderContext().shapeNode;
+        n.setAttribute("role", "region"); n.setAttribute("aria-label", opts.text);
+        n.style.boxShadow = "0 12px 36px rgba(0,0,0,0.25)";
+        timer = setTimeout(end, opts.ms || 12000);
+        UI._sharePrompt = { box: box, end: end };
+        return box;
+      },
+
+      // Removes the share prompt if one is showing (also called when the template is torn down).
+      dismissSharePrompt: function () {
+        var p = lively.gaming.GamingUI._sharePrompt;
+        if (p) p.end();
       },
     };
   }); // end module('lively.gaming.GamingUI')
