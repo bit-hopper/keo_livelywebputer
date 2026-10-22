@@ -193,6 +193,11 @@ module("lively.gaming.LibraryView")
         if (this.host.isOwner()) {
           var addBtn = UI.button(0, y, "Add game", { variant: "primary", icon: "add", onClick: function () { self.host.openAdd(); } });
           x -= addBtn.getExtent().x; addBtn.setPosition(lively.pt(x, y)); add(addBtn);
+          x -= 8;
+          // Reading a linked account's library is always the owner's own action: the dialog
+          // explains and offers to connect an account when none is linked yet.
+          var importBtn = UI.button(0, y, "Import", { variant: "secondary", icon: "sync", onClick: function () { self.host.openImport(); }, ariaLabel: "Import games from a linked account" });
+          x -= importBtn.getExtent().x; importBtn.setPosition(lively.pt(x, y)); add(importBtn);
           x -= 12;
         }
         var modeBtn = function (mode, icon, label) {

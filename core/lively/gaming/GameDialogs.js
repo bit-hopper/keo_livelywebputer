@@ -105,6 +105,13 @@ module("lively.gaming.GameDialogs")
 
     lively.gaming.GameDialogs = {
 
+      // The small builders above, shared with the other dialogs (the import preview) so that a
+      // change to how a dialog's click box, close button or cover looks is made once. Same
+      // contracts as where they are defined; reach them by this dotted path, never by copying.
+      clickBox: clickBox,
+      closeButton: closeButton,
+      coverBox: coverBox,
+
       // ─── who can see one game ──────────────────────────────────────────────
 
       // A small dialog with the three choices. Choosing one saves at once and says so.

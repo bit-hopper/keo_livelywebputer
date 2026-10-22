@@ -25,7 +25,7 @@
  */
 
 module("lively.gaming.Gaming")
-  .requires("lively.morphic.Complete", "lively.gaming.GamingUI", "lively.gaming.GameLog", "lively.gaming.LibraryView")
+  .requires("lively.morphic.Complete", "lively.gaming.GamingUI", "lively.gaming.GameLog", "lively.gaming.GamingImport", "lively.gaming.LibraryView")
   .toRun(function () {
 
     var GameLog = function () { return lively.gaming.GameLog; };
@@ -323,6 +323,105 @@ module("lively.gaming.Gaming")
         toast: function (text) { lively.gaming.GamingUI.toast(text, null, this); },
       },
 
+      "import",
+      {
+        // True while an import is writing. The dialog uses it to refuse a second one, and so
+        // does importGames itself (a double click on "Import" must not start two runs).
+        isImporting: function () { return !!this._importing; },
+
+        // Writes the part of a sync the owner confirmed: a NEW entry for each game in
+        // `opts.selected`, and a refresh of the store's own facts (playtime, last played) on
+        // each existing entry in `plan.refresh`. See lively.gaming.GamingImport for what a
+        // plan is and for the rules (a refresh never touches status, rating, review,
+        // visibility or the owner's own typed playtime).
+        //   platform        'steam' | 'itch'
+        //   plan            the object GamingImport.plan returned
+        //   opts.selected   the plan.fresh candidates to create (the owner may have unticked some)
+        //   opts.visibility 'private' | 'public' for the new entries (private unless the owner chose)
+        //   opts.syncedAt   ISO time the candidates were fetched
+        //   opts.onProgress(n, total)   after each job settles
+        //   opts.isCancelled()          true once the owner pressed Stop
+        // Calls thenDo(err, summary); err only for "cannot start", per-game failures are in
+        // summary = { created, refreshed, skipped, failed: [{ job, error }], cancelled }.
+        //
+        // Idempotent on purpose, because the owner can press twice, run it in two tabs, or retry
+        // after a failure: every job is re-checked against the library AT THE MOMENT it is about
+        // to be written (GamingImport.runWrites' shouldSkip), not only when the preview was made.
+        // A game already present by its store id is skipped, not written again. A game being
+        // edited right now (a save is queued) is skipped for this run and refreshed by the next.
+        importGames: function (platform, plan, opts, thenDo) {
+          var self = this, GI = lively.gaming.GamingImport;
+          if (!this.isOwner()) return thenDo(new Error("Only the owner can import games"));
+          if (this._importing) return thenDo(new Error("An import is already running"));
+          this._importing = true;
+
+          var syncedAt = opts.syncedAt, visibility = opts.visibility === "public" ? "public" : "private";
+          var counts = { created: 0, refreshed: 0 };
+
+          // The store ids already in the library, kept current as this run creates entries.
+          var have = {};
+          this.state.entries.forEach(function (e) {
+            var ids = (e.payload && e.payload.external_ids) || {};
+            Object.keys(ids).forEach(function (p) { have[p + ":" + ids[p]] = true; });
+          });
+          var keyOf = function (c) { return c.platform + ":" + c.external_id; };
+
+          var jobs = (opts.selected || []).map(function (c) { return { kind: "create", candidate: c }; })
+            .concat((plan.refresh || []).map(function (r) { return { kind: "refresh", objId: r.entry.objId, candidate: r.candidate }; }));
+
+          // Showing every created entry on screen as it lands would redraw the grid thousands of
+          // times; coalesce to at most one redraw every 250 ms, and one at the end.
+          var redrawTimer = null;
+          function redrawSoon() {
+            if (redrawTimer) return;
+            redrawTimer = setTimeout(function () { redrawTimer = null; if (self._view) self._view.refresh(); }, 250);
+          }
+
+          GI.runWrites(jobs, {
+            concurrency: GI.DEFAULT_CONCURRENCY,
+            onProgress: opts.onProgress,
+            isCancelled: opts.isCancelled,
+            shouldSkip: function (job) {
+              if (job.kind === "create") return !!have[keyOf(job.candidate)];
+              var cur = self.entryById(job.objId);
+              if (!cur) return true;                                   // removed meanwhile
+              var q = self._saveQueues[job.objId];
+              if (q && (q.running || q.pending)) return true;          // being edited right now
+              return !GI.refreshChanges(cur.payload, job.candidate, syncedAt);
+            },
+            write: function (job, cb) {
+              if (job.kind === "create") {
+                have[keyOf(job.candidate)] = true;                     // claim it before the write lands
+                GameLog().create(GI.fieldsOf(job.candidate, syncedAt, Date.now()), visibility, function (err, entry) {
+                  if (err) { delete have[keyOf(job.candidate)]; return cb(err); }
+                  self.state.entries.unshift(entry);
+                  counts.created++;
+                  redrawSoon();
+                  cb(null);
+                });
+                return;
+              }
+              var cur = self.entryById(job.objId), ch = cur && GI.refreshChanges(cur.payload, job.candidate, syncedAt);
+              if (!ch) return cb(null);
+              GameLog().save(cur, ch, function (err, saved) {
+                if (err) return cb(err);
+                // The owner may have started editing this game while the write was in flight: do not
+                // replace what they are typing (the same rule saveEntry follows).
+                var q = self._saveQueues[saved.objId];
+                if (!(q && (q.running || q.pending))) self._replaceEntry(saved);
+                counts.refreshed++;
+                cb(null);
+              });
+            },
+          }, function (summary) {
+            self._importing = false;
+            clearTimeout(redrawTimer);
+            if (self._view) self._view.refresh();
+            thenDo(null, { created: counts.created, refreshed: counts.refreshed, skipped: summary.skipped, failed: summary.failed, cancelled: summary.cancelled });
+          });
+        },
+      },
+
       "dialogs",
       {
         // The dialogs live in their own module, loaded the first time one is needed.
@@ -332,6 +431,12 @@ module("lively.gaming.Gaming")
         openAdd: function () { var self = this; this._dialogs(function (D) { D.openAdd(self); }); },
         openDetail: function (entry) { var self = this; this._dialogs(function (D) { D.openDetail(self, entry); }); },
         openVisibility: function (entry) { var self = this; this._dialogs(function (D) { D.openVisibility(self, entry); }); },
+        // The import preview. It lives in its own module (it is the largest dialog and only
+        // owners who linked an account ever open it).
+        openImport: function () {
+          var self = this;
+          lively.require("lively.gaming.GameImportDialog").toRun(function () { lively.gaming.GameImportDialog.open(self); });
+        },
       }
     );
 
