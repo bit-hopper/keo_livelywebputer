@@ -61,7 +61,7 @@ export function showForm(x) {
 //     inside a list or array only space ; ~ [ ] | \, because a list literal's (f) and {g} are ordinary words);
 //   - names print in bars when they contain a delimiter (they are stored without their typed form).
 // KNOWN DIFFERENCE: the reference prints a word typed with a backslash INSIDE A LIST LITERAL ([a\;b]) in bars, but the same
-// word built with  "a\;b  with a backslash; our reader keeps no such distinction, so both print with the backslash here.
+// word built with  "a\;b  with a backslash; our reader keeps no such distinction, so both print with the backslash here. (LOGO.md 15.3 item 9.)
 // Do not use these to build words, and do not use them for SHOW/PRINT/TYPE (those never add protection).
 const BS = String.fromCharCode(92);   // a backslash
 const TOP_DELIMITERS = ' ;~[](){}|' + BS;
