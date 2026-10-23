@@ -1,0 +1,132 @@
+--- palette 0-15
+0 0 0
+0 0 99.6108949416342
+0 99.6108949416342 0
+0 99.6108949416342 99.6108949416342
+99.6108949416342 0 0
+99.6108949416342 0 99.6108949416342
+99.6108949416342 99.6108949416342 0
+99.6108949416342 99.6108949416342 99.6108949416342
+60.5477988860914 37.5005722133211 23.0472266727703
+76.9542992294194 53.1258106355383 7.03135728999771
+39.0630960555428 63.2822156099794 25.0003814755474
+46.8757152666514 73.0479896238651 73.0479896238651
+99.6108949416342 58.2040131227588 46.485084306096
+56.2508583199817 44.1412985427634 81.2512397955291
+99.6108949416342 63.6728465705348 0
+71.4854657816434 71.4854657816434 71.4854657816434
+--- pen colour
+4
+9.76577401388571 19.9221789883268 29.6879530022126
+[]
+[7 setpc doesn't like -1 as input [] []]
+[7 setpc doesn't like red as input [] []]
+[7 setpc doesn't like [1 2] as input [] []]
+[]
+[7 setpc doesn't like 2.5 as input [] []]
+8
+49.6101319905394 49.6101319905394 49.6101319905394
+3
+--- palette set
+9.76577401388571 19.9221789883268 29.6879530022126
+[]
+9.76577401388571 19.9221789883268 29.6879530022126
+0 99.6108949416342 99.6108949416342
+[]
+[7 setpalette doesn't like [1 2] as input [] []]
+20
+--- pen mode
+erase
+true
+reverse
+true
+paint
+false
+paint
+true
+--- pen size
+3 3
+2 2
+[]
+[7 setpensize doesn't like 2.5 as input [] []]
+[7 setpensize doesn't like [1 2 3] as input [] []]
+[7 setpensize doesn't like -1 as input [] []]
+0 0
+wrap
+splitscreen
+window
+fence
+wrap
+--- scrunch
+2 1
+70.710678 70.710678
+[]
+--- heading arithmetic
+10
+330
+12.5
+0
+359.5
+--- type errors
+[7 fd doesn't like a as input [] []]
+[7 fd doesn't like [1] as input [] []]
+[7 setpos doesn't like [1] as input [] []]
+[7 setpos doesn't like [1 2 3] as input [] []]
+[7 setpos doesn't like 5 as input [] []]
+[6 not enough inputs to setxy [] []]
+[7 setheading doesn't like a as input [] []]
+[7 rt doesn't like [1] as input [] []]
+[7 towards doesn't like a as input [] []]
+[7 towards doesn't like [1] as input [] []]
+[7 setx doesn't like a as input [] []]
+[7 sety doesn't like [] as input [] []]
+0 0
+--- arc and label
+0 0
+0
+[7 arc doesn't like a as input [] []]
+[6 not enough inputs to arc [] []]
+0 0
+8 15
+11 20
+--- setx sety xcor ycor
+1.5
+2.25
+7 2.25
+7 8
+0
+-0
+90
+180
+270
+--- hide show clean cs
+false
+true
+7 8
+0 0
+0
+--- filled and fill
+10 10
+90
+[28 couldn't initialize graphics [] []]
+--- pen list
+pendown paint [1 1] 20 [-1]
+1 1
+--- wrap and setpos
+-373 0
+0 -180
+436 0
+-435 0
+1 259
+1 -259
+1 -259
+-436 0
+435 0
+[3 turtle out of bounds [] []]
+0 0
+[3 turtle out of bounds [] []]
+0 0
+--- fd fraction
+0 0.25
+0 -0.25
+0 -40.25

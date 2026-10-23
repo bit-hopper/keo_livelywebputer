@@ -21,6 +21,7 @@ export class LogoError extends Error {
 // Codes that tests and callers refer to by name.
 export const CODE = {
   STACK_OVERFLOW: 2,
+  OUT_OF_BOUNDS: 3,     // a fenced turtle was asked to leave the window
   BAD_VALUE: 4,        // a value of the right type but out of range ("item doesn't like 0 as input", "/ doesn't like 0")
   NOT_OUTPUT: 5,
   TOO_FEW: 6,
@@ -67,6 +68,9 @@ export const err = {
   macroReturned: (shown) => new LogoError(CODE.MACRO_RETURNED, `Macro returned ${shown} instead of a list`, shown),
   onlyInProc: (what) => new LogoError(CODE.ONLY_IN_PROC, `Can only use ${what} inside a procedure`, what),
   applyBad: (shown) => new LogoError(CODE.APPLY_BAD, `APPLY doesn't like ${shown} as input`, shown),
+  outOfBounds: () => new LogoError(CODE.OUT_OF_BOUNDS, 'turtle out of bounds'),
+  // The reference reports FILLED inside FILLED as "couldn't initialize graphics" (code 28); this says what is wrong.
+  nestedFilled: () => new LogoError(28, "FILLED can't be used inside FILLED"),
   stackOverflow: () => new LogoError(CODE.STACK_OVERFLOW, 'stack overflow'),
   badDefault: (shown) => new LogoError(CODE.BAD_DEFAULT, `Bad default expression for optional input: ${shown}`, shown),
   user: (text) => { const e = new LogoError(CODE.USER, text); e.userThrown = true; return e; },

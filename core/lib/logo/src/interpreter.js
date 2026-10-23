@@ -22,14 +22,15 @@ import * as arith from './arith.js';
 import * as lists from './lists.js';
 import * as control from './control.js';
 import * as workspace from './workspace.js';
+import * as turtleLib from './turtle.js';
 
 // The manual's "(library procedure)" entries that are implemented natively: user programs may redefine them.
-const LIBRARY_PROCEDURES = 'ignore for do.while while do.until until case cond invoke foreach map map.se filter find reduce crossmap cascade cascade.2 transfer combine reverse gensym pick remove remdup quoted push pop queue dequeue localmake name namelist pllist iseq rseq backslashedp backslashed? ` mdarray mditem mdsetitem erns erps erpls erall ern erpl poall pops pons popls pots';
+const LIBRARY_PROCEDURES = 'ignore for do.while while do.until until case cond invoke foreach map map.se filter find reduce crossmap cascade cascade.2 transfer combine reverse gensym pick remove remdup quoted push pop queue dequeue localmake name namelist pllist iseq rseq backslashedp backslashed? ` mdarray mditem mdsetitem xcor ycor pen setpen erns erps erpls erall ern erpl poall pops pons popls pots';
 
 const MAX_OUTPUT_CHARS = 1000000;
 
 export class Interpreter {
-  // opts: {prelude: source text of the always-loaded library, maxFrames}
+  // opts: {prelude: source text of the always-loaded library, maxFrames, half: half-size of the turtle window (default 250)}
   constructor(opts = {}) {
     this.procs = new Map();        // key -> primitive record or Proc
     this.plists = new Map();       // plist name key -> Map(prop key -> [prop name, value])
@@ -40,6 +41,7 @@ export class Interpreter {
     this.gensymCount = 0;
     this.systemVars = new Set();   // variables that exist from the start; NAMES / ERNS leave them alone
     this.buffer = '';              // output when no Job is attached (library loading, tests)
+    this.turtle = new turtleLib.Turtle({ half: opts.half });   // the one turtle (LOGO.md decision 12) and its pending draw ops
     this.sink = null;
     this.machine = new Machine(this, { maxFrames: opts.maxFrames });
     const P = new PrimTable(this.procs);
@@ -47,6 +49,7 @@ export class Interpreter {
     lists.install(P);
     control.install(P);
     workspace.install(P);
+    turtleLib.install(P);
     for (const name of LIBRARY_PROCEDURES.split(/\s+/)) { const rec = this.procs.get(name); if (rec) rec.library = true; }
     this._initVars();
     if (opts.prelude) this.loadLibrary(opts.prelude);
@@ -167,18 +170,21 @@ export class Interpreter {
     this.buffer = '';
   }
 
-  // Convenience for tests and tools: run `source` to the end and return {state, segments, text}, where text renders the
-  // segments the way the reference's terminal would show them (stdout as is; status and error lines newline-terminated).
+  // Convenience for tests and tools: run `source` to the end and return {state, segments, text, draw, turtle}, where text
+  // renders the segments the way the reference's terminal would show them (stdout as is; status and error lines
+  // newline-terminated), draw is every draw operation the run emitted and turtle the turtle's last reported state.
   run(source, opts = {}) {
     const job = new Job(this, source, opts);
-    const segments = [];
-    let state = 'running';
+    const segments = [], draw = [];
+    let state = 'running', turtle = null;
     while (state === 'running') {
       const r = job.step(1e9);
       state = r.state;
       segments.push(...r.segments);
+      for (const op of r.draw) draw.push(op);   // not push(...): a slice can hold hundreds of thousands of operations
+      if (r.turtle !== null) turtle = r.turtle;
     }
-    return { state, segments, text: renderSegments(segments) };
+    return { state, segments, text: renderSegments(segments), draw, turtle };
   }
 
   startRun(source, opts = {}) { return new Job(this, source, opts); }
@@ -234,6 +240,7 @@ export class Job {
   _finish(state) {
     this._flush();
     if (this.truncated) this.segments.push({ kind: 'status', text: '(output truncated)' });
+    if (this.interp.turtle.takeCapNotice()) this.segments.push({ kind: 'status', text: '(drawing truncated: too many operations; CLEAN or CLEARSCREEN starts a new picture)' });
     this.state = state;
   }
   _sink(text) {
@@ -243,7 +250,8 @@ export class Job {
     this.out += text;
   }
 
-  // Runs for roughly `budgetMs`; returns {state, segments} (segments: the new ones since the last call).
+  // Runs for roughly `budgetMs`; returns {state, segments, draw, turtle}: the new segments since the last call, the draw
+  // operations emitted meanwhile, and the turtle's state if it changed (else null).
   step(budgetMs = 25) {
     const interp = this.interp;
     if (this.state === 'running') {
@@ -259,7 +267,9 @@ export class Job {
         interp.sink = null;
       }
     }
-    return { state: this.state, segments: this.drain() };
+    // Draw operations and (when it changed) the turtle's state go out with the same slice as the text (LOGO.md 7.1).
+    const g = interp.turtle.drain();
+    return { state: this.state, segments: this.drain(), draw: g.ops, turtle: g.turtle };
   }
 
   _loop(deadline) {
@@ -284,6 +294,7 @@ export class Job {
           continue;
         }
         m.cancelled = false;
+        interp.turtle.filling = null;   // a FILLED abandoned by an error in an earlier line is not still running
         m.begin(interp.lineNodes(line.items));
         this.active = true;
       }

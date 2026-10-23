@@ -44,10 +44,8 @@ test('the bundle matches the source engine on every recorded probe', () => {
   const E = loadBundle();
   for (const f of fs.readdirSync(SEED_DIR).filter((n) => n.endsWith('.lg') && !/gui/.test(n))) {
     const src = fs.readFileSync(path.join(SEED_DIR, f), 'utf8');
-    // The probes call fd with its real arity; the turtle arrives in Phase 2, so both sides get the same stub.
-    const stub = (it) => { for (const n of ['fd', 'forward']) it.procs.set(n, { name: n, key: n, min: 1, def: 1, max: 1, fn: () => {} }); return it; };
-    const mine = stub(E.createInterpreter()).run(src, { onError: 'continue' }).text;
-    const want = out(src, { turtleStub: true });
+    const mine = E.createInterpreter().run(src, { onError: 'continue' }).text;
+    const want = out(src);
     assert.equal(mine.replace(/\s+$/, ''), want, f);
   }
 });

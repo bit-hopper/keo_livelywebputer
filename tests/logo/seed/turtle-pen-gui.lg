@@ -1,0 +1,184 @@
+openwrite "/tmp/g4.out
+setwrite "/tmp/g4.out
+print [--- palette 0-15]
+foreach iseq 0 15 [print palette ?]
+print [--- pen colour]
+setpc 4
+print pencolor
+setpc [10 20 30]
+print pencolor
+catch "error [setpc 99] show error
+catch "error [setpc -1] show error
+catch "error [setpc "red] show error
+catch "error [setpc [1 2]] show error
+catch "error [setpc [1 2 300]] show error
+catch "error [setpc 2.5] show error
+setpc 8
+print pencolor
+setbg [50 50 50]
+print background
+setbg 3
+print background
+print [--- palette set]
+setpalette 8 [10 20 30]
+print palette 8
+catch "error [setpalette 3 [1 2 3]] show error
+setpalette 20 [10 20 30]
+print palette 20
+catch "error [print palette 99] show error
+catch "error [setpalette 9 [1 2]] show error
+setpc 20
+print pencolor
+print [--- pen mode]
+pe
+print penmode
+print pendownp
+px
+print penmode
+print pendownp
+ppt
+print penmode
+pu
+print pendownp
+print penmode
+pd
+print pendownp
+print [--- pen size]
+setpensize 3
+print pensize
+setpensize [2 4]
+print pensize
+catch "error [setpensize 0] show error
+catch "error [setpensize 2.5] show error
+catch "error [setpensize [1 2 3]] show error
+catch "error [setpensize -1] show error
+print pensize
+setpensize 1
+print turtlemode
+print screenmode
+window
+print turtlemode
+fence
+print turtlemode
+wrap
+print turtlemode
+print [--- scrunch]
+setscrunch 2 1
+print scrunch
+setheading 45
+fd 100
+print pos
+catch "error [setscrunch 0 1] show error
+setscrunch 1 1
+home
+print [--- heading arithmetic]
+rt 370
+print heading
+lt 400
+print heading
+setheading 12.5
+print heading
+setheading 360
+print heading
+setheading -0.5
+print heading
+home
+print [--- type errors]
+catch "error [fd "a] show error
+catch "error [fd [1]] show error
+catch "error [setpos [1]] show error
+catch "error [setpos [1 2 3]] show error
+catch "error [setpos 5] show error
+catch "error [setxy 1] show error
+catch "error [setheading "a] show error
+catch "error [rt [1]] show error
+catch "error [print towards "a] show error
+catch "error [print towards [1]] show error
+catch "error [setx "a] show error
+catch "error [sety []] show error
+print pos
+print [--- arc and label]
+home
+arc 90 50
+print pos
+print heading
+catch "error [arc "a 3] show error
+catch "error [arc 90] show error
+label "hello
+label [a b]
+label 5
+print pos
+print labelsize
+setlabelheight 20
+print labelsize
+print [--- setx sety xcor ycor]
+setxy 1.5 2.25
+print xcor
+print ycor
+setx 7
+print pos
+sety 8
+print pos
+print towards [7 8]
+print towards [7 9]
+print towards [8 8]
+print towards [7 7]
+print towards [6 8]
+print [--- hide show clean cs]
+ht
+print shownp
+st
+print shownp
+clean
+print pos
+cs
+print pos
+print heading
+print [--- filled and fill]
+filled 4 [fd 10 rt 90 fd 10]
+print pos
+print heading
+catch "error [filled 4 [filled 5 [fd 1]]] show error
+fill
+print [--- pen list]
+print pen
+print pensize
+print [--- wrap and setpos]
+home
+wrap
+setxy 500 0
+print pos
+setxy 0 -700
+print pos
+setxy 436 0
+print pos
+setxy 437 0
+print pos
+setxy 0 259
+print pos
+setxy 0 260
+print pos
+setxy 0 -260
+print pos
+setxy -436 0
+print pos
+setxy -437 0
+print pos
+home
+fence
+catch "error [setx 1000] show error
+print pos
+catch "error [setpos [0 400]] show error
+print pos
+home
+wrap
+print [--- fd fraction]
+fd 0.25
+print pos
+bk 0.5
+print pos
+fd 1e3
+print pos
+setwrite []
+close "/tmp/g4.out
+bye

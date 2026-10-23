@@ -10,12 +10,10 @@ export const SEED_DIR = path.join(here, 'seed');
 
 const preludePath = path.join(here, '..', '..', 'core', 'lib', 'logo', 'prelude', 'core.logo');
 
-// A new interpreter. The turtle primitives arrive in Phase 2; a few probes call fd, so `turtleStub` registers one with its
-// real arity so that the "not enough inputs to fd" errors match.
-export function newInterpreter({ turtleStub = false, ...opts } = {}) {
+// A new interpreter with the always-loaded prelude (and the real turtle: opts.half sets its window).
+export function newInterpreter(opts = {}) {
   const prelude = fs.existsSync(preludePath) ? fs.readFileSync(preludePath, 'utf8') : undefined;
   const it = new Interpreter({ prelude, ...opts });
-  if (turtleStub) for (const n of ['fd', 'forward']) it.procs.set(n, { name: n, key: n, min: 1, def: 1, max: 1, fn: () => {} });
   return it;
 }
 

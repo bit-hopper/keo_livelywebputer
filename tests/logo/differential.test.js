@@ -20,7 +20,7 @@ function recorded(name) {
 
 function ours(name) {
   const src = fs.readFileSync(path.join(SEED_DIR, name + '.lg'), 'utf8');
-  const it = newInterpreter({ turtleStub: true });
+  const it = newInterpreter();
   return it.run(src, { onError: 'continue' }).text;
 }
 

@@ -28,7 +28,7 @@ export function runSuites(names) {
   let src = framework();
   for (const n of names) src += '\n' + fs.readFileSync(path.join(REF, `UnitTests-${n}.lg`), 'utf8').replace(/\r/g, '');
   src += '\nRunAll\n';
-  const it = newInterpreter({ turtleStub: true });
+  const it = newInterpreter();
   const r = it.run(src, { onError: 'continue' });
   const results = [];
   for (const line of r.text.split('\n')) {
