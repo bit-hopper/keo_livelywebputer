@@ -1,6 +1,6 @@
 // Dynamic scope, CATCH/THROW/ERROR, TEXT/DEFINE round trips, macros, templates and the way STOP/OUTPUT leave a procedure.
 // Values were checked against the reference interpreter (ucblogo 6.2.5, 2026-10-23); where the engine differs on purpose
-// the comment says so. ERRACT is not implemented yet (the reference's behaviour with it set is unverified, LOGO.md 11.4).
+// the comment says so. ERRACT is not implemented yet (LOGO.md 14.6).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { out } from './helpers.js';
