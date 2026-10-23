@@ -27,7 +27,7 @@
 // This file is the engine core. It knows nothing about any particular primitive except through the `prim` records the
 // interpreter registers. Do not put language-library behaviour here.
 
-import { Cell, NIL, LArray, QWord, isList, isWord, wordText, listFromArray, listToArray, nameKey } from './data.js';
+import { Cell, NIL, LArray, isList, isWord, wordText, listFromArray, listToArray, nameKey } from './data.js';
 import { N } from './treeify.js';
 import { LogoError, CODE, err } from './errors.js';
 import { showForm } from './printer.js';
@@ -701,4 +701,4 @@ export function errorList(e) {
 }
 
 // Frames the control primitives (control.js) push themselves.
-export { CatchFrame, RunResultFrame, ProcFrame, SeqFrame, RepeatFrame, TemplateFrame, OutputFrame, InitFrame, ArgFrame };
+export { CatchFrame, RunResultFrame, ProcFrame, TemplateFrame };

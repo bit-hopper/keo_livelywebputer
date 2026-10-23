@@ -2,11 +2,9 @@
 // PROPERTY LISTS, PROCEDURE DEFINITION, WORKSPACE MANAGEMENT, COMMUNICATION / TRANSMITTERS). Trace, step, bury, edit, files
 // and the terminal are later phases (LOGO.md section 10).
 
-import {
-  Cell, NIL, LArray, isList, isWord, wordText, nameKey, listFromArray, listToArray, equalp,
-} from './data.js';
-import { err, LogoError } from './errors.js';
-import { showForm, showText, printText } from './printer.js';
+import { NIL, isList, isWord, wordText, nameKey, listFromArray, listToArray } from './data.js';
+import { err } from './errors.js';
+import { showForm, showText, printText, poValue, poName } from './printer.js';
 import { wordArg, listArg, bool } from './prims.js';
 import { buildProc, procText, titleLine } from './procdef.js';
 import { isPrimRecord } from './prims.js';
@@ -50,6 +48,9 @@ export function install(P) {
   P.fn('namep name?', 1, (a, m) => bool(m.hasVar(nameKey(wordArg(a[0], 'namep')))));
 
   // ---- property lists ----------------------------------------------------------------------------------------------
+  // A property list's [name, value] pairs, newest property first: that is the order PLIST and PO give (a PPROP on a property
+  // that already exists changes its value and keeps its place).
+  const plistEntries = (pl) => [...pl.values()].reverse();
   const plistOf = (m, name, create) => {
     const k = nameKey(name);
     let pl = m.interp.plists.get(k);
@@ -71,7 +72,7 @@ export function install(P) {
   P.fn('plist', 1, (a, m) => {
     const pl = plistOf(m, wordArg(a[0], 'plist'), false);
     const out = [];
-    if (pl) for (const [, e] of pl) out.push(e[0], e[1]);
+    if (pl) for (const e of plistEntries(pl)) out.push(e[0], e[1]);
     return listFromArray(out);
   });
   P.fn('plistp plist?', 1, (a, m) => {
@@ -131,10 +132,11 @@ export function install(P) {
   });
 
   // ---- workspace queries -------------------------------------------------------------------------------------------
-  const userProcNames = (m) => [...m.interp.procs.values()].filter((p) => p.fn === undefined && p.op === undefined && !p.library).map((p) => p.name);
-  const varNames = (m) => [...m.vars.entries()].filter(([, st]) => st.length > 0 && !m.interp.systemVars.has(m.vars.get(nameKey('')) ? '' : '')).map(([k]) => k);
-  const globalNames = (m) => [...m.vars.entries()].filter(([k, st]) => st.length > 0 && !m.interp.systemVars.has(k)).map(([k]) => k);
-  const plistNames = (m) => [...m.interp.plists.keys()];
+  // PROCEDURES, NAMES, PLISTS, CONTENTS and the PO family list in alphabetical order, as the reference does.
+  const byName = (a, b) => (a.toLowerCase() < b.toLowerCase() ? -1 : a.toLowerCase() > b.toLowerCase() ? 1 : 0);
+  const userProcNames = (m) => [...m.interp.procs.values()].filter((p) => p.fn === undefined && p.op === undefined && !p.library).map((p) => p.name).sort(byName);
+  const globalNames = (m) => [...m.vars.entries()].filter(([k, st]) => st.length > 0 && !m.interp.systemVars.has(k)).map(([k]) => k).sort(byName);
+  const plistNames = (m) => [...m.interp.plists.keys()].sort(byName);
 
   P.fn('procedures', 0, (a, m) => listFromArray(userProcNames(m)));
   P.fn('primitives', 0, (a, m) => listFromArray([...m.interp.procs.values()].filter(isPrimRecord).map((p) => p.name)));
@@ -181,10 +183,10 @@ export function install(P) {
   const po = (titleOnly) => (a, m) => {
     const [procs, vars, pls] = contentsArg(a[0], 'po');
     for (const n of procs) { const p = m.interp.procs.get(nameKey(n)); if (p === undefined) throw err.unknownProc(n); if (p.fn === undefined && p.op === undefined) printProc(m, p, titleOnly); }
-    for (const n of vars) m.interp.out('Make ' + JSON.stringify(n).replace(/^"|"$/g, '"') + ' ' + showText(m.lookupVar(nameKey(n), n)) + '\n');
+    for (const n of vars) m.interp.out('Make ' + poName(n) + ' ' + poValue(m.lookupVar(nameKey(n), n)) + '\n');
     for (const n of pls) {
       const pl = m.interp.plists.get(nameKey(n));
-      if (pl) for (const [, e] of pl) m.interp.out('Pprop "' + n + ' "' + e[0] + ' ' + showText(e[1]) + '\n');
+      if (pl) for (const e of plistEntries(pl)) m.interp.out('Pprop ' + poName(n) + ' ' + poName(e[0]) + ' ' + poValue(e[1]) + '\n');
     }
   };
   P.fn('printout po', 1, po(false));

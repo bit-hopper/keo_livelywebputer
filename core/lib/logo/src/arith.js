@@ -1,7 +1,7 @@
 // Arithmetic, comparison and logic primitives (LOGO.md 4.2; manual, ARITHMETIC; 11.5 item 2 for the checked behaviour).
 // Numbers are JS doubles. Printing is numbers.js's job, not this file's.
 
-import { isWord, isList, numberValue, wordText, equalp, listFromArray, NIL } from './data.js';
+import { isList, equalp, listFromArray } from './data.js';
 import { err } from './errors.js';
 import { showForm } from './printer.js';
 import { num, int, tf, bool } from './prims.js';

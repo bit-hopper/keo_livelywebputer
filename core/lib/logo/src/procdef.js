@@ -6,8 +6,8 @@
 // the colons. Min / default / max inputs: min is the required count, max is unlimited with a rest input else
 // required + optional, default is the trailing number if given else min.
 
-import { Cell, NIL, QWord, isList, isWord, wordText, numberValue, listFromArray, listToArray, nameKey } from './data.js';
-import { err, LogoError } from './errors.js';
+import { Cell, NIL, isList, isWord, wordText, numberValue, listFromArray, listToArray, nameKey } from './data.js';
+import { err } from './errors.js';
 import { showForm } from './printer.js';
 import { Proc } from './machine.js';
 

@@ -13,7 +13,7 @@ import {
 } from './data.js';
 import { err, LogoError } from './errors.js';
 import { showForm, printText } from './printer.js';
-import { int, num, tf, bool } from './prims.js';
+import { int, num, tf } from './prims.js';
 import {
   NO, VALUE, EITHER, PENDING, CBFrame, CatchFrame, RunResultFrame, TemplateFrame, ByeSignal, tfOf, ProcFrame,
 } from './machine.js';

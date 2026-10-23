@@ -17,7 +17,7 @@
 //
 // Do not use this to read a number or to compare words; that is data.js and numbers.js.
 
-import { Cell, NIL, QWord, LArray, listFromArray } from './data.js';
+import { QWord, LArray, listFromArray } from './data.js';
 import { err, LogoError, CODE } from './errors.js';
 
 // Characters whose quoting by backslash or bars is observable (VBARREDP, manual TOKENIZATION): whitespace, parentheses,

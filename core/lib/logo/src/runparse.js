@@ -23,7 +23,6 @@
 //
 // This is a pure function of its input. Do not mutate the input list. Cache results (treeify's tree cache does).
 
-import { QWord } from './data.js';
 import { parseNumber } from './numbers.js';
 
 export const INFIX = new Set(['+', '-', '*', '/', '=', '<', '>', '<=', '>=', '<>', '--']);

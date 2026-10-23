@@ -9,7 +9,7 @@
 // Output segment kinds (the transcript pane's, PostCardUtils.js createSchemeOutput): stdout, error, warning, status.
 // There is no 'value': a Logo cell does not echo expressions (LOGO.md decision 7). Errors carry no errorClass.
 
-import { Cell, NIL, QWord, isList, isWord, wordText, listFromArray, listToArray, nameKey } from './data.js';
+import { NIL, QWord, wordText, listFromArray, listToArray, nameKey } from './data.js';
 import { LineReader, parseText } from './reader.js';
 import { runparse } from './runparse.js';
 import { treeify } from './treeify.js';

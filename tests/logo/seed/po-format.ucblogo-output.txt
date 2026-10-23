@@ -1,0 +1,63 @@
+Welcome to Berkeley Logo version 6.2.5
+zeta defined
+alpha defined
+mid defined
+[alpha mid zeta]
+[[] [bb cc mm zz]]
+[[] [] [b m z]]
+to alpha
+end
+
+to mid
+end
+
+to zeta
+end
+
+Make "bb 2
+Make "cc 4
+Make "mm 3
+Make "zz 1
+[[alpha mid zeta] [bb cc mm zz] [b m z]]
+to alpha
+to mid
+to zeta
+Make "s1 "|a b|
+Make "s2 "a\ b
+Make "s3 "|a;b|
+Make "s4 "|a~b|
+Make "s5 "|(x)|
+Make "s7 "ab
+Make "s8 "a+b
+Make "s9 "|a"b|
+Make "t1 "a:b
+Make "t2 "|{x}|
+Make "t3 "A
+Make "t4 "?x
+Make "t5 3
+Make "t6 "|3 4|
+Make "t7 "|-|
+Make "t8 "a*b
+Make "t9 "a<b
+Make "u1 "a=b
+Make "u2 [a "b :c |d e| (f) {g} j]
+Make "u3 {a |b c| [d]}
+Make "u4 [[] [] []]
+Make "u5 "+
+Make "u6 1e3
+Make "u7 "x\|y
+Make "|v 1| 2
+Make "|a;b| 3
+[z 4 y 2 x 3]
+[Mixed 5 z 4 y 2 x 3]
+Pprop "q "Mixed 5
+Pprop "q "z 4
+Pprop "q "y 2
+Pprop "q "x 3
+Pprop "b "b 2
+Pprop "b "a 9
+Make "pl2 "|Odd Name|
+Pprop "|odd plist| "|a b| [x |y z|]
+
+Thank you for using Logo.
+Have a nice day.

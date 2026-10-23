@@ -1,0 +1,61 @@
+to zeta
+end
+to alpha
+end
+to mid
+end
+make "zz 1
+make "bb 2
+make "mm 3
+make "Cc 4
+pprop "z "a 1
+pprop "b "a 1
+pprop "m "a 1
+pprop "b "b 2
+pprop "b "a 9
+show procedures
+show names
+show plists
+pops
+pons
+show contents
+pots
+make "s1 "|a b|
+make "s2 "a\ b
+make "s3 "|a;b|
+make "s4 "|a~b|
+make "s5 "|(x)|
+make "s7 "a\b
+make "s8 "a+b
+make "s9 "|a"b|
+make "t1 "a:b
+make "t2 "|{x}|
+make "t3 "A
+make "t4 "?x
+make "t5 "3
+make "t6 "|3 4|
+make "t7 "|-|
+make "t8 "a*b
+make "t9 "a<b
+make "u1 "a=b
+make "u2 [a "b :c |d e| (f) {g} j]
+make "u3 {a |b c| [d]}
+make "u4 [[] [] []]
+make "u5 "+
+make "u6 "1e3
+make "u7 "x\|y
+po [[] [s1 s2 s3 s4 s5 s7 s8 s9 t1 t2 t3 t4 t5 t6 t7 t8 t9 u1 u2 u3 u4 u5 u6 u7]]
+make "|v 1| 2
+make "a\;b 3
+po [[] [|v 1| a\;b]]
+pprop "q "x 1
+pprop "q "y 2
+pprop "q "x 3
+pprop "q "z 4
+show plist "q
+pprop "q "Mixed 5
+show plist "q
+po [[] [] [q a b]]
+make "pl2 "|Odd Name|
+pprop "|odd plist| "|a b| [x |y z|]
+po [[] [pl2] [|odd plist|]]

@@ -3,11 +3,10 @@
 // JS string (or number), a list is cons cells ending in NIL, an array is an LArray.
 
 import {
-  Cell, NIL, LArray, QWord, isList, isWord, isNumber, wordText, numberValue, listFromArray, listToArray, listLength,
-  equalp, nameKey,
+  Cell, NIL, LArray, QWord, isList, isWord, wordText, numberValue, listFromArray, listToArray, listLength, equalp, nameKey,
 } from './data.js';
 import { err } from './errors.js';
-import { showForm, printText } from './printer.js';
+import { showForm } from './printer.js';
 import { runparse } from './runparse.js';
 import { parseText } from './reader.js';
 import { num, int, wordArg, listArg, arrayArg, bool } from './prims.js';

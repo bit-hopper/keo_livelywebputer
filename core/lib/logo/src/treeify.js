@@ -21,7 +21,7 @@
 // Infix operators bind tighter than a procedure's prefix inputs: in `sum 1 2 * 3` the second input is `2 * 3`.
 // A "-" where an operand is expected right after another operator (`2 * - 3`) is negation, as the reference does.
 
-import { Cell, NIL, QWord } from './data.js';
+import { QWord } from './data.js';
 import { INFIX } from './runparse.js';
 import { parseNumber } from './numbers.js';
 import { err, LogoError } from './errors.js';
