@@ -265,6 +265,12 @@ module('lively.identity.PostCardUtils')
         // scales it, so the width is a ceiling, not a size.
         '.lively-code-cell-graphics{margin:0 0 8px 0;}',
         '.lively-code-cell-canvas{display:block;width:100%;max-width:480px;aspect-ratio:1/1;background:#000;border-radius:8px;}',
+        // (TurtleCanvas.js adds a second canvas on top for the turtle and this toolbar underneath; the host is then
+        // position:relative with the overlay stretched over the picture, so the host must not be wider than the picture.)
+        '.lively-code-cell-graphics{max-width:480px;}',
+        '.lively-code-cell-graphics-bar{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;}',
+        '.lively-code-cell-graphics-bar button{cursor:pointer;border:1px solid #d9dde8;border-radius:999px;background:#fff;color:#4a5068;font-size:11px;font-weight:600;padding:3px 12px;}',
+        '.lively-code-cell-graphics-bar button.lively-code-cell-toggle-on{background:#e3f6e8;border-color:#b9e4c5;color:#1d6b36;}',
       ].join('');
     }
 
@@ -961,6 +967,7 @@ module('lively.identity.PostCardUtils')
           runCodeCell(sourceEl.textContent, {
             onStatus: function (text) { setRunning(true, text); },
             onSegments: function (segments) { transcriptOut.append(segments); },
+            onDraw: function (ops, turtle) { transcriptOut.draw(ops, turtle); },
             onNeedInput: function () {
               setRunning(true, 'Waiting for input…');
               transcriptOut.showInput(function (text) { setRunning(true, 'Running…'); provideCodeCellInput(text, language); });
@@ -1632,7 +1639,9 @@ module('lively.identity.PostCardUtils')
       if (typeof lively === 'undefined' || !lively.require) { onDone(new Error('Run unavailable')); return; }
       var pending = { cancelled: false };
       _startPending[def.id] = pending;
-      lively.require(def.controller).toRun(function () {
+      // A graphics language also needs the turtle painter loaded before its first draw message arrives.
+      var needs = def.graphics ? [def.controller, 'lively.identity.TurtleCanvas'] : [def.controller];
+      lively.require.apply(lively, needs).toRun(function () {
         var worker = codeCellGlobal(def.controller);
         onStatus(def.loadingText);
         worker.ensureReady(function (err) {
@@ -1666,10 +1675,13 @@ module('lively.identity.PostCardUtils')
     //   graphicsHost()     for a graphics language (registry `graphics: true`): the element holding the turtle canvas,
     //                      created on the first call and placed above the transcript, or the existing one on later calls.
     //                      A pane that never calls this renders exactly as before (Scheme and ML cells never do), so do
-    //                      not call it speculatively. Phase 0 only creates the empty <canvas>; drawing is Phase 2.
+    //                      not call it speculatively. It only makes the empty <canvas>; draw() does the drawing.
+    //   draw(ops, turtle)  the turtle's picture for a graphics language: draw operations from the worker and the turtle's
+    //                      state (or null). Creates the canvas and its painter (lively.identity.TurtleCanvas) on the first
+    //                      operations; later calls add to the picture. A pane never given operations never has a canvas.
     //   finish(state, err) end of run; state: done | error | stopped | exit
     function createSchemeOutput(outputEl) {
-      var lastPre = null, lastKind = null, anyContent = false, inputRow = null, graphicsEl = null;
+      var lastPre = null, lastKind = null, anyContent = false, inputRow = null, graphicsEl = null, painter = null, lastTurtle = null;
 
       function addPre(kind, cls, text) {
         var pre = document.createElement('pre');
@@ -1687,9 +1699,23 @@ module('lively.identity.PostCardUtils')
 
       return {
         start: function () {
+          if (painter) painter.destroy();
           outputEl.innerHTML = '';
           outputEl.classList.remove('lively-code-cell-output-empty');
-          lastPre = null; lastKind = null; anyContent = false; inputRow = null; graphicsEl = null;
+          lastPre = null; lastKind = null; anyContent = false; inputRow = null; graphicsEl = null; painter = null; lastTurtle = null;
+        },
+        // The turtle's drawing for this run (a worker `draw` message): the painter is made on the first operations, so a cell
+        // that only prints text never gets a canvas. `turtle` is the turtle's state when it changed; the latest one is kept so
+        // a painter created later starts with it. Needs lively.identity.TurtleCanvas (runCodeCell loads it for graphics
+        // languages).
+        draw: function (ops, turtle) {
+          if (turtle) lastTurtle = turtle;
+          if (!painter) {
+            if (!ops || !ops.length) return;
+            if (!(lively.identity && lively.identity.TurtleCanvas)) return;
+            painter = lively.identity.TurtleCanvas.create(this.graphicsHost());
+          }
+          painter.apply(ops, lastTurtle);
         },
         graphicsHost: function () {
           if (graphicsEl && graphicsEl.parentNode === outputEl) return graphicsEl;

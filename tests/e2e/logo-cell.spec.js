@@ -208,3 +208,148 @@ test.describe("output pane graphics scaffolding", () => {
     );
   });
 });
+
+// ---- the turtle canvas (core/lively/identity/TurtleCanvas.js), through a real cell pane ---------------------------------
+
+// Runs `source` in a hydrated logo cell and waits for it to finish.
+async function runInCell(page, source, hostId = "logo-host") {
+  await renderCell(page, { language: "logo", source }, hostId);
+  const cell = page.locator(`#${hostId} .lively-code-cell`);
+  await cell.locator(".lively-code-cell-run-btn").click();
+  await expect(cell.locator(".lively-code-cell-status")).toHaveText(/Ran just now|Error|Stopped|Exited/, { timeout: 15000 });
+  return cell;
+}
+
+// The base canvas of the cell: buffer size and the alpha / colour of the pixel nearest to the logical point (x, y), taking
+// the strongest in a 3x3 block so a one-pixel line cannot be missed by a rounding error. Window is [-250, 250], y up.
+// A drawn one-unit line is anti-aliased across two pixel columns (about half coverage each), so "solid" is: the colour is
+// right and the alpha is at least ~40%.
+function expectSolid(p, rgb) {
+  expect(p.rgba.slice(0, 3)).toEqual(rgb);
+  expect(p.rgba[3]).toBeGreaterThan(100);
+}
+
+function pixelAt(page, x, y, hostId = "logo-host") {
+  return page.evaluate(([lx, ly, id]) => {
+    const c = document.querySelector(`#${id} canvas.lively-code-cell-canvas:not(.lively-code-cell-turtle-layer)`);
+    const S = c.width, scale = S / 500;
+    const cx = Math.round(S / 2 + lx * scale), cy = Math.round(S / 2 - ly * scale);
+    const d = c.getContext("2d").getImageData(Math.max(0, cx - 1), Math.max(0, cy - 1), 3, 3).data;
+    let best = [0, 0, 0, 0];
+    for (let i = 0; i < d.length; i += 4) if (d[i + 3] > best[3]) best = [d[i], d[i + 1], d[i + 2], d[i + 3]];
+    return { size: S, rgba: best };
+  }, [x, y, hostId]);
+}
+
+test.describe("turtle canvas in a cell pane", () => {
+  test("a drawing cell gets a canvas with the line in it, and a text-only cell gets none", async ({ page }) => {
+    await boot(page);
+    await runInCell(page, "print 1 + 1", "text-host");
+    expect(await page.locator("#text-host canvas").count()).toBe(0);
+    await runInCell(page, "fd 100");
+    expect(await page.locator("#logo-host canvas").count()).toBe(2);        // the picture and the turtle layer
+    expectSolid(await pixelAt(page, 0, 50), [255, 255, 255]);
+    expect((await pixelAt(page, 100, 50)).rgba[3]).toBe(0);                  // nothing where nothing was drawn
+    expect((await pixelAt(page, 0, 150)).rgba[3]).toBe(0);
+  });
+
+  test("the turtle is drawn on its own layer and HIDETURTLE removes it", async ({ page }) => {
+    await boot(page);
+    await runInCell(page, "fd 100");
+    const turtleAlpha = () => page.evaluate(() => {
+      const c = document.querySelector("#logo-host canvas.lively-code-cell-turtle-layer");
+      const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+      let n = 0;
+      for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++;
+      return n;
+    });
+    await expect.poll(turtleAlpha).toBeGreaterThan(20);
+    await runInCell(page, "fd 10 ht", "logo-host2");
+    await expect.poll(() => page.evaluate(() => {
+      const c = document.querySelector("#logo-host2 canvas.lively-code-cell-turtle-layer");
+      const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+      let n = 0;
+      for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++;
+      return n;
+    })).toBe(0);
+  });
+
+  test("pen colour, background, filled polygons and flood fill reach the pixels", async ({ page }) => {
+    await boot(page);
+    await runInCell(page, "setbg 4 setpc 1 fd 100 pu setxy 50 -50 setpc 2 filled 6 [pd fd 40 rt 90 fd 40 rt 90 fd 40]");
+    expect(await page.evaluate(() => document.querySelector("#logo-host canvas").style.backgroundColor)).toBe("rgb(255, 0, 0)");
+    expectSolid(await pixelAt(page, 0, 50), [0, 0, 255]);          // blue line
+    // setxy 50 -50 and a box going up 40, right... the polygon covers x 50..90, y -50..-10; its inside is yellow.
+    expect((await pixelAt(page, 70, -30)).rgba.slice(0, 3)).toEqual([255, 255, 0]);
+  });
+
+  test("the erasing pen removes what is under it", async ({ page }) => {
+    await boot(page);
+    await runInCell(page, "fd 100 pe bk 50");
+    // bk 50 from the top end erases y 50..100 and leaves 0..50. (A one-unit line on a 480-pixel canvas is anti-aliased across
+    // two pixel columns, so "drawn" is about half coverage and "erased" leaves a faint residue, never full alpha.)
+    expect((await pixelAt(page, 0, 25)).rgba[3]).toBeGreaterThan(100);
+    expect((await pixelAt(page, 0, 75)).rgba[3]).toBeLessThan(80);
+  });
+
+  test("a label puts pixels next to the turtle", async ({ page }) => {
+    await boot(page);
+    await runInCell(page, "ht pu setxy -50 -50 setlabelheight 30 label [HELLO]");
+    const n = await page.evaluate(() => {
+      const c = document.querySelector("#logo-host canvas.lively-code-cell-canvas:not(.lively-code-cell-turtle-layer)");
+      const S = c.width, k = S / 500;
+      const d = c.getContext("2d").getImageData(Math.round(S / 2 - 50 * k), Math.round(S / 2 + 50 * k - 30 * k), Math.round(120 * k), Math.round(30 * k)).data;
+      let m = 0;
+      for (let i = 3; i < d.length; i += 4) if (d[i] > 100) m++;
+      return m;
+    });
+    expect(n).toBeGreaterThan(50);
+  });
+
+  test("Light paper swaps black and white for display, and toggles back", async ({ page }) => {
+    await boot(page);
+    const cell = await runInCell(page, "fd 100");
+    await cell.locator("button", { hasText: "Light paper" }).click();
+    expectSolid(await pixelAt(page, 0, 50), [0, 0, 0]);
+    expect(await page.evaluate(() => document.querySelector("#logo-host canvas").style.backgroundColor)).toBe("rgb(255, 255, 255)");
+    await cell.locator("button", { hasText: "Light paper" }).click();
+    expectSolid(await pixelAt(page, 0, 50), [255, 255, 255]);
+  });
+
+  test("Clear wipes the picture; the next run starts a fresh canvas", async ({ page }) => {
+    await boot(page);
+    const cell = await runInCell(page, "fd 100");
+    await cell.locator("button", { hasText: "Clear" }).click();
+    expect((await pixelAt(page, 0, 50)).rgba[3]).toBe(0);
+    await cell.locator(".lively-code-cell-run-btn").click();
+    // The turtle is wherever the first run left it (0,100); this run's line goes on from there. (The pane is rebuilt at the
+    // start of a run, so the canvas may briefly not exist.)
+    await expect.poll(async () => { try { return (await pixelAt(page, 0, 150)).rgba[3]; } catch (e) { return -1; } }).toBeGreaterThan(100);
+    expect((await pixelAt(page, 0, 50)).rgba[3]).toBe(0);                   // and the first run's line did not come back
+  });
+
+  test("the picture follows the canvas when it is resized", async ({ page }) => {
+    await boot(page);
+    await runInCell(page, "fd 100");
+    await page.evaluate(() => { document.getElementById("logo-host").style.width = "240px"; });
+    await expect.poll(async () => (await pixelAt(page, 0, 50)).size).toBeLessThan(300);
+    expectSolid(await pixelAt(page, 0, 50), [255, 255, 255]);
+    expect((await pixelAt(page, 0, 150)).rgba[3]).toBe(0);
+  });
+
+  test("Save SVG and Save PNG download the picture", async ({ page }) => {
+    await boot(page);
+    const cell = await runInCell(page, "setbg 2 setpc 4 fd 100 label [hi]");
+    const [svgDl] = await Promise.all([page.waitForEvent("download"), cell.locator("button", { hasText: "Save SVG" }).click()]);
+    expect(svgDl.suggestedFilename()).toBe("turtle.svg");
+    const svg = require("fs").readFileSync(await svgDl.path(), "utf8");
+    expect(svg).toContain("<svg");
+    expect(svg).toContain('<rect width="500" height="500" fill="rgb(0,255,0)"/>');
+    expect(svg).toContain('<line x1="250" y1="250" x2="250" y2="150" stroke="rgb(255,0,0)"');
+    expect(svg).toContain(">hi</text>");
+    const [pngDl] = await Promise.all([page.waitForEvent("download"), cell.locator("button", { hasText: "Save PNG" }).click()]);
+    expect(pngDl.suggestedFilename()).toBe("turtle.png");
+    const png = require("fs").readFileSync(await pngDl.path());
+    expect(png.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
+  });
+});

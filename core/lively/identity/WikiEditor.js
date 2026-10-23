@@ -1847,6 +1847,7 @@ module('lively.identity.WikiEditor')
           postCardUtils.runCodeCell(textarea.value, {
             onStatus: function (text) { if (!destroyed) setRunning(true, text); },
             onSegments: function (segments) { if (!destroyed) transcriptOut.append(segments); },
+            onDraw: function (ops, turtle) { if (!destroyed) transcriptOut.draw(ops, turtle); },
             onNeedInput: function () {
               if (destroyed) { postCardUtils.provideCodeCellInput(null, language); return; }
               setRunning(true, 'Waiting for input…');
