@@ -14,7 +14,7 @@
  *
  * Unlike MLWorker, runs can pause for a line of input (READLIST and friends),
  * so this keeps SchemeWorker's onNeedInput / provideInput pair. The worker
- * does not post `needInput` until the engine exists (Phase 1).
+ * does not post `needInput` yet: the engine has no READ* primitives.
  *
  * Differences from the Python controller:
  *  - Output streams: a run reports ordered segments {kind, text} as they are
@@ -70,6 +70,9 @@ module('lively.identity.LogoWorker')
       // handlers: {
       //   onSegments(segments)   new output, in order; kinds: stdout | warning | error | status
       //                          (no `value`: a Logo cell does not echo expressions, LOGO.md decision 7)
+      //   onDraw(ops, turtle)    the turtle's drawing since the last call: the engine's draw operations (see
+      //                          core/lib/logo/src/turtle.js) and the turtle's state when it changed (else null). Always
+      //                          delivered before the same slice's onSegments.
       //   onNeedInput()          the cell asked for a line; answer with provideInput(text)
       //   onDone(err, result)    result = {state: done | error | stopped}; err only for
       //                          failures of the run machinery itself (worker lost, busy, ...)
@@ -173,6 +176,8 @@ module('lively.identity.LogoWorker')
         var handlers = active.handlers;
         if (data.op === 'segments') {
           if (handlers.onSegments) handlers.onSegments(data.segments);
+        } else if (data.op === 'draw') {
+          if (handlers.onDraw) handlers.onDraw(data.ops, data.turtle);
         } else if (data.op === 'needInput') {
           if (handlers.onNeedInput) handlers.onNeedInput();
           else this.provideInput(null);

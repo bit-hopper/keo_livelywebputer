@@ -1,9 +1,10 @@
 // @ts-check
 const { test, expect } = require("@playwright/test");
 
-// Logo and TPN code cells, PHASE 0 (LOGO.md section 10): the registry rows, the shared controller and the worker stub that
-// answers "Logo isn't built yet". There is no interpreter yet, so nothing here asserts a Logo result; when Phase 1 lands,
-// the stub assertions below are replaced by real ones and the structure (one controller, two languages) stays.
+// Logo and TPN code cells (LOGO.md sections 7 and 10): the registry rows, the shared controller, and the real worker (the
+// engine bundle, time-sliced, posting segments and the turtle's draw operations). Phase 2 so far: the worker runs Logo;
+// the cell pane does not draw the turtle yet, so the drawing is asserted on what the controller delivers (onDraw), not on
+// pixels. A tpn cell goes through the same worker but TPN syntax itself arrives in Phase 3.
 // Boots blank.html and drives lively.identity.LogoWorker / postCardUtils directly -- the same objects the wiki editor and
 // viewer use.
 
@@ -17,16 +18,18 @@ async function boot(page) {
   }));
 }
 
-// Runs one cell through the controller; resolves {segments, state, err}.
+// Runs one cell through the controller; resolves {segments, draw, turtle, state, err}.
 function runCell(page, source) {
   return page.evaluate((src) => new Promise((resolve) => {
     const W = lively.identity.LogoWorker;
-    const segments = [];
+    const segments = [], draw = [];
+    let turtle = null;
     W.ensureReady((err) => {
       if (err) return resolve({ err: err.message });
       W.run(src, {
         onSegments: (s) => segments.push(...s),
-        onDone: (err, res) => resolve({ err: err && err.message, state: res && res.state, segments }),
+        onDraw: (ops, t) => { draw.push(...ops); if (t) turtle = t; },
+        onDone: (err, res) => resolve({ err: err && err.message, state: res && res.state, segments, draw, turtle }),
       });
     });
   }), source);
@@ -45,50 +48,88 @@ async function renderCell(page, attrs, hostId = "logo-host") {
   }, [attrs, hostId]);
 }
 
-test.describe("LogoWorker controller (Phase 0 stub)", () => {
-  test("answers init and run; a run is a not-built error and the worker survives it", async ({ page }) => {
+test.describe("LogoWorker controller (real worker)", () => {
+  test("runs Logo: text comes back as segments and the turtle's drawing as draw operations", async ({ page }) => {
     await boot(page);
-    const r = await runCell(page, "fd 100");
+    const r = await runCell(page, "fd 100\nrt 90\nfd 50\nprint pos");
     expect(r.err).toBeFalsy();
-    expect(r.state).toBe("error");
-    expect(r.segments).toHaveLength(1);
-    expect(r.segments[0]).toMatchObject({ kind: "error", errorClass: "not built" });
-    expect(r.segments[0].text).toContain("Logo isn't built yet");
-    expect(await page.evaluate(() => lively.identity.LogoWorker.buildId)).toBe("phase0-stub");
-    // The controller is free again for the next run.
-    expect((await runCell(page, "rt 90")).state).toBe("error");
+    expect(r.state).toBe("done");
+    expect(r.segments).toEqual([{ kind: "stdout", text: "50 100\n" }]);
+    expect(r.draw.map((o) => o.op)).toEqual(["line", "line"]);
+    expect(r.draw[0]).toMatchObject({ x1: 0, y1: 0, x2: 0, y2: 100, c: [255, 255, 255] });
+    expect(r.turtle).toMatchObject({ x: 50, y: 100, heading: 90, shown: true });
+    expect(await page.evaluate(() => lively.identity.LogoWorker.buildId)).toMatch(/^\d{4}-\d\d-\d\dT/);
     expect(await page.evaluate(() => lively.identity.LogoWorker.isRunning())).toBe(false);
   });
 
-  test("reset answers, and Stop with nothing running does nothing", async ({ page }) => {
+  test("an error ends the cell, the workspace and the turtle survive it, and the next cell sees them", async ({ page }) => {
     await boot(page);
-    await runCell(page, "fd 1");
+    const bad = await runCell(page, "setxy 3 4\nfoo\nfd 10");
+    expect(bad.state).toBe("error");
+    expect(bad.segments.some((s) => s.kind === "error" && s.text.includes("I don't know how"))).toBe(true);
+    const next = await runCell(page, "print pos");
+    expect(next.state).toBe("done");
+    expect(next.segments).toEqual([{ kind: "stdout", text: "3 4\n" }]);
+    // Every run reports the turtle, even one that draws nothing: the new cell pane needs to know where it is.
+    expect(next.draw).toEqual([]);
+    expect(next.turtle).toMatchObject({ x: 3, y: 4 });
+  });
+
+  test("Stop interrupts an endless drawing loop cooperatively and the workspace survives", async ({ page }) => {
+    await boot(page);
+    const r = await page.evaluate(() => new Promise((resolve) => {
+      const W = lively.identity.LogoWorker;
+      let ops = 0, stopped = false;
+      W.ensureReady(() => {
+        W.run("to spin\nforever [fd 1 rt 1]\nend\nspin", {
+          onDraw: (o) => { ops += o.length; if (ops > 50 && !stopped) { stopped = true; lively.identity.postCardUtils.stopCodeCell("logo"); } },
+          onDone: (err, res) => resolve({ err: err && err.message, state: res && res.state, ops }),
+        });
+      });
+    }));
+    expect(r.err).toBeFalsy();
+    expect(r.state).toBe("stopped");
+    expect(r.ops).toBeGreaterThan(50);
+    // Tier 1 only: the worker answered, so it was not terminated and the interpreter is still there.
+    const after = await runCell(page, "print 2 + 2");
+    expect(after.segments).toEqual([{ kind: "stdout", text: "4\n" }]);
+  });
+
+  test("reset answers with a fresh workspace, and Stop with nothing running does nothing", async ({ page }) => {
+    await boot(page);
+    await runCell(page, "to sq\nrepeat 4 [fd 10 rt 90]\nend\nsetxy 5 5");
     const err = await page.evaluate(() => new Promise((r) => lively.identity.LogoWorker.reset(r)));
     expect(err).toBeNull();
     expect(await page.evaluate(() => lively.identity.postCardUtils.stopCodeCell("logo"))).toBe(false);
+    const r = await runCell(page, "print pos\nsq");
+    expect(r.segments[0]).toEqual({ kind: "stdout", text: "0 0\n" });
+    expect(r.state).toBe("error");
   });
 
-  test("logo and tpn rows share the one controller", async ({ page }) => {
+  test("logo and tpn rows share the one controller and so the one workspace", async ({ page }) => {
     await boot(page);
     const same = await page.evaluate(() => {
       const U = lively.identity.postCardUtils;
       return U.codeCellLanguage("logo").controller === U.codeCellLanguage("tpn").controller;
     });
     expect(same).toBe(true);
-    // A run started from a tpn cell goes through the same worker (and gets the same stub answer).
+    // A procedure defined by a run started as a tpn cell is callable from a logo cell. (TPN's own syntax is Phase 3: until
+    // then the text is read as Logo.)
     const state = await page.evaluate(() => new Promise((resolve) => {
-      lively.identity.postCardUtils.runCodeCell("TO POLY SIDE", { onDone: (err, res) => resolve(err ? "err" : res.state) }, "tpn");
+      lively.identity.postCardUtils.runCodeCell("to hello\nprint 42\nend", { onDone: (err, res) => resolve(err ? "err" : res.state) }, "tpn");
     }));
-    expect(state).toBe("error");
+    expect(state).toBe("done");
+    expect((await runCell(page, "hello")).segments).toEqual([{ kind: "stdout", text: "42\n" }]);
   });
 });
 
 test.describe("logo and tpn cells, read-only render", () => {
-  for (const [language, badge, source] of [
-    ["logo", "🐢 Logo", "to sq :n\n  repeat 4 [fd :n rt 90]\nend"],
-    ["tpn", "🐢 TPN", "TO POLY SIDE\n  FORWARD SIDE"],
+  for (const [language, badge, source, defined] of [
+    ["logo", "🐢 Logo", "to sq :n\n  repeat 4 [fd :n rt 90]\nend", "sq defined"],
+    // (TPN's own syntax is Phase 3; this text is also valid Logo, which is how the worker reads it for now.)
+    ["tpn", "🐢 TPN", "TO HELLO\n  PRINT 3\nEND", "HELLO defined"],
   ]) {
-    test(`${language}: badge, highlighted source, controls, and Run shows the stub's error`, async ({ page }) => {
+    test(`${language}: badge, highlighted source, controls, and Run defines the procedure`, async ({ page }) => {
       await boot(page);
       await renderCell(page, { language, source });
       const cell = page.locator("#logo-host .lively-code-cell");
@@ -98,10 +139,8 @@ test.describe("logo and tpn cells, read-only render", () => {
       await expect(cell.locator(".lively-code-cell-reset-btn")).toHaveCount(1);
       await expect(cell.locator(".lively-code-cell-help")).toHaveCount(1);
       await cell.locator(".lively-code-cell-run-btn").click();
-      const err = cell.locator(".lively-code-cell-output pre.lively-code-cell-stderr");
-      await expect(err).toContainText("Logo isn't built yet");
-      await expect(err.locator(".lively-code-cell-errclass")).toHaveText("not built:");
-      await expect(cell.locator(".lively-code-cell-status")).toHaveText("Error");
+      await expect(cell.locator(".lively-code-cell-output")).toContainText(defined);
+      await expect(cell.locator(".lively-code-cell-output pre.lively-code-cell-stderr")).toHaveCount(0);
     });
   }
 });

@@ -1642,6 +1642,7 @@ module('lively.identity.PostCardUtils')
           onStatus('Running…');
           worker.run(source, {
             onSegments: callbacks.onSegments,
+            onDraw: callbacks.onDraw,          // graphics languages only; a controller that never posts `draw` ignores it
             onNeedInput: callbacks.onNeedInput,
             onDone: function (runErr, result) { onDone(runErr, result); },
           });
