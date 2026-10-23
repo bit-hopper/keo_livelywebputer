@@ -47,5 +47,5 @@ to mdsetitem :indexes :array :value
 if emptyp bf :indexes [setitem first :indexes :array :value stop]
 mdsetitem bf :indexes (item first :indexes :array) :value
 end
-`;var rs=typeof self<"u"?self:globalThis;rs.LogoEngine={buildId:"2026-10-23T08:34:37.773Z",Interpreter:Lt,Job:ft,LogoError:_,formatNumber:Nt,showText:ot,printText:P,renderSegments:te,corePrelude:Ce,createInterpreter(e={}){return new Lt({prelude:Ce,...e})}};})();
+`;var rs=typeof self<"u"?self:globalThis;rs.LogoEngine={buildId:"2026-10-23T08:39:05.559Z",Interpreter:Lt,Job:ft,LogoError:_,formatNumber:Nt,showText:ot,printText:P,renderSegments:te,corePrelude:Ce,createInterpreter(e={}){return new Lt({prelude:Ce,...e})}};})();
 //# sourceMappingURL=logo-engine.js.map

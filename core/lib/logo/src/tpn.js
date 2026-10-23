@@ -160,17 +160,17 @@ function tokenize(text) {
       const m = NAME_RE.exec(text);
       tok = { k: 'name', v: m[0] };
       i += m[0].length;
-    } else if (c === '←') { tok = { k: 'arrow', v: '<-' }; i++; }
+    } else if (c === '\u2190') { tok = { k: 'arrow', v: '<-' }; i++; }
     else if (c === '<' && text[i + 1] === '-') { tok = { k: 'arrow', v: '<-' }; i += 2; }
     else if (c === '<' && text[i + 1] === '=') { tok = { k: 'op', v: '<=' }; i += 2; }
     else if (c === '>' && text[i + 1] === '=') { tok = { k: 'op', v: '>=' }; i += 2; }
     else if (c === '<' && text[i + 1] === '>') { tok = { k: 'op', v: '<>' }; i += 2; }
-    else if (c === '≤') { tok = { k: 'op', v: '<=' }; i++; }
-    else if (c === '≥') { tok = { k: 'op', v: '>=' }; i++; }
-    else if (c === '≠') { tok = { k: 'op', v: '<>' }; i++; }
-    else if (c === '↑') { tok = { k: 'op', v: '^' }; i++; }
-    else if (c === '×') { tok = { k: 'op', v: '*' }; i++; }
-    else if (c === '÷') { tok = { k: 'op', v: '/' }; i++; }
+    else if (c === '\u2264') { tok = { k: 'op', v: '<=' }; i++; }
+    else if (c === '\u2265') { tok = { k: 'op', v: '>=' }; i++; }
+    else if (c === '\u2260') { tok = { k: 'op', v: '<>' }; i++; }
+    else if (c === '\u2191') { tok = { k: 'op', v: '^' }; i++; }
+    else if (c === '\u00d7') { tok = { k: 'op', v: '*' }; i++; }
+    else if (c === '\u00f7') { tok = { k: 'op', v: '/' }; i++; }
     else if ('+-*/^=<>'.indexOf(c) >= 0) { tok = { k: 'op', v: c }; i++; }
     else if ('()[],'.indexOf(c) >= 0) { tok = { k: 'punct', v: c }; i++; }
     else throw syntax("I don't understand the character " + c);
