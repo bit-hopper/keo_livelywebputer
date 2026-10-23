@@ -18,6 +18,7 @@ module('lively.identity.LogoWorker')
       name: 'Logo',
       workerUrl: '/core/lib/logo/logo-worker.js',
       path: 'lively.identity.LogoWorker',
+      sendLanguage: true,   // the worker tells `logo` from `tpn` cells by the run message's language
     });
 
   });

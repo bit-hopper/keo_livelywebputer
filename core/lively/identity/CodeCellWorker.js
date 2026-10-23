@@ -38,6 +38,8 @@ module('lively.identity.CodeCellWorker')
       //   name       the language's name as shown in messages ('Scheme', 'ML', 'Logo')
       //   workerUrl  the Worker script ('/core/lib/scheme/scheme-worker.js')
       //   path       the controller's own dotted path, for the console error ('lively.identity.SchemeWorker')
+      //   sendLanguage  optional; true for a worker that serves more than one registry row (Logo: `logo` and `tpn`), so the
+      //              run message carries the cell's language id. Off by default: Scheme and ML send exactly what they did.
       // }
       // Returns the controller object, which the caller assigns to its own global.
       create: function (opts) {
@@ -88,8 +90,10 @@ module('lively.identity.CodeCellWorker')
           //   onDone(err, result)    result = {state: done | error | stopped | exit}; err only for
           //                          failures of the run machinery itself (worker lost, busy, ...)
           // }
+          // runOpts: {language}   the cell's registry id; sent to the worker only when the controller was created with
+          //                       sendLanguage (see create)
           // Call ensureReady() first.
-          run: function (source, handlers) {
+          run: function (source, handlers, runOpts) {
             handlers = handlers || {};
             if (this._active) {
               if (handlers.onDone) handlers.onDone(new Error('Another ' + name + ' cell is still running on this page. Stop it first.'), null);
@@ -97,7 +101,9 @@ module('lively.identity.CodeCellWorker')
             }
             var id = this._nextId++;
             this._active = { id: id, handlers: handlers, stopTimer: null };
-            this._ensureWorker().postMessage({ id: id, op: 'run', source: source });
+            var msg = { id: id, op: 'run', source: source };
+            if (opts.sendLanguage && runOpts && runOpts.language) msg.language = runOpts.language;
+            this._ensureWorker().postMessage(msg);
           },
 
           isRunning: function () { return !!this._active; },

@@ -10,7 +10,9 @@
  * Protocol (postMessage, plain JSON-able objects), the same as ml-worker.js plus the turtle's `draw` (LOGO.md 7.1):
  *   in:  {op:'init'}
  *   out: {op:'init', ok:true, buildId} | {op:'init', ok:false, error}
- *   in:  {id, op:'run', source}
+ *   in:  {id, op:'run', source, language}                    (language: 'logo' | 'tpn', the cell's registry id; the
+ *                                                             procedures the run defines record it as their dialect,
+ *                                                             LOGO.md 4.4. Absent means 'logo')
  *   out: {id, op:'draw', ops:[...], turtle:{...}|null}       (zero or more, one per slice that drew or moved the turtle;
  *                                                             ops are the engine's draw operations, see
  *                                                             core/lib/logo/src/turtle.js; turtle is the turtle's state
@@ -106,7 +108,8 @@ onmessage = function (evt) {
       // Every run reports the turtle once, even if it does not move: the cell's pane is new and blank, and the turtle may
       // be anywhere after an earlier cell.
       ensureInterpreter().turtle.dirty = true;
-      job = interp.startRun(msg.source, { onError: 'stop' });
+      // The cell's language picks the surface syntax; a message without one (an older controller) is Logo.
+      job = interp.startRun(msg.source, { onError: 'stop', dialect: msg.language === 'tpn' ? 'tpn' : 'logo' });
       jobId = msg.id;
       pump(job, jobId);
       break;

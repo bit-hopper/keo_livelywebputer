@@ -121,6 +121,32 @@ test.describe("LogoWorker controller (real worker)", () => {
     expect(state).toBe("done");
     expect((await runCell(page, "hello")).segments).toEqual([{ kind: "stdout", text: "42\n" }]);
   });
+
+  test("the run message carries the cell's language, for Logo's controller only", async ({ page }) => {
+    await boot(page);
+    // Spy on what the page really posts to its workers, then run one cell of each language.
+    await page.evaluate(() => {
+      window.__runMsgs = [];
+      const orig = Worker.prototype.postMessage;
+      Worker.prototype.postMessage = function (m) {
+        if (m && m.op === "run") window.__runMsgs.push({ url: this.__url || "", msg: m });
+        return orig.apply(this, arguments);
+      };
+      const OrigWorker = window.Worker;
+      window.Worker = function (url, o) { const w = new OrigWorker(url, o); w.__url = String(url); return w; };
+      window.Worker.prototype = OrigWorker.prototype;
+    });
+    const run = (language, source) => page.evaluate(([l, s]) => new Promise((resolve) => {
+      lively.identity.postCardUtils.runCodeCell(s, { onDone: (err, res) => resolve(err ? "err" : res.state) }, l);
+    }), [language, source]);
+    expect(await run("tpn", "print 1")).toBe("done");
+    expect(await run("logo", "print 2")).toBe("done");
+    expect(await run("scheme", "(+ 1 2)")).toBe("done");
+    const msgs = await page.evaluate(() => window.__runMsgs);
+    const by = (frag) => msgs.filter((m) => m.url.includes(frag)).map((m) => m.msg.language);
+    expect(by("logo-worker")).toEqual(["tpn", "logo"]);
+    expect(by("scheme-worker")).toEqual([undefined]);   // Scheme's run message is what it always was
+  });
 });
 
 test.describe("logo and tpn cells, read-only render", () => {

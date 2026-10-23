@@ -1654,7 +1654,7 @@ module('lively.identity.PostCardUtils')
             onDraw: callbacks.onDraw,          // graphics languages only; a controller that never posts `draw` ignores it
             onNeedInput: callbacks.onNeedInput,
             onDone: function (runErr, result) { onDone(runErr, result); },
-          });
+          }, { language: def.id });   // only a controller made with sendLanguage forwards it (Logo: logo vs tpn)
         });
       });
     }

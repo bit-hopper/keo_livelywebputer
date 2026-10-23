@@ -206,10 +206,13 @@ const isToLine = (items) => items.length > 0 && typeof items[0] === 'string' && 
 
 export class Job {
   // opts: {onError: 'stop' (default; an uncaught error ends the cell) | 'continue' (like the Logo prompt: report it and
-  //        go on with the next line), library: define silently, quiet: no "defined" lines, strict: no redefinition}
+  //        go on with the next line), library: define silently, quiet: no "defined" lines, strict: no redefinition,
+  //        dialect: 'logo' (default) | 'tpn', the surface syntax of this cell's source (LOGO.md 4.4); procedures it defines
+  //        record it}
   constructor(interp, source, opts = {}) {
     this.interp = interp;
     this.opts = opts;
+    this.dialect = opts.dialect === 'tpn' ? 'tpn' : 'logo';   // anything else is Logo, so a stray value cannot select nothing
     this.reader = new LineReader(source);
     this.segments = [];
     this.sinceDrain = 0;
@@ -361,6 +364,7 @@ export class Job {
       const name = wordText(titleItems[0]);
       const proc = buildProc(name, titleItems.slice(1), body.map((items) => listFromArray(items)), raw);
       proc.isMacro = line.items[0].toLowerCase() === '.macro';
+      proc.dialect = this.dialect;
       const status = interp.installProc(proc, {
         redefine: this.opts.strict ? false : true, library: !!this.opts.library, owner: this.opts.owner,
       });

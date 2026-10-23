@@ -75,6 +75,7 @@ export class Proc {
     this.nodesEpoch = -1;
     this.formalsText = null; // the title line's formals as typed, for FULLTEXT / PO
     this.owner = null;       // which cell defined it (decision 15), or null
+    this.dialect = 'logo';   // the surface syntax it was written in: 'logo' | 'tpn' (LOGO.md 4.4); set by the Job that defines it
   }
 }
 
