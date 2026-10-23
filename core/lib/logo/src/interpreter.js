@@ -23,6 +23,7 @@ import * as lists from './lists.js';
 import * as control from './control.js';
 import * as workspace from './workspace.js';
 import * as turtleLib from './turtle.js';
+import * as tpnLib from './tpn.js';
 
 // The manual's "(library procedure)" entries that are implemented natively: user programs may redefine them.
 const LIBRARY_PROCEDURES = 'ignore for do.while while do.until until case cond invoke foreach map map.se filter find reduce crossmap cascade cascade.2 transfer combine reverse gensym pick remove remdup quoted push pop queue dequeue localmake name namelist pllist iseq rseq backslashedp backslashed? ` mdarray mditem mdsetitem xcor ycor pen setpen erns erps erpls erall ern erpl poall pops pons popls pots';
@@ -50,6 +51,7 @@ export class Interpreter {
     control.install(P);
     workspace.install(P);
     turtleLib.install(P);
+    tpnLib.installPrims(this);   // after the Logo primitives it is built from
     for (const name of LIBRARY_PROCEDURES.split(/\s+/)) { const rec = this.procs.get(name); if (rec) rec.library = true; }
     this._initVars();
     if (opts.prelude) this.loadLibrary(opts.prelude);
@@ -80,11 +82,13 @@ export class Interpreter {
 
   // ---- trees ------------------------------------------------------------------------------------------------------
 
-  // The treeified instruction nodes of a list, cached against the list and the procedure epoch.
+  // The treeified instruction nodes of a list, cached against the list and the procedure epoch. A TPN block (tpn.js) is a
+  // list registered with `fixed: true`: its nodes were made by the TPN analyser and are not Logo text to re-read, so they are
+  // never stale (the procedure that owns them is analysed afresh, with new blocks, when the epoch changes).
   getTree(list) {
     if (list === NIL) return [];
     const cached = this.treeCache.get(list);
-    if (cached !== undefined && cached.epoch === this.epoch) return cached.nodes;
+    if (cached !== undefined && (cached.fixed || cached.epoch === this.epoch)) return cached.nodes;
     const nodes = treeify(runparse(listToArray(list)), this.arityOf);
     this.treeCache.set(list, { epoch: this.epoch, nodes });
     return nodes;
@@ -96,6 +100,11 @@ export class Interpreter {
   // A procedure's body as flat instruction nodes, each carrying .line (the body line it came from) for error messages.
   bodyNodes(proc) {
     if (proc.nodes !== null && proc.nodesEpoch === this.epoch) return proc.nodes;
+    if (proc.dialect === 'tpn') {
+      proc.nodes = tpnLib.compileProcBody(this, proc);
+      proc.nodesEpoch = this.epoch;
+      return proc.nodes;
+    }
     const nodes = [];
     for (const line of proc.lines) {
       const ns = treeify(runparse(listToArray(line)), this.arityOf);
@@ -213,7 +222,7 @@ export class Job {
     this.interp = interp;
     this.opts = opts;
     this.dialect = opts.dialect === 'tpn' ? 'tpn' : 'logo';   // anything else is Logo, so a stray value cannot select nothing
-    this.reader = new LineReader(source);
+    this.reader = this.dialect === 'tpn' ? new tpnLib.TpnReader(interp, source) : new LineReader(source);
     this.segments = [];
     this.sinceDrain = 0;
     this.out = '';
@@ -291,15 +300,27 @@ export class Job {
           continue;
         }
         if (line === null) { this._finish('done'); return; }
-        if (line.items.length === 0) continue;
-        if (isToLine(line.items)) {
-          if (!this._define(line)) { if (!continueOnError) { this._finish('error'); return; } }
-          continue;
+        if (line.tpn !== undefined) {
+          // A TPN cell: a definition, or one statement already analysed into nodes (tpn.js TpnReader).
+          if (line.tpn.kind === 'to') {
+            if (!this._defineTpn(line.tpn.line)) { if (!continueOnError) { this._finish('error'); return; } }
+            continue;
+          }
+          m.cancelled = false;
+          interp.turtle.filling = null;
+          m.begin([line.tpn.node]);
+          this.active = true;
+        } else {
+          if (line.items.length === 0) continue;
+          if (isToLine(line.items)) {
+            if (!this._define(line)) { if (!continueOnError) { this._finish('error'); return; } }
+            continue;
+          }
+          m.cancelled = false;
+          interp.turtle.filling = null;   // a FILLED abandoned by an error in an earlier line is not still running
+          m.begin(interp.lineNodes(line.items));
+          this.active = true;
         }
-        m.cancelled = false;
-        interp.turtle.filling = null;   // a FILLED abandoned by an error in an earlier line is not still running
-        m.begin(interp.lineNodes(line.items));
-        this.active = true;
       }
       let r;
       try {
@@ -335,6 +356,26 @@ export class Job {
       if (e.line !== null && e.line !== undefined) text += '\n' + showText(e.line);
     }
     this._push('error', text);
+  }
+
+  // A TPN title line (with its indented body under it) has been read: build the procedure, check its body for syntax errors
+  // now (the nodes are thrown away: they are analysed again when it is first called, once the procedures it uses exist),
+  // and install it. Returns false after reporting an error.
+  _defineTpn(titleLine) {
+    const interp = this.interp;
+    try {
+      const proc = tpnLib.buildTpnProc(titleLine);
+      tpnLib.compileProcBody(interp, proc);
+      const status = tpnLib.installTpnProc(interp, proc, {
+        redefine: this.opts.strict ? false : true, library: !!this.opts.library, owner: this.opts.owner,
+      });
+      if (!this.opts.library && !this.opts.quiet) this._push('status', proc.name + ' ' + status, { tone: 'note' });
+      return true;
+    } catch (e) {
+      if (!(e instanceof LogoError)) throw e;
+      this._reportError(e);
+      return false;
+    }
   }
 
   // A TO line has been read; read the body up to END and install the procedure. Returns false after reporting an error.

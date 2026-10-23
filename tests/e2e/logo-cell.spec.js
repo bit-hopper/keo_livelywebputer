@@ -4,7 +4,7 @@ const { test, expect } = require("@playwright/test");
 // Logo and TPN code cells (LOGO.md sections 7 and 10): the registry rows, the shared controller, and the real worker (the
 // engine bundle, time-sliced, posting segments and the turtle's draw operations). Phase 2 so far: the worker runs Logo;
 // the cell pane does not draw the turtle yet, so the drawing is asserted on what the controller delivers (onDraw), not on
-// pixels. A tpn cell goes through the same worker but TPN syntax itself arrives in Phase 3.
+// pixels. A tpn cell goes through the same worker and is read as TPN (the run message carries its language).
 // Boots blank.html and drives lively.identity.LogoWorker / postCardUtils directly -- the same objects the wiki editor and
 // viewer use.
 
@@ -113,13 +113,40 @@ test.describe("LogoWorker controller (real worker)", () => {
       return U.codeCellLanguage("logo").controller === U.codeCellLanguage("tpn").controller;
     });
     expect(same).toBe(true);
-    // A procedure defined by a run started as a tpn cell is callable from a logo cell. (TPN's own syntax is Phase 3: until
-    // then the text is read as Logo.)
+    // A procedure defined by a run started as a tpn cell (TPN syntax: indented body, no END) is callable from a logo cell.
     const state = await page.evaluate(() => new Promise((resolve) => {
-      lively.identity.postCardUtils.runCodeCell("to hello\nprint 42\nend", { onDone: (err, res) => resolve(err ? "err" : res.state) }, "tpn");
+      lively.identity.postCardUtils.runCodeCell("TO hello\n   print 42", { onDone: (err, res) => resolve(err ? "err" : res.state) }, "tpn");
     }));
     expect(state).toBe("done");
     expect((await runCell(page, "hello")).segments).toEqual([{ kind: "stdout", text: "42\n" }]);
+  });
+
+  test("a tpn cell is read as TPN in the real worker: indented blocks, the arrow, RETURN, drawing", async ({ page }) => {
+    await boot(page);
+    const src = [
+      "TO SQUARE SIZE",
+      "   REPEAT 4",
+      "      FORWARD SIZE",
+      "      RIGHT 90",
+      "TO TWICE N",
+      "   RETURN N * 2",
+      "SIDE <- TWICE 10",
+      "SQUARE SIDE",
+      "IF XCOR = 0 THEN PRINT \"home\" ELSE PRINT \"away\"",
+    ].join("\n");
+    const r = await page.evaluate((source) => new Promise((resolve) => {
+      const ops = [], segs = [];
+      lively.identity.postCardUtils.runCodeCell(source, {
+        onDraw: (o) => ops.push(...o),
+        onSegments: (s) => segs.push(...s),
+        onDone: (err, res) => resolve({ err: err && err.message, state: res && res.state, lines: ops.filter((o) => o.op === "line").length, text: segs.map((s) => s.text).join("|") }),
+      }, "tpn");
+    }), src);
+    expect(r.err).toBeFalsy();
+    expect(r.state).toBe("done");
+    expect(r.lines).toBe(4);
+    expect(r.text).toContain("SQUARE defined");
+    expect(r.text).toContain("home");
   });
 
   test("the run message carries the cell's language, for Logo's controller only", async ({ page }) => {
@@ -152,8 +179,7 @@ test.describe("LogoWorker controller (real worker)", () => {
 test.describe("logo and tpn cells, read-only render", () => {
   for (const [language, badge, source, defined] of [
     ["logo", "🐢 Logo", "to sq :n\n  repeat 4 [fd :n rt 90]\nend", "sq defined"],
-    // (TPN's own syntax is Phase 3; this text is also valid Logo, which is how the worker reads it for now.)
-    ["tpn", "🐢 TPN", "TO HELLO\n  PRINT 3\nEND", "HELLO defined"],
+    ["tpn", "🐢 TPN", "TO HELLO\n  PRINT 3", "HELLO defined"],
   ]) {
     test(`${language}: badge, highlighted source, controls, and Run defines the procedure`, async ({ page }) => {
       await boot(page);

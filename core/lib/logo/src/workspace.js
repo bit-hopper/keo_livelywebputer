@@ -139,7 +139,7 @@ export function install(P) {
   const plistNames = (m) => [...m.interp.plists.keys()].sort(byName);
 
   P.fn('procedures', 0, (a, m) => listFromArray(userProcNames(m)));
-  P.fn('primitives', 0, (a, m) => listFromArray([...m.interp.procs.values()].filter(isPrimRecord).map((p) => p.name)));
+  P.fn('primitives', 0, (a, m) => listFromArray([...m.interp.procs.values()].filter((p) => isPrimRecord(p) && !p.key.startsWith('tpn:')).map((p) => p.name)));
   P.fn('names', 0, (a, m) => listFromArray([NIL, listFromArray(globalNames(m))]));
   P.fn('plists', 0, (a, m) => listFromArray([NIL, NIL, listFromArray(plistNames(m))]));
   P.fn('contents', 0, (a, m) => listFromArray([listFromArray(userProcNames(m)), listFromArray(globalNames(m)), listFromArray(plistNames(m))]));
