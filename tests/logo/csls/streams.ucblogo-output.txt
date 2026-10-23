@@ -1,0 +1,25 @@
+(show.stream :integers 5)  =>  [1 2 3 4 5 ...]
+
+(show.stream :primes 8)  =>  [2 3 5 7 11 13 17 19 ...]
+
+(show.stream :sq 6)  =>  [1 4 9 16 25 36 ...]
+
+(show.stream :ev 5)  =>  [2 4 6 8 10 ...]
+
+show head tail tail :integers  =>  3
+
+show head tail :primes  =>  3
+
+(show.stream :mult 5)  =>  [3 6 9 12 15 ...]
+
+show integers.from 7  =>  [7 *delayed* [integers.from 8]]
+
+show head :integers  =>  1
+
+show tail [1]  =>  []
+
+show divisiblep 12 4  =>  true
+
+
+Thank you for using Logo.
+Have a nice day.

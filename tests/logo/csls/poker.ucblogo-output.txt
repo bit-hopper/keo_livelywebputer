@@ -1,0 +1,33 @@
+pokerhand [ah kh qh jh 10h]  =>  royal flush
+
+pokerhand [9h 10h jh qh kh]  =>  straight flush
+
+pokerhand [2h 2s 2d 2c 9c]  =>  four of a kind
+
+pokerhand [2h 2s 2d 5c 5s]  =>  full house
+
+pokerhand [2h 2s 2d 5c 9s]  =>  three of a kind
+
+pokerhand [2h 2s 7d 5c 5s]  =>  two pairs
+
+pokerhand [2h 2s 7d 5c 9s]  =>  one pair
+
+pokerhand [3h 4s 5d 6c 7s]  =>  straight
+
+pokerhand [3h 4h 5h 6h 7h]  =>  straight flush
+
+pokerhand [3h 4h 5h 6h 9h]  =>  flush
+
+pokerhand [ah 2s 3d 4c 5s]  =>  straight
+
+pokerhand [ah 10s jd qc ks]  =>  straight
+
+pokerhand [2h 4s 9d jc ks]  =>  nothing!
+
+show ranknum "k  =>  13
+
+show ranknum 7  =>  7
+
+
+Thank you for using Logo.
+Have a nice day.

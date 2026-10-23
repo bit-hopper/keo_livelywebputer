@@ -1,0 +1,421 @@
+category first [Jane Larry Opal Perry]
+category last [Irving King Mendle Nathan]
+category age [32 38 45 55]
+category job [drafter pilot sergeant driver]
+differ [Jane King Larry Nathan]
+Jane King -> false
+Jane Nathan -> false
+King Larry -> false
+Larry Nathan -> false
+says Jane Irving 45
+says King Perry driver
+says Larry sergeant 45
+says Nathan drafter 38
+differ [Mendle Jane Opal Nathan]
+Mendle Jane -> false
+Irving Jane -> true
+Larry Irving -> false
+Mendle Larry -> true
+Opal Mendle -> false
+Perry Mendle -> false
+Opal Irving -> false
+Perry Irving -> false
+Jane 45 -> false
+Irving 45 -> false
+Opal Nathan -> false
+Perry Nathan -> true
+King Perry -> false
+Opal King -> true
+King driver -> true
+Irving driver -> false
+Jane driver -> false
+Mendle driver -> false
+Larry driver -> false
+Nathan driver -> false
+Opal driver -> true
+Perry driver -> false
+drafter Opal -> false
+King drafter -> false
+pilot Opal -> false
+King pilot -> false
+sergeant Opal -> false
+King sergeant -> false
+says Mendle pilot Larry
+Mendle pilot -> false
+Larry pilot -> false
+says Jane pilot 45
+Jane pilot -> true
+Perry pilot -> false
+Nathan pilot -> false
+Irving pilot -> true
+45 pilot -> false
+drafter Irving -> false
+Jane drafter -> false
+sergeant Irving -> false
+Jane sergeant -> false
+says Opal 55 driver
+Opal 55 -> false
+driver 55 -> false
+King 55 -> false
+says Nathan 38 driver
+Nathan 38 -> true
+Irving 38 -> false
+pilot 38 -> false
+Jane 38 -> false
+King 38 -> false
+driver 38 -> false
+Opal 38 -> false
+Mendle 38 -> false
+Larry 38 -> false
+Perry 38 -> true
+32 Perry -> false
+Nathan 32 -> false
+45 Perry -> false
+Nathan 45 -> false
+55 Perry -> false
+Nathan 55 -> false
+Nathan drafter -> false
+Mendle drafter -> true
+Larry drafter -> true
+Perry drafter -> false
+38 drafter -> false
+sergeant 38 -> true
+32 sergeant -> false
+45 sergeant -> false
+55 sergeant -> false
+Nathan sergeant -> true
+Mendle sergeant -> false
+Larry sergeant -> false
+Perry sergeant -> true
+Larry 45 -> true
+Opal 45 -> false
+driver 45 -> false
+drafter 45 -> true
+King 45 -> false
+Mendle 45 -> true
+32 Mendle -> false
+Larry 32 -> false
+55 Mendle -> false
+Irving 55 -> true
+pilot 55 -> true
+drafter 55 -> false
+Jane 55 -> true
+Larry 55 -> false
+32 Jane -> false
+Opal 32 -> true
+driver 32 -> true
+drafter 32 -> false
+pilot 32 -> false
+Irving 32 -> false
+King 32 -> true
+
+Jane Irving 55 pilot
+Larry Mendle 45 drafter
+Opal King 32 driver
+Perry Nathan 38 sergeant
+category when [1st 2nd 3rd 4th 5th]
+category name [Felix Fred Frank Francine Flo]
+category street [Field Flag Fig Fork Frond]
+category item [food film flashlight fan fiddle]
+category position [1 2 3 4 5]
+Clue 1
+Flag 2nd -> false
+Flag 5 -> false
+2nd 1 -> false
+2nd Fred -> false
+2nd 5 -> false
+Flag 4 -> false
+Fred 1 -> false
+Fred 2 -> false
+Clue 2
+differ [film Fig 5th Francine Flo]
+film Fig -> false
+film 5th -> false
+film Francine -> false
+film Flo -> false
+Fig 5th -> false
+Fig Francine -> false
+Fig Flo -> false
+5th Francine -> false
+5th Flo -> false
+Clue 3
+flashlight Fork -> false
+flashlight 5 -> false
+Fork 1 -> false
+Fork 1st -> false
+Fork 5 -> false
+flashlight 4 -> false
+1st 1 -> false
+1st 2 -> false
+differ [1st Felix Fred Frank]
+1st Felix -> false
+1st Fred -> false
+1st Frank -> false
+Clue 4
+5th Frond -> false
+5th fan -> false
+Clue 5
+Francine 5 -> false
+Frank 1 -> false
+Clue 6
+differ [3rd Flag Felix Fred Frank]
+3rd Flag -> false
+3rd Felix -> false
+3rd Fred -> false
+3rd Frank -> false
+Francine 2nd -> false
+Flag Felix -> false
+Flag Fred -> false
+Flag Frank -> false
+Clue 7
+fiddle Frond -> false
+fiddle 5th -> false
+Frond 1st -> false
+fiddle 4th -> false
+Flo fiddle -> false
+fiddle 1st -> false
+Frond 2nd -> false
+Flo 3rd -> false
+Francine 3rd -> true
+5 3rd -> false
+Fig 3rd -> false
+film 3rd -> false
+1st Francine -> false
+Flo 1st -> true
+Fig 1st -> false
+film 1st -> false
+2nd Flo -> false
+fiddle 3rd -> false
+2nd fiddle -> true
+Francine fiddle -> false
+5 fiddle -> false
+Fred fiddle -> false
+1 fiddle -> false
+Flag fiddle -> false
+food 2nd -> false
+film 2nd -> false
+4th film -> true
+food 4th -> false
+flashlight 4th -> false
+fan 4th -> false
+Flo 4th -> false
+Francine 4th -> false
+Frank 5th -> false
+Fig 4th -> false
+2nd Fig -> true
+fiddle Fig -> true
+food Fig -> false
+flashlight Fig -> false
+fan Fig -> false
+1 Fig -> false
+Fred Fig -> false
+5 Fig -> false
+Field fiddle -> false
+Fork fiddle -> false
+Field 2nd -> false
+Fork 2nd -> false
+fan 2nd -> false
+flashlight 2nd -> false
+Frond 3rd -> true
+Field 3rd -> false
+Fork 3rd -> false
+4th Frond -> false
+film Frond -> false
+5 Frond -> false
+Field 5 -> true
+1 Field -> false
+2 Field -> false
+3 Field -> false
+4 Field -> false
+Francine Field -> false
+flashlight Field -> false
+Frank Frond -> false
+Fred Frond -> false
+Felix Frond -> false
+Frond Flo -> false
+Francine Frond -> true
+Flag Francine -> false
+Flo Flag -> true
+1st Flag -> true
+4th Flag -> false
+film Flag -> false
+5th Flag -> false
+2 Flag -> false
+2nd 3 -> false
+Fig 3 -> false
+fiddle 3 -> false
+Fred 4 -> false
+1 Flag -> false
+3 Flag -> true
+Fork 3 -> false
+1st 4 -> false
+flashlight 2 -> false
+Frond 3 -> false
+3rd 3 -> false
+5th 3 -> false
+4th 3 -> false
+1st 3 -> true
+film 3 -> false
+Francine 3 -> false
+Frank 4 -> false
+Frank 3 -> false
+Francine 2 -> false
+Frond 2 -> false
+3rd 2 -> false
+Fred 3 -> false
+5 Fred -> true
+Field Fred -> true
+Fork Fred -> false
+flashlight Fred -> false
+Felix Field -> false
+5 Felix -> false
+Frank Field -> false
+5 Frank -> false
+2 Frank -> true
+flashlight Frank -> false
+Felix 2 -> false
+Flo 2 -> false
+5th 2 -> false
+Francine 1 -> true
+Felix 1 -> false
+Flo 1 -> false
+Frond 1 -> true
+3rd 1 -> true
+4th 1 -> false
+film 1 -> false
+5th 1 -> false
+4 3rd -> false
+Frond 4 -> false
+4 Francine -> false
+Fork Francine -> false
+Flo Field -> false
+1st Field -> false
+5 1st -> false
+Fork 4 -> false
+Fig 4 -> true
+2nd 4 -> true
+4th 4 -> false
+film 4 -> false
+5th 4 -> false
+5 5th -> true
+Field 5th -> true
+Fork 5th -> false
+4th Fork -> true
+film Fork -> true
+food Fork -> false
+fan Fork -> false
+Flo Fork -> false
+Field film -> false
+Fred film -> false
+4th Fred -> false
+5th Fred -> true
+fan Fred -> false
+food Fred -> true
+Felix food -> false
+Frank food -> false
+2 food -> false
+Francine food -> false
+1 food -> false
+Frond food -> false
+3rd food -> false
+Flo food -> false
+1st food -> false
+5th food -> true
+4 food -> false
+3 food -> false
+5 food -> true
+Field food -> true
+Flag food -> false
+fan Field -> false
+5 fan -> false
+4th Field -> false
+5 4th -> false
+2 4th -> true
+Frank 4th -> true
+Felix 4th -> false
+film Felix -> false
+Fork Felix -> false
+Fig Felix -> true
+2nd Felix -> true
+5th Felix -> false
+fiddle Felix -> true
+flashlight Felix -> false
+fan Felix -> false
+3 Felix -> false
+4 Felix -> true
+Flo 4 -> false
+fan 4 -> false
+fiddle 4 -> true
+2 fiddle -> false
+Frank fiddle -> false
+2nd Frank -> false
+Fig Frank -> false
+Fork Frank -> true
+fan Frank -> false
+film Frank -> true
+2 film -> true
+5 film -> false
+fan 2 -> false
+Fork 2 -> true
+Fig 2 -> false
+2nd 2 -> false
+flashlight 1 -> true
+fan 1 -> false
+3 fan -> true
+Flag fan -> true
+Frond fan -> false
+3rd fan -> false
+1st fan -> true
+Francine fan -> false
+Flo fan -> true
+flashlight Flo -> false
+Francine flashlight -> true
+Frond flashlight -> true
+Flag flashlight -> false
+3rd flashlight -> true
+1st flashlight -> false
+5th flashlight -> false
+3 flashlight -> false
+5 Flo -> false
+3 Flo -> true
+
+1st Flo Flag fan 3
+2nd Felix Fig fiddle 4
+3rd Francine Frond flashlight 1
+4th Frank Fork film 2
+5th Fred Field food 5
+show combs [a b c d] 2  =>  [[a b] [a c] [a d] [b c] [b d] [c d]]
+
+show combs [a b c] 0  =>  [[]]
+
+show fact 10  =>  3628800
+
+show perms 7 3  =>  210
+
+show choose 10 4  =>  210
+
+show choose 6 3  =>  20
+
+show expand [2 a b]  =>  [a a b]
+
+show twoto 10  =>  1024
+
+socks [3 brown 2 blue]  =>  there are 10 possible pairs of socks.
+of these, 4 are matching pairs.
+probability of match = 40%
+
+show lock 3  =>  26
+
+show simplex 4  =>  150
+
+show f 5  =>  541
+
+show simp 5  =>  1082
+
+show t 3 4  =>  15
+
+show t 4 4  =>  35
+
+
+Thank you for using Logo.
+Have a nice day.

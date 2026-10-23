@@ -1,0 +1,43 @@
+Pour from river to 5
+Pour from 5 to 3
+Pour from 3 to river
+Pour from 5 to 3
+Pour from river to 5
+Pour from 5 to 3
+Final quantities are 3 4
+Pour from river to 4
+Pour from 4 to 7
+Pour from river to 4
+Pour from 4 to 7
+Pour from 7 to river
+Pour from 4 to 7
+Pour from river to 4
+Pour from 4 to 7
+Final quantities are 0 5
+Pour from river to 7
+Pour from 7 to 5
+Pour from 5 to river
+Pour from 7 to 5
+Pour from river to 7
+Pour from 7 to 5
+Pour from 5 to river
+Pour from 7 to 5
+Pour from river to 7
+Pour from 7 to 5
+Final quantities are 5 6
+Can't do it!
+Pour from river to 5
+Pour from 5 to 3
+Pour from 5 to 8
+Pour from river to 5
+Pour from 5 to 8
+Final quantities are 3 0 7
+show all.empty [1 2 3]  =>  [0 0 0]
+
+show replace [a b c] 2 "x  =>  [a x c]
+
+show replace2 [a b c d] 1 "p 3 "q  =>  [p b q d]
+
+
+Thank you for using Logo.
+Have a nice day.

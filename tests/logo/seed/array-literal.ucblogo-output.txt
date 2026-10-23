@@ -1,0 +1,21 @@
+Welcome to Berkeley Logo version 6.2.5
+f defined
+{11 2 3}
+{11 2 3}
+g defined
+{1 2}
+{99 2}
+[{77 2} {3 4}]
+{5 6}
+{7 8}
+{7 8}
+{9 2}
+true
+h defined
+[{8 2}]
+[{8 2}]
+[[] [make "a {1 2 3}] [setitem 1 :a (item 1 :a) + 10] [output :a]]
+{11 2 3}
+
+Thank you for using Logo.
+Have a nice day.

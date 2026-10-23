@@ -1,0 +1,62 @@
+quadratic 1 -3 2  =>  The solutions are 2 and 1
+
+quadratic 2 4 -6  =>  The solutions are 1 and -3
+
+show t 3 4  =>  15
+
+show t 6 6  =>  462
+
+show simplex 4  =>  150
+
+show simplex 10  =>  204495126
+
+show ssort [5 3 9 1 7 2 8]  =>  [1 2 3 5 7 8 9]
+
+howmany  =>  21
+
+show psort [5 3 9 1 7 2 8]  =>  [1 2 3 5 7 8 9]
+
+howmany  =>  21
+
+show locate "Sudbury  =>  [world [United States] Massachusetts Sudbury]
+
+show locate "Quebec  =>  [world Canada Quebec Quebec]
+
+show locate [San Francisco]  =>  [world [United States] California [San Francisco]]
+
+show locate "Nowhere  =>  []
+
+show cities "California  =>  [[San Francisco] Berkeley [Palo Alto] Pasadena]
+
+show cities "France  =>  [Paris Dijon Avignon]
+
+show cities "Canada  =>  [Toronto Ottawa Windsor Montreal Quebec Lachine Winnipeg]
+
+show leafp tree "x []  =>  true
+
+show datum :world  =>  world
+
+show count children :world  =>  4
+
+show listcity 415  =>  [San Francisco]
+
+show listcity 808  =>  [Honolulu]
+
+show treecity 415  =>  [San Francisco]
+
+show treecity 202  =>  [Washington]
+
+show treecity 999  =>  [no city]
+
+show datum :codetree  =>  [608 Madison]
+
+show sumprods [1 2 3] [4 5 6]  =>  32
+
+show nextrow [1 2 3 4]  =>  [3 5 7 4]
+
+addchild :tt [c]  =>  
+show :tt  =>  [root [c] a b]
+
+
+Thank you for using Logo.
+Have a nice day.

@@ -1,0 +1,51 @@
+Welcome to Berkeley Logo version 6.2.5
+try defined
+show yy  =>  6
+
+show YY  =>  6
+
+show mixed  =>  abc
+
+show lst  =>  [a b]
+
+print yy + 1  =>  7
+
+print yy * yy  =>  36
+
+show (list yy yy)  =>  [6 6]
+
+show list yy 2  =>  [6 2]
+
+print sum yy 1  =>  7
+
+if yy = 6 [print "six]  =>  six
+
+make "z yy print :z  =>  6
+
+yy  =>  6
+show nothere  =>  13 I don't know how  to nothere try [catch "error [make "r runresult :code]]
+show yy 1  =>  6
+1
+show first lst  =>  a
+
+show run [yy]  =>  6
+
+show map [yy] [1 2 3]  =>  [6 6 6]
+
+show map [? + yy] [1 2 3]  =>  [7 8 9]
+
+show apply "yy []  =>  6
+
+loc defined
+show loc  =>  8
+
+dyn defined
+dyn2 defined
+show dyn2  =>  77
+
+samename defined
+show samename  =>  1
+
+
+Thank you for using Logo.
+Have a nice day.

@@ -1,0 +1,98 @@
+Welcome to Berkeley Logo version 6.2.5
+try defined
+show ` [foo baz , [bf [a b c]] garply ,@ [bf [a b c]]]  =>  [foo baz [b c] garply b c]
+
+show ` [a , [1+2] b]  =>  [a 3 b]
+
+show ` [a ,:x b]  =>  [a 5 b]
+
+show ` [a ,:l b]  =>  [a [p q] b]
+
+show ` [a ,@:l b]  =>  [a p q b]
+
+show ` [a ,@:e b]  =>  [a b]
+
+show ` [a ,:e b]  =>  [a [] b]
+
+show ` [a ,@ [(list)] b]  =>  [a b]
+
+show ` [a , [(list)] b]  =>  [a [] b]
+
+show ` [a , [list 1 2] b]  =>  [a [1 2] b]
+
+show ` [a [b , [1+2]] c]  =>  [a [b 3] c]
+
+show ` [a [b ,@ [list 1 2]] c]  =>  [a [b 1 2] c]
+
+show ` [a ",:w b]  =>  [a "hello b]
+
+show ` [a ", [first :l] b]  =>  [a "p b]
+
+show ` [a :, [first :l] b]  =>  [a :p b]
+
+show ` [a :,@:l b]  =>  [a :p q b]
+
+show ` [a ",@:l b]  =>  [a "p q b]
+
+show ` [a "x,w b]  =>  [a "x,w b]
+
+show ` [a ,:l ,@:l]  =>  [a [p q] p q]
+
+show ` [a ,:l b ,@:l c]  =>  [a [p q] b p q c]
+
+show ` [a , [:x+1] ",:x]  =>  [a 6 "5]
+
+show ` [a , [1+2] , [3+4]]  =>  [a 3 7]
+
+show ` [[a ,:x] [b ,@:l]]  =>  [[a 5] [b p q]]
+
+show ` [,@:l]  =>  [p q]
+
+show ` [,:x]  =>  [5]
+
+show ` [,@:x]  =>  [5]
+
+show ` [a ,@ [1+2] b]  =>  [a 3 b]
+
+show ` [a ,@ [word "a "b] b]  =>  [a ab b]
+
+show ` [a ,",:x]  =>  [a ,:x]
+
+show ` []  =>  []
+
+show ` [a b c]  =>  [a b c]
+
+show ` [a "b ,:x]  =>  [a "b 5]
+
+show ` "abc  =>  [a b c]
+
+show `  =>  6 not enough inputs to ` try [catch "error [make "r runresult :code]]
+show ` [a ` [b , [1+2] , [foo , [1+3] d]]]  =>  [a ` [b , [1+2] , [foo 4 d]]]
+
+show ` [a ` [b , [1+2] ,, [1+4] c]]  =>  [a ` [b , [1+2] , [5] c]]
+
+show ` [a ` [b ` [c , [1+2] ,, [1+4] ,,, [7+1]]]]  =>  [a ` [b ` [c , [1+2] , [, [1+4]] , [, [8]]]]]
+
+show ` [a ` [b ,@ [1+2] ,,@:l]]  =>  [a ` [b ,@ [1+2] , [p q]]]
+
+show ` [a ` [b ,:x ,,:x]]  =>  [a ` [b , [:x] , [5]]]
+
+show ` [a ` [b] ,:x]  =>  [a ` [b] 5]
+
+print ` [a ,:x]  =>  a 5
+
+make "z ` [a ,:x] show :z  =>  [a 5]
+
+show first ` [,@:l]  =>  p
+
+show count ` [a b , [1+2]]  =>  3
+
+f defined
+show f 3  =>  [v is 3 and 3 3]
+
+g defined
+show g  =>  [loc 4]
+
+
+Thank you for using Logo.
+Have a nice day.

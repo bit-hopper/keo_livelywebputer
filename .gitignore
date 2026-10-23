@@ -163,3 +163,4 @@ tests/logo/reference/
 
 # Recorded reference output for our own probes (tests/logo/seed) is committed despite the *.txt rule
 !tests/logo/seed/*.txt
+!tests/logo/csls/*.txt

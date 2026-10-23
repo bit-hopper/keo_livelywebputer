@@ -1,0 +1,24 @@
+to try :code
+type :code type "|  =>  |
+make "r "NONE
+catch "error [make "r runresult :code]
+make "e error
+if not emptyp :e [print :e stop]
+print :r
+end
+print "=====DRIVER=====
+try [pokerhand [ah kh qh jh 10h]]
+try [pokerhand [9h 10h jh qh kh]]
+try [pokerhand [2h 2s 2d 2c 9c]]
+try [pokerhand [2h 2s 2d 5c 5s]]
+try [pokerhand [2h 2s 2d 5c 9s]]
+try [pokerhand [2h 2s 7d 5c 5s]]
+try [pokerhand [2h 2s 7d 5c 9s]]
+try [pokerhand [3h 4s 5d 6c 7s]]
+try [pokerhand [3h 4h 5h 6h 7h]]
+try [pokerhand [3h 4h 5h 6h 9h]]
+try [pokerhand [ah 2s 3d 4c 5s]]
+try [pokerhand [ah 10s jd qc ks]]
+try [pokerhand [2h 4s 9d jc ks]]
+try [show ranknum "k]
+try [show ranknum 7]

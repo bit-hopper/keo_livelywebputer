@@ -1,0 +1,22 @@
+norm defined
+show norm playfair "monarchy [attack at dawn]  =>  rssrdersbrny
+
+show norm playfair "keyword [hello world]  =>  gyisscokcfbn
+
+show norm playfair "playfair [meet me at the park]  =>  nddunddpwddlibhs
+
+show norm playfair "monarchy [balloon]  =>  ibpspmna
+
+show norm playfair "monarchy [x]  =>  ws
+
+show jtoi "jazz  =>  iazz
+
+show remove "ab "abcabc  =>  cc
+
+show rotate 6  =>  1
+
+show rotate 3  =>  3
+
+
+Thank you for using Logo.
+Have a nice day.

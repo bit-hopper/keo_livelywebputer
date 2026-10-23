@@ -1,0 +1,69 @@
+show match [a b c] [a b c]  =>  true
+
+show match [a b c] [a b d]  =>  false
+
+show match [a b c] [a b]  =>  false
+
+show match [a ! c] [a b c]  =>  true
+
+show match [a !x c] [a b c]  =>  true
+
+show :x  =>  b
+
+show match [my name is !name:wordp] [my name is brian]  =>  true
+
+show :name  =>  brian
+
+show match [!x:numberp !y:numberp] [3 4]  =>  true
+
+show match [!x:numberp !y:numberp] [3 four]  =>  false
+
+show (list :x :y)  =>  [3 4]
+
+show match [a ?z c] [a b c]  =>  true
+
+show :z  =>  b
+
+show match [a ?z c] [a c]  =>  true
+
+show :z  =>  []
+
+show match [a #x c] [a 1 2 3 c]  =>  true
+
+show :x  =>  [1 2 3]
+
+show match [a #x c] [a c]  =>  true
+
+show :x  =>  []
+
+show match [a &x c] [a c]  =>  false
+
+show match [&x end] [a b end]  =>  true
+
+show :x  =>  [a b]
+
+show match [^x end] [a b end end]  =>  true
+
+show :x  =>  [a b end]
+
+show match [#x:numberp !y] [1 2 3 four]  =>  true
+
+show (list :x :y)  =>  [[1 2 3] four]
+
+show match [!w:in [red green]] [green]  =>  true
+
+show match [!w:anyof [[a b] [c d]]] [c]  =>  false
+
+show match [@g: [a b] c] [a b c]  =>  true
+
+show match [a [b !q] c] [a [b 5] c]  =>  true
+
+show quoted "abc  =>  "abc
+
+show quoted [a b]  =>  [a b]
+
+show match "abc [a]  =>  false
+
+
+Thank you for using Logo.
+Have a nice day.

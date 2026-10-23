@@ -1,0 +1,65 @@
+to try :code
+type :code type "|  =>  |
+make "r "NONE
+catch "error [make "r runresult :code]
+make "e error
+if not emptyp :e [print :e stop]
+print :r
+end
+make "x 5
+make "w "hello
+make "l [p q]
+make "e []
+try [show `[foo baz ,[bf [a b c]] garply ,@[bf [a b c]]]]
+try [show `[a ,[1+2] b]]
+try [show `[a ,:x b]]
+try [show `[a ,:l b]]
+try [show `[a ,@:l b]]
+try [show `[a ,@:e b]]
+try [show `[a ,:e b]]
+try [show `[a ,@[(list)] b]]
+try [show `[a ,[(list)] b]]
+try [show `[a ,[list 1 2] b]]
+try [show `[a [b ,[1+2]] c]]
+try [show `[a [b ,@[list 1 2]] c]]
+try [show `[a ",:w b]]
+try [show `[a ",[first :l] b]]
+try [show `[a :,[first :l] b]]
+try [show `[a :,@:l b]]
+try [show `[a ",@:l b]]
+try [show `[a "x,w b]]
+try [show `[a ,:l ,@:l]]
+try [show `[a ,:l b ,@:l c]]
+try [show `[a ,[:x+1] ",:x]]
+try [show `[a ,[1+2],[3+4]]]
+try [show `[[a ,:x] [b ,@:l]]]
+try [show `[,@:l]]
+try [show `[,:x]]
+try [show `[,@:x]]
+try [show `[a ,@[1+2] b]]
+try [show `[a ,@[word "a "b] b]]
+try [show `[a ,",:x]]
+try [show `[]]
+try [show `[a b c]]
+try [show `[a "b ,:x]]
+try [show ` "abc]
+try [show `]
+try [show `[a `[b ,[1+2] ,[foo ,[1+3] d]]]]
+try [show `[a `[b ,[1+2] ,,[1+4] c]]]
+try [show `[a `[b `[c ,[1+2] ,,[1+4] ,,,[7+1]]]]]
+try [show `[a `[b ,@[1+2] ,,@:l]]]
+try [show `[a `[b ,:x ,,:x]]]
+try [show `[a `[b] ,:x]]
+try [print `[a ,:x]]
+try [make "z `[a ,:x] show :z]
+try [show first `[,@:l]]
+try [show count `[a b ,[1+2]]]
+to f :v
+output `[v is ,:v and ,@[list :v :v]]
+end
+try [show f 3]
+to g
+make "loc 4
+output `[loc ,:loc]
+end
+try [show g]

@@ -39,6 +39,14 @@ function check(name, differs = []) {
 test('numbers, words, print/show/type match the reference', () => check('numbers-words-print'));
 test('arithmetic matches the reference', () => check('arithmetic-misc'));
 
+test('backquote matches the reference', () => check('backquote'));
+
+test('an array literal in code is a new array on every evaluation, as in the reference', () => check('array-literal'));
+
+test('a parenthesised name followed by an operator is plain grouping, as in the reference', () => check('paren-infix'));
+
+test('a bare word naming a variable evaluates to it, as in the reference', () => check('bare-variable'));
+
 test('semantics, errors and templates match the reference, except where decisions 14 and 15 differ', () => check('semantics-errors-templates', [
   // Decision 15: a TO whose name is already defined redefines it (and says so) instead of failing and running the body
   // lines as commands; a TO naming a primitive is an error with the reference's "is a primitive" wording.

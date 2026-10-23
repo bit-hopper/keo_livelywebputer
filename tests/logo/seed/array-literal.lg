@@ -1,0 +1,40 @@
+to f
+make "a {1 2 3}
+setitem 1 :a (item 1 :a) + 10
+output :a
+end
+show f
+show f
+to g
+output {1 2}
+end
+make "g1 g
+setitem 1 :g1 99
+show g
+show :g1
+make "l [{1 2} {3 4}]
+setitem 1 first :l 77
+show :l
+show run [{5 6}]
+make "src [make "z {7 8}]
+run :src
+setitem 1 :z 55
+run :src
+show :z
+run :src
+show :z
+make "q {1 2}
+make "q2 :q
+setitem 1 :q 9
+show :q2
+show array? {1}
+to h
+local "x
+make "x [{1 2}]
+setitem 1 first :x 8
+output :x
+end
+show h
+show h
+show text "f
+show f

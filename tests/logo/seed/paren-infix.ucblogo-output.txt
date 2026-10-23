@@ -1,0 +1,59 @@
+Welcome to Berkeley Logo version 6.2.5
+try defined
+three defined
+two defined
+show (three - 1)  =>  2
+
+show (three-1)  =>  2
+
+show (three + 1) * 2  =>  8
+
+show (three * 2) + 1  =>  7
+
+show (three) - 1  =>  2
+
+show (three 5)  =>  8 too many inputs to three try [catch "error [make "r runresult :code]]
+show (two 5 - 1)  =>  4
+
+show (two 5) - 1  =>  4
+
+show (sum 1 2 - 3)  =>  0
+
+show (sum 1 2 3)  =>  6
+
+show (repcount - 1)  =>  -2
+
+repeat 2 [show (repcount - 1)]  =>  0
+1
+
+repeat 2 [show (# - 1)]  =>  0
+1
+
+repeat 2 [show (# + 1) * 2]  =>  4
+6
+
+show map [(? - 1)] [5 6]  =>  [4 5]
+
+show map [(? * 2) + 1] [5 6]  =>  [11 13]
+
+show (? 1)  =>  4 ? doesn't like 1 as input try [catch "error [make "r runresult :code]]
+show (first [1 2] - 1)  =>  7 - doesn't like [1 2] as input try [catch "error [make "r runresult :code]]
+show (count [1 2] + 1)  =>  7 + doesn't like [1 2] as input try [catch "error [make "r runresult :code]]
+show (thing "x - 1)  =>  7 - doesn't like x as input try [catch "error [make "r runresult :code]]
+show (-1)  =>  -1
+
+show (- 1)  =>  -1
+
+show (three = 3)  =>  true
+
+show (three < 4)  =>  true
+
+show (three / 2)  =>  1.5
+
+show (list 1 2 = 3)  =>  [1 false]
+
+show (- three)  =>  -3
+
+
+Thank you for using Logo.
+Have a nice day.

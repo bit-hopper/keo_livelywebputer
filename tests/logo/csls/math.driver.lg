@@ -1,0 +1,26 @@
+to try :code
+type :code type "|  =>  |
+make "r "NONE
+catch "error [make "r runresult :code]
+make "e error
+if not emptyp :e [print :e stop]
+print :r
+end
+print "=====DRIVER=====
+cub.reporter
+foote.family
+try [show combs [a b c d] 2]
+try [show combs [a b c] 0]
+try [show fact 10]
+try [show perms 7 3]
+try [show choose 10 4]
+try [show choose 6 3]
+try [show expand [2 a b]]
+try [show twoto 10]
+try [socks [3 brown 2 blue]]
+try [show lock 3]
+try [show simplex 4]
+try [show f 5]
+try [show simp 5]
+try [show t 3 4]
+try [show t 4 4]
