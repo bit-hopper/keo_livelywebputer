@@ -48,7 +48,7 @@ export class Interpreter {
     lists.install(P);
     control.install(P);
     workspace.install(P);
-    for (const name of LIBRARY_PROCEDURES.split(/s+/)) { const rec = this.procs.get(name); if (rec) rec.library = true; }
+    for (const name of LIBRARY_PROCEDURES.split(/\s+/)) { const rec = this.procs.get(name); if (rec) rec.library = true; }
     this._initVars();
     if (opts.prelude) this.loadLibrary(opts.prelude);
   }
@@ -122,16 +122,20 @@ export class Interpreter {
   // an "already defined" error (LOGO.md decision 15, ;# strict).
   installProc(proc, opts = {}) {
     const existing = this.procs.get(proc.key);
+    // A library procedure (native or from the prelude) is the language's, not the program's: a program replacing it is
+    // defining a new procedure, so it reports 'defined' (as the reference does for csls's own `quoted` and `remove`) and
+    // is never an "already defined" error. Only a procedure some program defined counts as user-defined.
+    const userDefined = existing !== undefined && !isPrimRecord(existing) && !existing.library;
     if (existing !== undefined) {
       const isPrim = isPrimRecord(existing);
       if (isPrim && !this.redefp()) throw err.isPrimitive(proc.name);
-      if (!isPrim && opts.redefine === false) throw err.alreadyDefined(proc.name);
+      if (userDefined && opts.redefine === false) throw err.alreadyDefined(proc.name);
     }
     if (opts.library) proc.library = true;
     if (opts.owner !== undefined) proc.owner = opts.owner;
     this.procs.set(proc.key, proc);
     this.epoch++;
-    return existing !== undefined && !isPrimRecord(existing) ? 'redefined' : 'defined';
+    return userDefined ? 'redefined' : 'defined';
   }
 
   copyProc(newName, old) {

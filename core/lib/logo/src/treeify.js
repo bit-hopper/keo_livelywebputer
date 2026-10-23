@@ -174,7 +174,13 @@ export function treeify(tokens, arityOf) {
     if (t === undefined) return errNode(new LogoError(10, "too many ('s"));
     const isName = (typeof t === 'string' && t !== '(' && t !== ')' && !INFIX.has(t) &&
                     t.charCodeAt(0) !== 34 && t.charCodeAt(0) !== 58 && parseNumber(t) === null) || t instanceof QWord;
-    if (isName) {
+    // `(name <infix operator> ...)` is plain grouping, not the explicit-inputs call form: `(three - 1)`, `(repcount - 1)`,
+    // `(# + 1)`, `(three = 3)` are expressions whose first operand is a call with its default inputs (the reference reads
+    // them so; csls `math` writes `(#-1)` in a template). The call form only starts a group when what follows the name
+    // is not an operator. A unary minus is not an operator here: runparse has already turned `-b` into `0 -- b`.
+    const nx = tokens[p + 1];
+    const infixNext = typeof nx === 'string' && INFIX.has(nx);
+    if (isName && !infixNext) {
       const name = t instanceof QWord ? t.text : t;
       p++;
       const node = callNode(name, []);

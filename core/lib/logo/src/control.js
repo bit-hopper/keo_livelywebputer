@@ -65,7 +65,128 @@ function evalNumber(m, x, who, k) {
   m.runList(x, VALUE, who, null, who);
 }
 
+// ---- BACKQUOTE ---------------------------------------------------------------------------------------------------------
+// `list outputs a copy of its input in which each comma marker has been replaced by the value of the instruction list
+// that follows it (manual, "`"; behaviour below checked against the 6.2.5 reference, tests/logo/seed/backquote.lg):
+//
+//   `[a ,[1+2] b]        -> [a 3 b]          the word "," and the list after it, or one word ",:x" / ",x" ("," plus text)
+//   `[a ,@[bf [p q]] b]  -> [a q b]          ",@" splices the members of a list value in place
+//   `[a ",:w b]          -> [a "hello b]     "," or ":" glued to the comma: prefix + the value, as one word
+//   `[a `[b ,[1+2] ,,[foo]]]                 a nested backquote raises the depth; a comma at depth > 0 stays a comma and
+//                                            only lowers the depth of what follows it, so ",[1+2]" survives untouched
+//                                            while ",,[foo]" becomes ", [value-of-foo]"
+//
+// It is done in three passes so that the instructions can run as machine frames (STOP, THROW, deep recursion and the Stop
+// button must keep working through them, LOGO.md 5.3): bqPlan walks the input and records, in source order, every
+// instruction to run; the op runs them one after another; bqBuild assembles the result. The plan is a tree of BqList nodes
+// (a sublist to rebuild), BqEval nodes (an instruction to run and where its value goes) and raw members (kept as they are).
+//
+// Deliberate differences from the reference, which implements this in Logo and so leaks its internals into messages and
+// misbehaves on odd input: an empty instruction list (`,[]`, `,@[]`) is an error in both, but ours is the ordinary
+// "didn't output" one rather than "Macro returned [] instead of a list"; a backquote followed by a word (not a list) has
+// no meaning and the word is left as it is (the reference emits garbage); arrays are ordinary members (the reference fails
+// on them). The probe lines that hit these are left out of tests/logo/seed/backquote.lg.
+class BqList { constructor(parts) { this.parts = parts; } }
+class BqEval { constructor(operand, splice, prefix) { this.operand = operand; this.splice = splice; this.prefix = prefix; this.value = undefined; } }
+
+// Reads a member as an unquote marker. Returns {prefix, splice, rest} or null. `prefix` is '' for a word that starts with the
+// comma, or the glued '"' / ':' for `",:x` and `:,x`; `rest` is the text after "," or ",@" ('' when the instruction list is
+// the NEXT member). Only a plain string can be a marker: a QWord (typed with bars) is always just a word, and so is a number.
+function bqMarker(x) {
+  if (typeof x !== 'string') return null;
+  const mt = /^(["]|:)?,(@?)([\s\S]*)$/.exec(x);
+  return mt === null ? null : { prefix: mt[1] || '', splice: mt[2] === '@', rest: mt[3] };
+}
+
+// The members of the datum being quoted: a list's members, or for a word its characters (the reference accepts
+// `` ` "abc `` and answers [a b c]). Anything else is a bad input. Call it once, on the op's input; bqPlan reads the
+// sublists itself with listToArray.
+function bqMembers(x) {
+  if (isList(x)) return listToArray(x);
+  if (isWord(x)) return Array.from(wordText(x));
+  throw err.badType('`', showForm(x));
+}
+
+// Pass 1. Walks `members` at quasi-quotation `depth` (0 = a comma here runs its instruction list) and returns the plan
+// parts, pushing every BqEval onto `evals` in the order they must run (document order, which is also the reference's
+// left-to-right order). Call it for the whole input at depth 0; it calls itself for sublists and for the operand of a
+// comma that is being kept. Does not run any Logo code.
+function bqPlan(members, depth, evals) {
+  const parts = [];
+  for (let i = 0; i < members.length; i++) {
+    const x = members[i];
+    // A nested backquote followed by a list: the list is one level deeper. Followed by anything else it means nothing.
+    if (x === '`' && i + 1 < members.length && isList(members[i + 1])) {
+      parts.push(x);
+      parts.push(new BqList(bqPlan(listToArray(members[++i]), depth + 1, evals)));
+      continue;
+    }
+    const mk = bqMarker(x);
+    // A glued prefix (`",:x`) is only supported at depth 0; deeper it is an ordinary word.
+    if (mk !== null && !(depth > 0 && mk.prefix !== '')) {
+      let operand;
+      if (mk.rest === '') {
+        // "," or ",@" alone: the instruction list is the next member (a missing one is the reference's `first of []`).
+        if (i + 1 >= members.length) throw err.badType('`', showForm(NIL));
+        operand = members[++i];
+      } else if (/^,+@?$/.test(mk.rest)) {
+        // ",," + list: the rest is itself a marker that wants the next member, so the operand is [rest nextlist].
+        if (i + 1 >= members.length) throw err.badType('`', showForm(NIL));
+        operand = listFromArray([mk.rest, members[++i]]);
+      } else {
+        operand = listFromArray([mk.rest]);        // ",:x": one word, run as an instruction
+      }
+      if (depth === 0) {
+        const ev = new BqEval(operand, mk.splice, mk.prefix);
+        evals.push(ev);
+        parts.push(ev);
+      } else {
+        // Kept: the comma word again, then the operand rebuilt one level shallower.
+        parts.push(mk.splice ? ',@' : ',');
+        parts.push(isList(operand) ? new BqList(bqPlan(listToArray(operand), depth - 1, evals)) : operand);
+      }
+      continue;
+    }
+    parts.push(isList(x) ? new BqList(bqPlan(listToArray(x), depth, evals)) : x);
+  }
+  return parts;
+}
+
+// Pass 3. Turns a plan (after every BqEval has its value) into the output members. Call only once all evals are done.
+function bqBuild(parts) {
+  const out = [];
+  for (const p of parts) {
+    if (p instanceof BqList) { out.push(listFromArray(bqBuild(p.parts))); continue; }
+    if (!(p instanceof BqEval)) { out.push(p); continue; }
+    const v = p.value;
+    const items = p.splice ? (isList(v) ? listToArray(v) : [v]) : [v];
+    if (p.prefix === '') { for (const it of items) out.push(it); continue; }
+    // Glued prefix: it joins the first item (which must be a word), the rest of a splice follow as separate members.
+    if (items.length === 0) { out.push(p.prefix); continue; }
+    if (!isWord(items[0])) throw err.badType('word', showForm(items[0]));
+    out.push(p.prefix + wordText(items[0]));
+    for (let k = 1; k < items.length; k++) out.push(items[k]);
+  }
+  return out;
+}
+
 export function install(P) {
+  // ---- backquote ---------------------------------------------------------------------------------------------------
+  P.op('`', 1, (m, a, want, blame) => {
+    const evals = [];
+    const parts = bqPlan(bqMembers(a[0]), 0, evals);
+    if (evals.length === 0) return listFromArray(bqBuild(parts));
+    let k = 0;
+    const step = (mm) => {
+      if (k >= evals.length) { mm.complete(listFromArray(bqBuild(parts)), want, blame, '`'); return; }
+      const ev = evals[k++];
+      mm.stack.push(new CBFrame((m2, v) => { ev.value = v; step(m2); }));
+      mm.runList(ev.operand, VALUE, '`', null, '`');
+    };
+    step(m);
+    return PENDING;
+  });
+
   // ---- running lists -----------------------------------------------------------------------------------------------
   P.op('run', 1, (m, a, want, blame, tail) => { m.runList(a[0], want, blame, tail, 'run'); return PENDING; });
 
@@ -184,9 +305,10 @@ export function install(P) {
   // ? and (? n): the template's data. ?REST and (?REST n): the data to the right of the current item.
   P.fn('?', 0, (a, m) => {
     const s = m.slots;
-    if (s === null) throw err.noValue('?');
     const k = a.length ? int(a[0], '?') : 1;
-    if (k < 1 || k > s.args.length) throw err.badValue('?', showForm(a[0]));
+    // Outside any template there is no slot to read: the reference says it does not like the slot number, `?` or `(? 2)`.
+    if (s === null) throw err.badValue('?', showForm(k));
+    if (k < 1 || k > s.args.length) throw err.badValue('?', showForm(k));
     return s.args[k - 1];
   }, { min: 0, max: 1 });
   P.fn('?rest', 0, (a, m) => {

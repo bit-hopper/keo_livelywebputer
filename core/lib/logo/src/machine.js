@@ -32,6 +32,17 @@ import { N } from './treeify.js';
 import { LogoError, CODE, err } from './errors.js';
 import { showForm } from './printer.js';
 
+// The value a CONST node delivers. A word or a list is immutable data, so the node's own value is handed out. An ARRAY
+// literal in code (`make "a {0 0 0}`) is different: arrays are mutated in place (SETITEM), and the reference makes a new
+// array every time such a literal is evaluated (a procedure that fills `{0 0 0}` gives a zeroed array on every call;
+// tests/logo/seed/array-literal.lg, csls `poker`). Handing out the tree's own array would mutate the procedure's source
+// and carry state from one call to the next. An array that is DATA (a member of a list that is merely passed around, never
+// evaluated) is not a CONST node and stays shared, as in the reference. Call from the two places that read a CONST.
+function constValue(v) {
+  if (!(v instanceof LArray)) return v;
+  return new LArray(v.items.map(constValue), v.origin);
+}
+
 // Evaluation requests.
 export const NO = 0, VALUE = 1, EITHER = 2;
 // Machine modes.
@@ -83,7 +94,7 @@ class ArgFrame {
     const args = this.node.args;
     while (this.i < args.length) {
       const a = args[this.i];
-      if (a.t === N.CONST) { this.vals.push(a.v); this.i++; }
+      if (a.t === N.CONST) { this.vals.push(constValue(a.v)); this.i++; }
       else if (a.t === N.VAR) { this.vals.push(m.lookupVar(a.key, a.name)); this.i++; }
       else {
         this.i++;
@@ -358,7 +369,7 @@ export class Machine {
   evalNode() {
     const n = this.node;
     switch (n.t) {
-      case N.CONST: this.deliver(n.v); return;
+      case N.CONST: this.deliver(constValue(n.v)); return;
       case N.VAR: this.deliver(this.lookupVar(n.key, n.name)); return;
       case N.CALL: this.beginCall(n); return;
       default: throw n.error;
@@ -383,7 +394,15 @@ export class Machine {
     if (n.err !== null) throw n.err;
     if (n.short) throw err.tooFew(n.name);
     const proc = this.interp.procs.get(n.key);
-    if (proc === undefined) throw err.unknownProc(n.name);
+    if (proc === undefined) {
+      // The reference evaluates a bare word that is not a procedure but names a variable: after `make "yy 6`, `show yy`
+      // prints 6 (recorded in tests/logo/seed/bare-variable.lg). A procedure of the same name still wins (checked first
+      // above), and a name that is neither stays the usual "I don't know how to". Used as a command it gives the usual
+      // "You don't say what to do with 6" through deliver. Do not extend this to names that take inputs: an unknown name
+      // never has any.
+      if (n.args.length === 0 && this.hasVar(n.key)) { this.deliver(this.lookupVar(n.key, n.name)); return; }
+      throw err.unknownProc(n.name);
+    }
     if (proc.special !== undefined && proc.special !== null) { this.beginSpecial(n, proc); return; }
     if (n.args.length === 0) { this.apply(proc, n, [], this.rWant, this.rBlame, this.rTail); return; }
     new ArgFrame(n, proc, this.rWant, this.rBlame, this.rTail).next(this);
@@ -587,7 +606,11 @@ export class Machine {
     if (isWord(tpl)) {
       const key = nameKey(wordText(tpl));
       const proc = this.interp.procs.get(key);
-      if (proc === undefined) throw err.unknownProc(wordText(tpl));
+      if (proc === undefined) {
+        // Same fallback as beginCall: a bare name that is a variable evaluates to it (`apply "yy []`), taking no inputs.
+        if (args.length === 0 && this.hasVar(key)) { this.complete(this.lookupVar(key, wordText(tpl)), want, blame, who); return; }
+        throw err.unknownProc(wordText(tpl));
+      }
       if (args.length < proc.min) throw err.tooFew(proc.name);
       if (proc.max >= 0 && args.length > proc.max) throw err.tooMany(proc.name);
       this.apply(proc, null, args, want, blame, null);
