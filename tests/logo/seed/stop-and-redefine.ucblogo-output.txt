@@ -1,0 +1,36 @@
+Welcome to Berkeley Logo version 6.2.5
+--- stop in repeat
+r1 defined
+12after
+
+r2 defined
+123after
+
+r3 defined
+after
+r4 defined
+13after
+
+r5 defined
+12
+--- redefinition
+z defined
+z is already defined
+2
+I don't know how  to end
+1
+z is already defined
+3
+I don't know how  to end
+1
+z defined
+4
+--- primitives
+sum is already defined
+mine
+I don't know how  to end
+You don't say what to do with 3
+3
+--- unit tests
+Thank you for using Logo.
+Have a nice day.

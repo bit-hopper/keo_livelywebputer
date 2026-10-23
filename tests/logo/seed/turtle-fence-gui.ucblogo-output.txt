@@ -1,0 +1,8 @@
+0 259
+3 turtle out of bounds [] []
+0 -260
+436 0
+-436 0
+0 -40
+wrap from 0 fd 600
+0 80

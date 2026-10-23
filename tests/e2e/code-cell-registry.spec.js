@@ -4,6 +4,8 @@ const hljs = require("highlight.js/lib/core");
 hljs.registerLanguage("python", require("highlight.js/lib/languages/python"));
 hljs.registerLanguage("scheme", require("highlight.js/lib/languages/scheme"));
 hljs.registerLanguage("sml", require("highlight.js/lib/languages/sml"));
+hljs.registerLanguage("logo", require("../../core/lib/logo/hljs-logo"));
+hljs.registerLanguage("tpn", require("../../core/lib/logo/hljs-tpn"));
 const { CODE_CELL_LANGUAGES, createCodeCellRenderer } = require("../../core/servers/identity/CodeCellRender");
 
 // The code-cell language registry (PostCardUtils.js) and the places that read
@@ -48,17 +50,25 @@ test.describe("code-cell language registry (client)", () => {
         python: pick(U.codeCellLanguage("python")),
         scheme: pick(U.codeCellLanguage("scheme")),
         sml: pick(U.codeCellLanguage("sml")),
+        logo: Object.assign(pick(U.codeCellLanguage("logo")), { graphics: U.codeCellLanguage("logo").graphics, controller: U.codeCellLanguage("logo").controller }),
+        tpn: Object.assign(pick(U.codeCellLanguage("tpn")), { graphics: U.codeCellLanguage("tpn").graphics, controller: U.codeCellLanguage("tpn").controller }),
+        noGraphics: ["python", "scheme", "sml"].map((id) => !!U.codeCellLanguage(id).graphics),
         cobol: pick(U.codeCellLanguage("cobol")),
         // Names that exist on every object must not resolve to a registry row.
         proto: ["constructor", "__proto__", "toString", "hasOwnProperty"].map((v) => U.codeCellLanguage(v).known),
         long: U.codeCellLanguage("x".repeat(100)).label.length,
       };
     });
-    expect(r.list).toEqual(["python", "scheme", "sml"]);
+    expect(r.list).toEqual(["python", "scheme", "sml", "logo", "tpn"]);
     expect(r.dflt).toEqual(["python", "python", "python"]);
     expect(r.python).toEqual({ id: "python", known: true, label: "🐍 Python", output: "python", hasReset: false });
     expect(r.scheme).toEqual({ id: "scheme", known: true, label: "λ Scheme", output: "transcript", hasReset: true });
     expect(r.sml).toEqual({ id: "sml", known: true, label: "🐪 ML", output: "transcript", hasReset: true });
+    // Two rows, one controller (one interpreter per page serves both); only they carry a turtle canvas.
+    const logoCtl = "lively.identity.LogoWorker";
+    expect(r.logo).toEqual({ id: "logo", known: true, label: "🐢 Logo", output: "transcript", hasReset: true, graphics: true, controller: logoCtl });
+    expect(r.tpn).toEqual({ id: "tpn", known: true, label: "🐢 TPN", output: "transcript", hasReset: true, graphics: true, controller: logoCtl });
+    expect(r.noGraphics).toEqual([false, false, false]);
     expect(r.cobol).toEqual({ id: "cobol", known: false, label: "cobol", output: "none", hasReset: false });
     expect(r.proto).toEqual([false, false, false, false]);
     expect(r.long).toBe(41);
@@ -70,6 +80,8 @@ test.describe("code-cell language registry (client)", () => {
     expect(css).toContain('.lively-code-cell-node[data-language="python"] .lively-code-cell-badge{background:#fff4cc;color:#7a5600;border-color:#f3dc8a;}');
     expect(css).toContain('.lively-code-cell-node[data-language="scheme"] .lively-code-cell-badge{background:#ede7ff;color:#5233b5;border-color:#d6c9fb;}');
     expect(css).toContain('.lively-code-cell-node[data-language="sml"] .lively-code-cell-badge{background:#fff0e0;color:#8a4b00;border-color:#f5d3a8;}');
+    expect(css).toContain('.lively-code-cell-node[data-language="logo"] .lively-code-cell-badge{background:#e3f6e8;color:#1d6b36;border-color:#b9e4c5;}');
+    expect(css).toContain('.lively-code-cell-node[data-language="tpn"] .lively-code-cell-badge{background:#e0f4f6;color:#0e6573;border-color:#b3dfe5;}');
   });
 
   test("an unknown language never runs: no confirm dialog, no worker, Stop/Reset do nothing", async ({ page }) => {
@@ -215,6 +227,8 @@ test.describe("unknown language in the wiki editor", () => {
     await expect(page.getByText("Python code cell", { exact: true })).toBeVisible();
     await expect(page.getByText("Scheme code cell", { exact: true })).toBeVisible();
     await expect(page.getByText("ML code cell", { exact: true })).toBeVisible();
+    await expect(page.getByText("Logo code cell", { exact: true })).toBeVisible();
+    await expect(page.getByText("Turtle Procedure Notation cell", { exact: true })).toBeVisible();
     await page.getByText("Scheme code cell", { exact: true }).click();
     const s = await cellState(page);
     expect(s.doc).toEqual([{ lang: "scheme", src: "" }]);
@@ -254,6 +268,19 @@ test.describe("server-side render", () => {
     expect(ml).toContain('<div class="lively-code-cell-help">');
     expect(ml).toContain("(*# style: book|sml *)");
     expect(ml).toContain("-&gt; =&gt; :&gt;");
+    const lg = render({ attrs: { language: "logo", source: "to sq :n\n  repeat 4 [fd :n rt 90]\nend ; done" } });
+    expect(lg).toContain('data-language="logo"');
+    expect(lg).toContain("🐢 Logo");
+    expect(lg).toContain("lively-code-cell-reset-btn");
+    expect(lg).toContain("hljs-keyword");
+    expect(lg).toContain("hljs-variable");
+    expect(lg).toContain("hljs-comment");
+    expect(lg).toContain('<div class="lively-code-cell-help">');
+    const tp = render({ attrs: { language: "tpn", source: "TO POLY SIDE\n  X <- 2 ^ 3" } });
+    expect(tp).toContain('data-language="tpn"');
+    expect(tp).toContain("🐢 TPN");
+    expect(tp).toContain("hljs-keyword");
+    expect(tp).toContain("&lt;-");
     expect(sc).not.toContain("lively-code-cell-help");
     expect(py).not.toContain("lively-code-cell-help");
     // No language attr: the schema default.

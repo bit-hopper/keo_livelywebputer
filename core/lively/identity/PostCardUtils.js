@@ -76,6 +76,7 @@ module('lively.identity.PostCardUtils')
     //   cooperativeStop  Stop interrupts the run and the environment survives
     //   loadingText      status shown while the runtime loads (transcript languages)
     //   editing          dotted path of an editing helper with attach(textarea), or null
+    //   graphics         true: the output pane may carry a turtle canvas (absent = false)
     //   badge            tint of the language badge
     //   help             optional note shown under the cell (lines separated by newlines), or absent
     var CODE_CELL_LANGUAGES = {
@@ -100,6 +101,25 @@ module('lively.identity.PostCardUtils')
         cooperativeStop: true, loadingText: 'Loading ML…', editing: null,
         help: "Glyphs accepted: → ⇒ ▷ for -> => :>, and α β γ for 'a 'b 'c. A line starting with • is a type box; ⊗ marks a box the book says is rejected.\nPragmas: (*# style: book|sml *)  (*# depth: N *)  (*# verdicts: on|off *)  (*# redundant: error|warning *)",
         badge: { background: '#fff0e0', color: '#8a4b00', border: '#f5d3a8' },
+      },
+      // Logo and TPN (LOGO.md): two rows, one controller, so one interpreter per page serves both and a procedure defined
+      // in a tpn cell can be called from a logo cell. `graphics: true` marks a language whose output pane may carry a
+      // turtle canvas (createSchemeOutput's graphicsHost); no other row sets it.
+      logo: {
+        id: 'logo', known: true, label: '🐢 Logo', hljsId: 'logo', insertLabel: 'Logo code cell',
+        output: 'transcript', graphics: true, controller: 'lively.identity.LogoWorker',
+        confirmBeforeRun: false, hasReset: true, resetTitle: 'Start a fresh Logo workspace for this page',
+        cooperativeStop: true, loadingText: 'Loading Logo…', editing: null,
+        help: "Berkeley Logo. Each line runs like a line typed at the Logo prompt, so an expression with nothing to use its value is an error, as in the books.",
+        badge: { background: '#e3f6e8', color: '#1d6b36', border: '#b9e4c5' },
+      },
+      tpn: {
+        id: 'tpn', known: true, label: '🐢 TPN', hljsId: 'tpn', insertLabel: 'Turtle Procedure Notation cell',
+        output: 'transcript', graphics: true, controller: 'lively.identity.LogoWorker',
+        confirmBeforeRun: false, hasReset: true, resetTitle: 'Start a fresh Logo workspace for this page',
+        cooperativeStop: true, loadingText: 'Loading Logo…', editing: null,
+        help: "Turtle Procedure Notation, the language of the book Turtle Geometry. Typed <- is accepted for the assignment arrow, and ^ is exponentiation.",
+        badge: { background: '#e0f4f6', color: '#0e6573', border: '#b3dfe5' },
       },
     };
 
@@ -241,6 +261,10 @@ module('lively.identity.PostCardUtils')
         '.lively-code-cell-input-row button{cursor:pointer;border:1px solid #d9dde8;border-radius:999px;' +
           'background:#fff;color:#4a5068;font-size:11px;font-weight:600;padding:3px 12px;}',
         '.lively-code-cell-output img{max-width:100%;display:block;margin:4px 0;}',
+        // Turtle canvas (graphics languages, createSchemeOutput's graphicsHost). Square, Berkeley's black paper; the pane
+        // scales it, so the width is a ceiling, not a size.
+        '.lively-code-cell-graphics{margin:0 0 8px 0;}',
+        '.lively-code-cell-canvas{display:block;width:100%;max-width:480px;aspect-ratio:1/1;background:#000;border-radius:8px;}',
       ].join('');
     }
 
@@ -1638,9 +1662,13 @@ module('lively.identity.PostCardUtils')
     //   append(segments)   segments from a worker: stdout | value | warning | error | status (an error may carry
     //                      errorClass, shown as a label; a status may carry tone: ok | note | bad)
     //   showInput(submit)  inline one-line input; submit(text|null) answers the cell's read
+    //   graphicsHost()     for a graphics language (registry `graphics: true`): the element holding the turtle canvas,
+    //                      created on the first call and placed above the transcript, or the existing one on later calls.
+    //                      A pane that never calls this renders exactly as before (Scheme and ML cells never do), so do
+    //                      not call it speculatively. Phase 0 only creates the empty <canvas>; drawing is Phase 2.
     //   finish(state, err) end of run; state: done | error | stopped | exit
     function createSchemeOutput(outputEl) {
-      var lastPre = null, lastKind = null, anyContent = false, inputRow = null;
+      var lastPre = null, lastKind = null, anyContent = false, inputRow = null, graphicsEl = null;
 
       function addPre(kind, cls, text) {
         var pre = document.createElement('pre');
@@ -1660,7 +1688,20 @@ module('lively.identity.PostCardUtils')
         start: function () {
           outputEl.innerHTML = '';
           outputEl.classList.remove('lively-code-cell-output-empty');
-          lastPre = null; lastKind = null; anyContent = false; inputRow = null;
+          lastPre = null; lastKind = null; anyContent = false; inputRow = null; graphicsEl = null;
+        },
+        graphicsHost: function () {
+          if (graphicsEl && graphicsEl.parentNode === outputEl) return graphicsEl;
+          graphicsEl = document.createElement('div');
+          graphicsEl.className = 'lively-code-cell-graphics';
+          var canvas = document.createElement('canvas');
+          canvas.className = 'lively-code-cell-canvas';
+          canvas.width = 500; canvas.height = 500;   // the drawing buffer; CSS scales the box (Phase 2 sizes it for the display)
+          graphicsEl.appendChild(canvas);
+          outputEl.insertBefore(graphicsEl, outputEl.firstChild);
+          outputEl.classList.remove('lively-code-cell-output-empty');
+          anyContent = true;   // a picture is output: finish() must not replace the pane with "Ran with no output."
+          return graphicsEl;
         },
         append: function (segments) {
           (segments || []).forEach(function (seg) {

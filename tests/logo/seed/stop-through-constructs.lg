@@ -1,0 +1,136 @@
+to p_repeat
+repeat 3 [type "x stop]
+print "after
+end
+to p_forever
+forever [type "x stop]
+print "after
+end
+to p_if
+if "true [type "x stop]
+print "after
+end
+to p_ifelse
+ifelse "true [type "x stop] [type "n]
+print "after
+end
+to p_run
+run [type "x stop]
+print "after
+end
+to p_catch
+catch "foo [type "x stop]
+print "after
+end
+to p_apply_list
+apply [type "x stop] []
+print "after
+end
+to p_apply_lambda
+apply [[] type "x stop] []
+print "after
+end
+to p_foreach
+foreach [1 2] [type "x stop]
+print "after
+end
+to p_for
+for [i 1 2] [type "x stop]
+print "after
+end
+to p_while
+while ["true] [type "x stop]
+print "after
+end
+to p_until
+until ["false] [type "x stop]
+print "after
+end
+to p_do_while
+do.while [type "x stop] ["false]
+print "after
+end
+to p_map
+ignore map [type "x stop] [1 2]
+print "after
+end
+to p_filter
+ignore filter [type "x stop] [1 2]
+print "after
+end
+to p_repeat_nested_if
+repeat 3 [if "true [type "x stop]]
+print "after
+end
+to p_cascade
+ignore cascade 2 [type "x stop] 0
+print "after
+end
+to p_test_iftrue
+test "true iftrue [type "x stop]
+print "after
+end
+type "repeat: p_repeat
+print []
+type "forever: p_forever
+print []
+type "if: p_if
+print []
+type "ifelse: p_ifelse
+print []
+type "run: p_run
+print []
+type "catch: p_catch
+print []
+type "apply_list: p_apply_list
+print []
+type "apply_lambda: p_apply_lambda
+print []
+type "foreach: p_foreach
+print []
+type "for: p_for
+print []
+type "while: p_while
+print []
+type "until: p_until
+print []
+type "do.while: p_do_while
+print []
+type "map: p_map
+print []
+type "filter: p_filter
+print []
+type "repeat_nested_if: p_repeat_nested_if
+print []
+type "cascade: p_cascade
+print []
+type "test_iftrue: p_test_iftrue
+print []
+
+print [--- output through constructs]
+to o_repeat
+repeat 3 [output 5]
+print "after
+end
+print o_repeat
+to o_if
+if "true [output 5]
+print "after
+end
+print o_if
+to o_run
+run [output 5]
+print "after
+end
+print o_run
+to o_foreach
+foreach [1 2] [output ?]
+print "after
+end
+print o_foreach
+to o_for
+for [i 1 2] [output :i]
+print "after
+end
+print o_for
+bye

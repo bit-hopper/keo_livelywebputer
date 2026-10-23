@@ -1,0 +1,27 @@
+openwrite "/tmp/g3.out
+setwrite "/tmp/g3.out
+fence
+home
+catch "error [fd 2000]
+print pos
+print error
+home
+catch "error [bk 2000]
+print pos
+home
+catch "error [rt 90 fd 2000]
+print pos
+home
+catch "error [lt 90 fd 2000]
+print pos
+home
+wrap
+fd 1000
+print pos
+home
+print [wrap from 0 fd 600]
+fd 600
+print pos
+setwrite []
+close "/tmp/g3.out
+bye

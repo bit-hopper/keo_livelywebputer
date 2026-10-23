@@ -156,3 +156,10 @@ playwright-report/
 blob-report/
 playwright/.cache/
 testmedia/
+
+# GPL reference programs and tests, fetched at test time from a pinned upstream commit,
+# are never committed
+tests/logo/reference/
+
+# Recorded reference output for our own probes (tests/logo/seed) is committed despite the *.txt rule
+!tests/logo/seed/*.txt

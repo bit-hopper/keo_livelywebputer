@@ -1,0 +1,161 @@
+Welcome to Berkeley Logo version 6.2.5
+--- evaluation order
+a defined
+b defined
+a
+b
+1 2
+a
+b
+3
+a
+b
+1 2
+--- test scope
+t2 defined
+t1 defined
+yes
+t3 defined
+outer-yes
+--- error shapes
+[4 / doesn't like 0 as input [] []]
+[13 I don't know how  to foo [] []]
+[35 my msg [] []]
+[11 nosuch has no value [] []]
+ee defined
+[6 not enough inputs to fd ee [catch "error [fd]]]
+[]
+--- throw
+1
+3
+Can't find catch tag for nosuchtag
+1
+4
+catch didn't output to print
+--- optional/rest
+f defined
+1
+5
+
+1
+2
+
+1
+2
+3 4
+g defined
+not enough inputs to g
+1
+You don't say what to do with 3
+too many inputs to g
+--- scope
+m defined
+5
+lv defined
+q has no value
+f1 defined
+f2 defined
+5
+x has no value
+f3 defined
+7
+--- uncaught errors
+I don't know how  to foo
+You don't say what to do with 3
+You don't say what to do with 7
+You don't say what to do with abc
+You don't say what to do with [a b]
+zzz has no value
+bad defined
+1
+I don't know how  to foo  in bad
+[foo]
+bad2 defined
+/ doesn't like 0 as input  in bad2
+[print :n / 0]
+bad3 defined
+not enough inputs to fd  in bad3
+[fd]
+not enough inputs to print
+unexpected ')'
+unexpected ']'
+--- define messages
+bad is already defined
+9
+I don't know how  to end
+print is already defined
+I don't know how  to end
+inner defined
+1
+I don't know how  to foo  in bad
+[foo]
+--- templates
+8
+8
+Can only use output inside a procedure
+You don't say what to do with 8  in apply
+[:x+3]
+[4 9 16 25]
+[ada beb cfc]
+[ad be cf]
+[3 4]
+6
+9
+[1 2 3 4 5]
+120
+abc
+123
+135
+531
+3
+[a1 a2 b1 b2]
+[1 2 3 4 5]
+[5 4 3 2 1]
+[b c]
+[3 2 1]
+a
+g1
+10
+--- stop/output via run
+s1 defined
+12after
+s2 defined
+s3 defined
+13after3
+s4 defined
+1
+
+[3]
+--- procedure text
+[[] [repeat 5 [if repcount = 3 [stop] type repcount]] [print "after]]
+[to s1 repeat 5 [if repcount = 3 [stop] type repcount] print "after end]
+[1 1 -1]
+[0 2 -1]
+[0 1 -1]
+true
+true
+false
+true
+--- misc
+true
+Unix-Nographics
+6.2
+I don't know how  to redefp
+redefp has no value
+[a b c]
+[print 3 + 4]
+[print 3+4]
+3
+3
+3
+Hello
+Hello World
+Hello
+Hello
+true
+[1 2 3.50 [4.0]]
+1
+1.0
+not enough inputs to wait
+Thank you for using Logo.
+Have a nice day.

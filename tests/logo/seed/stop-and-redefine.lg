@@ -1,0 +1,56 @@
+print [--- stop in repeat]
+to r1
+repeat 5 [if repcount = 3 [stop] type repcount]
+print "after
+end
+r1
+print []
+to r2
+repeat 5 [type repcount if repcount = 3 [stop]]
+print "after
+end
+r2
+print []
+to r3
+repeat 5 [if repcount = 3 [stop]]
+print "after
+end
+r3
+to r4
+foreach [1 2 3] [if ? = 2 [stop] type ?]
+print "after
+end
+r4
+print []
+to r5
+for [i 1 5] [if :i = 3 [stop] type :i]
+print "after
+end
+r5
+print []
+print [--- redefinition]
+to z
+print 1
+end
+to z
+print 2
+end
+z
+make "redefp "true
+to z
+print 3
+end
+z
+erase "z
+to z
+print 4
+end
+z
+print [--- primitives]
+to sum :a :b
+print "mine
+end
+sum 1 2
+print sum 1 2
+print [--- unit tests]
+bye

@@ -19,6 +19,14 @@ var CODE_CELL_LANGUAGES = {
     id: 'sml', label: '🐪 ML', hljsId: 'sml', hasReset: true,
     help: "Glyphs accepted: → ⇒ ▷ for -> => :>, and α β γ for 'a 'b 'c. A line starting with • is a type box; ⊗ marks a box the book says is rejected.\nPragmas: (*# style: book|sml *)  (*# depth: N *)  (*# verdicts: on|off *)  (*# redundant: error|warning *)",
   },
+  logo: {
+    id: 'logo', label: '🐢 Logo', hljsId: 'logo', hasReset: true,
+    help: "Berkeley Logo. Each line runs like a line typed at the Logo prompt, so an expression with nothing to use its value is an error, as in the books.",
+  },
+  tpn: {
+    id: 'tpn', label: '🐢 TPN', hljsId: 'tpn', hasReset: true,
+    help: "Turtle Procedure Notation, the language of the book Turtle Geometry. Typed <- is accepted for the assignment arrow, and ^ is exponentiation.",
+  },
 };
 
 var UNKNOWN_NOTE = 'This page uses a runtime this build doesn\'t have, so this cell can\'t run.';

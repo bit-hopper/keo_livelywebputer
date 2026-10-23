@@ -1,0 +1,56 @@
+openwrite "/tmp/g1.out
+setwrite "/tmp/g1.out
+print [--- gui build turtle]
+print heading
+print pos
+fd 100
+print pos
+rt 90
+print heading
+print xcor
+setheading 450
+print heading
+setheading -90
+print heading
+print towards [1 1]
+fd 50
+print pos
+home
+print pos
+print heading
+lt 90
+print heading
+print scrunch
+print pencolor
+print background
+print pensize
+print pendownp
+print shownp
+print labelsize
+print palette 4
+setpos [30 40]
+print pos
+print towards [0 0]
+setxy 10 20
+print pos
+fd 0.5
+print pos
+print round xcor
+setheading 45
+fd 100
+print pos
+print [window mode]
+window
+fd 1000
+print pos
+wrap
+home
+fd 150
+print pos
+fence
+home
+fd 150
+print pos
+setwrite []
+close "/tmp/g1.out
+bye

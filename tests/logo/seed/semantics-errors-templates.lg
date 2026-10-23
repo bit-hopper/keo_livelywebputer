@@ -1,0 +1,205 @@
+print [--- evaluation order]
+to a
+print "a
+output 1
+end
+to b
+print "b
+output 2
+end
+print list a b
+print sum a b
+(print a b)
+print [--- test scope]
+to t2
+test "false
+end
+to t1
+test "true
+t2
+iftrue [print "yes]
+iffalse [print "no]
+end
+t1
+test "true
+to t3
+iftrue [print "outer-yes]
+end
+t3
+print [--- error shapes]
+catch "error [print 1/0]
+show error
+catch "error [foo]
+show error
+catch "error [(throw "error [my msg])]
+show error
+catch "error [print :nosuch]
+show error
+to ee
+catch "error [fd]
+show error
+end
+ee
+show error
+print [--- throw]
+print 1 throw "toplevel print 2
+print 3
+throw "nosuchtag
+catch "foo [print 1 throw "foo print 2]
+print 4
+print (catch "foo [throw "foo 5])
+print [--- optional/rest]
+to f :a [:b 5] [:rest]
+print :a
+print :b
+print :rest
+end
+f 1
+(f 1 2)
+(f 1 2 3 4)
+to g :a :b
+print :a
+end
+g 1
+g 1 2 3
+(g 1 2 3)
+print [--- scope]
+to m
+make "zz 5
+end
+m
+print :zz
+to lv
+local "q
+make "q 1
+end
+lv
+print :q
+to f1
+local "x
+make "x 5
+f2
+end
+to f2
+print :x
+end
+f1
+print :x
+to f3 :x
+f2
+end
+f3 7
+print [--- uncaught errors]
+foo
+3
+3 + 4
+"abc
+[a b]
+print :zzz
+to bad
+print 1
+foo
+print 2
+end
+bad
+to bad2 :n
+print :n / 0
+end
+bad2 3
+to bad3
+fd
+end
+bad3
+print
+)
+]
+print [--- define messages]
+to bad
+print 9
+end
+to print
+end
+to inner
+to x
+end
+bad
+print [--- templates]
+print apply [[x] :x+3] [5]
+print apply [[x] [output :x+3]] [5]
+print apply [[x] output :x+3] [5]
+print apply [[x] [:x+3]] [5]
+show map [? * ?] [2 3 4 5]
+show (map [(word ?1 ?2 ?1)] [a b c] [d e f])
+show (map "word [a b c] [d e f])
+show filter [? > 2] [1 2 3 4]
+show reduce "sum [1 2 3]
+show reduce [?1 - ?2] [10 3 2]
+show cascade 5 [lput # ?] []
+show cascade 5 [# * ?] 1
+foreach [a b c] [type ?] print []
+repeat 3 [type repcount] print []
+for [i 1 5 2] [type :i] print []
+for [i 5 1 -2] [type :i] print []
+show find [? > 2] [1 2 3 4]
+show (crossmap [word ?1 ?2] [a b] [1 2])
+show iseq 1 5
+show iseq 5 1
+show remove "a [a b a c]
+show reverse [1 2 3]
+show pick [a]
+show gensym
+show count (iseq 1 10)
+print [--- stop/output via run]
+to s1
+repeat 5 [if repcount = 3 [stop] type repcount]
+print "after
+end
+s1
+to s2
+run [stop]
+print "notreached
+end
+s2
+to s3
+foreach [1 2 3] [if ? = 2 [stop] type ?]
+print "after3
+end
+s3
+to s4
+print runresult [print 1]
+show runresult [sum 1 2]
+end
+s4
+print [--- procedure text]
+show text "s1
+show fulltext "s1
+show arity "f
+show arity "sum
+show arity "print
+print procedurep "s1
+print primitivep "sum
+print definedp "sum
+print namep "zz
+print [--- misc]
+print caseignoredp
+print :logoplatform
+print :logoversion
+print redefp
+print :redefp
+show parse "|a b c|
+show runparse [print 3+4]
+show runparse "|print 3+4|
+make "Foo 3
+print :foo
+print :FOO
+print thing "foo
+print "Hello
+print [Hello World]
+show "Hello
+show first [Hello World]
+print equalp "Hello "hello
+show (list 1 2.0 "3.50 [4.0])
+show 1.0
+show "1.0
+print wait
+bye

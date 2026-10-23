@@ -1,0 +1,223 @@
+Welcome to Berkeley Logo version 6.2.5
+try defined
+--- numbers
+print 1/3  =>  0.333333333333333
+
+print 2/1  =>  2
+
+print 6/2  =>  3
+
+print 7/2  =>  3.5
+
+print 3.0  =>  3
+
+print 1e10  =>  10000000000
+
+print 2*3.5  =>  7
+
+print 100000000000*100000000000  =>  1e+22
+
+print 2147483647+1  =>  2147483648
+
+print 9007199254740993  =>  9.00719925474099e+15
+
+print int -3.5  =>  -3
+
+print round 2.5  =>  3
+
+print round -2.5  =>  -3
+
+print round 3.5  =>  4
+
+print sqrt 16  =>  4
+
+print sqrt 2  =>  1.4142135623731
+
+print power 2 10  =>  1024
+
+print power 2 0.5  =>  1.4142135623731
+
+print 10/4  =>  2.5
+
+print form 3.14159 8 2  =>      3.14
+
+print 1e100  =>  1e+100
+
+print 0.1+0.2  =>  0.3
+
+print exp 1  =>  2.71828182845905
+
+print 123456789012345678  =>  1.23456789012346e+17
+
+print 3.14e-5  =>  3.14e-05
+
+print 1/0  =>  4 / doesn't like 0 as input try [catch "error [make "r runresult :code]]
+print 0/0  =>  4 / doesn't like 0 as input try [catch "error [make "r runresult :code]]
+print remainder -7 2  =>  -1
+
+print modulo -7 2  =>  1
+
+print quotient 7 2  =>  3.5
+
+print 7 / 2  =>  3.5
+
+print int 7/2  =>  3
+
+--- infix precedence
+print 2+3*4  =>  14
+
+print 2*3+4  =>  10
+
+print 10-3-2  =>  5
+
+print 2-3-4  =>  -5
+
+print 8/4/2  =>  1
+
+print 2*-3  =>  -6
+
+print 1 + - 2  =>  -1
+
+print 3 -4  =>  3
+-4
+print sum 3 -4  =>  -1
+
+print sum 3 - 4  =>  6 not enough inputs to sum try [catch "error [make "r runresult :code]]
+print sum 3-4 5  =>  4
+
+print 3-4  =>  -1
+
+print 1<2  =>  true
+
+print 1+2<4  =>  true
+
+print 1 = 1  =>  true
+
+print "a = "A  =>  true
+
+print equalp "a "A  =>  true
+
+print 3 = 3.0  =>  true
+
+print "3 = 3.0  =>  true
+
+print equalp "abc "ABC  =>  true
+
+print 2*3=6  =>  true
+
+print 1<2=true  =>  13 I don't know how  to true try [catch "error [make "r runresult :code]]
+print -3 + 5  =>  2
+
+print - 3 + 5  =>  6 not enough inputs to print try [catch "error [make "r runresult :code]]
+print 4 * -3 + 5  =>  -7
+
+print 2 - -3  =>  5
+
+print minus 3  =>  -3
+
+print - 3  =>  6 not enough inputs to print try [catch "error [make "r runresult :code]]
+show runparse [a -b]  =>  [a 0 -- b]
+
+show runparse [print 5-2]  =>  [print 5 - 2]
+
+show runparse [a - b]  =>  [a - b]
+
+show runparse [a*-b]  =>  [a * - b]
+
+--- words
+print word 1 2  =>  12
+
+print first 123  =>  1
+
+print numberp "3  =>  true
+
+print sum "3 4  =>  7
+
+print count 3.50  =>  3
+
+print count "hello  =>  5
+
+print equalp 3 3.0  =>  true
+
+print equalp "3 3.0  =>  true
+
+print word "a 1.0  =>  a1
+
+print (word "a 1.50)  =>  a1.5
+
+print "hello  =>  hello
+
+print "TRUE  =>  TRUE
+
+print wordp 3  =>  true
+
+print listp []  =>  true
+
+print emptyp "  =>  true
+
+print count []  =>  0
+
+print uppercase "abc  =>  ABC
+
+print before? "a "B  =>  true
+
+print memberp "A [a b c]  =>  true
+
+print item 0 [a b c]  =>  4 item doesn't like 0 as input try [catch "error [make "r runresult :code]]
+print item 4 [a b c]  =>  4 item doesn't like 4 as input try [catch "error [make "r runresult :code]]
+print butfirst "a  =>  
+
+print last "  =>  7 last doesn't like || as input try [catch "error [make "r runresult :code]]
+print first []  =>  7 first doesn't like [] as input try [catch "error [make "r runresult :code]]
+--- print/show/type
+print [a [b c] d]  =>  a [b c] d
+
+show [a [b c] d]  =>  [a [b c] d]
+
+print "a b  =>  a b
+
+show "a b  =>  a b
+
+print []  =>  
+
+show []  =>  []
+
+print {1 2 3}  =>  {1 2 3}
+
+show {1 2 3}  =>  {1 2 3}
+
+show {1 2 3}  =>  {1 2 3}
+
+print (list "a "b)  =>  a b
+
+print list "a [b]  =>  a [b]
+
+show list "a [b]  =>  [a [b]]
+
+print sentence [a b] [c [d]]  =>  a b c [d]
+
+show se "a "b  =>  [a b]
+
+print fput "a "b  =>  ab
+
+print lput "a [b]  =>  b a
+
+show array 3  =>  {[] [] []}
+
+show (array 3 0)  =>  {[] [] []}
+
+print (se)  =>  
+
+type [a b]  =>  a b
+type "x  =>  x
+print count {1 2 3}  =>  3
+
+print "a.b  =>  a.b
+
+print "(  =>  (
+
+print "(  =>  (
+
+
+Thank you for using Logo.
+Have a nice day.

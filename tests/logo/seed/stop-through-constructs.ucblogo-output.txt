@@ -1,0 +1,63 @@
+Welcome to Berkeley Logo version 6.2.5
+p_repeat defined
+p_forever defined
+p_if defined
+p_ifelse defined
+p_run defined
+p_catch defined
+p_apply_list defined
+p_apply_lambda defined
+p_foreach defined
+p_for defined
+p_while defined
+p_until defined
+p_do_while defined
+p_map defined
+p_filter defined
+p_repeat_nested_if defined
+p_cascade defined
+p_test_iftrue defined
+repeat:xafter
+
+forever:xafter
+
+if:x
+ifelse:x
+run:x
+catch:xafter
+
+apply_list:xafter
+
+apply_lambda:xafter
+
+foreach:xxafter
+
+for:x
+while:x
+until:x
+do.while:x
+map:xstop didn't output to combine  in map1
+[output combine (apply :map.template firsts :template.lists) (map1 bfs :template.lists :template.number+1)]
+
+filter:xstop didn't output to if  in filter
+[if apply :filter.template (list first :template.list) [op combine (first :template.list) (filter :filter.template bf :template.list :template.number+1)]]
+
+repeat_nested_if:xafter
+
+cascade:xstop didn't output to fput  in cascade.eval
+[op fput (apply first :cascade.templates :template.vars) (cascade.eval bf :cascade.templates)]
+
+test_iftrue:x
+--- output through constructs
+o_repeat defined
+5
+o_if defined
+5
+o_run defined
+5
+o_foreach defined
+1
+o_for defined
+1
+Thank you for using Logo.
+Have a nice day.
