@@ -15,7 +15,7 @@ import { runparse } from './runparse.js';
 import { treeify } from './treeify.js';
 import { LogoError, err } from './errors.js';
 import { showText } from './printer.js';
-import { Machine, ByeSignal, ToplevelSignal } from './machine.js';
+import { Machine, ByeSignal, ToplevelSignal, now } from './machine.js';
 import { PrimTable, isPrimRecord } from './prims.js';
 import { buildProc } from './procdef.js';
 import * as arith from './arith.js';
@@ -27,7 +27,6 @@ import * as workspace from './workspace.js';
 const LIBRARY_PROCEDURES = 'ignore for do.while while do.until until case cond invoke foreach map map.se filter find reduce crossmap cascade cascade.2 transfer combine reverse gensym pick remove remdup quoted push pop queue dequeue localmake name namelist pllist iseq rseq backslashedp backslashed? ` mdarray mditem mdsetitem erns erps erpls erall ern erpl poall pops pons popls pots';
 
 const MAX_OUTPUT_CHARS = 1000000;
-const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
 export class Interpreter {
   // opts: {prelude: source text of the always-loaded library, maxFrames}
@@ -315,6 +314,7 @@ export class Job {
   }
 
   _reportError(e) {
+    if (e.quiet) return;   // an ERRACT handler read the error with ERROR, which consumes it (Machine.startErract)
     let text = e.message;
     if (e.proc !== null && e.proc !== undefined && e.proc !== '') {
       text += '  in ' + e.proc;

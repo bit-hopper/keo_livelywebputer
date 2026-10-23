@@ -1,9 +1,9 @@
 // Dynamic scope, CATCH/THROW/ERROR, TEXT/DEFINE round trips, macros, templates and the way STOP/OUTPUT leave a procedure.
 // Values were checked against the reference interpreter (ucblogo 6.2.5, 2026-10-23); where the engine differs on purpose
-// the comment says so. ERRACT is not implemented yet (LOGO.md 14.6).
+// the comment says so.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { out } from './helpers.js';
+import { out, logo, newInterpreter } from './helpers.js';
 
 test('dynamic scope: a callee sees the caller\'s inputs, LOCAL hides a MAKE', () => {
   const pre = 'make "x 1\nto show.x\nprint :x\nend\n';
@@ -128,4 +128,33 @@ test('OUTPUT leaves the procedure from inside every construct', () => {
 
 test('property lists', () => {
   assert.equal(out('pprop "p "k 5\nprint gprop "p "k\nshow plist "p'), '5\n[k 5]');
+});
+
+// ERRACT. The recorded probe (seed/erract.lg, differential.test.js) covers the cases the reference can be the oracle for;
+// these are the machine-level properties around it.
+test('ERRACT: the line is still abandoned after the handler, and the next line runs', () => {
+  assert.equal(out('make "erract [print "h]\nprint 1/0 print "never\nprint "next'), "h\n/ doesn't like 0 as input\nnext");
+});
+
+test('ERRACT: an empty or non-list value means no handler', () => {
+  assert.equal(out('make "erract []\nprint 1/0'), "/ doesn't like 0 as input");
+  assert.equal(out('make "erract 5\nprint 1/0'), "/ doesn't like 0 as input");
+});
+
+test('ERRACT: an error inside the handler is reported and does not start the handler again', () => {
+  assert.equal(out('make "erract [print "h foo]\nprint 1/0\nprint "next'), "h\nI don't know how  to foo\nnext");
+});
+
+test('ERRACT: the machine is clean afterwards (no handler state leaks into the next line)', () => {
+  assert.equal(out('make "erract [print "h]\nprint 1/0\nmake "erract []\nprint 2/0\nprint 3'), "h\n/ doesn't like 0 as input\n/ doesn't like 0 as input\n3");
+  assert.equal(out('make "erract [print "h]\ncatch "error [print 1/0]\nshow error'), '[4 / doesn\'t like 0 as input [] []]');
+});
+
+test('ERRACT: a job interrupted inside the handler leaves the next run usable', () => {
+  const it = newInterpreter();
+  const job = it.startRun('make "erract [forever [make "n 1]]\nprint 1/0');
+  assert.equal(job.step(10).state, 'running');
+  job.interrupt();
+  assert.equal(job.step(10).state, 'stopped');
+  assert.equal(logo('make "erract []\nprint 1/0\nprint "ok', { interp: it }).text.trim(), "/ doesn't like 0 as input\nok");
 });

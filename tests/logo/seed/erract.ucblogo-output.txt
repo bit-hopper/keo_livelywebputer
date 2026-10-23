@@ -1,0 +1,51 @@
+Welcome to Berkeley Logo version 6.2.5
+--- unset by default
+erract has no value
+--- top level, handler runs then the message follows
+handled
+/ doesn't like 0 as input
+next
+handled
+I don't know how  to foo
+next2
+--- a CATCH "error wins, the handler does not run
+next3
+/ doesn't like 0 as input
+--- inside a procedure, the handler is a local of that procedure
+p defined
+a
+handled
+/ doesn't like 0 as input  in p
+[print 1/0]
+after.p
+deep defined
+inner.deep defined
+handled.deep
+first doesn't like [] as input  in inner.deep
+[print first []]
+--- a handler that reads ERROR consumes it: no message afterwards
+q defined
+h
+msg: / doesn't like 0 as input
+after.q
+--- ERROR in the handler: the code and message are there
+r defined
+[4 / doesn't like 0 as input r [print 1/0]]
+--- an error in the handler is reported once, not handled again
+s defined
+h
+I don't know how  to foo  in s
+[print 1/0]
+after.s
+--- a handler that does not read ERROR leaves it set for the line
+h
+/ doesn't like 0 as input
+[]
+--- a procedure sees the failing procedure's inputs
+t defined
+42
+/ doesn't like 0 as input  in t
+[print 1/0]
+
+Thank you for using Logo.
+Have a nice day.

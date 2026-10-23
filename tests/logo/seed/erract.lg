@@ -1,0 +1,69 @@
+print [--- unset by default]
+print :erract
+print [--- top level, handler runs then the message follows]
+make "erract [print [handled]]
+print 1/0
+print "next
+foo
+print "next2
+print [--- a CATCH "error wins, the handler does not run]
+catch "error [print 1/0]
+print "next3
+make "erract []
+print 1/0
+print [--- inside a procedure, the handler is a local of that procedure]
+to p
+local "erract
+make "erract [print [handled]]
+print "a
+print 1/0
+print "never
+end
+p
+print "after.p
+to deep
+local "erract
+make "erract [print [handled.deep]]
+inner.deep
+print "never
+end
+to inner.deep
+print first []
+end
+deep
+print [--- a handler that reads ERROR consumes it: no message afterwards]
+to q
+local "erract
+make "erract [print "h (print [msg:] first butfirst error)]
+print 1/0
+print "never
+end
+q
+print "after.q
+print [--- ERROR in the handler: the code and message are there]
+to r
+local "erract
+make "erract [show error]
+print 1/0
+end
+r
+make "erract [print [h]]
+print [--- an error in the handler is reported once, not handled again]
+to s
+local "erract
+make "erract [print [h] foo]
+print 1/0
+end
+s
+print "after.s
+print [--- a handler that does not read ERROR leaves it set for the line]
+make "erract [print [h]]
+print 1/0
+show error
+print [--- a procedure sees the failing procedure's inputs]
+to t :n
+local "erract
+make "erract [print :n]
+print 1/0
+end
+t 42

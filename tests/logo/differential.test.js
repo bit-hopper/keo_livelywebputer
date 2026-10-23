@@ -46,6 +46,7 @@ test('an array literal in code is a new array on every evaluation, as in the ref
 test('a parenthesised name followed by an operator is plain grouping, as in the reference', () => check('paren-infix'));
 
 test('a bare word naming a variable evaluates to it, as in the reference', () => check('bare-variable'));
+// ERRACT (LOGO.md 14.6): the handler runs on top of the failing frames, then the error is reported unless the handler read it// with ERROR. Every case in the probe is identical to the reference (the one with an error inside the handler included).test('ERRACT runs for an uncaught error and not for a caught one, as in the reference', () => check('erract'));
 
 test('semantics, errors and templates match the reference, except where decisions 14 and 15 differ', () => check('semantics-errors-templates', [
   // Decision 15: a TO whose name is already defined redefines it (and says so) instead of failing and running the body

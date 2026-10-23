@@ -221,6 +221,10 @@ class TemplateFrame {
 // A frame whose behaviour is a closure: used by the iteration primitives (MAP, FOREACH, WHILE ...), which are written as
 // small state machines over `m.applyTemplate`. fn(m, val) must leave the machine ready for the next step, either by
 // pushing this frame again and starting something, or by calling m.complete(...).
+// Milliseconds on a monotonic clock where there is one (every browser and Node), else the wall clock. A job's deadline is a
+// value of this clock; Interpreter and Job use the same function.
+export const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
 export class CBFrame {
   constructor(fn, unwind) { this.fn = fn; this.unwindFn = unwind || null; }
   resume(m, val) { this.fn(m, val); }
@@ -245,6 +249,7 @@ export class Machine {
     this.slots = null;            // {args, index} of the innermost active template, or null
     this.testTop = undefined;     // TEST result at top level
     this.lastError = NIL;         // what ERROR outputs next, then it is cleared
+    this.inErract = false;        // an ERRACT handler is running (see startErract)
     this.maxFrames = opts.maxFrames || 400000;
     this.cancelled = false;
     this.steps = 0;
@@ -343,7 +348,7 @@ export class Machine {
             if (f === undefined) return 'done';
             f.resume(this, this.val);
           }
-          if ((++n & 511) === 0 && (this.cancelled || performance.now() > deadline)) return 'running';
+          if ((++n & 511) === 0 && (this.cancelled || now() > deadline)) return 'running';
         }
       } catch (e) {
         if (e instanceof LogoError) { pending = e; continue; }
@@ -362,6 +367,7 @@ export class Machine {
     }
     this.mode = RET; this.val = undefined; this.node = null;
     this.scope = null; this.slots = null; this.repcount = -1;
+    this.inErract = false;
   }
 
   // ---- evaluation ---------------------------------------------------------------------------------------------------
@@ -575,7 +581,31 @@ export class Machine {
         return true;
       }
     }
-    return false;
+    return this.startErract(e);
+  }
+
+  // ERRACT (LOGO.md 14.6, checked against the reference 2026-10-23). An error no CATCH took runs the instruction list in
+  // the variable ERRACT, if there is a non-empty one, ON TOP of the failing frames (so it sees the failing procedure's
+  // variables), with ERROR giving the details. When it ends the error carries on as usual: the message is reported and the
+  // line abandoned -- except that a handler which read the error with ERROR has consumed it, and then the message is not
+  // printed (e.quiet). A CATCH "ERROR still wins and ERRACT does not run for what it caught. An error inside the handler
+  // is not handed to ERRACT again. STOP and OUTPUT inside the handler are not specified (the reference's result is odd);
+  // they are not supported. Returns true when a handler was started.
+  startErract(e) {
+    if (e.erractRan || this.inErract || !this.hasVar('erract')) return false;
+    const act = this.lookupVar('erract', 'erract');
+    if (!isList(act) || act === NIL) return false;
+    this.inErract = true;
+    e.erractRan = true;      // the rethrow below must not start the handler again
+    this.lastError = errorList(e);
+    this.stack.push(new CBFrame((m) => {
+      m.inErract = false;
+      e.quiet = m.lastError === NIL;
+      m.lastError = NIL;
+      throw e;
+    }));
+    this.runList(act, NO, '', null, 'erract');
+    return true;
   }
 
   // ---- running lists, templates -------------------------------------------------------------------------------------
