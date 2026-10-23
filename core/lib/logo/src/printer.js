@@ -76,6 +76,7 @@ const backslash = (text, chars) => [...text].map((c) => (chars.includes(c) ? BS 
 // A word's text with the protection it needs to be typed again (see above); `delimiters` is TOP_ or ITEM_DELIMITERS.
 function protect(x, delimiters) {
   const text = wordText(x);
+  if (x instanceof QWord && x.viaBackslash) return backslash(text, delimiters);
   if (x instanceof QWord) return PLAIN_IN_BARS.test(text) ? text : '|' + backslash(text, BAR_SPECIALS) + '|';
   return hasAny(text, delimiters) ? backslash(text, delimiters) : text;
 }

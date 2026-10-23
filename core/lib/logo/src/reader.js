@@ -24,6 +24,9 @@ import { err, LogoError, CODE } from './errors.js';
 // brackets, braces, infix operators, backslash, bar, tilde, quote, question mark, colon, semicolon.
 const SPECIAL_RE = /[\s()\[\]{}+\-*\/=<>\\|~"?:;]/;
 
+// The characters runparse.js splits a word at: a backslash in front of one of these keeps it in the word.
+const RUNPARSE_SPLIT_RE = /[()+\-*\/=<>]/;
+
 class LineReadError extends LogoError {}
 
 // Reads logical lines from a source text, one `readLine()` call at a time. A cell's Job owns one of these.
@@ -71,19 +74,26 @@ export class LineReader {
     const root = { kind: 'line', items: [] };
     const stack = [root];
     let parenDepth = 0;   // unmatched ( in unquoted words: only used to decide whether the line continues
-    let word = null;      // the word being built, or null: {buf, special, quoted, barred}
+    let word = null;      // the word being built, or null: {buf, special, quoted, bsSpecial, barSpecial}
     let inBar = false;
 
     const top = () => stack[stack.length - 1];
     const finishWord = () => {
       if (word === null) return;
-      top().items.push(word.special ? new QWord(word.buf) : word.buf);
+      // A quoted word at the top level whose protected characters were all backslashed (no bars) remembers that, so PO
+      // can print it as typed.
+      const viaBackslash = word.special && word.bsSpecial === true && word.barSpecial !== true && word.quoted === true && stack.length === 1;
+      top().items.push(word.special ? new QWord(word.buf, viaBackslash) : word.buf);
       word = null;
     };
-    const addChar = (c, quoting) => {
-      if (word === null) word = { buf: '', special: false, quotedWord: false };
+    // `how` is 'bar' or 'backslash' for a protected character, absent for an ordinary one.
+    const addChar = (c, how) => {
+      if (word === null) word = { buf: '', special: false, quoted: false };
       word.buf += c;
-      if (quoting && SPECIAL_RE.test(c)) word.special = true;
+      if (how !== undefined && SPECIAL_RE.test(c)) {
+        word.special = true;
+        if (how === 'bar') word.barSpecial = true; else word.bsSpecial = true;
+      }
     };
 
     let i = this.pos;
@@ -98,8 +108,8 @@ export class LineReader {
 
       if (inBar) {
         if (c === '|') { inBar = false; i++; continue; }
-        if (c === '\\' && i + 1 < n) { addChar(text[i + 1], true); i += 2; continue; }
-        addChar(c, true);   // a newline inside bars is part of the word; the line continues
+        if (c === '\\' && i + 1 < n) { addChar(text[i + 1], 'bar'); i += 2; continue; }
+        addChar(c, 'bar');   // a newline inside bars is part of the word; the line continues
         i++;
         continue;
       }
@@ -128,11 +138,17 @@ export class LineReader {
 
       if (c === '\\') {
         if (i + 1 >= n) { i++; continue; }
-        // Backslash quotes the next character, newline included (the newline joins the word and the line continues). It
-        // does NOT make the word a QWord: when the word is runparsed later a backslashed parenthesis or operator acts as if
-        // typed normally (manual, TOKENIZATION: only vertical bars are forever special), while a backslashed space stays in
-        // the word because runparse never splits on spaces.
-        addChar(text[i + 1], false);
+        // Backslash quotes the next character, newline included (the newline joins the word and the line continues). A
+        // backslashed parenthesis, bracket or operator is protected exactly as if it were inside bars: the word becomes a
+        // QWord and the runparser leaves it whole, so `"r\(s` is the word r(s and `print 1\+2` calls a procedure named 1+2
+        // (checked against the reference, tests/logo/seed/backslash.lg). What loses the protection is a WORD that is
+        // re-read from its text -- `runparse "a\(b` splits at the paren, because the backslash is no longer in the text.
+        // `viaBackslash` records that no bars were involved, so PO can print the word the way it was typed.
+        // Only a character the runparser would split on needs protecting; a backslashed space (or any other character)
+        // is simply part of the word, and the rest of the word still ends at an unprotected parenthesis (`"...\ )` in
+        // the reference's own unit-test framework). Protection is per word here, so a word that mixes a backslashed
+        // paren with an unprotected one (`"a\()`) is not handled.
+        addChar(text[i + 1], RUNPARSE_SPLIT_RE.test(text[i + 1]) ? 'backslash' : undefined);
         i += 2;
         continue;
       }
@@ -194,7 +210,7 @@ export class LineReader {
         if (c === '(') parenDepth++;
         else if (c === ')' && parenDepth > 0) parenDepth--;
       }
-      addChar(c, false);
+      addChar(c);
       i++;
     }
 

@@ -51,6 +51,10 @@ test('a bare word naming a variable evaluates to it, as in the reference', () =>
 // it with ERROR. Every case in the probe is identical to the reference (the one with an error inside the handler included).
 test('ERRACT runs for an uncaught error and not for a caught one, as in the reference', () => check('erract'));
 
+// A backslash in front of a parenthesis or operator protects it like bars do (`show "r\(s` is the word r(s); only a word
+// re-read from its text (runparse of a word) splits there. The probe is identical to the reference.
+test('backslash-protected parentheses and operators stay in the word, as in the reference', () => check('backslash'));
+
 // PO (LOGO.md 15.4 item 6): variables as Make "name value with the protection a word needs, property lists newest first,
 // lists in alphabetical order. The probe is identical to the reference; the places where our reader keeps less information
 // than the reference's are documented above poValue in printer.js.

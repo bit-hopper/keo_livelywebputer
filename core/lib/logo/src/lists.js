@@ -295,8 +295,10 @@ export function install(P) {
   P.fn('parse', 1, (a) => listFromArray(parseText(wordArg(a[0], 'parse'))));
   P.fn('runparse', 1, (a) => {
     const x = a[0];
-    // A barred word (|print 3+4|) is already protected text: it comes back whole, as one member (11.5 item 6).
-    const items = isList(x) ? listToArray(x) : (x instanceof QWord ? [x] : parseText(wordArg(x, 'runparse')));
+    // A barred word (|print 3+4|) is already protected text: it comes back whole, as one member (11.5 item 6). A word whose
+    // protection was a backslash is not: the backslash is not part of its text, so runparse re-reads it and splits at the
+    // paren or operator (runparse of the word a, backslash, paren, b is [a ( b] in the reference).
+    const items = isList(x) ? listToArray(x) : (x instanceof QWord && !x.viaBackslash ? [x] : parseText(wordArg(x, 'runparse')));
     return listFromArray(runparse(items));
   });
 }

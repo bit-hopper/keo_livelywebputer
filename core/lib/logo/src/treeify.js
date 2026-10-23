@@ -120,7 +120,7 @@ export function treeify(tokens, arityOf) {
         // A barred word keeps its characters whole. With a leading quote or colon it is still a quoted word or a
         // variable ("|a b|, :|my var|); otherwise it is a procedure name that happens to contain special characters.
         const c = t.text.charCodeAt(0);
-        if (c === 34) return constNode(new QWord(t.text.slice(1)));
+        if (c === 34) return constNode(new QWord(t.text.slice(1), t.viaBackslash));
         if (c === 58) { const name = t.text.slice(1); return { t: N.VAR, key: name.toLowerCase(), name }; }
         return parseCall(t.text, true);
       }
@@ -157,6 +157,8 @@ export function treeify(tokens, arityOf) {
     const key = name.toLowerCase();
     const ar = arityOf(key);
     const node = callNode(name, []);
+    // An error message shows a protected name in bars, as the reference does ("I don't know how  to |1+2|").
+    if (barred) node.shown = '|' + name + '|';
     const want = ar ? ar.def : 0;
     for (let k = 0; k < want; k++) {
       if (!canStartOperand(tokens[p])) { node.short = true; break; }

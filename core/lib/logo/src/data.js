@@ -17,7 +17,8 @@
 import { formatNumber, parseNumber } from './numbers.js';
 
 export class QWord {
-  constructor(text) { this.text = text; }
+  // viaBackslash: the protection came from backslashes alone, in a word typed as "word (PO prints such a word with them).
+  constructor(text, viaBackslash = false) { this.text = text; this.viaBackslash = viaBackslash; }
   toString() { return this.text; }
 }
 

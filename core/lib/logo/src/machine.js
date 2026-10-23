@@ -407,7 +407,7 @@ export class Machine {
       // "You don't say what to do with 6" through deliver. Do not extend this to names that take inputs: an unknown name
       // never has any.
       if (n.args.length === 0 && this.hasVar(n.key)) { this.deliver(this.lookupVar(n.key, n.name)); return; }
-      throw err.unknownProc(n.name);
+      throw err.unknownProc(n.shown || n.name);
     }
     if (proc.special !== undefined && proc.special !== null) { this.beginSpecial(n, proc); return; }
     if (n.args.length === 0) { this.apply(proc, n, [], this.rWant, this.rBlame, this.rTail); return; }

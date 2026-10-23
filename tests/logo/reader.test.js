@@ -78,6 +78,31 @@ test('procedure inputs: required, optional with a default, and rest', () => {
   assert.equal(out('to rest :a [:r]\noutput :r\nend\nshow (rest 1 2 3 4)'), 'rest defined\n[2 3 4]');
 });
 
+// A backslash in front of a parenthesis or an operator protects it like bars. What loses the protection is a word that is
+// re-read from its text. (The recorded probe seed/backslash.lg compares 35 cases with the reference.)
+test('a backslash-protected parenthesis or operator stays in the word', () => {
+  const B = String.fromCharCode(92);
+  assert.equal(out(`show "r${B}(s`), 'r(s');
+  assert.equal(out(`show count "r${B}(s`), '3');
+  assert.equal(out(`show (list "a "r${B}(s)`), '[a r(s]');
+  assert.equal(out(`show "a${B}+b`), 'a+b');
+  assert.equal(out(`show (word "p${B}( "q)`), 'p(q');
+  assert.equal(out(`show runparse [a${B}(b c]`), '[a(b c]');
+  assert.equal(out(`run [print "r${B}(s]`), 'r(s');
+});
+
+test('a word re-read from its text splits at the paren; a barred word does not', () => {
+  const B = String.fromCharCode(92);
+  assert.equal(out(`show runparse "a${B}(b`), '[a ( b]');
+  assert.equal(out('show runparse "|print 3+4|'), '[print 3+4]');
+});
+
+test('a protected name is a name, and the error shows it in bars', () => {
+  const B = String.fromCharCode(92);
+  assert.equal(out(`print 1${B}+2`), "I don't know how  to |1+2|");
+  assert.equal(out(`to a${B}+b\noutput 7\nend\nprint a${B}+b`), 'a+b defined\n7');
+});
+
 test('too many and too few inputs', () => {
   assert.equal(out('to g :x\noutput :x\nend\nshow (g 1 2)'), "g defined\ntoo many inputs to g");
   assert.equal(out('to g :x\noutput :x\nend\nshow g 1 2'), "g defined\n1\nYou don't say what to do with 2");

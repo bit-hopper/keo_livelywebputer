@@ -1,0 +1,36 @@
+show "r\(s
+show count "r\(s
+show (list "a "r\(s)
+print first [a\(b]
+show count first [a\(b]
+show first runparse [a\(b]
+show runparse [a\(b c]
+show runparse "a\(b
+run [print "r\(s]
+run [show "r\)s]
+show "a\+b
+show runparse [a\+b]
+show runparse [1\+2]
+print 1\+2
+show [a\+b]
+make "p "x\(y
+show :p
+show (word "p\( "q)
+show "a\)b
+show (list "a\)b)
+show [a\ b]
+show count first [a\ b]
+show first runparse [a\ b]
+to f
+output "r\(s
+end
+show f
+show count f
+show text "f
+show "a\"b
+show (list "a\[b)
+show "a\;b
+show "a\~b
+show runparse [a\=b]
+show (list "a\=b)
+show count "a\=b

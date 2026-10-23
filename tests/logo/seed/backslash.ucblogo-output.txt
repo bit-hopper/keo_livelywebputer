@@ -1,0 +1,37 @@
+Welcome to Berkeley Logo version 6.2.5
+r(s
+3
+[a r(s]
+a(b
+3
+a(b
+[a(b c]
+[a ( b]
+r(s
+r)s
+a+b
+[a+b]
+[1+2]
+I don't know how  to |1+2|
+[a+b]
+x(y
+p(q
+a)b
+[a)b]
+[a b]
+3
+a b
+f defined
+r(s
+3
+[[] [output "r(s]]
+a"b
+[a[b]
+a;b
+a~b
+[a=b]
+[a=b]
+3
+
+Thank you for using Logo.
+Have a nice day.
