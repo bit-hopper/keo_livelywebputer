@@ -353,3 +353,19 @@ test.describe("turtle canvas in a cell pane", () => {
     expect(png.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
   });
 });
+
+test.describe("read-only hydration of a drawing cell", () => {
+  test("shows the source and no canvas until Run; Reset starts a fresh workspace", async ({ page }) => {
+    await boot(page);
+    await renderCell(page, { language: "logo", source: "fd 100\nrt 90\nfd 100" });
+    const cell = page.locator("#logo-host .lively-code-cell");
+    await expect(cell.locator("canvas")).toHaveCount(0);
+    await cell.locator(".lively-code-cell-run-btn").click();
+    await expect(cell.locator("canvas")).toHaveCount(2);
+    // Reset gives a fresh workspace: the next run of the same cell starts at the origin again, so its first line is the one
+    // from the origin straight up (the earlier run left the turtle at (100, 100)).
+    await cell.locator(".lively-code-cell-reset-btn").click();
+    await cell.locator(".lively-code-cell-run-btn").click();
+    await expect.poll(async () => { try { return (await pixelAt(page, 0, 50)).rgba[3]; } catch (e) { return -1; } }).toBeGreaterThan(100);
+  });
+});
