@@ -1898,7 +1898,14 @@ module("lively.identity.WikiIndex")
           this._activeContentMorph.remove();
         }
         this._activeContentMorph = morph;
-        morph.bringToFront();
+        // Behind everything else in the world, not in front: the page is the
+        // backdrop, and a window the visitor opened earlier (git control, a
+        // workspace, a dialog) belongs above it. WikiView.open / WikiEditor.openCard
+        // have just added the morph at the top of the z-order, which would paint it
+        // over any such window and hide it. The page never overlaps the other index
+        // panels (_repositionWikiView lays it out below the grid), so order among
+        // them does not matter.
+        morph.sendToBack();
         // Opening/re-opening a page always lands the sidebar back on that
         // page's own outline — the home button (_showSidebarPageList) is
         // the only way to switch it into "all pages" mode from here.
