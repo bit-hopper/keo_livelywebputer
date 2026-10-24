@@ -1744,7 +1744,11 @@ lively.morphic.Text.addMethods(
 },
 'event handling', {
     onBlur: function($super, evt) {
-        this.stopStepping("logTextForSharing");
+        // Only the script this text started on focus (see onFocus). stopStepping()
+        // takes no argument and stops EVERY script on the morph, so the old call
+        // here also killed unrelated ones: a menu bar entry (a Text) lost its own
+        // update timer, or an animation, the first time it was clicked and blurred.
+        this.stopSteppingScriptNamed("logTextForSharing");
         this.logChangeForUndo();
         $super(evt);
         delete this.constructor.prototype.activeInstance;
