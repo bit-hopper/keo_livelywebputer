@@ -71,7 +71,27 @@ module("lively.identity.WorldsBrowser")
         },
       ],
 
+      // The base theme's default title-text color (#555) has too little contrast
+      // against this window's teal _Fill, which shows through as the title bar's
+      // own background (`.Window .TitleBar` is transparent by design). Scoped to
+      // a shared class so it never affects any other window. Same technique, and
+      // the same style element id, as AuthChoiceDialog.js / ProfileCard.js /
+      // RegisterDialog.js, so whichever of them runs first installs it for all.
+      _ensureAccentChromeCss: function () {
+        var STYLE_ID = "identity-accent-chrome-style";
+        if (document.getElementById(STYLE_ID)) return;
+        var styleEl = document.createElement("style");
+        styleEl.id = STYLE_ID;
+        styleEl.textContent = [
+          ".Window.identity-accent-chrome .Text.window-title { color: #fff; }",
+          ".Window.identity-accent-chrome.highlighted .Text.window-title { color: #fff; font-weight: bold; }",
+        ].join("\n");
+        document.head.appendChild(styleEl);
+      },
+
       onFromBuildSpecCreated: function onFromBuildSpecCreated() {
+        this._ensureAccentChromeCss();
+        this.addStyleClassName("identity-accent-chrome");
         this.targetMorph = this.get("worldsBrowserContent");
         var titleBar = this.makeTitleBar("My worlds", this.getExtent().x);
         this.titleBar = this.addMorph(titleBar);
@@ -153,7 +173,7 @@ module("lively.identity.WorldsBrowser")
           borderRadius: 3,
         });
         content.addMorph(listBox);
-        listBox.renderContext().shapeNode.style.overflowX = "hidden";
+        self.styleScrollList(listBox);
 
         lively.bindings.connect(searchInput, "savedTextString", self, "filterWorlds");
       },
@@ -223,6 +243,36 @@ module("lively.identity.WorldsBrowser")
         return "/@" + handle + "/" + e.objId;
       },
 
+      // Makes a clipped, vertically scrolling list box (the worlds list, the
+      // history list, the create pickers) hold its rows without losing their
+      // right-hand edge. A classic browser scrollbar takes ~15px out of the
+      // box's inner width, and only once the list overflows, so rows built to the
+      // box's outer width had their last ~15px (the "open" / "view →" links)
+      // cut off by the overflow-x clip. This asks for a thin scrollbar and
+      // reserves its space from the start (scrollbar-gutter: stable), so the inner
+      // width is the same whether or not the list scrolls; pair it with
+      // listInnerWidth() when sizing the rows. Call it right after the box has
+      // been added to its owner (it styles the real DOM node). Not for a list
+      // that should scroll horizontally.
+      styleScrollList: function styleScrollList(listBox) {
+        var s = listBox.renderContext().shapeNode.style;
+        s.overflowX = "hidden";
+        s.scrollbarWidth = "thin";
+        s.scrollbarColor = "rgb(190, 190, 190) transparent";
+        s.scrollbarGutter = "stable";
+      },
+
+      // The width rows should be built to: the list box's real inner width
+      // (clientWidth: excludes its border and the reserved scrollbar gutter), not
+      // its model extent. Call it after styleScrollList(). Falls back to the
+      // model width minus a generous gutter + border if the node has no layout
+      // yet (clientWidth is 0 for a node that is not in the document), so a row
+      // never ends up wider than the visible area.
+      listInnerWidth: function listInnerWidth(listBox) {
+        var cw = listBox.renderContext().shapeNode.clientWidth;
+        return cw > 0 ? cw : listBox.getExtent().x - 16;
+      },
+
       showMessage: function showMessage(msg) {
         var listBox = this.get("worldsList");
         if (!listBox) return;
@@ -251,7 +301,9 @@ module("lively.identity.WorldsBrowser")
         }
 
         var handle = this._handle;
-        var w = listBox.getExtent().x;
+        // The inner width, not the box's outer one: the scrollbar's space is
+        // already taken out (see styleScrollList).
+        var w = this.listInnerWidth(listBox);
         var rowH = 52;
         var y = 4;
         var PINK       = Color.rgb(240, 26, 105);
@@ -441,7 +493,10 @@ module("lively.identity.WorldsBrowser")
         listBox.applyStyle({ fill: Color.white, clipMode: "auto",
           borderWidth: 1, borderColor: Color.rgb(220, 220, 220), borderRadius: 3 });
         content.addMorph(listBox);
-        listBox.renderContext().shapeNode.style.overflowX = "hidden";
+        this.styleScrollList(listBox);
+        // Rows from here on are built to the list's inner width (the header above
+        // already used the content width).
+        w = this.listInnerWidth(listBox);
 
         var rowH = 46;
         var ry   = 4;
@@ -645,7 +700,8 @@ module("lively.identity.WorldsBrowser")
         var listBox = new lively.morphic.Box(lively.rect(pad, y, w, listH));
         listBox.applyStyle({ fill: null, clipMode: "auto", borderWidth: 0 });
         content.addMorph(listBox);
-        listBox.renderContext().shapeNode.style.overflowX = "hidden";
+        self.styleScrollList(listBox);
+        w = self.listInnerWidth(listBox);
 
         var cards = [
           { icon: "note_add",            title: "Blank world", subtitle: "Start with a completely empty world.", action: "blank" },
@@ -730,7 +786,8 @@ module("lively.identity.WorldsBrowser")
         var listBox = new lively.morphic.Box(lively.rect(pad, y, w, listH));
         listBox.applyStyle({ fill: null, clipMode: "auto", borderWidth: 0 });
         content.addMorph(listBox);
-        listBox.renderContext().shapeNode.style.overflowX = "hidden";
+        self.styleScrollList(listBox);
+        w = self.listInnerWidth(listBox);
 
         var templates = [
           { icon: "storefront",     title: "Shop",                   subtitle: "A storefront to sell items.",              enabled: true,  key: "shop" },
