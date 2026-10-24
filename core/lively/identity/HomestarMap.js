@@ -233,7 +233,11 @@ module("lively.identity.HomestarMap")
         this._caption = label(lively.rect(16, 46 + MAP_H + 8, 278, 36), "", { px: 12, color: MUTED, wrap: true });
         p.addMorph(this._caption);
         this._makeMap();
-        $world.addMorph(p);
+        // Behind everything already in the world, like the rest of the page
+        // (HomestarController._add). This runs when the pins arrive, which can be
+        // after the visitor opened a window; a plain addMorph would paint the map
+        // card over that window.
+        $world.addMorphBack(p);
       },
 
       _makeMap: function () {

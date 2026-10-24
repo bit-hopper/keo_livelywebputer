@@ -386,8 +386,18 @@ module("lively.identity.Homestar")
         lively.lang.fun.debounceNamed("homestar-resize-" + this._handle, 150, this._render.bind(this))();
       },
 
+      // Adds one rebuilt page morph (a card, the hero, a shelf) to the world,
+      // BEHIND everything else already there. _render() removes and re-adds every
+      // page morph on each run (load, resize, any async data arriving), and a plain
+      // addMorph appends to the top of the z-order, so a window opened earlier
+      // (My worlds, a chat, a dialog) ended up underneath the new cards on the next
+      // render. The page is the backdrop; windows and dialogs belong above it.
+      // Call it only for page morphs built by _render(); a morph that should float
+      // over the page (a popup, a dialog) must use addMorph / openInWorld instead.
+      // The page morphs never overlap each other, so their order among themselves
+      // does not matter.
       _add: function (m) {
-        $world.addMorph(m);
+        $world.addMorphBack(m);
         this._morphs.push(m);
         return m;
       },

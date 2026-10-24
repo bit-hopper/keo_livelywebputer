@@ -185,7 +185,11 @@ module("lively.identity.PostcardReel")
         this._threadHost.style.cssText = "position:absolute;inset:0;";
         tnode.appendChild(this._threadHost);
 
-        $world.addMorph(panel);
+        // Behind everything already in the world, like the rest of the page
+        // (HomestarController._add). The reel is built once the first data
+        // arrives, which can be after the visitor opened a window; a plain
+        // addMorph would paint the reel over that window.
+        $world.addMorphBack(panel);
         this._renderEmpty();
       },
 
