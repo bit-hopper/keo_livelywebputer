@@ -3364,7 +3364,9 @@ module('lively.identity.WikiEditor')
         WikiEditorClass._currentWorldEditor = editor;
         var extent = editor.getExtent();
         editor.openInWorld(lively.morphic.World.current().visibleBounds().center().subPt(extent.scaleBy(0.5)));
-        editor.bringToFront();
+        // To the back, as in WikiView._openInWorld: the page is the backdrop of
+        // its world, and windows and the menu bar belong above it.
+        editor.sendToBack();
       },
 
       // Load an existing wiki page and open the editor.

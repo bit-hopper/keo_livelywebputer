@@ -1175,7 +1175,12 @@ module("lively.identity.WikiView")
         WikiViewClass._currentWorldView = view;
         var extent = view.getExtent();
         view.openInWorld(lively.morphic.World.current().visibleBounds().center().subPt(extent.scaleBy(0.5)));
-        view.bringToFront();
+        // To the back, not the front: the page is the backdrop of its world.
+        // openInWorld has just put the view on top of everything, including a
+        // window the visitor opened earlier and the menu bar, and a re-open
+        // (Save swaps the editor for a new view) happens with those already
+        // there. The first open of a page is unaffected: nothing else exists yet.
+        view.sendToBack();
         WikiViewClass._disableWorldRename();
       },
 
