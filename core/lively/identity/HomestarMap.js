@@ -221,6 +221,12 @@ module("lively.identity.HomestarMap")
         var self = this;
         var p = panel(lively.rect(0, 0, 310, 340));
         this._panel = p;
+        // Hidden until attach() places it. The panel is created at (0, 0) because
+        // its real place depends on the page layout, which only runs afterwards
+        // (the controller's re-render, a timer later plus the render itself); left
+        // visible it showed in the page's top-left corner for ~180 ms before
+        // jumping to its slot. attach() makes it visible once it is positioned.
+        p.setVisible(false);
         p.addMorph(icon(lively.rect(16, 14, 22, 22), "map", 18, UI.PINK));
         this._title = label(lively.rect(44, 14, 170, 22), this._isOwner ? "Where I have been" : "Where @" + this._shown + " has been", { px: 15, bold: true });
         p.addMorph(this._title);
