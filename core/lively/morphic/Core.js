@@ -328,8 +328,20 @@ Object.subclass('lively.morphic.Morph',
         return morph;
     },
 
+    // Adds `other` below all of its siblings. The DOM insert is "before the
+    // node of the morph that is currently first", so that morph has to be one
+    // whose node is a real sibling of the new one. A morph with fixed positioning
+    // (the menu bar, the ambient presence panel) renders under <body>, outside
+    // this owner's DOM node: inserting before it finds no such sibling, and
+    // insertMorphNodeInHTML falls back to APPENDING the node, i.e. on top, while
+    // the model says it is at the back. The two orders then disagree and the
+    // "back" morph paints over everything (a wiki page over an open window).
+    // So skip fixed morphs when picking the one to go before; they paint above
+    // normal ones regardless of their place in the list.
     addMorphBack: function(other) {
-        var next = other === this.submorphs[0] ? this.submorphs[1] : this.submorphs[0];
+        var next = this.submorphs.find(function(m) {
+            return m !== other && !(m.hasFixedPosition && m.hasFixedPosition());
+        });
         return this.addMorph(other, next);
     },
 
