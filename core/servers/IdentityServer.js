@@ -83,6 +83,7 @@ var mapVisibility = require("./identity/MapVisibility");
 var constellationsCard = require("./identity/ConstellationsCard");
 var transitCard = require("./identity/TransitCard");
 var wikiCard = require("./identity/WikiCard");
+var badgeRules = require("./identity/Badges");
 var editTracking = require("./identity/EditTracking");
 var audienceRules = require("./identity/AudienceLists");
 var contentRealm = require("./support/content-realm-gate");
@@ -2484,6 +2485,24 @@ module.exports = function (route, app) {
     });
   });
 
+  // How a signed-in viewer relates to this owner: thenDo(err, { isFriend, inOrbit }).
+  // `st` is the owner's settings state (the orbit lives there). Orbit members are always
+  // friends, and a friendship that ended is dropped from the orbit on read, so both
+  // facts come from here. A signed-out viewer is neither, with no lookup. Shared by
+  // _settingAccess (one card-level choice) and GET /@:handle/badges (a choice per badge).
+  function _viewerRelation(ownerDid, viewerDid, st, thenDo) {
+    if (!viewerDid) return thenDo(null, { isFriend: false, inOrbit: false });
+    friendRegistry.listFriends(ownerDid, function (err, friends) {
+      if (err) return thenDo(err);
+      var friendDids = friends.map(function (f) { return f.did; });
+      var orbit = orbitRules.normalize(st && st.orbit, friendDids).orbit;
+      thenDo(null, {
+        isFriend: friendDids.indexOf(viewerDid) !== -1,
+        inOrbit: !!(orbit && orbit.members.indexOf(viewerDid) !== -1)
+      });
+    });
+  }
+
   // Who may see one of this owner's homestar cards (MapVisibility.js: the same four
   // choices for each), read from the owner's settings state under `key`
   // ('mapVisibility', 'constellationsVisibility'). Friendship and orbit membership are
@@ -2503,16 +2522,9 @@ module.exports = function (route, app) {
       var vis = mapVisibility.normalize(st[key]).value || mapVisibility.DEFAULT;
       if (vis === 'anyone') return thenDo(null, { allowed: true, visibility: vis, state: st });
       if (!viewerDid || vis === 'private') return thenDo(null, { allowed: false, visibility: vis, state: st });
-      friendRegistry.listFriends(ownerDid, function (err, friends) {
+      _viewerRelation(ownerDid, viewerDid, st, function (err, rel) {
         if (err) return thenDo(err);
-        var friendDids = friends.map(function (f) { return f.did; });
-        var isFriend = friendDids.indexOf(viewerDid) !== -1;
-        var inOrbit = false;
-        if (vis === 'orbit') {
-          var orbit = orbitRules.normalize(st.orbit, friendDids).orbit;
-          inOrbit = !!(orbit && orbit.members.indexOf(viewerDid) !== -1);
-        }
-        thenDo(null, { allowed: mapVisibility.canView(vis, ownerDid, viewerDid, isFriend, inOrbit), visibility: vis, state: st });
+        thenDo(null, { allowed: mapVisibility.canView(vis, ownerDid, viewerDid, rel.isFriend, rel.inOrbit), visibility: vis, state: st });
       });
     });
   }
@@ -3453,6 +3465,45 @@ module.exports = function (route, app) {
     });
   });
 
+  // The badge row on a handle's homestar (Badges.js): a place, transit lines, a school, a
+  // library, teams. Each badge carries its OWN visibility in the owner's private settings
+  // (state.badges), so unlike the card routes above there is no card-level gate: the list
+  // is filtered per badge for this viewer. A viewer who may see none gets an empty list,
+  // with no `locked` marker and no count, so nothing hints that a badge is hidden. Only the
+  // owner gets `visibility` back. An owner with no place badge yet gets the old public
+  // profile.location read through as a synthetic `_legacy` place (public, as it already
+  // was). Registered here, ahead of the /@:handle/* catch-all, like /transit above.
+  app.get("/@:handle/badges", auth.optionalAuth, function (req, res) {
+    var handle = req.params.handle;
+    handleRegistry.resolve(handle, function (err, ownerDid) {
+      if (err)  return res.status(500).json({ error: String(err) });
+      if (!ownerDid) return res.status(404).json({ error: "Handle not found: @" + handle });
+      var viewerDid = req.identity ? req.identity.did : null;
+      objectRepo.getSettingsForDid(ownerDid, function (err, settings) {
+        if (err) return res.status(500).json({ error: String(err) });
+        var st = (settings && settings.state) || {};
+        // Already validated on write; normalize again so a hand-edited row cannot send
+        // anything the PUT would have refused (an invalid list reads as no badges).
+        var badges = badgeRules.normalize(st.badges).badges || [];
+        function respond(list) {
+          _viewerRelation(ownerDid, viewerDid, st, function (err, rel) {
+            if (err) return res.status(500).json({ error: String(err) });
+            res.json(badgeRules.forViewer(list, {
+              ownerDid: ownerDid, viewerDid: viewerDid, isFriend: rel.isFriend, inOrbit: rel.inOrbit
+            }));
+          });
+        }
+        if (badges.some(function (b) { return b.kind === "place"; })) return respond(badges);
+        // No real place badge: the profile's old public location stands in for it.
+        objectRepo.getProfileForDid(ownerDid, function (err, profile) {
+          if (err) return res.status(500).json({ error: String(err) });
+          var pl = profile && profile.record && profile.record.payload;
+          respond(badgeRules.withLegacyPlace(badges, pl && pl.location));
+        });
+      });
+    });
+  });
+
   // The personal wiki pages the homestar's Wiki pages card may list (WikiCard.js): the
   // owner's choice of who sees the card applies first, then the pages they hid are dropped
   // (for everyone, the owner included; the owner's Manage dialog reads the full public
@@ -3766,6 +3817,14 @@ module.exports = function (route, app) {
       if (st && st.transitStation !== undefined) {
         var ts = transitCard.normalizeStation(st.transitStation);
         if (ts.error) return res.status(400).json({ error: ts.error, code: "INVALID_TRANSIT" });
+      }
+      // state.badges (Badges.js): validated and replaced by the cleaned copy (place first,
+      // colours upper-cased). Must stay above the early return below or it is skipped.
+      if (st && st.badges !== undefined) {
+        var bd = badgeRules.normalize(st.badges);
+        if (bd.error) return res.status(400).json({ error: bd.error, code: "INVALID_BADGES" });
+        st = Object.assign({}, st, { badges: bd.badges });
+        envelope = Object.assign({}, envelope, { state: st });
       }
       if (!st || (st.orbit === undefined && st.audienceLists === undefined && st.cardAudiences === undefined)) {
         return _put(envelope);
