@@ -33,6 +33,7 @@ module("lively.identity.Homestar")
     "lively.identity.HomestarMap",
     "lively.identity.HomestarShelves",
     "lively.identity.HomestarBadges",
+    "lively.identity.BadgePicker",
     "lively.transit.TransitClient",
     "lively.identity.PostcardAudience",
     "lively.identity.QuiltPatterns",
@@ -540,7 +541,17 @@ module("lively.identity.Homestar")
             // The "Add badge" pill appears once the picker exists (BadgePicker.js).
             var Picker = lively.identity.BadgePicker;
             if (Picker && Picker.open) {
-              rowOpts.onAdd = function () { Picker.open({ handle: self._handle, badges: self._badges || [], onSave: function () { self._loadBadges(); } }); };
+              rowOpts.onAdd = function () {
+                Picker.open({
+                  handle: self._handle, badges: self._badges || [],
+                  // a saved place makes the picker clear the old public profile.location; keep our copy in step
+                  oldLocation: self._profile && self._profile.location,
+                  onSave: function (info) {
+                    if (info && info.locationCleared && self._profile) self._profile.location = "";
+                    self._loadBadges();
+                  },
+                });
+              };
             }
           }
           var badgesBottom = lively.identity.HomestarBadges.buildRow(hero, TEXT_X, cy, w - TEXT_X - PAD, this._badges, rowOpts);

@@ -50,6 +50,7 @@ const readBadges = () => A.page.evaluate(() => {
   $world.withAllSubmorphsDo((m) => {
     const n = m.renderContext && m.renderContext().shapeNode;
     if (!n || !n.getAttribute || !n.getAttribute("data-badge")) return;
+    if (n.getAttribute("data-badge") === "add") return;     // the owner's "Add badge" pill is a control, not a badge
     const cs = getComputedStyle(n), r = n.getBoundingClientRect();
     const texts = [];
     m.withAllSubmorphsDo((k) => {

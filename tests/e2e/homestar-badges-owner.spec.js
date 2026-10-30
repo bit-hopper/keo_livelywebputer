@@ -6,8 +6,9 @@
 // keyboard input (page.mouse / page.keyboard), and every claim is judged by its side effect (the stored
 // state.badges, the stored profile, a counter bumped by the handler), not by where a click landed.
 //
-// The picker and the manage dialog do not exist yet (phases 4 and 5), so an init script stands in for them with
-// two counters; the "Add badge" pill and "Manage badges" button only appear once such a module exists.
+// The picker is real (phase 4, tested in homestar-badge-picker.spec.js) but its `open` is swapped for a counter here;
+// the manage dialog does not exist yet (phase 5), so an init script stands in for it with a counter. The "Add badge"
+// pill and "Manage badges" button only appear once such a module exists.
 //
 // Registers one throwaway `hometest_*` account (and one signed-out visitor context); see account-lifecycle.spec.js
 // on pruning the reserved handles.
@@ -29,13 +30,17 @@ test.beforeAll(async ({ browser }) => {
   test.setTimeout(200 * 1000);
   browserRef = browser;
   A = await newAccount(browser, "hometest_bo" + Math.random().toString(36).slice(2, 6));
-  // stand-ins for the picker and the manage dialog: count the calls
+  // stand-ins that count the calls instead of opening a dialog. The picker is real now (Homestar.js requires it), so
+  // its `open` is swapped once the module has loaded; the manage dialog does not exist yet (phase 5), so it is a stub.
   await A.page.addInitScript(() => {
     const t = setInterval(() => {
       if (window.lively && lively.identity) {
-        clearInterval(t);
-        lively.identity.BadgePicker = { open: (o) => { window.__picker = (window.__picker || 0) + 1; window.__pickerBadges = (o.badges || []).length; } };
-        lively.identity.BadgesDialog = { open: () => { window.__manage = (window.__manage || 0) + 1; } };
+        if (!lively.identity.BadgesDialog) lively.identity.BadgesDialog = { open: () => { window.__manage = (window.__manage || 0) + 1; } };
+        const P = lively.identity.BadgePicker;
+        if (P && P.initials) {                                  // the real module has loaded
+          clearInterval(t);
+          P.open = (o) => { window.__picker = (window.__picker || 0) + 1; window.__pickerBadges = (o.badges || []).length; };
+        }
       }
     }, 2);
   });
