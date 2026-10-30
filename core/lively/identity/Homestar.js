@@ -34,6 +34,7 @@ module("lively.identity.Homestar")
     "lively.identity.HomestarShelves",
     "lively.identity.HomestarBadges",
     "lively.identity.BadgePicker",
+    "lively.identity.BadgesDialog",
     "lively.transit.TransitClient",
     "lively.identity.PostcardAudience",
     "lively.identity.QuiltPatterns",
@@ -508,7 +509,15 @@ module("lively.identity.Homestar")
         if (this._isOwner && Manage && Manage.open) {
           try {
             lively.identity.HomestarBadges.manageButton(hero, 24, 20, function () {
-              Manage.open({ handle: self._handle, badges: self._badges || [], onSave: function () { self._loadBadges(); } });
+              Manage.open({
+                handle: self._handle, badges: self._badges || [],
+                // saving makes the dialog clear the old public profile.location; keep our copy in step
+                oldLocation: self._profile && self._profile.location,
+                onSave: function (info) {
+                  if (info && info.locationCleared && self._profile) self._profile.location = "";
+                  self._loadBadges();
+                },
+              });
             });
           } catch (e) { console.error("[Homestar] manage button failed:", e); }
         }

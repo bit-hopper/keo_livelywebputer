@@ -6,9 +6,9 @@
 // keyboard input (page.mouse / page.keyboard), and every claim is judged by its side effect (the stored
 // state.badges, the stored profile, a counter bumped by the handler), not by where a click landed.
 //
-// The picker is real (phase 4, tested in homestar-badge-picker.spec.js) but its `open` is swapped for a counter here;
-// the manage dialog does not exist yet (phase 5), so an init script stands in for it with a counter. The "Add badge"
-// pill and "Manage badges" button only appear once such a module exists.
+// The picker (phase 4, homestar-badge-picker.spec.js) and the manage dialog (phase 5, homestar-badges-manage.spec.js)
+// are real, but their `open` is swapped for a counter here. The "Add badge" pill and "Manage badges" button only
+// appear once such a module exists.
 //
 // Registers one throwaway `hometest_*` account (and one signed-out visitor context); see account-lifecycle.spec.js
 // on pruning the reserved handles.
@@ -30,16 +30,16 @@ test.beforeAll(async ({ browser }) => {
   test.setTimeout(200 * 1000);
   browserRef = browser;
   A = await newAccount(browser, "hometest_bo" + Math.random().toString(36).slice(2, 6));
-  // stand-ins that count the calls instead of opening a dialog. The picker is real now (Homestar.js requires it), so
-  // its `open` is swapped once the module has loaded; the manage dialog does not exist yet (phase 5), so it is a stub.
+  // counters instead of dialogs. Both modules are real (Homestar.js requires them), so each `open` is swapped once its
+  // module has loaded; the dialogs themselves are tested in homestar-badge-picker.spec.js and homestar-badges-manage.spec.js.
   await A.page.addInitScript(() => {
     const t = setInterval(() => {
       if (window.lively && lively.identity) {
-        if (!lively.identity.BadgesDialog) lively.identity.BadgesDialog = { open: () => { window.__manage = (window.__manage || 0) + 1; } };
-        const P = lively.identity.BadgePicker;
-        if (P && P.initials) {                                  // the real module has loaded
+        const P = lively.identity.BadgePicker, M = lively.identity.BadgesDialog;
+        if (P && P.initials && M && M.signature) {              // the real modules have loaded
           clearInterval(t);
           P.open = (o) => { window.__picker = (window.__picker || 0) + 1; window.__pickerBadges = (o.badges || []).length; };
+          M.open = () => { window.__manage = (window.__manage || 0) + 1; };
         }
       }
     }, 2);
