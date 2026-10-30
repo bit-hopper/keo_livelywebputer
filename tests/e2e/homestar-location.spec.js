@@ -1,9 +1,12 @@
 // @ts-check
-// The Location field in the profile card's edit tab (ProfileCard.js, locationPicker): typing offers cities
-// from the birth-chart calculator's offline list, picking one fills the field, anything else typed is kept
-// as-is, Save writes profile.location, and the home page then shows it as the Place badge (the server reads
-// profile.location through as a place badge until the owner has a real one; see badges.md, Homestar.js,
-// HomestarBadges.js).
+// The old public profile.location, now that the place lives in the badge row (badges.md D1, §8 phases 2 and 6):
+//  - the profile card's edit tab no longer has a Location field, and saving the card leaves a stored location alone
+//    (so it cannot write a stale value back over what the badge flow cleared);
+//  - a location that is still stored is read through as the Place badge on the home page (until the owner has a real one);
+//  - clearing it removes the badge;
+//  - the leak check: after the owner saves that place as a Friends-only badge, what ANYONE can fetch (the public profile
+//    JSON and GET /@handle/badges, signed out) shows no place at all.
+// City suggestions now belong to the badge picker and are tested in homestar-badge-picker.spec.js.
 //
 // Registers one throwaway `hometest_*` account; see account-lifecycle.spec.js on pruning the reserved handles.
 const { test, expect } = require("@playwright/test");
@@ -27,18 +30,20 @@ test.afterAll(async () => {
 
 const worldText = () => A.page.evaluate(() => { const out = []; if (typeof $world === "undefined" || !$world) return out; $world.withAllSubmorphsDo((m) => { if (m.textString) out.push(m.textString); }); return out; });
 const shows = (/** @type {string} */ s) => expect.poll(async () => (await worldText()).includes(s), { timeout: 30000 }).toBe(true);
+const storedLocation = () => A.page.evaluate(async (h) => (await (await fetch("/@" + h + "/profile", { credentials: "include", headers: { Accept: "application/json" } })).json()).record.payload.location || "", A.handle);
+const setLocation = (/** @type {string} */ loc) => A.page.evaluate(async (l) => {
+  await new Promise((r) => lively.require("lively.identity.UserSpace").toRun(r));
+  await new Promise((res, rej) => lively.identity.userSpace.saveProfile({ location: l }, (e) => (e ? rej(e) : res(null))));
+}, loc);
 
-// Lively reads a text morph on keyup and gets "" when keys arrive with no gap, so type at human speed.
-// Screen centre of the morph (found by name, or by exact text) in the card window.
-const nodeCenter = (/** @type {any} */ find) => A.page.evaluate((f) => {
+// Screen centre of the morph (found by name) in the card window.
+const nodeCenter = (/** @type {string} */ name) => A.page.evaluate((n) => {
   let hit = null;
-  $world.withAllSubmorphsDo((m) => {
-    if (f.name ? m.name === f.name : (m.textString === f.text && m.owner && m.owner.name !== "pcLocation")) hit = m;
-  });
+  $world.withAllSubmorphsDo((m) => { if (m.name === n) hit = m; });
   if (!hit) return null;
   const r = hit.renderContext().shapeNode.getBoundingClientRect();
   return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-}, find);
+}, name);
 
 async function openEditTab() {
   await A.page.evaluate(async (h) => {
@@ -54,53 +59,48 @@ async function openEditTab() {
     });
     win._renderEdit(win._handle, (win._envelope.record && win._envelope.record.payload) || {}, win._currentDid);
   }, A.handle);
-  await expect.poll(() => nodeCenter({ name: "pcLocation" }), { timeout: 20000 }).not.toBeNull();
+  await expect.poll(() => nodeCenter("pcPronouns"), { timeout: 20000 }).not.toBeNull();
 }
 
-test("typing a city offers matches, picking one fills the field", async () => {
+/** Viewport centre of the node with this aria-label (the LAST one: a dialog sits above the page), or null. */
+const probe = (/** @type {string} */ aria) => A.page.evaluate((a) => {
+  let n = null;
+  for (const e of document.querySelectorAll("[aria-label]")) if (e.getAttribute("aria-label") === a) n = e;
+  if (!n) return null;
+  const r = n.getBoundingClientRect();
+  return { cx: r.left + r.width / 2, cy: r.top + r.height / 2 };
+}, aria);
+const click = async (/** @type {string} */ aria) => {
+  const p = await probe(aria);
+  expect(p, "no node labelled " + aria).not.toBeNull();
+  await A.page.mouse.move(p.cx, p.cy, { steps: 4 });
+  await A.page.mouse.click(p.cx, p.cy);
+};
+
+test("the profile card's edit tab has no Location field, and saving it keeps a stored location", async () => {
+  await setLocation("THE A");
   await A.page.goto("/@" + A.handle);
   await shows("Edit profile");
   await openEditTab();
-
-  const c = await nodeCenter({ name: "pcLocation" });
+  // the field and its suggestion list are gone; a sibling field is still there
+  expect(await nodeCenter("pcLocation")).toBeNull();
+  expect(await A.page.evaluate(() => (window.__pcWin.targetMorph.submorphs || []).some((m) => m.textString && /^Location/.test(m.textString)))).toBe(false);
+  const c = await nodeCenter("pcPronouns");
   await A.page.mouse.click(c.x, c.y);
-  await A.page.keyboard.type("oakla", { delay: 80 });
-  await expect.poll(() => nodeCenter({ name: "pcLocationSuggest" }), { timeout: 30000 }).not.toBeNull();
-
-  const rows = await A.page.evaluate(() => {
-    const box = $world.withAllSubmorphsDo ? (() => { let b = null; $world.withAllSubmorphsDo((m) => { if (m.name === "pcLocationSuggest") b = m; }); return b; })() : null;
-    return box.submorphs.map((m) => m.textString);
-  });
-  expect(rows.length).toBeGreaterThan(0);
-  expect(rows[0].toLowerCase()).toContain("oakland");
-
-  const row = await A.page.evaluate(() => {
-    let b = null; $world.withAllSubmorphsDo((m) => { if (m.name === "pcLocationSuggest") b = m; });
-    const r = b.submorphs[0].renderContext().shapeNode.getBoundingClientRect();
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-  });
-  await A.page.mouse.click(row.x, row.y);
-  await expect.poll(() => A.page.evaluate(() => { let t = null; $world.withAllSubmorphsDo((m) => { if (m.name === "pcLocation") t = m.textString; }); return t; })).toBe("Oakland");
-  expect(await nodeCenter({ name: "pcLocationSuggest" })).toBeNull();
-});
-
-test("a custom place is kept, saved, and shown as the Place badge", async () => {
-  // replace the picked city with a made-up place
-  const c = await nodeCenter({ name: "pcLocation" });
-  await A.page.mouse.click(c.x, c.y);
-  await A.page.keyboard.press("Control+A");
-  await A.page.keyboard.type("THE A", { delay: 80 });
+  await A.page.keyboard.type("they/them", { delay: 80 });
   await A.page.waitForTimeout(500);
-
   const save = await A.page.evaluate(() => {
     const btn = window.__pcWin.targetMorph.submorphs.filter((m) => m.label && m.label.textString === "Save")[0];
     const r = btn.renderContext().shapeNode.getBoundingClientRect();
     return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
   });
   await A.page.mouse.click(save.x, save.y);
-  await expect.poll(() => A.page.evaluate(async (h) => (await (await fetch("/@" + h + "/profile", { credentials: "include" })).json()).record.payload.location, A.handle),
-    { timeout: 30000 }).toBe("THE A");
+  await expect.poll(() => A.page.evaluate(async (h) => (await (await fetch("/@" + h + "/profile", { credentials: "include", headers: { Accept: "application/json" } })).json()).record.payload.pronouns, A.handle),
+    { timeout: 30000 }).toBe("they/them");
+  expect(await storedLocation()).toBe("THE A");           // untouched by the card's Save
+});
 
+test("a stored location shows as the Place badge on the home page", async () => {
   await A.page.goto("/@" + A.handle);
   await shows("Edit profile");
   await shows("THE A");
@@ -127,12 +127,48 @@ test("a custom place is kept, saved, and shown as the Place badge", async () => 
   expect((await worldText()).some((t) => t.includes("📍"))).toBe(false);
 });
 
-test("clearing the field removes the badge", async () => {
-  await A.page.evaluate(async () => {
-    await new Promise((r) => lively.require("lively.identity.UserSpace").toRun(r));
-    await new Promise((res, rej) => lively.identity.userSpace.saveProfile({ location: "" }, (e) => e ? rej(e) : res(null)));
-  });
+test("clearing the location removes the badge", async () => {
+  await setLocation("");
   await A.page.goto("/@" + A.handle);
   await shows("Edit profile");
   expect((await worldText()).some((t) => t.includes("THE A"))).toBe(false);
+});
+
+test("saving the old location as a Friends-only place leaves nothing public: the profile JSON and the badge list, signed out", async ({ playwright, baseURL }) => {
+  await setLocation("Old Town");
+  await A.page.goto("/@" + A.handle);
+  await shows("Edit profile");
+  await expect.poll(async () => probe("Manage badges"), { timeout: 30000 }).not.toBeNull();
+  await A.page.waitForTimeout(700);
+
+  // before: anyone can read the location, both in the profile and as the read-through place badge
+  const anon = await playwright.request.newContext({ baseURL: baseURL || undefined, extraHTTPHeaders: { Accept: "application/json" } });
+  try {
+    const before = await (await anon.get("/@" + A.handle + "/profile")).json();
+    expect(before.record.payload.location).toBe("Old Town");
+    const beforeBadges = await (await anon.get("/@" + A.handle + "/badges")).json();
+    expect(beforeBadges.badges.map((/** @type {any} */ b) => b.label)).toEqual(["Old Town"]);
+
+    // the owner makes it Friends-only in the manage dialog (real clicks), and saves
+    await click("Manage badges");
+    await expect.poll(() => probe("Cancel"), { timeout: 10000 }).not.toBeNull();
+    await A.page.locator('select[data-badge-visibility="_legacy"]').selectOption("friends");
+    await click("Save");
+    await expect.poll(() => probe("Cancel"), { timeout: 10000 }).toBeNull();
+    await expect.poll(() => storedLocation(), { timeout: 30000 }).toBe("");
+
+    // after: signed out, nothing is readable
+    const after = await (await anon.get("/@" + A.handle + "/profile")).json();
+    expect(after.record.payload.location || "").toBe("");
+    expect(JSON.stringify(after)).not.toContain("Old Town");
+    const afterBadges = await (await anon.get("/@" + A.handle + "/badges")).json();
+    expect(afterBadges.badges).toEqual([]);
+    expect(JSON.stringify(afterBadges)).not.toContain("Old Town");
+  } finally {
+    await anon.dispose();
+  }
+  // and the owner still has it, as a real badge with its own who-sees choice
+  const mine = await A.page.evaluate(async (h) => ((await (await fetch("/@" + h + "/settings", { credentials: "include", headers: { Accept: "application/json" } })).json()).state || {}).badges || [], A.handle);
+  expect(mine).toHaveLength(1);
+  expect(mine[0]).toMatchObject({ kind: "place", label: "Old Town", visibility: "friends" });
 });
