@@ -32,6 +32,7 @@ module("lively.identity.Homestar")
     "lively.identity.PostcardReel",
     "lively.identity.HomestarMap",
     "lively.identity.HomestarShelves",
+    "lively.identity.HomestarBadges",
     "lively.transit.TransitClient",
     "lively.identity.PostcardAudience",
     "lively.identity.QuiltPatterns",
@@ -104,35 +105,6 @@ module("lively.identity.Homestar")
       return {morph: box, w: w, h: h};
     }
 
-    // The owner's location: a 📍 and whatever they chose or typed ("Oakland",
-    // "THE BAY"), white on green (5:1). One label, so the pin and the text share a
-    // baseline. Not clickable.
-    var LOC_MAX = 40;
-    var LOC_GREEN = Color.rgb(18, 128, 70);
-    function cleanLocation(s) {
-      return String(s || "").replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, LOC_MAX);
-    }
-    // Width of the bold 26px name, letter by letter (calibrated on the live name font:
-    // lowercase ~0.54em, W ~0.9em), so a long or wide-lettered name never reaches the pill.
-    function nameWidth(str) {
-      var em = 0;
-      String(str).split("").forEach(function (ch) {
-        em += /[WM]/.test(ch) ? 0.95 : /[wm@]/.test(ch) ? 0.85 : /[A-Z]/.test(ch) ? 0.72
-            : /[ijlt.,:;'!|]/.test(ch) ? 0.36 : 0.58;
-      });
-      return Math.ceil(em * 26);
-    }
-    function locationPill(x, y, text) {
-      var px = 12, h = 24;
-      var full = "📍 " + text;
-      var w = textW(full, px, false) + 28;
-      var box = new lively.morphic.Box(lively.rect(x, y, w, h));
-      box.applyStyle({ fill: LOC_GREEN, borderRadius: h / 2, borderWidth: 0, clipMode: "hidden" });
-      noDrag(box);
-      box.addMorph(label(lively.rect(0, 1, w, 20), full, { px: px, color: Color.white, align: "center" }));
-      return {morph: box, w: w, h: h};
-    }
-
     var getJSON = UI.getJSON;
 
     Object.subclass("lively.identity.HomestarController",
@@ -155,6 +127,7 @@ module("lively.identity.Homestar")
         this._constellationsInfo = null; // the owner's own view of it: { hiddenCount, visibility }
         this._wikiPages = null;     // null = loading, failed or locked; else GET /wiki-card rows
         this._wikiInfo = null;      // the owner's own view of it: { hiddenCount, visibility }
+        this._badges = null;        // null = loading or failed; else the badges this viewer may see (GET /badges), place first
         this._transit = null;       // null = loading, failed or locked; else { station, visibility, times }
         this._transitTimer = null;  // refreshes the times while the page is open
         this._gbObjId = null;       // the profile object's id: the guestbook is comments on it
@@ -205,6 +178,7 @@ module("lively.identity.Homestar")
         this._loadGuestbook();
         this._loadConstellations();
         this._loadTransit();
+        this._loadBadges();
         this._loadWiki();
         if (this._viewer && !this._isOwner) {
           getJSON(base + "/friend-status", function (err, body) {
@@ -223,6 +197,53 @@ module("lively.identity.Homestar")
           self._constellations = ok && !body.locked ? body.constellations : null;
           self._constellationsInfo = ok ? { hiddenCount: body.hiddenCount || 0, visibility: body.visibility || null } : null;
           self._scheduleRender();
+        });
+      },
+
+      // The badge row. The server filters each badge for this viewer (and reads the old
+      // public profile location through as a place badge), so whatever comes back is
+      // drawn as is. A failed read leaves the row out.
+      _loadBadges: function () {
+        var self = this;
+        getJSON("/@" + encodeURIComponent(this._handle) + "/badges", function (err, body) {
+          self._badges = body && Array.isArray(body.badges) ? body.badges : null;
+          self._scheduleRender();
+        });
+      },
+
+      // Removes one badge for the owner (the remove button on a badge). A real badge is
+      // dropped from state.badges through patchSettings, which re-reads the stored copy first
+      // so another tab's change is not overwritten. The synthetic place (id "_legacy") is not
+      // in state.badges at all: it is the old public profile.location, so removing it clears
+      // that. Removing ANY place also clears a leftover profile.location, or the fallback
+      // would bring the old value straight back as a public place. Then the row is re-read.
+      _removeBadge: function (b) {
+        var self = this;
+        if (this._badgeBusy) return;
+        this._badgeBusy = true;
+        var finish = function (err, what) {
+          self._badgeBusy = false;
+          if (err) $world.alert(what + ((err && err.message) || err));
+          self._loadBadges();
+        };
+        var clearOldLocation = function (thenDo) {
+          var loc = String(self._profile.location || "").trim();
+          if (b.kind !== "place" || !loc) return thenDo(null);
+          lively.require("lively.identity.UserSpace").toRun(function () {
+            lively.identity.userSpace.saveProfile({ location: "" }, function (err) {
+              if (!err) self._profile.location = "";
+              thenDo(err);
+            });
+          });
+        };
+        if (b.id === "_legacy") {
+          return clearOldLocation(function (err) { finish(err, "Could not remove your place: "); });
+        }
+        lively.identity.postcardAudience.patchSettings(function (state) {
+          state.badges = (state.badges || []).filter(function (x) { return x.id !== b.id; });
+        }, function (err) {
+          if (err) return finish(err, "Could not remove the badge: ");
+          clearOldLocation(function (err2) { finish(err2, "The badge was removed, but your old public location could not be cleared: "); });
         });
       },
 
@@ -480,6 +501,17 @@ module("lively.identity.Homestar")
         avatar.eventsAreIgnored = true;
         hero.addMorph(avatar);
 
+        // The owner's ghost "Manage badges" button, top-right over the banner. Shown once the
+        // dialog exists (BadgesDialog.js); until then there is nothing for it to open.
+        var Manage = lively.identity.BadgesDialog;
+        if (this._isOwner && Manage && Manage.open) {
+          try {
+            lively.identity.HomestarBadges.manageButton(hero, 24, 20, function () {
+              Manage.open({ handle: self._handle, badges: self._badges || [], onSave: function () { self._loadBadges(); } });
+            });
+          } catch (e) { console.error("[Homestar] manage button failed:", e); }
+        }
+
         var textTop = BANNER_H + 10;
         var nameW = actionsBeside ? w - TEXT_X - PAD - actionsW - 12 : w - TEXT_X - PAD;
         var shownName = trunc(name, 40);
@@ -487,24 +519,6 @@ module("lively.identity.Homestar")
 
         var sub = "@" + this._shown + (p.pronouns ? "  ·  " + trunc(p.pronouns, 24) : "");
         hero.addMorph(label(lively.rect(TEXT_X, textTop + 36, nameW, 22), sub, { px: 14, color: MUTED }));
-
-        // The location pill sits beside the name; when the name leaves no room it
-        // moves to the end of the handle line, and failing that it leads the chips.
-        var loc = cleanLocation(p.location), locInChips = false;
-        if (loc) {
-          var lp = locationPill(0, 0, loc);
-          var nameEnd = nameWidth(shownName) + 40;
-          var subEnd = textW(sub, 14, false) + 28;
-          if (nameEnd + lp.w <= nameW) {
-            lp.morph.setPosition(lively.pt(TEXT_X + nameEnd, textTop + 5));
-            hero.addMorph(lp.morph);
-          } else if (subEnd + lp.w <= nameW) {
-            lp.morph.setPosition(lively.pt(TEXT_X + subEnd, textTop + 35));
-            hero.addMorph(lp.morph);
-          } else {
-            locInChips = true;
-          }
-        }
 
         var cy = textTop + 66;
         var bio = String(p.bio || "").trim();
@@ -516,7 +530,26 @@ module("lively.identity.Homestar")
           cy += BIO_LINE_H * Math.min(BIO_MAX_LINES, Math.max(1, Math.ceil(Math.min(bio.length, cap) / Math.max(20, Math.floor(bioW / 7.6))))) + 12;
         }
 
-        cy = this._buildChips(hero, TEXT_X, cy, w - TEXT_X - PAD, locInChips ? loc : null);
+        // The badge row (place, transit, school, library, teams) sits between the bio and
+        // the chips. The server has already dropped the badges this viewer may not see.
+        // A failure drawing it must not take the rest of the page down with it.
+        try {
+          var rowOpts = { onFontReady: function () { self._scheduleRender(); } };
+          if (this._isOwner) {
+            rowOpts.onRemove = function (b) { self._removeBadge(b); };
+            // The "Add badge" pill appears once the picker exists (BadgePicker.js).
+            var Picker = lively.identity.BadgePicker;
+            if (Picker && Picker.open) {
+              rowOpts.onAdd = function () { Picker.open({ handle: self._handle, badges: self._badges || [], onSave: function () { self._loadBadges(); } }); };
+            }
+          }
+          var badgesBottom = lively.identity.HomestarBadges.buildRow(hero, TEXT_X, cy, w - TEXT_X - PAD, this._badges, rowOpts);
+          if (badgesBottom > cy) cy = badgesBottom + 12;
+        } catch (e) {
+          console.error("[Homestar] badge row failed:", e);
+        }
+
+        cy = this._buildChips(hero, TEXT_X, cy, w - TEXT_X - PAD);
 
         // Action pills.
         if (actionsBeside) {
@@ -543,12 +576,10 @@ module("lively.identity.Homestar")
       },
 
       // Sun/moon/rising and status, then up to five links; flows onto further
-      // rows when they don't fit. `loc` (the location, when there was no room
-      // for it beside the name) goes first. Returns the y below the last row.
-      _buildChips: function (hero, x, y, maxW, loc) {
+      // rows when they don't fit. Returns the y below the last row.
+      _buildChips: function (hero, x, y, maxW) {
         var p = this._profile;
         var items = [];
-        if (loc) items.push({ loc: loc });
         var st = p.orbit && p.orbit.status;
         if (st && st.label) items.push({ text: (st.emoji ? st.emoji + " " : "") + trunc(st.label, 16) });
         [["☉", p.sunSign], ["☽", p.moonSign], ["↑", p.risingSign]].forEach(function (pair) {
@@ -567,7 +598,7 @@ module("lively.identity.Homestar")
 
         var cx = x, rowY = y;
         items.forEach(function (it) {
-          var c = it.loc ? locationPill(cx, rowY, it.loc) : chip(cx, rowY, it.text, { onClick: it.onClick });
+          var c = chip(cx, rowY, it.text, { onClick: it.onClick });
           if (cx > x && cx + c.w > x + maxW) {
             cx = x; rowY += 30;
             c.morph.setPosition(lively.pt(cx, rowY));
