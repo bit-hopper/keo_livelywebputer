@@ -42,6 +42,7 @@ module("lively.identity.RegisterDialog")
     "lively.identity.DID",
     "lively.identity.WebAuthn",
     "lively.identity.UserSpace",
+    "lively.identity.LocalIdentity",
     "lively.identity.PasskeyPrimingDialog",
     "lively.persistence.BuildSpec",
     "lively.morphic.Complete",
@@ -112,6 +113,11 @@ module("lively.identity.RegisterDialog")
         var content = this.get("registerContent");
         if (!content) return;
         content.removeAllMorphs();
+
+        // Inside the keo app there is no server to register with: the identity
+        // is made on this device (LocalIdentity), without a handle.
+        this._isLocal = lively.identity.localIdentity.isAvailable();
+        if (this._isLocal) return this.buildLocalForm(content);
 
         var pad = 14;
         var y = pad;
@@ -237,6 +243,103 @@ module("lively.identity.RegisterDialog")
         }
       },
 
+      // The keo-app form: one field, the user's own name for the identity on
+      // this device (changeable later, never sent anywhere). Same look as the
+      // server form above; its small helpers are repeated here rather than
+      // shared because a BuildSpec method cannot reach a sibling method's
+      // local functions.
+      buildLocalForm: function buildLocalForm(content) {
+        var self = this;
+        var pad = 14;
+        var y = pad;
+        var w = content.getExtent().x - pad * 2;
+
+        var lbl = new lively.morphic.Text(lively.rect(pad, y, w, 16), "Name for this identity (only you see it):");
+        lbl.applyStyle({
+          allowInput: false,
+          fontFamily: "Arial, sans-serif",
+          fontSize: 11,
+          textColor: Color.rgb(70, 70, 70),
+          padding: lively.rect(4, 3, 0, 0),
+          fill: null,
+          borderWidth: 0,
+          borderColor: null,
+        });
+        content.addMorph(lbl);
+        y += 22;
+
+        var inp = new lively.morphic.Text(lively.rect(pad, y, w, 22), "");
+        inp.name = "labelInput";
+        inp.applyStyle({
+          allowInput: true,
+          fontFamily: "Helvetica",
+          fontSize: 12,
+          fill: Color.white,
+          borderWidth: 1,
+          borderColor: Color.rgb(203, 203, 203),
+          borderRadius: 3.75,
+          padding: lively.rect(4, 4, 0, 0),
+        });
+        inp.beInputLine();
+        content.addMorph(inp);
+        y += 34;
+
+        // 18px per rendered line (CLAUDE.md: a guessed per-line height undershoots and clips the last line)
+        var note = new lively.morphic.Text(
+          lively.rect(pad, y, w, 3 * 18 + 4),
+          "Created on this device with your passkey and kept here. Nothing is sent to a server. " +
+          "A handle comes later, if a host you register with gives you one.",
+        );
+        note.applyStyle({
+          allowInput: false,
+          fontFamily: "Arial, sans-serif",
+          fontSize: 9,
+          textColor: Color.rgb(120, 120, 120),
+          padding: lively.rect(4, 3, 0, 0),
+          fill: null,
+          borderWidth: 0,
+          borderColor: null,
+        });
+        content.addMorph(note);
+        y += 3 * 18 + 8;
+
+        // room for two lines: the success message ("Created … Not recoverable yet: …") wraps
+        var statusText = new lively.morphic.Text(lively.rect(pad, y, w, 2 * 18 + 8), "");
+        statusText.name = "statusText";
+        statusText.applyStyle({ allowInput: false, fontSize: 11, fill: null, borderWidth: 0, borderColor: null });
+        content.addMorph(statusText);
+        y += 2 * 18 + 16;
+
+        function paintButton(btn, borderColor, borderWidth, borderRadius, fill) {
+          // see the identical helper in buildForm for why the DOM is written too
+          btn.applyStyle({ borderColor: borderColor, borderWidth: borderWidth, borderRadius: borderRadius, fill: fill });
+          (function () {
+            var node = btn.renderContext && btn.renderContext().shapeNode;
+            if (node) {
+              node.style.borderColor = borderColor;
+              node.style.borderWidth = borderWidth + "px";
+              node.style.borderRadius = borderRadius + "px";
+              node.style.background = fill || "";
+            }
+          }).delay(0);
+        }
+
+        var createBtn = new lively.morphic.Button(lively.rect(pad + w - 100, y, 100, 24), "Create");
+        createBtn.name = "registerBtn";
+        content.addMorph(createBtn);
+        paintButton(createBtn, "rgb(240,190,210)", 1.184, 5.2, "rgb(255,240,247)");
+        lively.bindings.connect(createBtn, "fire", self, "register");
+
+        var cancelBtn = new lively.morphic.Button(lively.rect(pad, y, 80, 24), "Back");
+        cancelBtn.name = "registerCancelBtn";
+        content.addMorph(cancelBtn);
+        paintButton(cancelBtn, "rgb(214,214,214)", 1, 5, null);
+        lively.bindings.connect(cancelBtn, "fire", self, "goBack");
+
+        this._isAddDevice = false;
+        this.setTitle("Create identity");
+      },
+
       // ─── navigation ─────────────────────────────────────────────────────────────
 
       goBack: function goBack() {
@@ -254,8 +357,9 @@ module("lively.identity.RegisterDialog")
 
       register: function register() {
         var self = this;
+        if (this._isLocal) return this._createLocal();
 
-        var handle = (this.get("handleInput").textString || "").trim();
+        var handle =(this.get("handleInput").textString || "").trim();
         var displayName = (
           this.get("displayNameInput").textString || ""
         ).trim();
@@ -293,6 +397,34 @@ module("lively.identity.RegisterDialog")
 
         lively.identity.PasskeyPrimingDialog.maybeShow(function () {
           self._startRegisterCeremony(handle, displayName, deviceLabel);
+        });
+      },
+
+      // ─── local creation (keo app) ───────────────────────────────────────────────
+
+      // Asks the shell to make the identity (two passkey prompts: create the
+      // passkey, then sign the inception with it). Ends with the identity
+      // existing on this device and the dialog saying so. Signing in with it
+      // and giving the world a session come in a later step, so nothing else
+      // happens yet; the button stays off so a second click cannot create a
+      // second identity.
+      _createLocal: function _createLocal() {
+        var self = this;
+        var btn = this.get("registerBtn");
+        var label = (this.get("labelInput").textString || "").trim();
+        lively.identity.PasskeyPrimingDialog.maybeShow(function () {
+          if (btn) btn.setActive(false);
+          self.setStatus("Waiting for your passkey…");
+          lively.identity.localIdentity.create(label, function (err, id) {
+            if (err) {
+              if (btn) btn.setActive(true);
+              return self.setStatus("Could not create the identity: " + (err.message || err), true);
+            }
+            self.setStatus(
+              "Created " + id.label + " (" + lively.identity.localIdentity.shortDid(id.did) + ") on this device." +
+              (id.notRecoverable ? " Not recoverable yet: add a second passkey later." : "")
+            );
+          });
         });
       },
 
