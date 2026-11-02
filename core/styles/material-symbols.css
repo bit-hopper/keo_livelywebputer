@@ -34,14 +34,9 @@
  * .material-symbols-rounded class (or just the font-family below) to it.
  * Since this is a font, color/size follow ordinary CSS `color`/`font-size`.
  *
- * For places that want a plain image morph instead of an inline text glyph,
- * the same icon set is also vendored as individual SVGs — one file per icon,
- * named after its ligature (e.g. settings.svg) — under
- * core/media/material-icons/, following the same convention as the existing
- * halo icons in core/media/halos/:
- *
- *   new lively.morphic.Image(bounds).setImageURL(
- *     Config.codeBase + 'media/material-icons/settings.svg')
+ * For places that want a plain image morph instead of an inline text glyph, vendor that one icon as an SVG (named after its
+ * ligature, e.g. settings.svg) under core/media/material-icons/ with `python bin/vendor-icon.py settings`, which reads it out
+ * of this same font. The full per-icon SVG set is deliberately not kept in the repo.
  *
  * This stylesheet is loaded once per world at startup — see the <link>
  * injection in core/lively/morphic/StyleSheets.js right after the base theme
