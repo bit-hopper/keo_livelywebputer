@@ -385,7 +385,7 @@ Object.extend(lively.ide.codeeditor.modes.Clojure, {
 
   }
 
-};
+);
 
 lively.ide.codeeditor.modes.Clojure.Mode = lively.ide.ace.require('ace/mode/clojure').Mode;
 

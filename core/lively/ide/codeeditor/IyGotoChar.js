@@ -88,8 +88,8 @@ Object.extend(lively.ide.codeeditor.IyGotoChar, {
       keyboardHandler.bindKeys({"CMD-.": "iyGoToChar"});
       keyboardHandler.bindKeys({"CMD-,": "iyGoToCharBackwards"});
     } else {
-      keyboardHandler.bindKeys({"c-.": "iyGoToChar"});
-      keyboardHandler.bindKeys({"c-,": "iyGoToCharBackwards"});
+      keyboardHandler.bindKeys({"ctrl-.": "iyGoToChar"});
+      keyboardHandler.bindKeys({"ctrl-,": "iyGoToCharBackwards"});
     }
   }
 

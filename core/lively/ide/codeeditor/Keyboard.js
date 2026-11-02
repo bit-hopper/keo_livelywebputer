@@ -303,7 +303,7 @@ Object.subclass('lively.ide.CodeEditor.KeyboardShortcuts',
 
         this.addCommands(kbd, [{
                 name: 'removeSelectionOrLine',
-                bindKey: {win: 'Win-X', mac: 'Command-X'},
+                bindKey: {win: 'Ctrl-X', mac: 'Command-X'},
                 exec: function(ed) {
                     var sel = ed.selection;
                     if (sel.isEmpty()) { sel.selectLine(); }
@@ -332,7 +332,7 @@ Object.subclass('lively.ide.CodeEditor.KeyboardShortcuts',
                 readOnly: false
             }, {
                 name: 'insertLineBelow',
-                bindKey: {mac: "Command-Return", win: "Win-Return"},
+                bindKey: {mac: "Command-Return", win: "Ctrl-Return"},
                 exec: function(ed) { ed.navigateLineEnd(); ed.insert('\n'); },
                 multiSelectAction: 'forEach',
                 readOnly: false
