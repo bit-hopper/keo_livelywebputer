@@ -316,9 +316,12 @@ async function coreFiles(baseDir) {
 
   // Convert all absolute paths back to relative paths for the module loading system
   coreFiles = coreFiles.map(function (file) {
-    return file[0] === "/" || (file.length > 1 && file[1] === ":")
+    var rel = file[0] === "/" || (file.length > 1 && file[1] === ":")
       ? path.relative(baseDir, file)
       : file;
+    // these names become URLs, cache file names and the module list in the bundle header: always "/" (no-op where
+    // path.sep is already "/"; where it is a backslash, path.relative gives backslashes)
+    return rel.split(path.sep).join("/");
   });
 
   return coreFiles;
