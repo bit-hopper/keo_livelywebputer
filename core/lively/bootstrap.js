@@ -423,10 +423,17 @@
     },
 
     ensureBrokenWorldMessage: function () {
+      // Called from the console consumer on every console.error, and the consumer stays registered until
+      // LoadingScreen.remove() runs at the very end of startup. Between the world's DOM replacing the loading
+      // screen in the document and that call there is a window in which the container below no longer exists:
+      // an error logged then used to throw from in here, the throw was logged as another error, which came back
+      // here, and so on, burying the original error. With no container there is nowhere to show the message
+      // (and the world is already on screen), so leave it out; never throw from a console consumer.
       this.removeElement(this.logo);
+      var container = document.getElementById(this.id);
+      if (!container) return;
       if (!document.getElementById(this.brokenWorldMsgId)) {
-        var msg = this.buildBrokenWorldMessage();
-        document.getElementById(this.id).appendChild(msg);
+        container.appendChild(this.buildBrokenWorldMessage());
       }
     },
 
