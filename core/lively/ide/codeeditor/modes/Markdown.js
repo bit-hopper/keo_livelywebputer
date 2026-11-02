@@ -1,4 +1,4 @@
-module('lively.ide.codeeditor.modes.Markdown').requires('lively.ide.codeeditor.ace').requiresLib({url: "https://cdnjs.cloudflare.com/ajax/libs/marked/0.3.2/marked.js", loadTest: function() { return  typeof marked !== "undefined"; }}).toRun(function() {
+module('lively.ide.codeeditor.modes.Markdown').requires('lively.ide.codeeditor.ace').requiresLib({url: Config.codeBase + 'lib/marked/marked.js', loadTest: function() { return  typeof marked !== "undefined"; }}).toRun(function() {
 
 Object.extend(lively.ide.codeeditor.modes.Markdown, {
 
