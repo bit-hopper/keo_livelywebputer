@@ -95,7 +95,8 @@ module("lively.identity.IdentityVaultBridge")
           window.addEventListener("message", function (ev) {
             if (!self._frame || ev.source !== self._frame.contentWindow || ev.origin !== self._origin()) return;
             var m = ev.data;
-            if (!m || m.id === undefined) return;
+            // m.keo marks the shell's own bridge replies (transport "parent"); their ids are a different counter
+            if (!m || m.id === undefined || m.keo) return;
             var p = self._pending[m.id];
             if (!p) return;
             delete self._pending[m.id];
@@ -106,6 +107,22 @@ module("lively.identity.IdentityVaultBridge")
           });
         },
 
+        // identityVaultTransport "parent": there is no iframe to create, the page that embeds this one hosts the vault.
+        // A stand-in with the two members the rest of this file uses (contentWindow, style.cssText) lets the listener,
+        // _send and the show/hide calls work unchanged: messages go to window.parent, and assigning the "shown" CSS
+        // tells the parent to show or hide the vault's unlock button (it owns the real iframe).
+        _parentFrame: function () {
+          var self = this, shown = this.FRAME_SHOWN_CSS, origin = this._origin();
+          return {
+            contentWindow: window.parent,
+            style: {
+              set cssText(v) { window.parent.postMessage({ keo: 1, id: 0, op: "vault.frame", args: { shown: v === shown } }, origin); },
+              get cssText() { return ""; },
+            },
+            parentNode: null,
+          };
+        },
+
         // Create the hidden iframe once; callers racing it share one creation.
         _withFrame: function (thenDo) {
           var self = this;
@@ -113,6 +130,12 @@ module("lively.identity.IdentityVaultBridge")
           if (this._waiters) { this._waiters.push(thenDo); return; }
           var origin = this._origin();
           if (!origin) return thenDo(new Error("identity vault: identityVaultOrigin is not configured"));
+          if (lively.Config.get("identityVaultTransport") === "parent") {
+            if (!window.parent || window.parent === window) return thenDo(new Error("identity vault: transport 'parent' needs this page to be embedded"));
+            this._installListener();
+            this._frame = this._parentFrame();
+            return thenDo(null, this._frame);
+          }
           this._waiters = [thenDo];
           this._installListener();
 

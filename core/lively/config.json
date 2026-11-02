@@ -65,7 +65,8 @@
     ["identityRpId", "dev.tinylil.world", "WebAuthn relying party ID — must exactly match the hostname served over HTTPS."],
     ["identityOrigin", "https://dev.tinylil.world", "WebAuthn expected origin — the full HTTPS origin where the Lively world is served."],
     ["identityVaultOrigin", null, "Origin of the identity vault iframe (Encryption.md §19.5), e.g. https://vault.dev.tinylil.world. Its host must equal identityRpId or be a subdomain of it, and the server must be reachable on that host (the vault app origin allow-list is derived from the Host: 'vault.' + the app host; IDENTITY_VAULT_APP_ORIGINS adds more). Unset = off: the KEK and X25519 key stay in this page's memory as before."],
-    ["identityVaultGesture", false, "If true the vault ceremony always runs from a click inside the vault frame instead of trying a plain postMessage first (only needed if a browser refuses cross-origin ceremonies without a user gesture in the frame)."]
+    ["identityVaultGesture", false, "If true the vault ceremony always runs from a click inside the vault frame instead of trying a plain postMessage first (only needed if a browser refuses cross-origin ceremonies without a user gesture in the frame)."],
+    ["identityVaultTransport", null, "How this page reaches the identity vault. Unset (default): it creates the vault iframe itself from identityVaultOrigin. 'parent': this page is itself embedded in the page that hosts the vault, so the vault protocol is posted to window.parent (whose origin must be identityVaultOrigin) and that page forwards it to the vault; a request to show the vault's unlock button is sent to the parent as {keo:1, op:'vault.frame', args:{shown}}. Used when the world runs sandboxed inside the extension shell."]
   ],
 
   "wallet": [
