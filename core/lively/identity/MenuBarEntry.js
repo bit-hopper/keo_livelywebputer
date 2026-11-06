@@ -260,9 +260,11 @@ module("lively.identity.MenuBarEntry")
         // The worlds saved on this device: search, open, name, tag, copy, delete (inside keo only: they live in its shell). One window
         // at a time: asking again brings the open one forward.
         openWorldLibrary: function openWorldLibrary() {
-          var open = $world.submorphs.filter(function (m) { return m.name === "IdentityWorldLibrary"; })[0];
-          if (open) { open.comeForward(); if (open.focusSearch) open.focusSearch(); return; }
+          // Looked for again once the module has loaded: a second request made while it was still loading would otherwise see no
+          // window yet and open another.
           lively.require("lively.identity.WorldLibrary").toRun(function () {
+            var open = $world.submorphs.filter(function (m) { return m.name === "IdentityWorldLibrary"; })[0];
+            if (open) { open.comeForward(); open.focusSearch(); return; }
             var w = lively.BuildSpec("lively.identity.WorldLibrary").createMorph();
             w.openInWorldCenter();
             w.focusSearch();
