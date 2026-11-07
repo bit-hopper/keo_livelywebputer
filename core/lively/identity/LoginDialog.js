@@ -299,6 +299,17 @@ module("lively.identity.LoginDialog")
           });
         }
 
+        // For a webputer that has no identity (or not the one wanted): ask the shell for its dialog, which takes a code from a
+        // webputer that has the identity. Drawn also when the list is empty, which is when it is most needed.
+        if (list !== null) {
+          var linkBtn = new lively.morphic.Button(lively.rect(pad, y, w, 24), "Link this webputer to an identity ...");
+          linkBtn.name = "linkWebputerBtn";
+          content.addMorph(linkBtn);
+          paintButton(linkBtn, "rgb(214,214,214)", 1, 5, null);
+          lively.bindings.connect(linkBtn, "fire", self, "openLink");
+          y += 30;
+        }
+
         y += 2;
         // room for two lines: an error from the shell can wrap
         var statusText = new lively.morphic.Text(lively.rect(pad, y, w, 2 * 18 + 8), "");
@@ -345,6 +356,14 @@ module("lively.identity.LoginDialog")
           lively.identity.localIdentity.go("enter", undefined, function (goErr) {
             if (goErr) self.setStatus("Signed in, but could not open the page: " + (goErr.message || goErr), true);
           });
+        });
+      },
+
+      // The shell's dialog opens over the whole page; this window stays under it, so a refusal (one is already open) is shown here.
+      openLink: function openLink() {
+        var self = this;
+        lively.identity.localIdentity.enrollOpen("new", function (err) {
+          if (err) self.setStatus(err.message || String(err), true);
         });
       },
 
