@@ -69,6 +69,9 @@ module("lively.identity.MyFilesBrowser")
         ".mf-search input:focus { border-color: #2563eb; }",
         ".mf-point { display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 10px; font-size: 11px; font-weight: bold; color: #2563eb; background: #dbeafe; border: 1px solid #93c5fd; border-radius: 5px; cursor: pointer; }",
         ".mf-point .mf-ms { font-size: 14px; } .mf-point:hover { background: #bfdbfe; }",
+        // the pill: the same button with fully rounded ends, for what comes from another device (the files mock-up's lightning pill)
+        ".mf-point.mf-pill { border-radius: 15px; padding: 0 12px 0 9px; }",
+        ".mf-point + .mf-point { margin-left: 6px; }",
         ".mf-kinds { display: flex; flex-wrap: wrap; gap: 6px; }",
         ".mf-kinds button { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 12px; padding: 2px 11px; font-size: 11px; color: #2563eb; cursor: pointer; }",
         ".mf-kinds button:hover { background: #dbeafe; }",
@@ -576,7 +579,7 @@ module("lively.identity.MyFilesBrowser")
           els.point.innerHTML = (lf().pointAvailable
             ? '<button class="mf-point" data-act="point"><span class="mf-ms">attach_file</span>Point to a file</button>' : "") +
             (lively.identity.localIdentity.phoneReady
-              ? '<button class="mf-point" data-act="phone"><span class="mf-ms">smartphone</span>From a phone</button>' : "");
+              ? '<button class="mf-point mf-pill" data-act="phone" title="Receive files from a phone on the same Wi-Fi"><span class="mf-ms">bolt</span>WarpDrop</button>' : "");
         },
 
         _renderKinds: function () {
