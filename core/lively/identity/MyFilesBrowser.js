@@ -228,6 +228,7 @@ module("lively.identity.MyFilesBrowser")
           this._wire();
           var self = this;
           lf().checkPointAvailable(function () { if (self.world()) self._renderBar(); });
+          lively.identity.localIdentity.checkPhoneAvailable(function () { if (self.world()) self._renderBar(); });
           this.load();
         },
 
@@ -251,6 +252,7 @@ module("lively.identity.MyFilesBrowser")
             self._wire();
             self._els.q.value = self._query || "";
             lf().checkPointAvailable(function () { if (self.world()) self._renderBar(); });
+          lively.identity.localIdentity.checkPhoneAvailable(function () { if (self.world()) self._renderBar(); });
             self.load();
           })();
         },
@@ -382,6 +384,7 @@ module("lively.identity.MyFilesBrowser")
             case "clear": this._sel = []; this._last = null; this._renderSel(); this._renderList(); this._renderPrev(); break;
             case "repoint": this._menu = null; this.pointToFile(); break;
             case "point": this.pointToFile(); break;
+            case "phone": lively.require("lively.identity.PhoneDialog").toRun(function () { var open = $world.get("IdentityPhoneDialog"); if (open) open.comeForward(); else lively.BuildSpec("lively.identity.PhoneDialog").createMorph().openInWorldCenter(); }); break;
             case "newfolder": this._folderEdit = { id: null }; this._menu = null; this._renderSide(); this._renderPop(); break;
             case "more-files": this._shown += this._pageSize; this.load(); break;
             case "undo": var u = this._status && this._status.undo; this._status = null; this._renderStatus(); if (u) u(); break;
@@ -570,8 +573,10 @@ module("lively.identity.MyFilesBrowser")
           els.view.innerHTML =
             '<button data-act="view" data-view="list" title="List" aria-label="List" aria-pressed="' + (v !== "grid") + '"><span class="mf-ms">view_list</span></button>' +
             '<button data-act="view" data-view="grid" title="Grid with small pictures" aria-label="Grid" aria-pressed="' + (v === "grid") + '"><span class="mf-ms">grid_view</span></button>';
-          els.point.innerHTML = lf().pointAvailable
-            ? '<button class="mf-point" data-act="point"><span class="mf-ms">attach_file</span>Point to a file</button>' : "";
+          els.point.innerHTML = (lf().pointAvailable
+            ? '<button class="mf-point" data-act="point"><span class="mf-ms">attach_file</span>Point to a file</button>' : "") +
+            (lively.identity.localIdentity.phoneReady
+              ? '<button class="mf-point" data-act="phone"><span class="mf-ms">smartphone</span>From a phone</button>' : "");
         },
 
         _renderKinds: function () {
