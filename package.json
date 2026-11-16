@@ -32,7 +32,7 @@
     "life_star": "^0.9.0",
     "lively-loader": "^0.2.5",
     "lively.ast": "^0.7.47",
-    "lively.lang": "^0.7.9",
+    "lively.lang": "github:bit-hopper/lively.lang#0.7.9-keo.2",
     "minio": "^8.0.7",
     "node-pty": "^1.0.0",
     "open-location-code": "^1.0.3",
