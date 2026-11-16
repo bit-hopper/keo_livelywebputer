@@ -35,14 +35,16 @@ function runCell(page, source) {
   }), source);
 }
 
-// Puts a read-only rendering of one code_cell into the page and hydrates it.
+// Puts a read-only rendering of one code_cell into the page and hydrates it. `source` is the cell's code, which a cell holds
+// as its own text.
 async function renderCell(page, attrs, hostId = "logo-host") {
   await page.evaluate(([a, id]) => {
     const U = lively.identity.postCardUtils;
     const host = document.createElement("div");
     host.id = id;
     host.style.cssText = "position:fixed;left:0;top:60px;width:700px;background:#fff;z-index:99999";
-    host.innerHTML = U.snapshotToHtml({ type: "doc", content: [{ type: "code_cell", attrs: a }] });
+    const { source, ...rest } = a;
+    host.innerHTML = U.snapshotToHtml({ type: "doc", content: [source ? { type: "code_cell", attrs: rest, content: [{ type: "text", text: source }] } : { type: "code_cell", attrs: rest }] });
     document.body.appendChild(host);
     U.hydrateCodeCells(host);
   }, [attrs, hostId]);

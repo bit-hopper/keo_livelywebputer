@@ -32,14 +32,16 @@ function runCell(page, source) {
 
 const texts = (r) => r.segments.map((s) => s.kind + ":" + s.text);
 
-// Puts a read-only rendering of one code_cell into the page and hydrates it.
+// Puts a read-only rendering of one code_cell into the page and hydrates it. `source` is the cell's code, which a cell holds
+// as its own text.
 async function renderCell(page, attrs) {
   await page.evaluate((a) => {
     const U = lively.identity.postCardUtils;
     const host = document.createElement("div");
     host.id = "ml-host";
     host.style.cssText = "position:fixed;left:0;top:60px;width:700px;background:#fff;z-index:99999";
-    host.innerHTML = U.snapshotToHtml({ type: "doc", content: [{ type: "code_cell", attrs: a }] });
+    const { source, ...rest } = a;
+    host.innerHTML = U.snapshotToHtml({ type: "doc", content: [source ? { type: "code_cell", attrs: rest, content: [{ type: "text", text: source }] } : { type: "code_cell", attrs: rest }] });
     document.body.appendChild(host);
     U.hydrateCodeCells(host);
   }, attrs);
@@ -297,15 +299,17 @@ test.describe("ML cell in the wiki editor", () => {
     await expect(cell.locator(".lively-code-cell-badge")).toHaveText("🐪 ML");
     await expect(cell.locator(".lively-code-cell-help")).toContainText("Pragmas: (*# style: book|sml *)");
 
-    const ta = cell.locator("textarea");
-    await ta.fill("fun sq(x) = x * x;\nsq(12);");
-    await ta.blur();
-    const doc = await page.evaluate(() => {
+    // The caret is in the new cell: type the program with the real keyboard (Enter is a newline in a cell).
+    await page.keyboard.type("fun sq(x) = x * x;");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("sq(12);");
+    const read = () => page.evaluate(() => {
       const out = [];
-      window.__wikiEd.editorView.state.doc.descendants((n) => { if (n.type.name === "code_cell") out.push({ lang: n.attrs.language, src: n.attrs.source }); });
+      window.__wikiEd.editorView.state.doc.descendants((n) => { if (n.type.name === "code_cell") out.push({ lang: n.attrs.language, src: n.textContent }); });
       return out;
     });
-    expect(doc).toEqual([{ lang: "sml", src: "fun sq(x) = x * x;\nsq(12);" }]);
+    await expect.poll(read).toEqual([{ lang: "sml", src: "fun sq(x) = x * x;\nsq(12);" }]);
+    await expect(cell.locator("pre.lively-code-cell-source")).toHaveText("fun sq(x) = x * x;\nsq(12);");
 
     await cell.locator(".lively-code-cell-run-btn").click();
     await expect(cell.locator(".lively-code-cell-output pre.lively-code-cell-value")).toHaveText([

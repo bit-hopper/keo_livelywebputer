@@ -39,7 +39,11 @@ function createCodeCellRenderer(deps) {
 
   return function renderCodeCell(node) {
     var attrs = node.attrs || {};
-    var text = attrs.source || '';
+    // The cell's own text (the cell is a text block, the code is its content); a page saved before
+    // that has it in a `source` attribute and no children. The same rule as codeCellSource in the
+    // client's PostCardUtils.js, which this module cannot load.
+    var kids = node.content || [];
+    var text = kids.length ? kids.map(function (c) { return c.text || ''; }).join('') : (attrs.source || '');
     // A missing/empty language is the schema's default (python). Any other id this
     // build has no row for renders as plain text with no Run button -- never as
     // python, which would offer to feed that source to the wrong interpreter.

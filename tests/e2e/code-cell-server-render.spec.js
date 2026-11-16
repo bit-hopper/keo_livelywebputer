@@ -30,15 +30,20 @@ test("saved page: known cells render with controls, an unknown language as plain
         { language: "tpn", source: "TO sq n\n  x <- 3\n  REPEAT 4" },
         { language: "cobol", source: "fun f x = <b>x</b>" },
       ];
-      const doc = PM.model.Node.fromJSON(v.state.schema, { type: "doc", content: cells.map((attrs) => ({ type: "code_cell", attrs })) });
+      // A cell is a text block: its code is the node's own text, and the only attribute is the language.
+      const doc = PM.model.Node.fromJSON(v.state.schema, { type: "doc", content: cells.map((c) => ({ type: "code_cell", attrs: { language: c.language }, content: [{ type: "text", text: c.source }] })) });
       v.dispatch(v.state.tr.replaceWith(0, v.state.doc.content.size, doc.content));
       ed._saveNow((e) => (e ? rej(e) : res(true)));
     }));
 
-    // The saved envelope keeps the unknown language as written.
+    // The saved envelope keeps the unknown language as written, and each cell's code as its text (no `source` attribute).
     const saved = await acct.page.evaluate(([h, o]) => /** @type {any} */ (window).__latestEnvelope(h, o), [handle, objId]);
-    const attrs = saved.record.payload.snapshot.content.map((n) => n.attrs);
-    expect(attrs.map((a) => a.language)).toEqual(["python", "scheme", "sml", "logo", "tpn", "cobol"]);
+    const blocks = saved.record.payload.snapshot.content;
+    expect(blocks.map((n) => n.attrs.language)).toEqual(["python", "scheme", "sml", "logo", "tpn", "cobol"]);
+    expect(blocks.map((n) => n.attrs.source)).toEqual([undefined, undefined, undefined, undefined, undefined, undefined]);
+    expect(blocks.map((n) => (n.content || []).map((c) => c.text).join(""))).toEqual([
+      "print(1)", "(+ 1 2)", "(*# style: book *)\nfun f x = x + 1", "to sq :n\nrepeat 4 [fd :n rt 90]\nend", "TO sq n\n  x <- 3\n  REPEAT 4", "fun f x = <b>x</b>",
+    ]);
 
     // A fresh context: no cookies, so this is the public static page.
     const anon = await request.newContext({ baseURL: baseURL || "http://localhost:9001" });

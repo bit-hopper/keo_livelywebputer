@@ -302,7 +302,7 @@ test.describe("read-only Scheme cell", () => {
       host.style.cssText = "position:fixed;left:0;top:0;width:600px;background:#fff;z-index:99999";
       host.innerHTML = U.snapshotToHtml({
         type: "doc",
-        content: [{ type: "code_cell", attrs: { language: "scheme", source: "(define (sq x) (* x x))\n(display \"sq: \")\n(sq 7)" } }],
+        content: [{ type: "code_cell", attrs: { language: "scheme" }, content: [{ type: "text", text: "(define (sq x) (* x x))\n(display \"sq: \")\n(sq 7)" }] }],
       });
       document.body.appendChild(host);
       U.hydrateCodeCells(host);
@@ -343,7 +343,7 @@ test.describe("read-only Scheme cell", () => {
       host.style.cssText = "position:fixed;left:0;top:0;width:600px;background:#fff;z-index:99999";
       host.innerHTML = U.snapshotToHtml({
         type: "doc",
-        content: [{ type: "code_cell", attrs: { language: "scheme", source: "(define seen 1)\n(let loop () (loop))" } }],
+        content: [{ type: "code_cell", attrs: { language: "scheme" }, content: [{ type: "text", text: "(define seen 1)\n(let loop () (loop))" }] }],
       });
       document.body.appendChild(host);
       U.hydrateCodeCells(host);
@@ -368,7 +368,7 @@ test.describe("read-only Scheme cell", () => {
       host.style.cssText = "position:fixed;left:0;top:0;width:600px;background:#fff;z-index:99999";
       host.innerHTML = U.snapshotToHtml({
         type: "doc",
-        content: [{ type: "code_cell", attrs: { language: "scheme", source: "(string-append \"hello \" (read-line))" } }],
+        content: [{ type: "code_cell", attrs: { language: "scheme" }, content: [{ type: "text", text: "(string-append \"hello \" (read-line))" }] }],
       });
       document.body.appendChild(host);
       U.hydrateCodeCells(host);
@@ -390,7 +390,7 @@ test.describe("read-only Scheme cell", () => {
       host.style.cssText = "position:fixed;left:0;top:0;width:600px;background:#fff;z-index:99999";
       host.innerHTML = U.snapshotToHtml({
         type: "doc",
-        content: [{ type: "code_cell", attrs: { language: "scheme", source: "(define late 1)" } }],
+        content: [{ type: "code_cell", attrs: { language: "scheme" }, content: [{ type: "text", text: "(define late 1)" }] }],
       });
       document.body.appendChild(host);
       U.hydrateCodeCells(host);
@@ -430,10 +430,41 @@ async function insertCodeCell(page, kind) {
 }
 const insertSchemeCell = (page) => insertCodeCell(page, "Scheme");
 
+// Replaces the first cell's whole text through the editor, as a paste does (one transaction), and leaves the caret at the
+// end of it with the editor focused, as a fill of the old textarea did. Typing itself is under test in "Scheme source
+// editing", not here.
 async function setSource(page, text) {
-  const ta = page.locator(".lively-code-cell-source");
-  await ta.fill(text);
-  await ta.blur();
+  await page.evaluate((t) => {
+    const ed = window.__wikiEd, v = ed.editorView, PM = ed._ProseMirror().state;
+    let pos = null, node = null;
+    v.state.doc.descendants((n, p) => { if (pos === null && n.type.name === "code_cell") { pos = p; node = n; } });
+    const tr = v.state.tr;
+    if (node.content.size) tr.delete(pos + 1, pos + 1 + node.content.size);
+    if (t) tr.insertText(t, pos + 1);
+    tr.setSelection(PM.TextSelection.create(tr.doc, pos + 1 + t.length));
+    v.dispatch(tr);
+    v.focus();
+  }, text);
+}
+
+// The code of the first cell as the document holds it: a cell is a text block, so its code is its text.
+const docCellSource = (page) => page.evaluate(() => {
+  let s = null;
+  window.__wikiEd.editorView.state.doc.descendants((n) => { if (s === null && n.type.name === "code_cell") s = n.textContent; });
+  return s;
+});
+// The document AND the screen both show `text` for the first cell.
+async function expectSource(page, text) {
+  await expect.poll(() => docCellSource(page)).toBe(text);
+  expect(await page.locator(".lively-code-cell-editing pre.lively-code-cell-source").first().evaluate((p) => p.textContent)).toBe(text);
+}
+
+// A native cursor key (an arrow, Home, End) moves the browser's own selection at once, but the editor learns of it from a
+// selectionchange event a moment later (measured: an immediate read was stale in 24 of 30 tries, no key was lost in 60), and a
+// key pressed in between acts on where the caret WAS. A person cannot press two keys that close; a test can. Wait until the
+// editor holds the caret where the key put it, then press the next key. `offset` is the caret's place in its block's text.
+async function expectCaretOffset(page, offset) {
+  await expect.poll(() => page.evaluate(() => window.__wikiEd.editorView.state.selection.$from.parentOffset)).toBe(offset);
 }
 
 // Clicks the Python confirm dialog's "Run" button (a morphic Button) with a real mouse click.
@@ -470,12 +501,12 @@ async function templateInsert(page, kind) {
 // What the document holds vs. what the editor shows, for every code cell in order.
 const cellsInDocAndView = (page) => page.evaluate(() => {
   const doc = [];
-  window.__wikiEd.editorView.state.doc.descendants((n) => { if (n.type.name === "code_cell") doc.push({ lang: n.attrs.language, src: n.attrs.source }); });
+  window.__wikiEd.editorView.state.doc.descendants((n) => { if (n.type.name === "code_cell") doc.push({ lang: n.attrs.language, src: n.textContent }); });
   const view = [...document.querySelectorAll(".lively-code-cell-node")].map((c) => ({
     lang: c.getAttribute("data-language"),
     badge: c.querySelector(".lively-code-cell-badge").innerText,
     reset: !!c.querySelector(".lively-code-cell-reset-btn"),
-    src: c.querySelector("textarea").value,
+    src: c.querySelector("pre.lively-code-cell-source").textContent,
     status: c.querySelector(".lively-code-cell-status").innerText,
     out: c.querySelector(".lively-code-cell-output").innerText,
   }));
@@ -549,7 +580,7 @@ test.describe("Inserting cells while another block is selected", () => {
       const v = window.__wikiEd.editorView;
       let pos = null, size = 0;
       v.state.doc.descendants((n, p) => { if (pos === null && n.type.name === "code_cell") { pos = p; size = n.nodeSize; } });
-      v.dispatch(v.state.tr.replaceWith(pos, pos + size, v.state.schema.nodes.code_cell.create({ language: "python", source: "x = 1" })));
+      v.dispatch(v.state.tr.replaceWith(pos, pos + size, v.state.schema.nodes.code_cell.create({ language: "python" }, v.state.schema.text("x = 1"))));
     });
     const s = await cellsInDocAndView(page);
     expect(s.doc).toEqual([{ lang: "python", src: "x = 1" }]);
@@ -568,10 +599,10 @@ test.describe("Scheme cell in the wiki editor", () => {
     await expect(page.locator(".lively-code-cell-reset-btn")).toBeVisible();
 
     await setSource(page, "(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))\n(display \"fact 20 = \")\n(fact 20)");
-    // The edit is committed to the document node, not just the textarea.
+    // The edit is in the document: the cell's text.
     const saved = await page.evaluate(() => {
       let src = null, lang = null;
-      window.__wikiEd.editorView.state.doc.descendants((n) => { if (n.type.name === "code_cell") { src = n.attrs.source; lang = n.attrs.language; } });
+      window.__wikiEd.editorView.state.doc.descendants((n) => { if (n.type.name === "code_cell") { src = n.textContent; lang = n.attrs.language; } });
       return { src, lang };
     });
     expect(saved.lang).toBe("scheme");
@@ -741,7 +772,7 @@ test.describe("Python cell is unchanged", () => {
       const host = document.createElement("div");
       host.id = "py-host";
       host.style.cssText = "position:fixed;left:0;top:60px;width:600px;background:#fff;z-index:99999";
-      host.innerHTML = U.snapshotToHtml({ type: "doc", content: [{ type: "code_cell", attrs: { language: "python", source: src } }] });
+      host.innerHTML = U.snapshotToHtml({ type: "doc", content: [{ type: "code_cell", attrs: { language: "python" }, content: [{ type: "text", text: src }] }] });
       document.body.appendChild(host);
       U.hydrateCodeCells(host);
     }, source);
@@ -806,7 +837,7 @@ test.describe("Previously unverified paths", () => {
     await expect(preview.locator(".lively-code-cell-status")).toHaveText("Ran just now");
 
     await page.getByRole("button", { name: "Continue Editing", exact: true }).click();
-    await expect(page.locator(".lively-code-cell-node textarea.lively-code-cell-source")).toBeVisible();
+    await expect(page.locator(".lively-code-cell-editing pre.lively-code-cell-source")).toBeVisible();
     // Back in the editor the same shared environment is live.
     expect((await runCell(page, "pv")).segments[0].text).toBe("6");
   });
@@ -865,145 +896,139 @@ test.describe("Previously unverified paths", () => {
   });
 });
 
-// Paren-aware source editing (SchemeEditing): driven with real key events,
-// never `.value =`, so the keydown handlers and the browser's own edit path
-// are what's under test.
+// Paren-aware source editing (SchemeEditing): driven with real key events, so the editor's own key handling and the browser's
+// own edit path are what's under test. A cell is a text block of the editor, so every check reads the document's text for the
+// cell AND what is on screen (expectSource).
 test.describe("Scheme source editing", () => {
   async function focusedCell(page) {
     await openEditor(page);
-    await insertSchemeCell(page);
-    const ta = page.locator("textarea.lively-code-cell-source");
-    await ta.click();
-    return ta;
+    await insertSchemeCell(page);      // the caret is left inside the new cell
+    await expect.poll(() => page.evaluate(() => window.__wikiEd.editorView.state.selection.$from.parent.type.name)).toBe("code_cell");
   }
+  const focusLeftEditor = (page) => page.evaluate(() => !document.activeElement || !document.activeElement.closest(".ProseMirror"));
 
   test("auto-closes brackets, overtypes closers, and Enter indents", async ({ page }) => {
-    const ta = await focusedCell(page);
+    await focusedCell(page);
     await page.keyboard.type("(define (f x");
-    await expect(ta).toHaveValue("(define (f x))");
+    await expectSource(page, "(define (f x))");
     await page.keyboard.type(")");               // overtypes the auto-inserted closer
-    await expect(ta).toHaveValue("(define (f x))");
+    await expectSource(page, "(define (f x))");
     await page.keyboard.press("Enter");
-    await expect(ta).toHaveValue("(define (f x)\n  )");
+    await expectSource(page, "(define (f x)\n  )");
     await page.keyboard.type("(* x x");
     await page.keyboard.type(")");
-    await expect(ta).toHaveValue("(define (f x)\n  (* x x))");
-    // The edit reaches the document node through the normal debounced commit.
-    await ta.blur();
-    const src = await page.evaluate(() => {
-      let s = null;
-      window.__wikiEd.editorView.state.doc.descendants((n) => { if (n.type.name === "code_cell") s = n.attrs.source; });
-      return s;
-    });
-    expect(src).toBe("(define (f x)\n  (* x x))");
+    await expectSource(page, "(define (f x)\n  (* x x))");
     // and it runs
     await page.locator(".lively-code-cell-run-btn").click();
-    await page.locator("textarea.lively-code-cell-source").click();
     await expect(page.locator(".lively-code-cell-status")).toHaveText("Ran just now");
     expect((await runCell(page, "(f 7)")).segments[0].text).toBe("49");
   });
 
   test("quotes pair, Backspace removes an empty pair, character literals are left alone", async ({ page }) => {
-    const ta = await focusedCell(page);
+    await focusedCell(page);
     await page.keyboard.type('(display "hi');
-    await expect(ta).toHaveValue('(display "hi")');   // only the "(" is auto-closed; the quote paired inside it
-    await page.keyboard.type('"');                    // overtypes the closing quote
-    await page.keyboard.press("Backspace");           // removes the quote just typed (not a pair)
-    await ta.fill("");
+    await expectSource(page, '(display "hi")');   // only the "(" is auto-closed; the quote paired inside it
+    await page.keyboard.type('"');                // overtypes the closing quote
+    await page.keyboard.press("Backspace");       // removes the quote just typed (not a pair)
+    await setSource(page, "");
     await page.keyboard.type("()");
-    await expect(ta).toHaveValue("()");
+    await expectSource(page, "()");
     await page.keyboard.press("ArrowLeft");
-    await page.keyboard.press("Backspace");           // empty pair -> both go
-    await expect(ta).toHaveValue("");
+    await expectCaretOffset(page, 1);
+    await page.keyboard.press("Backspace");       // empty pair -> both go
+    await expectSource(page, "");
     const charLit = "#" + String.fromCharCode(92) + "(";   // the character literal #\(
     await page.keyboard.type(charLit);                // no auto-close after #\
-    await expect(ta).toHaveValue(charLit);
+    await expectSource(page, charLit);
     await page.keyboard.type(" ; (");                 // inside a comment: no auto-close
-    await expect(ta).toHaveValue(charLit + " ; (");
+    await expectSource(page, charLit + " ; (");
   });
 
   test("Tab re-indents the selected lines; Ctrl+Z undoes it as one step", async ({ page }) => {
-    const ta = await focusedCell(page);
+    await focusedCell(page);
     const messy = "(define (fact n)\n(if (= n 0)\n1\n(* n\n(fact (- n 1)))))";
-    await ta.fill(messy);
-    await page.keyboard.press("Control+a");
+    await setSource(page, messy);
+    await page.waitForTimeout(700);               // the document's undo groups edits made within half a second: keep the re-indent a step of its own
+    await page.keyboard.press("Control+a");       // inside a cell, select-all selects the cell's code
     await page.keyboard.press("Tab");
-    await expect(ta).toHaveValue("(define (fact n)\n  (if (= n 0)\n      1\n      (* n\n         (fact (- n 1)))))");
+    await expectSource(page, "(define (fact n)\n  (if (= n 0)\n      1\n      (* n\n         (fact (- n 1)))))");
     await page.keyboard.press("Control+z");
-    await expect(ta).toHaveValue(messy);
+    await expectSource(page, messy);
   });
 
   test("Tab on a single line indents just that line and keeps the caret in place", async ({ page }) => {
-    const ta = await focusedCell(page);
-    await ta.fill("(foo a\nb)");
-    await page.keyboard.press("Control+End");
-    await page.keyboard.press("ArrowLeft");          // between b and )
+    await focusedCell(page);
+    await setSource(page, "(foo a\nb)");           // the caret is left at the end
+    await page.keyboard.press("ArrowLeft");         // between b and )
+    await expectCaretOffset(page, "(foo a\nb)".length - 1);
     await page.keyboard.press("Tab");
-    await expect(ta).toHaveValue("(foo a\n     b)");
+    await expectSource(page, "(foo a\n     b)");
     await page.keyboard.type("X");
-    await expect(ta).toHaveValue("(foo a\n     bX)");
+    await expectSource(page, "(foo a\n     bX)");
   });
 
   test("the bracket next to the caret and its partner are highlighted", async ({ page }) => {
-    const ta = await focusedCell(page);
-    await ta.fill("(a (b) c)");
-    await page.keyboard.press("Control+Home");
-    await page.keyboard.press("ArrowRight");         // just after the first "("
-    const marks = page.locator(".lively-code-cell-backdrop-inner mark");
+    await focusedCell(page);
+    await setSource(page, "(a (b) c)");
+    await page.keyboard.press("Control+Home");     // the cell is the first block: the start of the page is the start of its code
+    await page.keyboard.press("ArrowRight");       // just after the first "("
+    const marks = page.locator(".lively-code-cell-source .lively-bracket-ok");
     await expect(marks).toHaveCount(2);
     await expect(marks.nth(0)).toHaveText("(");
     await expect(marks.nth(1)).toHaveText(")");
-    // The marks sit exactly over the characters they highlight: same left offset
-    // as the textarea's text, one cell per column.
+    // The marks are the characters themselves, highlighted in place: the first sits at the code's left edge (16px padding),
+    // its partner at column 8, and both are centred on the first line (14px padding, a 1.55 * 13px line box)
     const geo = await page.evaluate(() => {
-      const t = document.querySelector("textarea.lively-code-cell-source").getBoundingClientRect();
-      const ms = [...document.querySelectorAll(".lively-code-cell-backdrop-inner mark")].map((m) => m.getBoundingClientRect());
-      return { taLeft: t.left, taTop: t.top, m0: ms[0].left, m1: ms[1].left, w: ms[0].width, mTop: ms[0].top, mH: ms[0].height };
+      const p = document.querySelector(".lively-code-cell-editing pre.lively-code-cell-source").getBoundingClientRect();
+      const ms = [...document.querySelectorAll(".lively-code-cell-source .lively-bracket-ok")].map((m) => m.getBoundingClientRect());
+      return { preLeft: p.left, preTop: p.top, m0: ms[0].left, m1: ms[1].left, w: ms[0].width, mTop: ms[0].top, mH: ms[0].height };
     });
-    expect(Math.abs(geo.m0 - (geo.taLeft + 16))).toBeLessThan(1.5);          // padding-left
-    expect(Math.abs((geo.m1 - geo.m0) - 8 * geo.w)).toBeLessThan(1.5);       // ")" is at column 8
-    // vertically the mark is centred on the first text line (14px padding, 1.55 * 13px line box)
-    expect(Math.abs((geo.mTop + geo.mH / 2) - (geo.taTop + 14 + (1.55 * 13) / 2))).toBeLessThan(2);
+    expect(Math.abs(geo.m0 - (geo.preLeft + 16))).toBeLessThan(1.5);
+    expect(Math.abs((geo.m1 - geo.m0) - 8 * geo.w)).toBeLessThan(1.5);
+    expect(Math.abs((geo.mTop + geo.mH / 2) - (geo.preTop + 14 + (1.55 * 13) / 2))).toBeLessThan(2);
     if (process.env.SCHEME_SHOT) await page.locator(".lively-code-cell-node").screenshot({ path: process.env.SCHEME_SHOT });
     // moving away clears them; an unmatched bracket is flagged
     await page.keyboard.press("ArrowRight");
     await expect(marks).toHaveCount(0);
-    await ta.fill("(a b");
+    await setSource(page, "(a b");
     await page.keyboard.press("Control+Home");
-    await expect(page.locator(".lively-code-cell-backdrop-inner mark.bad")).toHaveCount(1);
+    await expect(page.locator(".lively-code-cell-source .lively-bracket-bad")).toHaveCount(1);
   });
 
-  test("Escape and Shift+Tab are not trapped", async ({ page }) => {
-    const ta = await focusedCell(page);
+  test("Shift+Tab is not trapped: focus can leave the editor", async ({ page }) => {
+    await focusedCell(page);
     await page.keyboard.type("(a");
+    expect(await focusLeftEditor(page)).toBe(false);
     await page.keyboard.press("Shift+Tab");
-    await expect(ta).not.toBeFocused();
-    await ta.click();
-    await page.keyboard.press("Escape");
-    await expect(ta).not.toBeFocused();
+    expect(await focusLeftEditor(page)).toBe(true);
   });
 
-  test("a Python cell keeps its plain textarea (no brackets paired, Tab not trapped)", async ({ page }) => {
+  test("a Python cell has no editing helper: nothing is paired, and Tab is not trapped", async ({ page }) => {
     await openEditor(page);
     await insertCodeCell(page, "Python");
-    await expect(page.locator(".lively-code-cell-editwrap")).toHaveCount(0);
-    const ta = page.locator("textarea.lively-code-cell-source");
-    await ta.click();
     await page.keyboard.type("print(");
-    await expect(ta).toHaveValue("print(");
+    await expectSource(page, "print(");
+    await expect(page.locator(".lively-code-cell-source .lively-bracket-ok, .lively-code-cell-source .lively-bracket-bad")).toHaveCount(0);
+    // Tab is not taken by a cell with no helper: it types nothing and moves focus on. The first stop is the cell's own Run button
+    // (the header is inside the editor's root, and a Tab from the root goes to its first tab stop), the next one is out of the
+    // editor: no trap.
+    await page.keyboard.press("Tab");
+    await expectSource(page, "print(");
+    expect(await page.evaluate(() => document.activeElement.classList.contains("ProseMirror"))).toBe(false);
+    await page.keyboard.press("Tab");
+    expect(await focusLeftEditor(page)).toBe(true);
   });
 });
 
-test.describe("Code cell auto-sizing", () => {
-  // Real measured geometry, not the style value that was set.
+test.describe("Code cell sizing", () => {
+  // Real measured geometry, not a style value that was set. The code is the page's own text, so the pane is as tall as its
+  // lines up to the stylesheet's cap, then it scrolls inside itself.
   const geo = (page) => page.evaluate(() => {
-    const ta = document.querySelector("textarea.lively-code-cell-source");
+    const pre = document.querySelector(".lively-code-cell-editing pre.lively-code-cell-source");
     const cell = document.querySelector(".lively-code-cell-node");
-    const back = document.querySelector(".lively-code-cell-backdrop");
     return {
-      h: ta.offsetHeight, scrollH: ta.scrollHeight, clientH: ta.clientHeight,
-      cellH: cell.offsetHeight, backH: back ? back.offsetHeight : null,
-      overflowY: getComputedStyle(ta).overflowY, resize: getComputedStyle(ta).resize,
+      h: pre.offsetHeight, scrollH: pre.scrollHeight, clientH: pre.clientHeight, cellH: cell.offsetHeight,
+      overflowY: getComputedStyle(pre).overflowY, scrollW: pre.scrollWidth, clientW: pre.clientWidth,
     };
   });
   const lines = (n) => Array.from({ length: n }, (_, i) => "(+ " + i + " 1)").join("\n");
@@ -1012,22 +1037,17 @@ test.describe("Code cell auto-sizing", () => {
     test(kind + " cell grows and shrinks with its line count, and caps at the maximum", async ({ page }) => {
       await openEditor(page);
       await insertCodeCell(page, kind);
-      const ta = page.locator("textarea.lively-code-cell-source");
-      await ta.click();
 
       const empty = await geo(page);
       expect(empty.h).toBe(72);
-      expect(empty.resize).toBe("none");
 
-      // Real typing: each Enter adds a line (Scheme's Enter is auto-indenting, Python's is native).
+      // Real typing: each Enter adds a line (Scheme's Enter is auto-indenting, Python's is a plain newline).
       for (let i = 0; i < 9; i++) { await page.keyboard.type("x"); await page.keyboard.press("Enter"); }
       await page.keyboard.type("x");
       const ten = await geo(page);
       expect(Math.abs(ten.h - (10 * 1.55 * 13 + 28))).toBeLessThanOrEqual(2);   // scrollHeight rounds
-      expect(ten.scrollH).toBeLessThanOrEqual(ten.clientH);     // nothing scrolls inside
-      expect(ten.overflowY).toBe("hidden");
-      expect(ten.cellH).toBeGreaterThan(empty.cellH);           // the card itself follows
-      if (kind === "Scheme") expect(ten.backH).toBe(ten.h);     // the backdrop follows
+      expect(ten.scrollH).toBeLessThanOrEqual(ten.clientH + 1);                 // nothing scrolls inside
+      expect(ten.cellH).toBeGreaterThan(empty.cellH);                           // the card itself follows
 
       // Backspacing lines away shrinks it again.
       for (let i = 0; i < 6; i++) { await page.keyboard.press("Backspace"); await page.keyboard.press("Backspace"); }
@@ -1035,39 +1055,39 @@ test.describe("Code cell auto-sizing", () => {
       expect(few.h).toBeLessThan(ten.h);
 
       // A big paste hits the cap and scrolls inside the box.
-      await ta.fill(lines(80));
+      await setSource(page, lines(80));
       const big = await geo(page);
       expect(big.h).toBe(520);
       expect(big.overflowY).toBe("auto");
       expect(big.scrollH).toBeGreaterThan(big.clientH);
 
       // Replacing it with one line collapses back to the minimum.
-      await ta.fill("1");
+      await setSource(page, "1");
       expect((await geo(page)).h).toBe(72);
     });
   }
 
-  test("a long line adds a horizontal scrollbar without clipping the last line", async ({ page }) => {
+  test("a long line scrolls sideways without clipping the last line", async ({ page }) => {
     await openEditor(page);
     await insertCodeCell(page, "Scheme");
-    const ta = page.locator("textarea.lively-code-cell-source");
-    await ta.fill(lines(8) + "\n" + "(list " + "1 ".repeat(400) + ")");
+    await setSource(page, lines(8) + "\n" + "(list " + "1 ".repeat(400) + ")");
     const g = await geo(page);
-    expect(g.scrollH).toBeLessThanOrEqual(g.clientH);   // vertical content fits; scrollbar room was added
-    // The line really overflows sideways. (Headless Chromium uses overlay scrollbars that take no
-    // room, so the scrollbar's own height can't be asserted here; the point is nothing is clipped.)
-    expect(await page.evaluate(() => { const t = document.querySelector("textarea.lively-code-cell-source"); return t.scrollWidth > t.clientWidth; })).toBe(true);
+    expect(g.scrollH).toBeLessThanOrEqual(g.clientH + 1);   // the vertical content fits
+    // The line really overflows sideways. (A headless browser uses overlay scrollbars that take no room, so the scrollbar's
+    // own height can't be asserted here; the point is nothing is clipped and the pane does not widen the page.)
+    expect(g.scrollW).toBeGreaterThan(g.clientW);
   });
 
-  test("an incoming collaborator edit resizes an unfocused cell", async ({ page }) => {
+  test("an incoming edit to an unfocused cell resizes it", async ({ page }) => {
     await openEditor(page);
     await insertCodeCell(page, "Scheme");
     const before = await geo(page);
+    // what a collaborator's change looks like to this editor: a change to the document, not typed here
     await page.evaluate((src) => {
       const v = window.__wikiEd.editorView;
-      let pos = null, node = null;
-      v.state.doc.descendants((n, p) => { if (pos === null && n.type.name === "code_cell") { pos = p; node = n; } });
-      v.dispatch(v.state.tr.setNodeMarkup(pos, null, Object.assign({}, node.attrs, { source: src })));
+      let pos = null;
+      v.state.doc.descendants((n, p) => { if (pos === null && n.type.name === "code_cell") pos = p; });
+      v.dispatch(v.state.tr.insertText(src, pos + 1));
     }, lines(12));
     await expect.poll(async () => (await geo(page)).h).toBeGreaterThan(before.h + 100);
   });

@@ -87,6 +87,47 @@ test('non-text blocks are matched whole', () => {
   assert.deepStrictEqual(ops(doc(img('a.png'), p('x')), doc(img('b.png'), p('x'))), ['del', 'ins', 'eq']);
 });
 
+// A code cell keeps its source as its own text, so an edit to it diffs word by word like a paragraph. A version
+// saved before that held the source in a `source` attribute with no children; history has both kinds.
+const cell = (language, src) => ({ type: 'code_cell', attrs: { language }, content: src === '' ? [] : [text(src)] });
+const oldCell = (language, src) => ({ type: 'code_cell', attrs: { language, source: src } });
+
+test('an edited code cell becomes one modified line with a word diff', () => {
+  const r = D.diffSnapshots(doc(p('before'), cell('python', 'x = compute(1, 2)')), doc(p('before'), cell('python', 'x = compute(1, 3)')));
+  assert.deepStrictEqual(plain(r.ops.map((o) => o.op)), ['eq', 'mod']);
+  assert.strictEqual(r.ops[1].newItem.tag, 'pre');
+  assert.strictEqual(r.ops[1].fmtOnly, false);
+  assert.ok(r.ops[1].words.some((w) => w.t === 'del' || w.t === 'ins'));
+});
+
+test('a cell of the old shape is read from its source attribute, and edits across the two shapes are word diffs too', () => {
+  const r = D.diffSnapshots(doc(oldCell('scheme', '(+ 1 2)')), doc(cell('scheme', '(+ 1 3)')));
+  assert.deepStrictEqual(plain(r.ops.map((o) => o.op)), ['mod']);
+  assert.strictEqual(r.ops[0].oldItem.text, '(+ 1 2)');
+  assert.strictEqual(r.ops[0].newItem.text, '(+ 1 3)');
+  assert.strictEqual(r.ops[0].fmtOnly, false);
+});
+
+test('the same source in the old and the new shape shows no change of words', () => {
+  const r = D.diffSnapshots(doc(oldCell('python', 'print(1)\nprint(2)')), doc(cell('python', 'print(1)\nprint(2)')));
+  assert.strictEqual(r.ops.every((o) => o.op === 'eq' || (o.op === 'mod' && o.fmtOnly === true)), true);
+  assert.strictEqual(r.ops.some((o) => o.op === 'mod' && o.words.some((w) => w.t !== 'eq')), false);
+});
+
+test('an empty cell that gains its first line is a removal plus an insertion, as an empty paragraph or code block is (no words in common)', () => {
+  const r = D.diffSnapshots(doc(cell('python', '')), doc(cell('python', 'print(1)')));
+  assert.deepStrictEqual(plain(r.ops.map((o) => o.op)), ['del', 'ins']);
+  assert.strictEqual(r.changed, true);
+  assert.strictEqual(r.ops[0].item.text, '');
+  assert.strictEqual(r.ops[1].item.text, 'print(1)');
+});
+
+test('a cell changing language with the same source is a formatting change, not an edit of its words', () => {
+  const r = D.diffSnapshots(doc(cell('python', 'x = 1')), doc(cell('scheme', 'x = 1')));
+  assert.deepStrictEqual(plain(r.ops.map((o) => o.op)), ['mod']);
+  assert.strictEqual(r.ops[0].fmtOnly, true);
+});
+
 test('wordDiff keeps spacing changes visible', () => {
   const w = D.wordDiff('a b', 'a  b');
   assert.ok(w.some((x) => x.t !== 'eq'));

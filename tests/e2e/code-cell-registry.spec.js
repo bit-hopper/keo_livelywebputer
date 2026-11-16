@@ -24,17 +24,21 @@ async function boot(page) {
   }));
 }
 
-// Puts a read-only rendering of one code_cell into the page and hydrates it.
-async function renderCell(page, attrs) {
-  await page.evaluate((a) => {
+// Puts a read-only rendering of one code_cell into the page and hydrates it. `source` is the cell's code, which a cell holds
+// as its own text; `legacy: true` builds the OLD shape instead (the code in a `source` attribute, no children), which pages
+// saved before the cell became a text block still have.
+async function renderCell(page, attrs, legacy = false) {
+  await page.evaluate(([a, old]) => {
     const U = lively.identity.postCardUtils;
     const host = document.createElement("div");
     host.id = "cell-host";
     host.style.cssText = "position:fixed;left:0;top:60px;width:600px;background:#fff;z-index:99999";
-    host.innerHTML = U.snapshotToHtml({ type: "doc", content: [{ type: "code_cell", attrs: a }] });
+    const { source, ...rest } = a;
+    const node = old || !source ? { type: "code_cell", attrs: a } : { type: "code_cell", attrs: rest, content: [{ type: "text", text: source }] };
+    host.innerHTML = U.snapshotToHtml({ type: "doc", content: [node] });
     document.body.appendChild(host);
     U.hydrateCodeCells(host);
-  }, attrs);
+  }, [attrs, legacy]);
 }
 
 test.describe("code-cell language registry (client)", () => {
@@ -143,6 +147,20 @@ test.describe("unknown language, read-only render", () => {
     await expect(cell.locator("pre.lively-code-cell-source .hljs-number")).toHaveCount(2);
   });
 
+  test("a cell of the old shape (its code in a `source` attribute) renders exactly like one with its code as text", async ({ page }) => {
+    await boot(page);
+    const same = await page.evaluate(() => {
+      const U = lively.identity.postCardUtils;
+      return [["python", "print(1)"], ["scheme", "(+ 1 2)"], ["sml", "fun f x = x + 1"], ["cobol", "x <b>"]].map(([language, source]) =>
+        U.snapshotToHtml({ type: "doc", content: [{ type: "code_cell", attrs: { language, source } }] }) ===
+        U.snapshotToHtml({ type: "doc", content: [{ type: "code_cell", attrs: { language }, content: [{ type: "text", text: source }] }] }));
+    });
+    expect(same).toEqual([true, true, true, true]);
+    await renderCell(page, { language: "scheme", source: "(+ 1 2)" }, true);          // and the old shape runs through the same viewer
+    await expect(page.locator("#cell-host .lively-code-cell-badge")).toHaveText("λ Scheme");
+    await expect(page.locator("#cell-host pre.lively-code-cell-source .hljs-number")).toHaveCount(2);
+  });
+
   test("a cell with no language attr is python", async ({ page }) => {
     await boot(page);
     await renderCell(page, { source: "print(1)" });
@@ -169,14 +187,15 @@ const setCell = (page, attrs) => page.evaluate((a) => {
   const v = window.__wikiEd.editorView;
   let pos = null, size = 0;
   v.state.doc.descendants((n, p) => { if (pos === null && n.type.name === "code_cell") { pos = p; size = n.nodeSize; } });
-  const node = v.state.schema.nodes.code_cell.create(a);
+  const { source, ...rest } = a;           // the code is the cell's own text
+  const node = v.state.schema.nodes.code_cell.create(rest, source ? v.state.schema.text(source) : null);
   if (pos === null) v.dispatch(v.state.tr.insert(v.state.doc.content.size, node));
   else v.dispatch(v.state.tr.replaceWith(pos, pos + size, node));
 }, attrs);
 
 const cellState = (page) => page.evaluate(() => {
   const doc = [];
-  window.__wikiEd.editorView.state.doc.descendants((n) => { if (n.type.name === "code_cell") doc.push({ lang: n.attrs.language, src: n.attrs.source }); });
+  window.__wikiEd.editorView.state.doc.descendants((n) => { if (n.type.name === "code_cell") doc.push({ lang: n.attrs.language, src: n.textContent }); });
   const view = [...document.querySelectorAll(".lively-code-cell-node")].map((c) => ({
     lang: c.getAttribute("data-language"),
     badge: c.querySelector(".lively-code-cell-badge").innerText,
@@ -184,7 +203,7 @@ const cellState = (page) => page.evaluate(() => {
     stop: !!c.querySelector(".lively-code-cell-stop-btn"),
     reset: !!c.querySelector(".lively-code-cell-reset-btn"),
     status: !!c.querySelector(".lively-code-cell-status"),
-    src: c.querySelector("textarea").value,
+    src: c.querySelector("pre.lively-code-cell-source").textContent,
     out: c.querySelector(".lively-code-cell-output").innerText,
   }));
   return { doc, view };
@@ -201,12 +220,13 @@ test.describe("unknown language in the wiki editor", () => {
     expect(s.view[0]).toMatchObject({ lang: "cobol", badge: "cobol", run: false, stop: false, reset: false, status: false, src: "val x = 1" });
     expect(s.view[0].out).toContain("this build doesn't have");
 
-    // The source stays editable and the edit reaches the document with the language intact.
-    const ta = page.locator(".lively-code-cell-source");
-    await ta.fill("val x = 2");
-    await ta.blur();
-    const after = await cellState(page);
-    expect(after.doc).toEqual([{ lang: "cobol", src: "val x = 2" }]);
+    // The source stays editable and the edit reaches the document with the language intact: select the cell's code
+    // (select-all inside a cell) and type over it with the real keyboard.
+    await page.locator(".lively-code-cell-editing pre.lively-code-cell-source").click();
+    await page.keyboard.press("Control+a");
+    await page.keyboard.type("val x = 2");
+    await expect.poll(async () => (await cellState(page)).doc).toEqual([{ lang: "cobol", src: "val x = 2" }]);
+    expect((await cellState(page)).view[0].src).toBe("val x = 2");
   });
 
   test("a cell that becomes a known language (or back) gets a fresh view", async ({ page }) => {
@@ -241,6 +261,8 @@ test.describe("server-side render", () => {
     hljs,
     escapeHtml: (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"),
   });
+  // A cell as page JSON has it: the code is the cell's own text (an empty cell has no text node).
+  const cell = (language, source) => ({ type: "code_cell", attrs: language === undefined ? {} : { language }, ...(source ? { content: [{ type: "text", text: source }] } : {}) });
 
   test("the server's table matches the client registry", async ({ page }) => {
     await boot(page);
@@ -251,16 +273,16 @@ test.describe("server-side render", () => {
   });
 
   test("known languages render as before", () => {
-    const py = render({ attrs: { language: "python", source: "print(1)" } });
+    const py = render(cell("python", "print(1)"));
     expect(py).toContain('data-language="python"');
     expect(py).toContain("🐍 Python");
     expect(py).toContain("lively-code-cell-run-btn");
     expect(py).not.toContain("lively-code-cell-reset-btn");
-    const sc = render({ attrs: { language: "scheme", source: "(+ 1 2)" } });
+    const sc = render(cell("scheme", "(+ 1 2)"));
     expect(sc).toContain("λ Scheme");
     expect(sc).toContain("lively-code-cell-reset-btn");
     expect(sc).toContain("hljs-number");
-    const ml = render({ attrs: { language: "sml", source: "fun f x = x + 1" } });
+    const ml = render(cell("sml", "fun f x = x + 1"));
     expect(ml).toContain('data-language="sml"');
     expect(ml).toContain("🐪 ML");
     expect(ml).toContain("lively-code-cell-reset-btn");
@@ -268,7 +290,7 @@ test.describe("server-side render", () => {
     expect(ml).toContain('<div class="lively-code-cell-help">');
     expect(ml).toContain("(*# style: book|sml *)");
     expect(ml).toContain("-&gt; =&gt; :&gt;");
-    const lg = render({ attrs: { language: "logo", source: "to sq :n\n  repeat 4 [fd :n rt 90]\nend ; done" } });
+    const lg = render(cell("logo", "to sq :n\n  repeat 4 [fd :n rt 90]\nend ; done"));
     expect(lg).toContain('data-language="logo"');
     expect(lg).toContain("🐢 Logo");
     expect(lg).toContain("lively-code-cell-reset-btn");
@@ -276,7 +298,7 @@ test.describe("server-side render", () => {
     expect(lg).toContain("hljs-variable");
     expect(lg).toContain("hljs-comment");
     expect(lg).toContain('<div class="lively-code-cell-help">');
-    const tp = render({ attrs: { language: "tpn", source: "TO POLY SIDE\n  X <- 2 ^ 3" } });
+    const tp = render(cell("tpn", "TO POLY SIDE\n  X <- 2 ^ 3"));
     expect(tp).toContain('data-language="tpn"');
     expect(tp).toContain("🐢 TPN");
     expect(tp).toContain("hljs-keyword");
@@ -284,12 +306,25 @@ test.describe("server-side render", () => {
     expect(sc).not.toContain("lively-code-cell-help");
     expect(py).not.toContain("lively-code-cell-help");
     // No language attr: the schema default.
-    expect(render({ attrs: { source: "x" } })).toContain('data-language="python"');
+    expect(render(cell(undefined, "x"))).toContain('data-language="python"');
     expect(render({})).toContain('data-language="python"');
   });
 
+  test("a page saved before the cell was a text block (a `source` attribute, no children) renders the same", () => {
+    for (const [language, source] of [["python", "print(1)"], ["scheme", "(+ 1 2)"], ["sml", "fun f x = x + 1"], ["cobol", "fun f x = <b>x</b>"]]) {
+      expect(render({ attrs: { language, source } })).toBe(render(cell(language, source)));
+    }
+    expect(render({ attrs: { source: "x" } })).toContain('data-language="python"');
+  });
+
+  test("a cell with text uses it, and a leftover `source` attribute beside it is not read", () => {
+    const html = render({ type: "code_cell", attrs: { language: "python", source: "STALE" }, content: [{ type: "text", text: "fresh" }] });
+    expect(html).toContain("fresh");
+    expect(html).not.toContain("STALE");
+  });
+
   test("an unknown language is plain text with a note and no controls", () => {
-    const html = render({ attrs: { language: "cobol", source: "fun f x = <b>x</b>" } });
+    const html = render(cell("cobol", "fun f x = <b>x</b>"));
     expect(html).toContain('data-language="cobol"');
     expect(html).toContain('<span class="lively-code-cell-badge">cobol</span>');
     expect(html).toContain("fun f x = &lt;b&gt;x&lt;/b&gt;");
@@ -299,11 +334,11 @@ test.describe("server-side render", () => {
   });
 
   test("an unknown language id is escaped, and names on Object.prototype are not rows", () => {
-    const evil = render({ attrs: { language: '"><img src=x>', source: "1" } });
+    const evil = render(cell('"><img src=x>', "1"));
     expect(evil).not.toContain("<img");
     expect(evil).toContain("&quot;&gt;&lt;img src=x&gt;");
     for (const name of ["constructor", "__proto__", "toString"]) {
-      const html = render({ attrs: { language: name, source: "1" } });
+      const html = render(cell(name, "1"));
       expect(html).toContain("this build doesn't have");
       expect(html).not.toContain("run-btn");
     }
