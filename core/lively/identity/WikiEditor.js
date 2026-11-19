@@ -39,7 +39,8 @@
  *
  * Two places the page can live:
  *   - on a host (everything above: the server loads, saves and syncs it), and
- *   - ON THIS DEVICE, inside keo with a local identity (openLocal below; `_local` is true). There is no server: the shell keeps the page
+ *   - ON THIS DEVICE, inside keo with a local identity (openLocal below; `_local` is true; the page is the whole world, as on a host, and
+ *     a person goes to it with LocalIdentity.wikiGo). There is no server: the shell keeps the page
  *     as signed edits in a sealed store (shell/keo-wikipages.js) and the editor only asks it, through lively.identity.localIdentity
  *     (wikiOpen, wikiEdit, wikiClose). Loading, saving, edit access and sync then take the 'keo local pages' methods instead of the XHR,
  *     serializer and websocket ones; nothing else about the editor changes. What the editor sends is ONLY what its own client wrote
@@ -929,19 +930,7 @@ module('lively.identity.WikiEditor')
         });
         row.appendChild(saveBtn);
 
-        // On this device the page is in a window of its own: Close saves what is typed, then closes the window (as the window's own close
-        // control does).
-        if (this._local) {
-          var closeBtn = document.createElement('button');
-          closeBtn.textContent = 'Close';
-          closeBtn.title = 'Save, then close this page';
-          closeBtn.style.cssText = 'flex:0 0 auto;width:64px;height:24px;padding:0;font-size:12px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff;';
-          closeBtn.addEventListener('mousedown', function (e) {
-            e.preventDefault(); e.stopPropagation();
-            self._closeLocal();
-          });
-          row.appendChild(closeBtn);
-        }
+        // On this device the page is the whole world, so there is nothing to close: leaving is moving to another world (menu bar, My worlds).
       },
 
       // Reflects the current selection's formatting into the toolbar —
@@ -2423,32 +2412,21 @@ module('lively.identity.WikiEditor')
         if (typeof $world !== 'undefined' && $world && $world.setStatusMessage) $world.setStatusMessage(message, Color.red, 8);
       },
 
-      // Gives the shell's editing session back (it keeps a limited number open).
-      _endLocalSession: function () {
-        var s = this._pageSession;
-        this._pageSession = null;
-        if (s) lively.identity.localIdentity.wikiClose(s);
+      // The world calls this on each of its morphs when the browser window changes size (World>>onWindowResize, after it has fitted itself to
+      // the new size). A page that is the whole world follows, as the home page does; the text inside is laid out by the browser from the new size.
+      onWorldResize: function () {
+        if (!this._local || !this.owner || !this.owner.isWorld) return;
+        var fit = lively.identity.WikiEditor._worldFit();
+        this.setExtent(fit.extent);
+        this.setPosition(fit.pos);
       },
 
-      // The Close button, and the window's own close control, both go through the window's shutdown: ifOkToShutdownDo first (below), then
-      // onShutdown.
-      _closeLocal: function () {
-        var win = this.getWindow();
-        if (win && win !== this && win.initiateShutdown) win.initiateShutdown();
-      },
-
-      // Asked by the window before it closes (Window#initiateShutdown): what was typed in the last moments is saved first. If that cannot be
-      // saved the window stays open with its text and the reason on screen, rather than lose the text.
-      ifOkToShutdownDo: function (thenDo) {
-        if (!this._local || !this._hasUnsavedLocal()) return thenDo();
-        this._saveNow(function (err) { if (!err) thenDo(); });
-      },
-
-      // The window is closing for good: no save is pending any more, and the shell's session for the page is given back.
-      onShutdown: function () {
-        if (!this._local) return;
-        clearTimeout(this._saveTimer);
-        this._endLocalSession();
+      // What was typed in the last moments is saved now, before this world goes (see WikiEditor.leaveLocal). thenDo(err): err says why it
+      // could not be saved, and the text is still here. The shell's editing session is NOT given back here: the move may still be refused,
+      // and the page then goes on; the shell gives every session up when the world is really replaced.
+      _saveBeforeLeaving: function (thenDo) {
+        if (!this._local || !this._hasUnsavedLocal()) return thenDo(null);
+        this._saveNow(thenDo);
       },
 
     },
@@ -3636,15 +3614,29 @@ module('lively.identity.WikiEditor')
         return editor;
       },
 
-      // The editors of pages kept on this device that are open now, in the windows that hold them.
+      // The editors of pages kept on this device that are in the world now (one at most: a page is the whole world, see openLocal).
       localEditors: function () {
-        return $world.submorphs.map(function (m) { return m.targetMorph; }).filter(function (e) { return e && e._local && e.world(); });
+        return $world.submorphs.filter(function (e) { return e && e._local && e.world(); });
       },
 
-      // A page kept on THIS device (inside keo, signed in with a local identity). ref is { name } for this identity's own page, which comes
-      // into being when it is first saved, or { id } for a page the shell already holds. The page opens in a window of its own, like the
-      // other windows of keo: a page opened as the world's backdrop is behind whatever the world shows (the home page covers it, and a
-      // click never reaches it). One window per page: asking for a page that is open brings its window forward. Returns the editor.
+      // Asked by the page that holds the world, just before the world is replaced (another world or page, the home page, signing out):
+      // what was typed in the last moments and not yet saved is saved first. thenDo(err): err says why it could not be, and the text is
+      // still on screen (the page told the person). Not called when nothing is typed and unsaved.
+      leaveLocal: function (thenDo) {
+        var editors = WikiEditorClass.localEditors();
+        (function next(i) {
+          if (i >= editors.length) return thenDo(null);
+          editors[i]._saveBeforeLeaving(function (err) { if (err) thenDo(err); else next(i + 1); });
+        })(0);
+      },
+
+      // A page kept on THIS device (inside keo, signed in with a local identity) as the WORLD the person is in: the editor fills the blank
+      // world the way the host's own page for a wiki page does (the page is not a window to open and shut; it is where the person is, and
+      // leaving it is moving to another world, from the menu bar or My worlds). ref is { name } for this identity's own page, which comes
+      // into being when it is first saved, or { id } for a page the shell already holds. The world must hold nothing that could cover
+      // the editor: the backdrop of a world that shows a home page is behind that page and a click never reaches it (the kernel notes), so
+      // this is for the blank world the shell starts for kind 'wiki' (world/keo-boot.js), not for a world that already shows something.
+      // One page per world: asking again for the page that is open returns it, another page is refused. Returns the editor, or null.
       openLocal: function (ref, options) {
         var opts = options || {};
         var user = lively.identity.did.currentUser();
@@ -3652,14 +3644,17 @@ module('lively.identity.WikiEditor')
           $world.inform('Wiki pages on this device need keo webputer with an identity signed in.');
           return null;
         }
-        // This identity's own page is the same page whether it is asked for by name or by id; the window is found by name either way.
+        // This identity's own page is the same page whether it is asked for by name or by id.
         if (ref.id && ref.id.indexOf(user.did + '/') === 0) ref = { name: ref.id.slice(user.did.length + 1) };
         var key = ref.id ? 'id:' + ref.id : 'name:' + ref.name;
-        var open = WikiEditorClass.localEditors().filter(function (e) { return e._localKey === key; })[0];
-        if (open) { open.getWindow().comeForward(); return open; }
-        var vis = lively.morphic.World.current().visibleBounds();
-        var w = Math.min(900, Math.max(520, vis.width - 60)), h = Math.min(680, Math.max(400, vis.height - 100));
-        var editor = new lively.identity.WikiEditor(opts.bounds || lively.rect(0, 0, w, h));
+        var open = WikiEditorClass.localEditors()[0];
+        if (open) {
+          if (open._localKey === key) return open;
+          $world.inform('This world already holds a wiki page. Open the other page from My worlds.');
+          return null;
+        }
+        var fit = WikiEditorClass._worldFit();
+        var editor = new lively.identity.WikiEditor(opts.bounds || lively.rect(0, 0, fit.extent.x, fit.extent.y));
         editor._handle = user.handle;
         editor._objId = ref.id || null;
         editor._isNew = false;
@@ -3667,10 +3662,40 @@ module('lively.identity.WikiEditor')
         editor._localKey = key;
         editor._localRef = ref.id ? { id: ref.id } : { name: ref.name };
         editor._wikiName = ref.name || (ref.id ? ref.id.slice(ref.id.indexOf('/') + 1) : null);
-        var title = ref.name || ref.id.slice(ref.id.indexOf('/') + 1);
-        editor.openInWindow({ title: title, pos: vis.center().subPt(lively.pt(w / 2, h / 2)) });
+        editor.openInWorld(fit.pos);
+        // To the back, as in the host's page: the page is the backdrop of its world, and the menu bar and the panels belong above it.
+        editor.sendToBack();
         editor._setup();
+        WikiEditorClass._nameWorldAfterPage(editor._wikiName);
         return editor;
+      },
+
+      // Where a page sits in its world and how big it is: below the menu bar (a pill 32 px tall at y 10, measured in a keo world), as wide as a
+      // page reads well, as tall as what is left. Read again when the world is resized (onWorldResize), so the page keeps filling it.
+      _worldFit: function () {
+        var vis = lively.morphic.World.current().visibleBounds(), top = 52;
+        var w = Math.min(960, Math.max(320, vis.width - 40)), h = Math.max(300, vis.height - top - 16);
+        return { pos: vis.topLeft().addPt(lively.pt((vis.width - w) / 2, top)), extent: lively.pt(w, h) };
+      },
+
+      // The menu bar names the world and offers to rename it (and, for a saved world, to save it). This world is one page, which has no
+      // rename yet, so the entry names the page and does nothing when it is clicked. The menu bar may not be there yet: asked again for a
+      // few seconds, as the home page does for the same entry.
+      _nameWorldAfterPage: function (name) {
+        var attempts = 0;
+        (function tryName() {
+          var menuBar = typeof $world !== 'undefined' && $world && $world.get(/^MenuBar/);
+          var entry = menuBar && (menuBar.submorphs || []).find(function (m) { return m.name === 'WorldNameMenuBarEntry'; });
+          if (entry) {
+            entry.currentWorldDisplayName = function () { return name; };
+            entry.toolTip = 'Wiki page: ' + name;
+            entry.onMouseUp = function (evt) { evt.stop(); return true; };
+            entry.update();
+            return;
+          }
+          if (++attempts > 25) return;
+          setTimeout(tryName, 200);
+        })();
       },
 
       // Create a new genesis wiki page and open the editor.

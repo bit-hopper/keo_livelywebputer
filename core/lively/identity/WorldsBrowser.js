@@ -18,9 +18,10 @@
  *     session's own $world if createOn were called directly).
  *   - Wiki page: a pure launcher into the existing NewWikiPageDialog/
  *     WikiEditor flow. Wiki pages save as type "wikipage", not "world", but
- *     are listed here too, labelled "Wiki". Inside keo (a local identity) the card asks for a name and opens the page in the editor on
- *     this device (WikiEditor.openLocal); the pages this device holds are listed here, in the one list with the worlds, labelled "Wiki",
- *     and each has its own "open" (no rename, tags, copy or delete: pages have none of those yet).
+ *     are listed here too, labelled "Wiki". Inside keo (a local identity) the card asks for a name and goes to the page of that name,
+ *     which is a world of its own with the editor filling it (LocalIdentity.wikiGo, WikiEditor.openLocal); the pages this device holds are
+ *     listed here, in the one list with the worlds, labelled "Wiki", and each has its own "open" (no rename, tags, copy or delete: pages
+ *     have none of those yet).
  *   - Template: a single list of presets that pre-populate a new world
  *     (Shop/Inventory/Gallery/Books/Music are wired up; Movie/Game are
  *     inert "Coming soon" placeholders for now). A chosen template is launched
@@ -699,17 +700,18 @@ module("lively.identity.WorldsBrowser")
         });
       },
 
-      // A wiki page opens in the editor, in a window of its own: it is not a world to go into. A page the shell holds is asked for by its id.
+      // A wiki page is a world: "open" goes to it, as it does for a saved world, and the world frame restarts with the page's editor filling
+      // it (the way a page of a wiki is on a host). A page the shell holds is asked for by its id; the shell refuses one it does not hold.
       localOpenWiki: function localOpenWiki(it) {
-        this.setLocalStatus("");
-        lively.require("lively.identity.WikiEditor").toRun(function () {
-          lively.identity.WikiEditor.openLocal({ id: it.id });
+        var self = this;
+        this.setLocalStatus("Opening “" + it.name + "”…");
+        lively.identity.localIdentity.wikiGo({ id: it.id }, function (err) {
+          if (err && self.world()) self.setLocalStatus(err.message || String(err), true);
         });
       },
 
-      // The "Wiki page" card of the Create picker, inside keo: asks for a name, then opens the page of that name in the editor (made when it
-      // is first saved; asking for the name of a page of one's own opens that page instead). The window goes back to the list, where the
-      // page joins once it has been saved.
+      // The "Wiki page" card of the Create picker, inside keo: asks for a name, then goes to the page of that name (made when it is first
+      // saved; asking for the name of a page of one's own goes to that page instead).
       localWikiNew: function localWikiNew() {
         var self = this;
         $world.prompt("Name of the new wiki page:", function (name) {
@@ -722,8 +724,9 @@ module("lively.identity.WorldsBrowser")
             return;
           }
           if (self.world() && self.get("worldsBrowserContent")) self.showWorlds();
-          lively.require("lively.identity.WikiEditor").toRun(function () {
-            lively.identity.WikiEditor.openLocal({ name: n });
+          self.setLocalStatus("Opening “" + n + "”…");
+          lively.identity.localIdentity.wikiGo({ name: n }, function (err) {
+            if (err && self.world()) self.setLocalStatus(err.message || String(err), true);
           });
         });
       },
