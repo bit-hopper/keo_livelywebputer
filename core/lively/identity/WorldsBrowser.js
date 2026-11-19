@@ -18,10 +18,11 @@
  *     session's own $world if createOn were called directly).
  *   - Wiki page: a pure launcher into the existing NewWikiPageDialog/
  *     WikiEditor flow. Wiki pages save as type "wikipage", not "world", but
- *     are listed here too, labelled "Wiki". Inside keo (a local identity) the card asks for a name and goes to the page of that name,
- *     which is a world of its own with the editor filling it (LocalIdentity.wikiGo, WikiEditor.openLocal); the pages this device holds are
- *     listed here, in the one list with the worlds, labelled "Wiki", and each has its own "open" (no rename, tags, copy or delete: pages
- *     have none of those yet).
+ *     are listed here too, labelled "Wiki". Inside keo (a local identity) the card goes to the person's wiki, the index of their pages (a
+ *     world of its own, WikiIndex.openLocal, via LocalIdentity.wikiIndexGo) and has it ask for the new page's name, category and tags, as the
+ *     host's card hands off to its wiki index with the same dialog; the pages this device holds are listed here, in the one list with the
+ *     worlds, labelled "Wiki", and each has its own "open", which goes to the page as a world of its own (LocalIdentity.wikiGo,
+ *     WikiEditor.openLocal; no rename, tags, copy or delete: pages have none of those yet).
  *   - Template: a single list of presets that pre-populate a new world
  *     (Shop/Inventory/Gallery/Books/Music are wired up; Movie/Game are
  *     inert "Coming soon" placeholders for now). A chosen template is launched
@@ -710,24 +711,15 @@ module("lively.identity.WorldsBrowser")
         });
       },
 
-      // The "Wiki page" card of the Create picker, inside keo: asks for a name, then goes to the page of that name (made when it is first
-      // saved; asking for the name of a page of one's own goes to that page instead).
+      // The "Wiki page" card of the Create picker, inside keo: goes to the person's wiki (the index of their pages, a world of its own) and has
+      // it ask for the new page's name, category and tags, as the host's card hands off to the wiki index with its new-page dialog
+      // (launchWikiCreation, "?new=1"). What was typed in a page that is open is saved first (the shell waits for it), and a failure stops the move.
       localWikiNew: function localWikiNew() {
         var self = this;
-        $world.prompt("Name of the new wiki page:", function (name) {
-          var n = String(name == null ? "" : name).trim();
-          if (!n) return;
-          // The shell holds the real rule (1 to 128 characters, no control character); this is so the person is told here, not by an
-          // error from the editor.
-          if (n.length > 128 || /[\u0000-\u001f\u007f]/.test(n)) {
-            $world.inform("A page name is 1 to 128 characters, with no control characters.");
-            return;
-          }
-          if (self.world() && self.get("worldsBrowserContent")) self.showWorlds();
-          self.setLocalStatus("Opening “" + n + "”…");
-          lively.identity.localIdentity.wikiGo({ name: n }, function (err) {
-            if (err && self.world()) self.setLocalStatus(err.message || String(err), true);
-          });
+        if (self.world() && self.get("worldsBrowserContent")) self.showWorlds();
+        self.setLocalStatus("Opening your wiki…");
+        lively.identity.localIdentity.wikiIndexGo({ newPage: true }, function (err) {
+          if (err && self.world()) self.setLocalStatus(err.message || String(err), true);
         });
       },
 

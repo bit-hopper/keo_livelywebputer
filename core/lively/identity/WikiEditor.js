@@ -119,7 +119,7 @@ module('lively.identity.WikiEditor')
         '_flowEl', '_heightObserver', '_onHeightChanged',
         '_editAccess', '_tokenTimer', '_permissionsRow', '_permPanel', '_permCloseHandler',
         '_saveInFlight', '_saveRerun', '_saveWaiters', '_restore',
-        '_local', '_localRef', '_localKey', '_pageSession', '_pageClientId', '_unsaved', '_unconfirmed', '_saveN'],
+        '_local', '_localRef', '_localKey', '_pageSession', '_pageClientId', '_unsaved', '_unconfirmed', '_saveN', '_inIndex', '_newMeta'],
     },
 
     // ─── initialization ──────────────────────────────────────────────────────────
@@ -2354,6 +2354,39 @@ module('lively.identity.WikiEditor')
           self._applyReadOnlyMode();
           self._refreshPermissionsRow();
           self._setStatus(r.isNew ? 'New page' : 'Saved');
+          // A page made from the index's new-page dialog carries the category and tags that were chosen there. They are written into the page's
+          // own document (a `meta` map beside the text), so they are signed, versioned and travel with the page; the shell reads them back out
+          // for the index's cards and lists (shell/keo-wikistore.js). Only for a page that is new: an existing page's meta is not touched here.
+          if (r.isNew && self._newMeta) self._writeMeta(self._newMeta);
+        });
+      },
+
+      // Puts the category and tags in the page's own document, as one change of this client's, and saves it soon like any other change. Not a
+      // rule of the page: any writer of the page may set them, and the shell cuts what it reads back to a short label and a short list.
+      _writeMeta: function (meta) {
+        if (!this.yDoc || !this._canEdit) return;
+        var map = this.yDoc.getMap('meta');
+        this.yDoc.transact(function () {
+          if (meta.category) map.set('category', String(meta.category));
+          if (meta.tags && meta.tags.length) map.set('tags', meta.tags.map(String));
+        });
+        this._markEdited();
+      },
+
+      // The page is being taken out of its place (another page is opened in the index, or the index is left for the home page): what was typed
+      // in the last moments is saved first, and the shell's editing session for it is given back. thenDo(err): err says why the typing could
+      // not be saved, and then NOTHING is closed (the text is still here and the caller must not remove the editor). Without an error the
+      // editor can be removed.
+      _closeLocal: function (thenDo) {
+        var self = this, li = lively.identity.localIdentity;
+        this._saveBeforeLeaving(function (err) {
+          if (err) return thenDo(err);
+          clearTimeout(self._saveTimer);
+          if (self._heightObserver) { self._heightObserver.disconnect(); self._heightObserver = null; }
+          var session = self._pageSession;
+          self._pageSession = null;
+          if (session) li.wikiClose(session);
+          thenDo(null);
         });
       },
 
@@ -2415,7 +2448,8 @@ module('lively.identity.WikiEditor')
       // The world calls this on each of its morphs when the browser window changes size (World>>onWindowResize, after it has fitted itself to
       // the new size). A page that is the whole world follows, as the home page does; the text inside is laid out by the browser from the new size.
       onWorldResize: function () {
-        if (!this._local || !this.owner || !this.owner.isWorld) return;
+        // An editor in the index's slot is placed and sized by the index (it grows with its text), not by the world's size.
+        if (!this._local || this._inIndex || !this.owner || !this.owner.isWorld) return;
         var fit = lively.identity.WikiEditor._worldFit();
         this.setExtent(fit.extent);
         this.setPosition(fit.pos);
@@ -3637,6 +3671,12 @@ module('lively.identity.WikiEditor')
       // the editor: the backdrop of a world that shows a home page is behind that page and a click never reaches it (the kernel notes), so
       // this is for the blank world the shell starts for kind 'wiki' (world/keo-boot.js), not for a world that already shows something.
       // One page per world: asking again for the page that is open returns it, another page is refused. Returns the editor, or null.
+      //
+      // IN THE INDEX'S SLOT (options.target, the world: see WikiIndex.openLocal): the editor is one of several things the index lays out, as the
+      // host's index lays out a page it opens (WikiIndex._openPage), not the whole world. It is added to options.target at options.bounds,
+      // grows with its text (options.autoHeight, options.onHeightChanged tells the index its new height), and the index places it, puts it at the
+      // back and names the world, so none of that is done here, and the page that is open is the index's to replace (it closes the old editor
+      // with _closeLocal first). options.meta ({ category, tags }) is written into a NEW page's document once it is open.
       openLocal: function (ref, options) {
         var opts = options || {};
         var user = lively.identity.did.currentUser();
@@ -3647,11 +3687,14 @@ module('lively.identity.WikiEditor')
         // This identity's own page is the same page whether it is asked for by name or by id.
         if (ref.id && ref.id.indexOf(user.did + '/') === 0) ref = { name: ref.id.slice(user.did.length + 1) };
         var key = ref.id ? 'id:' + ref.id : 'name:' + ref.name;
+        var slot = !!opts.target;
         var open = WikiEditorClass.localEditors()[0];
         if (open) {
           if (open._localKey === key) return open;
-          $world.inform('This world already holds a wiki page. Open the other page from My worlds.');
-          return null;
+          if (!slot) {
+            $world.inform('This world already holds a wiki page. Open the other page from My worlds.');
+            return null;
+          }
         }
         var fit = WikiEditorClass._worldFit();
         var editor = new lively.identity.WikiEditor(opts.bounds || lively.rect(0, 0, fit.extent.x, fit.extent.y));
@@ -3662,6 +3705,15 @@ module('lively.identity.WikiEditor')
         editor._localKey = key;
         editor._localRef = ref.id ? { id: ref.id } : { name: ref.name };
         editor._wikiName = ref.name || (ref.id ? ref.id.slice(ref.id.indexOf('/') + 1) : null);
+        editor._newMeta = opts.meta || null;
+        if (slot) {
+          editor._inIndex = true;
+          editor._autoHeight = !!opts.autoHeight;
+          editor._onHeightChanged = opts.onHeightChanged || null;
+          opts.target.addMorph(editor);
+          editor._setup();
+          return editor;
+        }
         editor.openInWorld(fit.pos);
         // To the back, as in the host's page: the page is the backdrop of its world, and the menu bar and the panels belong above it.
         editor.sendToBack();
@@ -3679,8 +3731,9 @@ module('lively.identity.WikiEditor')
       },
 
       // The menu bar names the world and offers to rename it (and, for a saved world, to save it). This world is one page, which has no
-      // rename yet, so the entry names the page and does nothing when it is clicked. The menu bar may not be there yet: asked again for a
-      // few seconds, as the home page does for the same entry.
+      // rename yet, so the entry names the page, and a click goes up to the wiki the page belongs to (its index), as the host's own index
+      // page patches the same entry to lead back to the home page. The menu bar may not be there yet: asked again for a few seconds, as the
+      // home page does for the same entry.
       _nameWorldAfterPage: function (name) {
         var attempts = 0;
         (function tryName() {
@@ -3688,8 +3741,12 @@ module('lively.identity.WikiEditor')
           var entry = menuBar && (menuBar.submorphs || []).find(function (m) { return m.name === 'WorldNameMenuBarEntry'; });
           if (entry) {
             entry.currentWorldDisplayName = function () { return name; };
-            entry.toolTip = 'Wiki page: ' + name;
-            entry.onMouseUp = function (evt) { evt.stop(); return true; };
+            entry.toolTip = 'Wiki page: ' + name + ' (click for your wiki)';
+            entry.onMouseUp = function (evt) {
+              lively.identity.localIdentity.wikiIndexGo({}, function (err) { if (err) $world.inform(err.message || String(err)); });
+              evt.stop();
+              return true;
+            };
             entry.update();
             return;
           }
