@@ -21,8 +21,9 @@
  *     are listed here too, labelled "Wiki". Inside keo (a local identity) the card goes to the person's wiki, the index of their pages (a
  *     world of its own, WikiIndex.openLocal, via LocalIdentity.wikiIndexGo) and has it ask for the new page's name, category and tags, as the
  *     host's card hands off to its wiki index with the same dialog; the pages this device holds are listed here, in the one list with the
- *     worlds, labelled "Wiki", and each has its own "open", which goes to the page as a world of its own (LocalIdentity.wikiGo,
- *     WikiEditor.openLocal; no rename, tags, copy or delete: pages have none of those yet).
+ *     worlds, labelled "Wiki", and each has its own "open", which opens the page inside the wiki's index (in place when the index is the
+ *     world already, else by restarting the world as the index with the page open; a page of someone else's that this device holds is gone
+ *     to as a world of its own, LocalIdentity.wikiGo); no rename, tags, copy or delete: pages have none of those yet.
  *   - Template: a single list of presets that pre-populate a new world
  *     (Shop/Inventory/Gallery/Books/Music are wired up; Movie/Game are
  *     inert "Coming soon" placeholders for now). A chosen template is launched
@@ -300,7 +301,7 @@ module("lively.identity.WorldsBrowser")
         return (pages || []).filter(function (p) {
           return !needle || String(p.name).toLowerCase().indexOf(needle) !== -1;
         }).map(function (p) {
-          return { wiki: true, id: p.id, name: p.name, owner: p.owner, versions: p.versions, pending: p.pending || 0, savedAt: p.updated,
+          return { wiki: true, id: p.id, name: p.name, owner: p.owner, mine: !!p.mine, versions: p.versions, pending: p.pending || 0, savedAt: p.updated,
                    by: p.mine ? "yours" : "by " + li.shortDid(p.owner) };
         });
       },
@@ -701,14 +702,27 @@ module("lively.identity.WorldsBrowser")
         });
       },
 
-      // A wiki page is a world: "open" goes to it, as it does for a saved world, and the world frame restarts with the page's editor filling
-      // it (the way a page of a wiki is on a host). A page the shell holds is asked for by its id; the shell refuses one it does not hold.
+      // "open" on a wiki page's row opens the page where a person's pages are read: inside their wiki, the index (cards, the list of pages on
+      // the left, the categories on the right, the page in the slot), as a page of a wiki is opened on a host. In a world that already is the
+      // index the page just opens in its slot (the person's text is saved first, by the index); anywhere else the world frame restarts as the
+      // index with the page open. The index lists only the person's own pages, so a page of someone else's that this device holds (it has
+      // no list to be in) is gone to as a world of its own (LocalIdentity.wikiGo), where the editor shows it as it is allowed to. The shell
+      // refuses a page it does not hold, and a move that cannot save what was typed stops, with the reason in the line under the list.
       localOpenWiki: function localOpenWiki(it) {
-        var self = this;
+        var self = this, li = lively.identity.localIdentity;
+        function failed(err) { if (err && self.world()) self.setLocalStatus(err.message || String(err), true); }
         this.setLocalStatus("Opening “" + it.name + "”…");
-        lively.identity.localIdentity.wikiGo({ id: it.id }, function (err) {
-          if (err && self.world()) self.setLocalStatus(err.message || String(err), true);
-        });
+        if (!it.mine) return li.wikiGo({ id: it.id }, failed);
+        var index = lively.identity.WikiIndex && lively.identity.WikiIndex.current;
+        // Running = started in this frame and its first list read (a start that was refused, nobody signed in, never has the page list).
+        if (index && index.openPageById && index._scope && index._isLocal() && index._pages) {
+          return index.openPageById(it.id, function (err) {
+            if (err) return failed(err);
+            // The page is where the person is now: this window has done its work, as it has when a move replaces the world.
+            if (self.world()) { self.setLocalStatus(""); if (self.initiateShutdown) self.initiateShutdown(); else self.remove(); }
+          });
+        }
+        li.wikiIndexGo({ id: it.id }, failed);
       },
 
       // The "Wiki page" card of the Create picker, inside keo: goes to the person's wiki (the index of their pages, a world of its own) and has

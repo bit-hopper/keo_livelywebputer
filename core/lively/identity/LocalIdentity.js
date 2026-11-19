@@ -247,6 +247,10 @@ module("lively.identity.LocalIdentity")
       //   wikiList()       -> [{ id, name, owner, mine, versions, pending, updated, created, category, tags, unreadable }]   newest change first; a
       //                       page exists once it has a saved edit. created is the earliest date an edit of it states (null if none), category
       //                       and tags are the page's own (null and []), unreadable says its history could not be read (it is still listed)
+      //   wikiSearch(query) -> [{ id, name, owner, mine, category, tags, score, where, snippet }]   the pages that mention the words (every word,
+      //                       or "quoted phrase", has to be found; case and accents do not matter), best first, at most fifty. The shell reads the
+      //                       page's name, category, tags and TEXT; `where` says which of "name", "tags", "text" matched and `snippet` is a short
+      //                       piece of the text around the first match ("" when the text did not match). No page's text is handed over but that.
       //   wikiOpen(ref)    -> { session, id, name, owner, mine, isNew, canEdit, clientId, heads, state }
       //                       ref is { name } for this identity's own page (made when first saved) or { id } for any page held here. `state`
       //                       is the page's Yjs update; `clientId` is the number the editor must give its Yjs document (a fresh one at every
@@ -264,6 +268,7 @@ module("lively.identity.LocalIdentity")
       //   wikiHere(ref)    -> true   the index says which page it shows ({ id } or { name }, or null for none), so that a refresh comes back to
       //                       it. Only a world that was started as the index may say so.
       wikiList: function wikiList(thenDo) { this._run("wiki.list", {}, 30000, thenDo); },
+      wikiSearch: function wikiSearch(query, thenDo) { this._run("wiki.search", { query: String(query) }, 30000, thenDo); },
       wikiIndexGo: function wikiIndexGo(opts, thenDo) {
         var o = opts || {};
         this._run("world.go", { kind: "wikiindex", id: o.id || undefined, newPage: o.newPage === true }, 120000, thenDo || function () {});

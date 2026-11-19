@@ -1274,6 +1274,7 @@ module('lively.identity.WikiEditor')
           yPM.ySyncPlugin(yXmlFragment),
           yPM.yUndoPlugin(), // sole undo/redo — do NOT add prosemirror history() alongside this
           this._buildHighlightPlugin(prosemirror),
+          this._buildSearchMarkPlugin(prosemirror),
           this._buildLinkPreviewPlugin(prosemirror),
           prosemirror.keymap.keymap({ 'Mod-z': yPM.undo, 'Mod-y': yPM.redo, 'Mod-Shift-z': yPM.redo }),
           prosemirror.keymap.keymap({ 'Shift-Enter': hardBreakCmd }),
@@ -1481,6 +1482,99 @@ module('lively.identity.WikiEditor')
             decos = decos.concat(highlightCodeBlock(pos, node));
           });
           return DecorationSet.create(state.doc, decos);
+        }
+      },
+
+      // Marks the words of a search in the page that was opened from its results, as the host's read view does for the term it was opened
+      // with: every match is marked and the first is brought into view (markSearch below). Decorations only: the page's content is not
+      // touched and nothing is saved or sent. The marks go when the page is changed (the person starts writing) or another search is
+      // marked. A query is read the way the shell reads it when it searches: words, and "quoted phrases", case and accents not mattering.
+      // A phrase is found inside one text block (a paragraph, a heading), across the pieces of a styled run, not across blocks.
+      _buildSearchMarkPlugin: function (prosemirror) {
+        var self = this, MAX_MARKS = 500, MAX_TERMS = 8;
+        var Plugin = prosemirror.state.Plugin, PluginKey = prosemirror.state.PluginKey;
+        var Decoration = prosemirror.view.Decoration, DecorationSet = prosemirror.view.DecorationSet;
+        var key = new PluginKey('keoSearchMarks');
+        this._searchMarkKey = key;
+        // one character to one character, so that a match in the folded text is the same place in the page's text
+        function fold(s) {
+          return String(s).split('').map(function (c) {
+            var f = c.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+            return f.length === 1 ? f : (f.charAt(0) || ' ');
+          }).join('');
+        }
+        function terms(query) {
+          var out = [], re = /"([^"]+)"|(\S+)/g, m;
+          while ((m = re.exec(String(query == null ? '' : query)))) {
+            var t = fold(m[1] != null ? m[1] : m[2]).replace(/\s+/g, ' ').trim();
+            if (t && out.indexOf(t) < 0) out.push(t);
+          }
+          return out.slice(0, MAX_TERMS);
+        }
+        function marksIn(doc, query) {
+          var ts = terms(query), out = [];
+          if (!ts.length) return out;
+          doc.descendants(function (node, pos) {
+            if (out.length >= MAX_MARKS) return false;
+            if (!node.isTextblock) return true;
+            var text = '', at = [];                       // at[i]: where the i-th character of `text` is in the page
+            node.forEach(function (child, offset) {
+              var start = pos + 1 + offset;
+              if (child.isText) { for (var i = 0; i < child.text.length; i++) { text += child.text.charAt(i); at.push(start + i); } }
+              else { text += ' '; at.push(start); }       // a break or an inline object: a space, so that words do not run together
+            });
+            var f = fold(text);
+            ts.forEach(function (t) {
+              var i = f.indexOf(t);
+              while (i >= 0 && out.length < MAX_MARKS) {
+                out.push(Decoration.inline(at[i], at[i + t.length - 1] + 1, { class: 'keo-search-mark', style: 'background:#fff3a0;color:inherit;border-radius:2px;' }));
+                i = f.indexOf(t, i + t.length);
+              }
+            });
+            return false;                                 // the children of a text block are inline: nothing below it is a block
+          });
+          return out;
+        }
+        return new Plugin({
+          key: key,
+          state: {
+            init: function () { return DecorationSet.empty; },
+            apply: function (tr, old) {
+              var asked = tr.getMeta(key);
+              if (asked) return DecorationSet.create(tr.doc, marksIn(tr.doc, asked.query));
+              return tr.docChanged ? DecorationSet.empty : old;
+            },
+          },
+          props: { decorations: function (state) { return key.getState(state); } },
+          // A search asked for before the page has its text is marked as soon as there is text: the text may be in the page already when this
+          // plugin's view is made (the sync plugin before it draws the content as the view is built, and nothing updates the view after
+          // that), or arrive in a later update. Marked in a microtask, not inside the update that brought the text.
+          view: function (view) {
+            function check(v) {
+              if (!self._pendingSearch || !v.state.doc.textContent) return;
+              var q = self._pendingSearch;
+              self._pendingSearch = null;
+              Promise.resolve().then(function () { self.markSearch(q); });
+            }
+            check(view);
+            return { update: check };
+          },
+        });
+      },
+
+      // Marks the words of `query` in the page (see _buildSearchMarkPlugin) and brings the first match into view. Asked for before the page
+      // has text, it is done when the text is there.
+      markSearch: function (query) {
+        var view = this.editorView, key = this._searchMarkKey;
+        if (!view || !key || !view.state.doc.textContent) { this._pendingSearch = query || null; return; }
+        this._pendingSearch = null;
+        view.dispatch(view.state.tr.setMeta(key, { query: query }));
+        var set = key.getState(view.state), found = set && set.find();
+        if (found && found.length) {
+          try {
+            var d = view.domAtPos(found[0].from), el = d.node.nodeType === 3 ? d.node.parentElement : d.node;
+            if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          } catch (e) { /* a mark that cannot be scrolled to is still marked */ }
         }
       },
 
@@ -3706,6 +3800,8 @@ module('lively.identity.WikiEditor')
         editor._localRef = ref.id ? { id: ref.id } : { name: ref.name };
         editor._wikiName = ref.name || (ref.id ? ref.id.slice(ref.id.indexOf('/') + 1) : null);
         editor._newMeta = opts.meta || null;
+        // The words of the search this page was opened from: marked in the page once it has text (markSearch)
+        editor._pendingSearch = opts.highlightQuery || null;
         if (slot) {
           editor._inIndex = true;
           editor._autoHeight = !!opts.autoHeight;
