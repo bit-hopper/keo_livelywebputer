@@ -2401,7 +2401,7 @@ module('lively.identity.WikiEditor')
           self._unsaved.splice(0, sent.count);
           self._unconfirmed = null;
           self._setStatus('Saved');
-          // the list of pages (a window of its own) reads again: a page may have just come into being, or have a newer change
+          // the list of worlds and pages (My worlds, WorldsBrowser) reads again: a page may have just come into being, or have a newer change
           try { window.dispatchEvent(new CustomEvent('keo-wiki-changed')); } catch (e) { /* no listener matters */ }
           cb(null);
         });

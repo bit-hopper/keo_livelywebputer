@@ -18,7 +18,9 @@
  *     session's own $world if createOn were called directly).
  *   - Wiki page: a pure launcher into the existing NewWikiPageDialog/
  *     WikiEditor flow. Wiki pages save as type "wikipage", not "world", but
- *     are listed here too, labelled "Wiki".
+ *     are listed here too, labelled "Wiki". Inside keo (a local identity) the card asks for a name and opens the page in the editor on
+ *     this device (WikiEditor.openLocal); the pages this device holds are listed here, in the one list with the worlds, labelled "Wiki",
+ *     and each has its own "open" (no rename, tags, copy or delete: pages have none of those yet).
  *   - Template: a single list of presets that pre-populate a new world
  *     (Shop/Inventory/Gallery/Books/Music are wired up; Movie/Game are
  *     inert "Coming soon" placeholders for now). A chosen template is launched
@@ -106,11 +108,17 @@ module("lively.identity.WorldsBrowser")
           // put back at once), so the listener cannot be dropped there, nor a request still on its way be cancelled. A window that is
           // really closed is not in the world when the next event comes, and stops listening then; an answer or a search timer that
           // arrives for it is ignored because both check that the window is in the world.
+          // "keo-wiki-changed" is the same for a wiki page the editor has just saved (a new page joins the list once it is first saved).
           this._onChanged = function () {
-            if (!self.world()) { window.removeEventListener("keo-worlds-changed", self._onChanged); return; }
+            if (!self.world()) {
+              window.removeEventListener("keo-worlds-changed", self._onChanged);
+              window.removeEventListener("keo-wiki-changed", self._onChanged);
+              return;
+            }
             self.refreshLocal();
           };
           window.addEventListener("keo-worlds-changed", this._onChanged);
+          window.addEventListener("keo-wiki-changed", this._onChanged);
         }
       },
 
@@ -261,16 +269,52 @@ module("lively.identity.WorldsBrowser")
       loadLocal: function loadLocal() {
         var self = this, li = lively.identity.localIdentity, q = (this._query || "").trim();
         var seq = this._seq = (this._seq || 0) + 1;
-        function done(err, items, skipped) {
+        function done(err, items, skipped, wikiErr) {
           if (seq !== self._seq || !self.world() || !self.get("worldsList")) return;
           if (err) return self.showMessage("Could not load worlds: " + (err.message || err));
           self._worlds = items || [];
           self.renderLocalWorlds(self._worlds);
           self.refreshSpace();
-          if (skipped) self.setLocalStatus(skipped + (skipped === 1 ? " world" : " worlds") + " could not be read for the search.", true);
+          if (wikiErr) self.setLocalStatus("Your wiki pages could not be read: " + (wikiErr.message || wikiErr), true);
+          else if (skipped) self.setLocalStatus(skipped + (skipped === 1 ? " world" : " worlds") + " could not be read for the search.", true);
         }
-        if (q) li.worldSearch(q, function (err, r) { done(err, r && r.hits, r && r.skipped); });
-        else li.worldList(function (err, l) { done(err, l, 0); });
+        // The wiki pages are kept in their own store, so they are read separately and put in the same list. Pages that cannot be read
+        // leave the worlds showing, with a line that says so.
+        function withWiki(err, items, skipped) {
+          if (err || typeof li.wikiList !== "function") return done(err, items, skipped);
+          li.wikiList(function (wikiErr, pages) {
+            var wiki = wikiErr ? [] : self._wikiItems(pages, q);
+            done(null, self._mergeWiki(items || [], wiki, q), skipped, wikiErr);
+          });
+        }
+        if (q) li.worldSearch(q, function (err, r) { withWiki(err, r && r.hits, r && r.skipped); });
+        else li.worldList(function (err, l) { withWiki(err, l, 0); });
+      },
+
+      // The shell's list of wiki pages as rows of this list: `wiki: true`, `savedAt` the time this device last took a change into the
+      // page (an ISO time, like a world's). While searching, only the pages whose name holds the words (the shell searches worlds only).
+      _wikiItems: function _wikiItems(pages, q) {
+        var li = lively.identity.localIdentity, needle = String(q || "").toLowerCase();
+        return (pages || []).filter(function (p) {
+          return !needle || String(p.name).toLowerCase().indexOf(needle) !== -1;
+        }).map(function (p) {
+          return { wiki: true, id: p.id, name: p.name, owner: p.owner, versions: p.versions, pending: p.pending || 0, savedAt: p.updated,
+                   by: p.mine ? "yours" : "by " + li.shortDid(p.owner) };
+        });
+      },
+
+      // One list, newest first. Both lists come newest first, so this is a merge that never reorders either: the worlds keep the order
+      // the shell gave them. While searching the worlds keep their ranking and the pages follow.
+      _mergeWiki: function _mergeWiki(worlds, wiki, q) {
+        if (!wiki.length) return worlds;
+        if (String(q || "").trim()) return worlds.concat(wiki);
+        function t(x) { var v = Date.parse(x.savedAt); return isNaN(v) ? 0 : v; }
+        var out = [], i = 0, j = 0;
+        while (i < worlds.length || j < wiki.length) {
+          if (j >= wiki.length || (i < worlds.length && t(worlds[i]) >= t(wiki[j]))) out.push(worlds[i++]);
+          else out.push(wiki[j++]);
+        }
+        return out;
       },
 
       // The search field's text changed. A search opens every world's text in the shell, so it waits for a short pause in typing.
@@ -603,17 +647,29 @@ module("lively.identity.WorldsBrowser")
           row.onMouseOut  = function () { row.setFill(null); };
 
           label(row, it.name, 10, 7, w - 130, 20, 13, Color.rgb(40, 40, 40), true, "worldName");
-          var bits = [it.template ? "Template · " + it.template.charAt(0).toUpperCase() + it.template.slice(1) : "World"];
-          if (it.last) bits.push("last saved");
-          bits.push("saved " + ago(it.savedAt));
-          bits.push(size(it.bytes));
-          if (it.tags && it.tags.length) bits.push(it.tags.map(function (t) { return "#" + t; }).join(" "));
+          var bits;
+          if (it.wiki) {
+            // A wiki page, kept in its own store: whose it is, how many changes it has, when this device last took one in.
+            bits = ["Wiki", it.by, it.versions + (it.versions === 1 ? " change" : " changes")];
+            if (it.savedAt) bits.push("saved " + ago(it.savedAt));
+            if (it.pending) bits.push(it.pending + " waiting");
+            row.wikiId = it.id;
+          } else {
+            bits = [it.template ? "Template · " + it.template.charAt(0).toUpperCase() + it.template.slice(1) : "World"];
+            if (it.last) bits.push("last saved");
+            bits.push("saved " + ago(it.savedAt));
+            bits.push(size(it.bytes));
+            if (it.tags && it.tags.length) bits.push(it.tags.map(function (t) { return "#" + t; }).join(" "));
+          }
           label(row, bits.join("  ·  "), 10, 29, w - 20, 14, 10, Color.rgb(170, 170, 170), false, "worldMeta");
           if (extra) label(row, extra, 10, 45, w - 20, 14, 10, Color.rgb(110, 104, 134), false, "worldSnippet");
 
-          var more = link(row, "more_horiz", w - 76, 15, 26, GRAY, GRAY_HOVER, function () { self.openRowMenu(it); }, "'Material Symbols Rounded'", true);
-          more.name = "worldMore";
-          var open = link(row, "open", w - 42, 16, 34, PINK, PINK_HOVER, function () { self.localOpen(it.name); });
+          // A page has no rename, tags, copy or delete yet, so it has no "⋯" menu.
+          if (!it.wiki) {
+            var more = link(row, "more_horiz", w - 76, 15, 26, GRAY, GRAY_HOVER, function () { self.openRowMenu(it); }, "'Material Symbols Rounded'", true);
+            more.name = "worldMore";
+          }
+          var open = link(row, "open", w - 42, 16, 34, PINK, PINK_HOVER, function () { if (it.wiki) self.localOpenWiki(it); else self.localOpen(it.name); });
           open.name = "worldOpen";
 
           var sep = new lively.morphic.Box(lively.rect(10, rowH - 1, w - 20, 1));
@@ -640,6 +696,35 @@ module("lively.identity.WorldsBrowser")
         this.setLocalStatus("Opening “" + name + "”…");
         lively.identity.localIdentity.go("world", name, function (err) {
           if (err && self.world()) self.setLocalStatus(err.message || String(err), true);
+        });
+      },
+
+      // A wiki page opens in the editor, in a window of its own: it is not a world to go into. A page the shell holds is asked for by its id.
+      localOpenWiki: function localOpenWiki(it) {
+        this.setLocalStatus("");
+        lively.require("lively.identity.WikiEditor").toRun(function () {
+          lively.identity.WikiEditor.openLocal({ id: it.id });
+        });
+      },
+
+      // The "Wiki page" card of the Create picker, inside keo: asks for a name, then opens the page of that name in the editor (made when it
+      // is first saved; asking for the name of a page of one's own opens that page instead). The window goes back to the list, where the
+      // page joins once it has been saved.
+      localWikiNew: function localWikiNew() {
+        var self = this;
+        $world.prompt("Name of the new wiki page:", function (name) {
+          var n = String(name == null ? "" : name).trim();
+          if (!n) return;
+          // The shell holds the real rule (1 to 128 characters, no control character); this is so the person is told here, not by an
+          // error from the editor.
+          if (n.length > 128 || /[\u0000-\u001f\u007f]/.test(n)) {
+            $world.inform("A page name is 1 to 128 characters, with no control characters.");
+            return;
+          }
+          if (self.world() && self.get("worldsBrowserContent")) self.showWorlds();
+          lively.require("lively.identity.WikiEditor").toRun(function () {
+            lively.identity.WikiEditor.openLocal({ name: n });
+          });
         });
       },
 
@@ -1006,8 +1091,8 @@ module("lively.identity.WorldsBrowser")
           { icon: "article",             title: "Wiki page",   subtitle: "Create a wiki page for your profile.", action: "wiki" },
           { icon: "dashboard_customize", title: "Template",    subtitle: "Start from a preset like Shop.",       action: "template" },
         ];
-        // Wiki pages are kept on a host; there is no wiki on this device, so the card is not offered there.
-        if (this.isLocal()) cards = cards.filter(function (c) { return c.action !== "wiki"; });
+        // Inside keo a wiki page is kept on this device, not on a profile: the card says so, and starts the page here (see launchWikiCreation).
+        if (this.isLocal()) cards[1].subtitle = "Write a page that stays on this device.";
 
         var rowH = 62;
         var ry = 0;
@@ -1027,6 +1112,7 @@ module("lively.identity.WorldsBrowser")
       },
 
       launchWikiCreation: function launchWikiCreation() {
+        if (this.isLocal()) return this.localWikiNew();
         var user = lively.identity.did.currentUser();
         if (!user) return;
         // Wikis live on their own route, not inside whichever world this
